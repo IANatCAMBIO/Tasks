@@ -7,11 +7,11 @@
  * top-level tasks) its subtasks.  Subtasks cannot have subtasks: editing
  * a subtask shows a "part of" note instead of a subtask section.
  *
- * Saves are write-through with a short debounce (like the Records
+ * Saves are write-through with a short debounce (like the Notes
  * editor autosave): every change lands in the database within ~600 ms
  * and the library refreshes.  Closing the window flushes a pending save.
- * A task mirroring a Records action item is no different here — its
- * done and due reach Records with the next mirror pass (bnsync.h),
+ * A task mirroring a Notes action item is no different here — its
+ * done and due reach Notes with the next mirror pass (bnsync.h),
  * never from this window.
  *
  * Subtasks and Attachments are folded away behind an "Advanced" link at

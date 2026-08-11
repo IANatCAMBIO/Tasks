@@ -1,5 +1,5 @@
 /* ===========================================================================
- * bnotes.c — Records integration via its CLI (see bnotes.h)
+ * bnotes.c — Notes integration via its CLI (see bnotes.h)
  * =========================================================================== */
 
 #include "bnotes.h"
@@ -7,21 +7,21 @@
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
- * bt_bnotes_cli_path() — resolve the Records CLI binary: the
- * "blue_notes_cli" setting (path or bare command name), else PATH.
+ * bt_bnotes_cli_path() — resolve the Notes CLI binary: the
+ * "notes_cli" setting (path or bare command name), else PATH.
  * Returns a new string (g_free), or NULL when nothing resolves.
  *
- * The config KEY keeps its pre-rename name (`blue_notes_cli`) — it is
- * stored in users' ini files, so renaming it would silently drop their
- * configured path — but the PROGRAM it looks for is now `records`.
- * `blue_notes` stays as a second candidate: an install still carrying the
- * old binary name keeps working, and a stale `blue_notes` on PATH is
- * never preferred over the current one.
+ * The program looked for is `notes`, and ONLY `notes`.  There is
+ * deliberately no fallback to the pre-rename names (`records`,
+ * `blue_notes`): neither was ever released, so nothing runs them, and
+ * probing for them could only turn up a STALE build left beside the
+ * current one — which answers `action list` with an empty result and
+ * exit 0, i.e. reads as "no action items" rather than as an error.
  * ------------------------------------------------------------------------- */
 static gchar *
 bt_bnotes_cli_path(void)
 {
-    gchar *configured = bt_app_config_get("blue_notes_cli");
+    gchar *configured = bt_app_config_get("notes_cli");
     if (configured != NULL) {
         if (g_file_test(configured, G_FILE_TEST_IS_EXECUTABLE))
             return configured;
@@ -30,13 +30,11 @@ bt_bnotes_cli_path(void)
         g_free(configured);
         return found;
     }
-    gchar *found = g_find_program_in_path("records");
-    return found != NULL ? found
-                         : g_find_program_in_path("blue_notes");
+    return g_find_program_in_path("notes");
 }
 
 /* ---------------------------------------------------------------------------
- * run_cli() — spawn the Records CLI with up to four arguments and
+ * run_cli() — spawn the Notes CLI with up to four arguments and
  * collect stdout.  TRUE on a zero exit; FALSE with *err set otherwise.
  * `out` may be NULL when only success matters.
  * ------------------------------------------------------------------------- */
@@ -48,7 +46,7 @@ run_cli(const gchar *a1, const gchar *a2, const gchar *a3,
         *out = NULL;
     gchar *cli = bt_bnotes_cli_path();
     if (cli == NULL) {
-        *err = g_strdup("Records CLI not found \xe2\x80\x94 set its "
+        *err = g_strdup("Notes CLI not found \xe2\x80\x94 set its "
                         "path in File \xe2\x86\x92 Settings\xe2\x80\xa6");
         return FALSE;
     }
@@ -63,7 +61,7 @@ run_cli(const gchar *a1, const gchar *a2, const gchar *a3,
                                     &sout, &serr, &wait_status, &gerr);
     g_free(cli);
     if (!spawned) {
-        *err = g_strdup_printf("cannot run the Records CLI: %s",
+        *err = g_strdup_printf("cannot run the Notes CLI: %s",
                                gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
         g_free(sout);
@@ -72,7 +70,7 @@ run_cli(const gchar *a1, const gchar *a2, const gchar *a3,
     }
     if (!g_spawn_check_wait_status(wait_status, NULL)) {
         gchar *detail = serr != NULL ? g_strstrip(serr) : NULL;
-        *err = g_strdup_printf("Records reported: %s",
+        *err = g_strdup_printf("Notes reported: %s",
                                detail != NULL && *detail != '\0'
                                ? detail : "command failed");
         g_free(sout);

@@ -59,7 +59,7 @@ typedef struct {
 /* editor_notify() — tell the library something changed.  Editor saves
  * use the LIGHT hook (task pane only): they can never change the
  * sidebar, and the saving editor is itself the source of truth — the
- * full notify would reload every open editor (and re-run the Records
+ * full notify would reload every open editor (and re-run the Notes
  * CLI) per autosave.                                                        */
 static void
 editor_notify(BtEditor *ed)
@@ -107,9 +107,9 @@ editor_title_refresh(BtEditor *ed)
  * editor_save_now() — write every editable field through to the row and
  * notify the library.  The debounce timer funnels here.
  *
- * A mirrored Records item saves exactly like any other task: its done
+ * A mirrored Notes item saves exactly like any other task: its done
  * and due land in the database, and the next mirror pass carries them
- * to Records in bulk (bnsync.h).  The editor no longer shells the CLI
+ * to Notes in bulk (bnsync.h).  The editor no longer shells the CLI
  * per keystroke-debounce, which is what made every autosave wait on a
  * process spawn.
  * ------------------------------------------------------------------------- */
@@ -919,7 +919,7 @@ editor_has_advanced_content(BtEditor *ed)
 
 /* ---------------------------------------------------------------------------
  * editor_open_common() — build an editor window for a task.  Mirrored
- * Records items are ordinary tasks, so there is no longer a reduced
+ * Notes items are ordinary tasks, so there is no longer a reduced
  * variant: they get notes, subtasks and attachments like anything else.
  *
  * Every editor gets a Save button under the notes box; `is_new` marks the
@@ -1219,7 +1219,7 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
     g_hash_table_insert(app->editors, key, ed->window);
     g_object_set_data(G_OBJECT(ed->window), "bt-editor", ed);
     bt_task_free(t);
-    /* The Records load can destroy the window (item gone / CLI
+    /* The Notes load can destroy the window (item gone / CLI
      * failure) — `ed` is freed then, so bail before touching it.            */
     if (!editor_load(ed))
         return;

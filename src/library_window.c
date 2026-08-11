@@ -15,17 +15,27 @@
 #include <gtkosxapplication.h>
 #endif
 
-/* Odd-row stripe tint of the task list (the Records list palette).          */
+/* Odd-row stripe tint of the task list (the Notes list palette).          */
 #define ROW_TINT      "#e8f2fb"
 /* Background applied to the row currently held during a manual drag.        */
 #define DRAG_ROW_TINT "#fde68a"
+
+/* Blank strip above the sidebar tree, to line its first row's text up with
+ * the task list's column-header text (see bt_library_window_new).           */
+#define SB_TOP_PAD 3
+
+/* How far the sidebar backdrop sits below the toolbar/window background it
+ * is shaded from — a CSS shade() factor, < 1 darkens.  0.96 turns Adwaita's
+ * rgb(246,245,244) into rgb(238,236,234).  A string, not a number: it is
+ * pasted into two CSS declarations in bt_library_window_new.                */
+#define SB_BG_SHADE "0.96"
 
 /* Sidebar row kinds (SB_KIND column).                                       */
 enum {
     SB_KIND_PINNED = 0,              /* "Pinned Tasks" virtual list         */
     SB_KIND_ALL,                     /* "All Tasks" virtual list            */
     SB_KIND_BN_ACTIONS,              /* "Action Items" — a filtered view
-                                      * of every mirrored Records item      */
+                                      * of every mirrored Notes item      */
     SB_KIND_TODAY,                   /* "Due Today" virtual list            */
     SB_KIND_FORECAST,                /* "Weekly Forecast" virtual list      */
     SB_KIND_HEADER,                  /* the "Lists" section header          */
@@ -333,7 +343,7 @@ markup_escape_db(const gchar *text)
  * what makes the rows "extra tall".
  *
  * Prefix glyphs stack outwards from the title: ❗ marks a mirrored
- * Records action item, then ⭐️ a favorite, then 🚨 high priority, then
+ * Notes action item, then ⭐️ a favorite, then 🚨 high priority, then
  * ↳ a subtask shown in a virtual view.  The ❗ sits INNERMOST (nearest
  * the title) because it describes what the row IS, not how it is
  * flagged — and unlike the pre-mirror tag it shows in every view,
@@ -357,7 +367,7 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
     gchar *line = t->done
         ? g_strdup_printf("%s<s>%s</s>%s", open, title, close)
         : g_strdup_printf("%s%s%s", open, title, close);
-    if (t->bn_uid != 0) {            /* mirrored Records action item        */
+    if (t->bn_uid != 0) {            /* mirrored Notes action item        */
         gchar *p = g_strdup_printf("\xe2\x9d\x97  %s", line);
         g_free(line);
         line = p;
@@ -495,7 +505,7 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
 
 /* scroll_keep_queue() — restore a scrolled window's vertical position
  * after a model rebuild (idle-deferred so the rebuilt view re-validates
- * its height first — Records gotcha #11).                                   */
+ * its height first — Notes gotcha #11).                                   */
 typedef struct {
     GtkAdjustment *vadj;
     gdouble        value;
@@ -547,7 +557,7 @@ static void     on_menu_toggle_manual_sort(GtkWidget *, gpointer);
 static void     on_menu_toggle_sidebar(GtkWidget *, gpointer);
 
 /* sidebar_show_pinned() — whether the Pinned Tasks meta row should
- * exist: any pinned task.  Mirrored Records items are ordinary tasks
+ * exist: any pinned task.  Mirrored Notes items are ordinary tasks
  * carrying the ordinary `pinned` flag, so no separate check remains.       */
 static gboolean
 sidebar_show_pinned(BtLibrary *lw)
@@ -556,15 +566,15 @@ sidebar_show_pinned(BtLibrary *lw)
 }
 
 /* sidebar_show_actions() — whether the "Action Items" meta row should
- * exist: the Records integration on, and the row not switched off in
+ * exist: the Notes integration on, and the row not switched off in
  * Settings.  It is a FILTERED VIEW over every mirrored task, wherever
  * each one actually lives, which is why it sits with the other meta
  * rows instead of among the real lists.                                    */
 static gboolean
 sidebar_show_actions(void)
 {
-    return bt_app_config_get_bool("blue_notes_sync", FALSE) &&
-           bt_app_config_get_bool("records_meta_row", TRUE);
+    return bt_app_config_get_bool("notes_sync", FALSE) &&
+           bt_app_config_get_bool("notes_meta_row", TRUE);
 }
 
 static void
@@ -574,7 +584,7 @@ refresh_sidebar(BtLibrary *lw)
     scroll_keep_queue(lw->sb_view);
 
     /* Snapshot the Lists section's expansion BEFORE the clear — every
-     * model rebuild collapses it otherwise (Records gotcha #14).
+     * model rebuild collapses it otherwise (Notes gotcha #14).
      * The first population expands it; after that the user's choice
      * is preserved.                                                         */
     GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
@@ -998,7 +1008,7 @@ refresh_tasks(BtLibrary *lw)
         view_name = "All Tasks";
         break;
     case SB_KIND_BN_ACTIONS:
-        /* A FILTERED view over the mirrored Records items, wherever
+        /* A FILTERED view over the mirrored Notes items, wherever
          * each one lives — not a list of its own.  virtual_view stays
          * TRUE so every row keeps its "in <list>" line, the only thing
          * that says where the task actually sits.                          */
@@ -1300,7 +1310,7 @@ selected_list_id(BtLibrary *lw)
 
 /* selected_task_ids() — ids of every selected task row (the view is
  * multi-select: Ctrl/Cmd-click and Shift-click extend).  Free with
- * g_array_unref.  Records rows (id 0) are excluded.                         */
+ * g_array_unref.  Notes rows (id 0) are excluded.                         */
 static GArray *
 selected_task_ids(BtLibrary *lw)
 {
@@ -1323,7 +1333,7 @@ selected_task_ids(BtLibrary *lw)
 }
 
 /* on_task_activated() — double-click opens the editor window.  Mirrored
- * Records items are ordinary tasks, so they open the ordinary editor.      */
+ * Notes items are ordinary tasks, so they open the ordinary editor.      */
 static void
 on_task_activated(GtkTreeView *view, GtkTreePath *path,
                   GtkTreeViewColumn *col, gpointer data)
@@ -1489,8 +1499,8 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
     gtk_tree_model_get(model, &iter,
                        TL_ID, &id, TL_DONE, &done, TL_TITLE, &title, -1);
 
-    /* A mirrored Records item is written like any other task: the tick
-     * lands in the database now and rides to Records with the next
+    /* A mirrored Notes item is written like any other task: the tick
+     * lands in the database now and rides to Notes with the next
      * mirror pass (bnsync.h) — that is what makes the write-back bulk
      * rather than one CLI spawn per click.                                 */
     bt_db_task_set_done(lw->app->db, id, !done);
@@ -1510,7 +1520,7 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
 /* on_forecast_done_toggled() — the done checkbox of a Weekly Forecast
  * day view.  Each day view has its own store (the handler above is
  * bound to the main task store), stashed on the renderer as
- * "bt-model".  Day views hold real tasks only — no Records rows.            */
+ * "bt-model".  Day views hold real tasks only — no Notes rows.            */
 static void
 on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
                          gpointer data)
@@ -1543,7 +1553,7 @@ on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
 }
 
 /* task_row_bg_func() — cell data function giving list rows alternating
- * white / light-blue backgrounds regardless of theme (the Records
+ * white / light-blue backgrounds regardless of theme (the Notes
  * notes-list stripes).  data is BtLibrary * for the task pane columns so
  * the dragged row can be highlighted; NULL is safe (forecast day views).   */
 static void
@@ -1574,7 +1584,7 @@ task_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
 
 /* forecast_toggle_bg_func() — the day views' checkbox data func: the
  * row stripe, plus hiding the checkbox on the "No tasks due"
- * placeholder rows (id 0 — day stores never hold Records rows, so
+ * placeholder rows (id 0 — day stores never hold Notes rows, so
  * the id alone identifies them).                                            */
 static void
 forecast_toggle_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
@@ -1682,7 +1692,7 @@ compact_layout_apply(BtLibrary *lw)
 
 /* on_toggle_sidebar() — toolbar show/hide button for the lists pane:
  * the task view takes the whole window while it is hidden (mirrors the
- * Records "Folders" toggle).                                                */
+ * Notes "Folders" toggle).                                                */
 static void
 on_toggle_sidebar(GtkWidget *widget, gpointer data)
 {
@@ -2149,7 +2159,7 @@ on_edit_list(GtkWidget *w, gpointer data)
 /* on_sidebar_activated() — double-click on a real list opens the Edit
  * List dialog (the first click of the pair already settled the
  * selection on the row).  Metas, the Lists header (which keeps its
- * default expand/collapse) and the Records row do nothing.                  */
+ * default expand/collapse) and the Notes row do nothing.                  */
 static void
 on_sidebar_activated(GtkTreeView *view, GtkTreePath *path,
                      GtkTreeViewColumn *col, gpointer data)
@@ -2203,7 +2213,7 @@ on_delete_list(GtkWidget *w, gpointer data)
     if (l == NULL)
         return;
     /* Google's default tasklist cannot be deleted (the API refuses with
-     * 400 from any client) — block it here, like the Records list.          */
+     * 400 from any client) — block it here, like the Notes list.          */
     gchar *default_gid = bt_db_state_get(lw->app->db, "default_list_gid");
     if (l->gtasks_id != NULL && default_gid != NULL &&
         strcmp(l->gtasks_id, default_gid) == 0) {
@@ -2264,7 +2274,7 @@ on_delete_task(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
-    /* Mirrored Records items delete like any other task: the row is
+    /* Mirrored Notes items delete like any other task: the row is
      * tombstoned and its uid parked in bn_deleted, so the next mirror
      * pass does not helpfully re-create what was just deleted.             */
     GArray *ids = selected_task_ids(lw);
@@ -2686,8 +2696,8 @@ sync_after_signin(gboolean ok, const gchar *error, gpointer data)
  * in-memory token is missing/expired this re-runs the browser flow first
  * (usually a silent redirect), then syncs.
  *
- * The Records mirror runs FIRST and on its own worker: it is the cheap
- * local pass, and going first means anything it pulls in from Records
+ * The Notes mirror runs FIRST and on its own worker: it is the cheap
+ * local pass, and going first means anything it pulls in from Notes
  * is already in the database when the Google pass reads it, so a new
  * action item reaches Google in one press rather than two.                 */
 static void
@@ -2695,7 +2705,7 @@ on_sync(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtLibrary *lw = data;
-    if (bt_app_config_get_bool("blue_notes_sync", FALSE))
+    if (bt_app_config_get_bool("notes_sync", FALSE))
         bt_bnsync_start(lw->app, lw->app->db->path, NULL, NULL);
     if (!bt_app_config_get_bool("google_sync_enabled", TRUE)) {
         bt_app_status(lw->app, "Google Tasks sync is disabled \xe2\x80\x94 "
@@ -2926,7 +2936,7 @@ on_menu_toggle_sidebar(GtkWidget *w, gpointer data)
 
 /* on_menu_about() — File → About and the toolbar About button: the
  * standard about dialog with the app logo, version, database vitals and
- * a link to the BSD license (the Records About, retinted).                  */
+ * a link to the BSD license (the Notes About, retinted).                  */
 static void
 on_menu_about(GtkWidget *w, gpointer data)
 {
@@ -2989,7 +2999,7 @@ on_menu_about(GtkWidget *w, gpointer data)
      * portable thing to a "last compiled" stamp.                           */
     gchar *comments = g_strdup_printf(
         "Task lists with subtasks, due dates and Google Tasks sync.\n"
-        "Companion app to Records.\n\n"
+        "Companion app to Notes.\n\n"
         "Compiled " __DATE__ " " __TIME__ "\n\n"
         "Database: %s\n"
         "%d tasks in %d lists \xe2\x80\x94 %s on disk",
@@ -3066,7 +3076,7 @@ menu_item(GtkWidget *menu, const gchar *label, GCallback cb, gpointer data)
 
 /* ---------------------------------------------------------------------------
  * bt_library_apply_native_menubar() — move the library menu into (or out
- * of) the native macOS menu bar (see header).  Mirrors Records: the
+ * of) the native macOS menu bar (see header).  Mirrors Notes: the
  * SAME menu shell drives the macOS bar — the in-window widget just has
  * to be hidden; leaving native mode hands macOS an empty bar so the app
  * menu stays functional.
@@ -3324,7 +3334,7 @@ on_library_destroy(GtkWidget *w, gpointer data)
     }
     /* Hooks come down BEFORE the editors: a closing editor's final save
      * would otherwise fire notify_changed → bt_editor_refresh_all, which
-     * can destroy sibling editors mid-teardown (a failing Records CLI
+     * can destroy sibling editors mid-teardown (a failing Notes CLI
      * closes its editors on reload) and leave close_all's snapshot list
      * holding freed windows.                                                */
     lw->app->notify_changed = NULL;
@@ -3379,7 +3389,7 @@ view_order_key(BtLibrary *lw)
 
 /* task_view_save_manual_order() — serialize the task pane's current row
  * order to config as a comma-separated list of task ids.  Every row is a
- * real task now (mirrored Records items included), so the old
+ * real task now (mirrored Notes items included), so the old
  * "NOTEID:ORD" token form is gone; a saved order still holding those
  * tokens simply finds no match and those entries drop out.                  */
 static void
@@ -3564,7 +3574,7 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
                 gint64 at_id;
                 gtk_tree_model_get(model, &at_it, TL_ID, &at_id, -1);
 
-                /* Every row carries a real id now — mirrored Records
+                /* Every row carries a real id now — mirrored Notes
                  * items included — so the old "skip past the contiguous
                  * BN section" dance is gone: any row is a swap target.    */
                 if (at_id != 0) {
@@ -3839,7 +3849,7 @@ bt_library_window_new(BtApp *app)
      * a drawn divider, then the task buttons and Sync.                      */
     GtkWidget *toolbar = gtk_toolbar_new();
     lw->toolbar = toolbar;           /* Compact Layout hides it whole       */
-    /* Small-toolbar metrics — the Records bar height.                       */
+    /* Small-toolbar metrics — the Notes bar height.                       */
     gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
                               GTK_ICON_SIZE_SMALL_TOOLBAR);
     tool_button(lw, GTK_TOOLBAR(toolbar), "sidebar",
@@ -3870,7 +3880,7 @@ bt_library_window_new(BtApp *app)
                 G_CALLBACK(on_delete_task));
 
     /* Expanding blank separator pushes the About button to the right
-     * edge (the Records layout).                                            */
+     * edge (the Notes layout).                                            */
     GtkToolItem *spacer = gtk_separator_tool_item_new();
     gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spacer),
                                      FALSE);
@@ -3909,7 +3919,7 @@ bt_library_window_new(BtApp *app)
 
     bt_app_register_toolbar(app, toolbar);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
-    /* Thin rule between the toolbar and the panes (Records look).           */
+    /* Thin rule between the toolbar and the panes (Notes look).           */
     lw->toolbar_rule = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_box_pack_start(GTK_BOX(vbox), lw->toolbar_rule, FALSE, FALSE, 0);
 
@@ -3967,12 +3977,21 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_column_set_fixed_width(sb_col, 40);
     gtk_tree_view_column_set_expand(sb_col, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->sb_view), sb_col);
-    /* Sidebar palette (Records): light grey backdrop (rows and the
-     * empty area below them — the tree view paints the whole widget),
-     * muted grey text, and a blue selection bar with white text.            */
+    /* Sidebar palette (Notes): the backdrop (rows AND the empty area below
+     * them — the tree view paints the whole widget) is the theme's window/
+     * toolbar background taken down a step, so the pane sits just behind
+     * the toolbar above it and reads as distinct from the white task list
+     * without pinning a grey of its own.  A tree view left alone would
+     * paint the white theme BASE colour instead.  Both CSS colour functions
+     * work from this widget-scoped provider (verified on GTK 3.24 /
+     * Adwaita: @theme_bg_color = rgb(246,245,244), exactly what the toolbar
+     * renders, and shade(…, 0.96) = rgb(238,236,234)); beware that an
+     * UNDEFINED colour name is NOT a parse error here — it silently renders
+     * transparent.  Then muted grey text and a blue selection bar with
+     * white text.                                                           */
     bt_app_widget_add_css(lw->sb_view,
         "treeview.view {"
-        "  background-color: rgb(230,230,230);"
+        "  background-color: shade(@theme_bg_color, " SB_BG_SHADE ");"
         "  color: rgb(65,65,65);"
         "}"
         "treeview.view:selected {"
@@ -4001,11 +4020,28 @@ bt_library_window_new(BtApp *app)
                                    GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(sb_scroll), lw->sb_view);
 
+    /* Sidebar column: a fixed spacer, then the tree.  Top padding, so the
+     * first row's text sits level with the text in the task list's column
+     * headers (the sidebar has none of its own).  It is a SPACER WIDGET
+     * rather than CSS padding: GtkScrolledWindow ignores padding when
+     * allocating its child, and a margin on the tree view would scroll away
+     * with it.  Painted in the sidebar grey so the strip reads as part of
+     * the pane.  A GtkBox has no background of its own, so it repeats the
+     * tree view's backdrop expression verbatim — keep the two in step.     */
+    GtkWidget *sidebar_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *sidebar_pad = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_size_request(sidebar_pad, -1, SB_TOP_PAD);
+    bt_app_widget_add_css(sidebar_pad,
+        "box { background-color: shade(@theme_bg_color, "
+        SB_BG_SHADE "); }");
+    gtk_box_pack_start(GTK_BOX(sidebar_box), sidebar_pad, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(sidebar_box), sb_scroll, TRUE, TRUE, 0);
+
     /* shrink=TRUE (4th arg): the pane may allocate the sidebar LESS than
      * its minimum.  With shrink=FALSE the divider stops at that minimum
      * no matter what the scroll policy says — both are needed.            */
-    gtk_paned_pack1(GTK_PANED(paned), sb_scroll, FALSE, TRUE);
-    lw->sidebar_box = sb_scroll;     /* for the toolbar show/hide toggle    */
+    gtk_paned_pack1(GTK_PANED(paned), sidebar_box, FALSE, TRUE);
+    lw->sidebar_box = sidebar_box;   /* for the toolbar show/hide toggle    */
 
     /* Task pane.                                                            */
     lw->task_store = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
@@ -4157,7 +4193,7 @@ bt_library_window_new(BtApp *app)
     gtk_paned_pack2(GTK_PANED(paned), task_pane, TRUE, FALSE);
 
     /* --- Status bar -------------------------------------------------------- */
-    /* Same geometry as the Records status bar: 8 px side margins,
+    /* Same geometry as the Notes status bar: 8 px side margins,
      * 3 px top/bottom (a border_width would add a pixel more on every
      * edge and read visibly taller).                                        */
     GtkWidget *status = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
@@ -4175,7 +4211,7 @@ bt_library_window_new(BtApp *app)
                             PANGO_ELLIPSIZE_END);
     gtk_widget_set_halign(lw->status_right, GTK_ALIGN_END);
     gtk_box_pack_end(GTK_BOX(status), lw->status_right, FALSE, FALSE, 0);
-    /* Both labels 85% of the UI font (Records size).  CSS font-size: 85%
+    /* Both labels 85% of the UI font (Notes size).  CSS font-size: 85%
      * can resolve to zero on Linux when the per-widget provider has no
      * explicit base size in scope; Pango scale attributes are always
      * relative to the actual rendered font and work on every platform.      */

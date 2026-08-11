@@ -4,7 +4,7 @@
  * A single BtApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open task-editor windows, and hosts
  * the notification hooks the library window installs.  Companion app to
- * Records — same design language: plain C + GTK3 + SQLite, no
+ * Notes — same design language: plain C + GTK3 + SQLite, no
  * HeaderBars, window titles "Lists - <thing>".
  * =========================================================================== */
 
@@ -26,7 +26,7 @@
  *   gtk_app        — the GtkApplication driving the main loop.
  *   db             — open tasks database (owned; closed at shutdown).
  *   editors        — map of open editor windows keyed by task id
- *                    (gint64* keys, GtkWindow* values).  Records action
+ *                    (gint64* keys, GtkWindow* values).  Notes action
  *                    items are ordinary tasks (see bnsync.h), so they
  *                    live in this map like everything else.
  *   library_window — the (single) library window, or NULL before startup.
@@ -39,7 +39,7 @@
  *                    subtask/attachment edits use this — they can never
  *                    change the sidebar, and the saving editor is itself
  *                    the source of truth (reloading every editor per
- *                    autosave would also re-run the Records CLI).
+ *                    autosave would also re-run the Notes CLI).
  *                    May be NULL.
  *   notify_status  — hook installed by the library window: shows an event
  *                    message on its status bar.  Post through
@@ -47,9 +47,9 @@
  *   sync_running   — TRUE while the Google Tasks sync worker is running
  *                    (main-thread flag; blocks a second concurrent sync).
  *   sync_timer     — the periodic auto-sync GSource id, or 0.
- *   bn_sync_running— the same guard for the Records mirror pass, which
+ *   bn_sync_running— the same guard for the Notes mirror pass, which
  *                    is a separate worker on its own schedule.
- *   bn_sync_timer  — the periodic Records-mirror GSource id, or 0.
+ *   bn_sync_timer  — the periodic Notes-mirror GSource id, or 0.
  *   toolbar_style  — how toolbar buttons render (icons only, text below
  *                    icons, or text only); persisted as "toolbar_style".
  *   toolbars       — every live toolbar, so a style change can be
@@ -172,15 +172,15 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
                         const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
 
 /* ---------------------------------------------------------------------------
- * Config — same model as Records: lists.ini next to the binary
+ * Config — same model as Notes: lists.ini next to the binary
  * (portable mode) falling back to ~/.config/lists/lists.ini when that
  * directory is unwritable.  Loaded ONCE into memory; written through on
  * every change.  Keys used (see lists.ini.defaults):
  *   sync       — google_sync_enabled, google_client_id,
  *                google_client_secret, gtasks_refresh_token,
  *                sync_interval_min, sync_toolbar_button
- *   Records — blue_notes_sync, blue_notes_cli, blue_notes_embed_list,
- *                records_sync_interval_min, records_meta_row
+ *   Notes — notes_sync, notes_cli, notes_embed_list,
+ *                notes_sync_interval_min, notes_meta_row
  *   database   — db_dir (custom directory for lists.db; absent = default
  *                location), db_integrity_check
  *   UI         — toolbar_style, bold_task_titles, native_menubar,
@@ -221,7 +221,7 @@ gchar *bt_due_format(gint64 due);
 gchar *bt_due_format_iso(gint64 due);
 
 /* bt_due_color() — urgency tint for a due timestamp: overdue red, today
- * gold, ahead green (the Records action-item palette), or NULL for no
+ * gold, ahead green (the Notes action-item palette), or NULL for no
  * tint (due == 0).  Static string; do not free.                             */
 const gchar *bt_due_color(gint64 due);
 

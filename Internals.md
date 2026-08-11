@@ -17,8 +17,8 @@ and the sync engine. For everyday use see the
 | `src/settings_window.[ch]` | The Settings window                                |
 | `src/oauth.[ch]`           | OAuth 2.0 installed-app flow: PKCE, loopback redirect |
 | `src/gtasks.[ch]`          | Two-way Google Tasks sync engine + move/clear jobs |
-| `src/bnotes.[ch]`          | Records CLI wrapper (never its database) |
-| `src/bnsync.[ch]`          | Records action-item mirror: worker pass, uid identity, bulk write-back |
+| `src/bnotes.[ch]`          | Notes CLI wrapper (never its database) |
+| `src/bnsync.[ch]`          | Notes action-item mirror: worker pass, uid identity, bulk write-back |
 | `src/http.[ch]`            | Small libcurl wrapper (blocking; worker threads only) |
 | `src/json.[ch]`            | Minimal JSON parser/serializer (no external JSON dependency) |
 | `icons/`                   | Bundled PNG toolbar icons + app logo; `icons/theme/hicolor/` holds SVG arrows for crisp HiDPI tree expanders |
@@ -66,8 +66,8 @@ CREATE TABLE tasks (
   web_link     TEXT,                          -- Google mirror fields...
   glinks       TEXT,                          --   links[] as JSON
   assigned     TEXT,                          --   assignmentInfo origin
-  bn_uid       INTEGER NOT NULL DEFAULT 0,    -- Records item identity
-  bn_done      INTEGER NOT NULL DEFAULT 0,    -- what Records last held:
+  bn_uid       INTEGER NOT NULL DEFAULT 0,    -- Notes item identity
+  bn_done      INTEGER NOT NULL DEFAULT 0,    -- what Notes last held:
   bn_due       INTEGER NOT NULL DEFAULT 0     --   the bulk-push baseline
 );
 
@@ -97,7 +97,7 @@ The schema version rides in `PRAGMA user_version` (currently **6**);
 older files are migrated in place at open.  Migration history: v2 adds
 `lists.emoji`; v3 adds five Google-mirror task columns (`completed_at`,
 `etag`, `web_link`, `glinks`, `assigned`); v4 adds `tasks.priority`;
-v5 adds `lists.group_id`; v6 adds the three Records-mirror task columns
+v5 adds `lists.group_id`; v6 adds the three Notes-mirror task columns
 (`bn_uid`, `bn_done`, `bn_due`).
 
 Semantics worth knowing when querying directly:
@@ -125,9 +125,9 @@ Semantics worth knowing when querying directly:
   the last successful pass), `default_list_gid` (Google's undeletable
   default tasklist), `lists_custom_order` (set once the user
   drag-reorders lists).
-- `bn_pins` and `bn_priority` keys are Records `NOTEID:ORD` refs —
+- `bn_pins` and `bn_priority` keys are Notes `NOTEID:ORD` refs —
   pinning and high-priority for action items live entirely on this side
-  (Records knows neither concept).
+  (Notes knows neither concept).
 
 Two practical cautions: the app sets a 5-second busy timeout (the GUI
 and the sync worker share the file), so brief external readers coexist

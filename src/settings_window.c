@@ -23,8 +23,8 @@ typedef struct {
     GtkWidget *signin_btn;
     GtkWidget *signout_btn;
     GtkWidget *state_label;          /* "Signed in" / "Not signed in"       */
-    GtkWidget *bn_check;             /* Records mirror master switch        */
-    GtkWidget *bn_cli_entry;         /* Records command path                */
+    GtkWidget *bn_check;             /* Notes mirror master switch        */
+    GtkWidget *bn_cli_entry;         /* Notes command path                */
     GtkWidget *bn_embed_combo;       /* list mirrored items are filed into  */
     GArray    *bn_embed_ids;         /* combo index → list id (0 = managed) */
     GtkWidget *bn_interval_spin;     /* mirror pass interval, minutes       */
@@ -143,7 +143,7 @@ on_signout(GtkWidget *w, gpointer data)
                   "was removed and syncing stopped");
 }
 
-/* on_bn_toggled() — the Records enable checkbox: persist, then re-arm
+/* on_bn_toggled() — the Notes enable checkbox: persist, then re-arm
  * the mirror timer (switching ON runs a pass immediately, which is what
  * populates the mirror; switching OFF stops the timer).                     */
 static void
@@ -155,7 +155,7 @@ on_bn_toggled(GtkWidget *w, gpointer data)
         return;
     gboolean on = gtk_toggle_button_get_active(
         GTK_TOGGLE_BUTTON(sw->bn_check));
-    bt_app_config_set("blue_notes_sync", on ? "1" : "0");
+    bt_app_config_set("notes_sync", on ? "1" : "0");
     bt_bnsync_auto_start(sw->app, sw->db_path);
     bt_app_notify_changed(sw->app);
 }
@@ -170,7 +170,7 @@ on_bn_interval_changed(GtkWidget *w, gpointer data)
         return;
     gchar *v = g_strdup_printf("%d", gtk_spin_button_get_value_as_int(
         GTK_SPIN_BUTTON(sw->bn_interval_spin)));
-    bt_app_config_set("records_sync_interval_min", v);
+    bt_app_config_set("notes_sync_interval_min", v);
     g_free(v);
     bt_bnsync_auto_start(sw->app, sw->db_path);
 }
@@ -183,7 +183,7 @@ on_bn_meta_toggled(GtkWidget *w, gpointer data)
     BtSettings *sw = data;
     if (sw->loading)
         return;
-    bt_app_config_set("records_meta_row",
+    bt_app_config_set("notes_meta_row",
         gtk_toggle_button_get_active(
             GTK_TOGGLE_BUTTON(sw->bn_meta_check)) ? "1" : "0");
     bt_app_notify_changed(sw->app);
@@ -205,14 +205,14 @@ on_bn_embed_changed(GtkComboBox *combo, gpointer data)
         return;
     gint64 id = g_array_index(sw->bn_embed_ids, gint64, active);
     if (id == 0) {
-        bt_app_config_set("blue_notes_embed_list", NULL);
+        bt_app_config_set("notes_embed_list", NULL);
     } else {
         gchar *v = g_strdup_printf("%" G_GINT64_FORMAT, id);
-        bt_app_config_set("blue_notes_embed_list", v);
+        bt_app_config_set("notes_embed_list", v);
         g_free(v);
     }
     bt_bnsync_reconcile_target(sw->app);
-    if (bt_app_config_get_bool("blue_notes_sync", FALSE))
+    if (bt_app_config_get_bool("notes_sync", FALSE))
         bt_bnsync_start(sw->app, sw->db_path, NULL, NULL);
     bt_app_notify_changed(sw->app);
 }
@@ -228,7 +228,7 @@ on_bn_cli_changed(GtkWidget *w, gpointer data)
     if (sw->loading)
         return;
     const gchar *cli = gtk_entry_get_text(GTK_ENTRY(sw->bn_cli_entry));
-    bt_app_config_set("blue_notes_cli", *cli != '\0' ? cli : NULL);
+    bt_app_config_set("notes_cli", *cli != '\0' ? cli : NULL);
 }
 
 /* on_bn_cli_commit() — Enter in the CLI path entry: run a mirror pass
@@ -241,7 +241,7 @@ on_bn_cli_commit(GtkWidget *w, gpointer data)
     BtSettings *sw = data;
     if (sw->loading)
         return;
-    if (bt_app_config_get_bool("blue_notes_sync", FALSE))
+    if (bt_app_config_get_bool("notes_sync", FALSE))
         bt_bnsync_start(sw->app, sw->db_path, NULL, NULL);
     bt_app_notify_changed(sw->app);
 }
@@ -588,7 +588,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
 
     /* Toolbar style: icons / text below icons / text only.  Applies live
      * to every registered toolbar; also reachable by right-clicking any
-     * toolbar (like Records).                                               */
+     * toolbar (like Notes).                                               */
     GtkWidget *style_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start(GTK_BOX(style_row),
                        gtk_label_new("Toolbar style:"), FALSE, FALSE, 0);
@@ -678,28 +678,29 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                        FALSE, FALSE, 2);
 
-    /* --- Records ------------------------------------------------------------ */
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Records"),
+    /* --- Notes ------------------------------------------------------------ */
+    gtk_box_pack_start(GTK_BOX(vbox), section_label("Notes"),
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
-        "Mirror the action items from Records as ordinary tasks, with "
+        "Mirror the action items from Notes as ordinary tasks, with "
         "their own notes, subtasks and attachments. Ticking one off or "
-        "changing its due date is sent back to Records on the interval "
-        "below; the item's text is owned by the note in Records."),
+        "changing its due date is sent back to Notes on the interval "
+        "below; the item's text belongs to the note it lives in, so "
+        "edit that in Notes."),
         FALSE, FALSE, 0);
     sw->bn_check = gtk_check_button_new_with_label(
-        "Mirror Records action items");
+        "Mirror Notes action items");
     g_signal_connect(sw->bn_check, "toggled",
                      G_CALLBACK(on_bn_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), sw->bn_check, FALSE, FALSE, 0);
 
     GtkWidget *bn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start(GTK_BOX(bn_row),
-                       gtk_label_new("Records command:"),
+                       gtk_label_new("Notes command:"),
                        FALSE, FALSE, 0);
     sw->bn_cli_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(sw->bn_cli_entry),
-                                   "records (searched on PATH)");
+                                   "notes (searched on PATH)");
     gtk_widget_set_hexpand(sw->bn_cli_entry, TRUE);
     g_signal_connect(sw->bn_cli_entry, "changed",
                      G_CALLBACK(on_bn_cli_changed), sw);
@@ -722,7 +723,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     g_array_append_val(sw->bn_embed_ids, own);
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(sw->bn_embed_combo),
                                    "Action Items (managed list)");
-    gchar *embed_v = bt_app_config_get("blue_notes_embed_list");
+    gchar *embed_v = bt_app_config_get("notes_embed_list");
     gint64 embed_id = embed_v != NULL
                       ? g_ascii_strtoll(embed_v, NULL, 10) : 0;
     g_free(embed_v);
@@ -836,7 +837,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
 
     /* --- Load current values ------------------------------------------------ */
     gchar *iv  = bt_app_config_get("sync_interval_min");
-    gchar *bnc = bt_app_config_get("blue_notes_cli");
+    gchar *bnc = bt_app_config_get("notes_cli");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_check),
         bt_app_config_get_bool("google_sync_enabled", TRUE));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_toolbar_check),
@@ -844,10 +845,10 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->interval_spin),
                               iv != NULL ? g_ascii_strtod(iv, NULL) : 5);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_check),
-        bt_app_config_get_bool("blue_notes_sync", FALSE));
+        bt_app_config_get_bool("notes_sync", FALSE));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_meta_check),
-        bt_app_config_get_bool("records_meta_row", TRUE));
-    gchar *bniv = bt_app_config_get("records_sync_interval_min");
+        bt_app_config_get_bool("notes_meta_row", TRUE));
+    gchar *bniv = bt_app_config_get("notes_sync_interval_min");
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->bn_interval_spin),
                               bniv != NULL ? g_ascii_strtod(bniv, NULL) : 5);
     g_free(bniv);

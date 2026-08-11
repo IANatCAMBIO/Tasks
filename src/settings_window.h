@@ -1,7 +1,7 @@
 /* ===========================================================================
  * settings_window.h — the Lists settings window
  *
- * One singleton window (File → Settings…), in the Records settings
+ * One singleton window (File → Settings…), in the Notes settings
  * style: plain GtkWindow, bold section headings, write-through controls
  * (every change lands in the ini immediately — no OK/Apply buttons).
  *
@@ -12,7 +12,7 @@
  *     oauth.h); Sign Out removes it.  The OAuth client itself is not
  *     entered here — it comes from the client-secret JSON file, the
  *     legacy ini keys, or the baked-in build default (oauth.h).
- *   Records — the action-items integration switch and CLI path.
+ *   Notes — the action-items integration switch and CLI path.
  *   Appearance — toolbar style, bold task titles, native macOS menubar.
  *   Database — where the SQLite file lives (informational).
  * =========================================================================== */

@@ -1,7 +1,7 @@
 # Lists — User Guide
 
 Everyday use of Lists: the library, the task editor, settings,
-storage, Google Tasks sync, and the Records integration. For build
+storage, Google Tasks sync, and the Notes integration. For build
 instructions and OAuth client setup see the [README](README.md); for
 the database schema and the sync engine see [Internals](Internals.md).
 
@@ -44,7 +44,7 @@ the database schema and the sync engine see [Internals](Internals.md).
   Priority** (a checkbox in the editor, or the right-click menu) sort
   to the top of every list they appear in and wear a 🚨 beside the
   title. The flag is local to Lists — Google Tasks has no priority, so
-  it never syncs. A task mirrored from a Records action item wears a
+  it never syncs. A task mirrored from a Notes action item wears a
   ❗ beside its title in every view, so it is always clear which tasks
   came from your notes. Columns: a done checkbox, the task, and the due date;
   right-click any column header to hide or show the Done and Due Date
@@ -58,9 +58,9 @@ the database schema and the sync engine see [Internals](Internals.md).
   Sort*) switches the task pane to hand ordering: a ⠿ handle column
   appears and you drag rows into the order you want. The order is
   remembered per view — each list, All Tasks, Favorites, Due Today and
-  the Records section keep their own — and is local to Lists.
+  the Notes section keep their own — and is local to Lists.
 - **Toolbar** — the Sidebar toggle, then Sync, a visibility toggle that
-  shows or hides completed tasks (it applies to every view, Records
+  shows or hides completed tasks (it applies to every view, Notes
   items included), the Manual Sort toggle, then New Task and Delete
   Task. At the far right, the logo button opens the About dialog
   (program info plus live database statistics). Button style —
@@ -142,8 +142,8 @@ window per task: opening it again focuses the one you already have.
   file: if the target folder is empty the current database is copied
   there; if it already contains a database you choose whether to use
   the existing one or overwrite it with your current data.
-- **Records** — mirror its action items as ordinary tasks, point the
-  app at the `records` command (a path or a name on PATH), choose which
+- **Notes** — mirror its action items as ordinary tasks, point the
+  app at the `notes` command (a path or a name on PATH), choose which
   list new items are filed into, set how often changes are sent back,
   and show or hide the sidebar's Action Items view.
 - **Google Tasks** — the sync master switch, Sign In / Sign Out, the
@@ -208,10 +208,10 @@ How it behaves:
 Signing out drops the tokens; the grant can also be revoked at
 myaccount.google.com/permissions at any time.
 
-## Records action items
+## Notes action items
 
 If you keep meeting notes in
-[Records](https://github.com/IANatCAMBIO/records), its `!`
+[Notes](https://github.com/IANatCAMBIO/Records), its `!`
 action items can live here as **ordinary tasks**. Enable the
 integration in Settings and Lists mirrors each item into a real list —
 the managed **Action Items** list by default, or any list you pick
@@ -227,24 +227,24 @@ another list, and Google Tasks sync all work. Nothing is locked.
   it is only overridden the next time you change that setting. The
   sidebar's **Action Items** row is a view, not a list: it gathers
   every mirrored item wherever it has ended up, so nothing gets lost.
-  Turn the row off in Settings → Records if you don't want it.
-- **What flows back to Records** — ticking an item done and changing
-  its due date, because those are the only two things the Records
+  Turn the row off in Settings → Notes if you don't want it.
+- **What flows back to Notes** — ticking an item done and changing
+  its due date, because those are the only two things the Notes
   command line can write. The item's **text belongs to the note**: edit
-  it in Records, not here, or your change will be overwritten the next
+  it in Notes, not here, or your change will be overwritten the next
   time the two sync.
 - **When it flows back** — not instantly. Changes are cached and sent
-  in a batch on the interval in Settings → Records ("Sync action items
+  in a batch on the interval in Settings → Notes ("Sync action items
   every N minutes", 5 by default; set 0 to only sync when you press
-  Sync). If Records can't be reached, your change simply waits and goes
+  Sync). If Notes can't be reached, your change simply waits and goes
   out on a later pass — it is never dropped.
-- **Deleting** — an item deleted in Records disappears from Lists on
+- **Deleting** — an item deleted in Notes disappears from Lists on
   the next pass, along with any notes or subtasks you attached to it.
   Deleting the task in Lists keeps it deleted: it will not come back on
-  the next sync, even though the item still exists in Records.
-- Everything goes through the `records` command-line interface —
-  never its database file — so a running Records GUI and Lists
+  the next sync, even though the item still exists in Notes.
+- Everything goes through the `notes` command-line interface —
+  never its database file — so a running Notes GUI and Lists
   cooperate safely (the CLI forwards to the GUI over its socket).
-  This needs a current version of Records; against an older one Lists
+  This needs a current version of Notes; against an older one Lists
   says so and leaves your tasks alone rather than guessing which item
   is which.

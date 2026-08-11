@@ -1,5 +1,5 @@
 /* ===========================================================================
- * bnsync.c — Records action-item mirror (see bnsync.h)
+ * bnsync.c — Notes action-item mirror (see bnsync.h)
  * =========================================================================== */
 
 #include "bnsync.h"
@@ -32,7 +32,7 @@ typedef struct {
     gint            n_updated;
     gint            n_removed;
     gint            n_pushed;
-    gint            n_failed;        /* pushes Records refused              */
+    gint            n_failed;        /* pushes Notes refused              */
 } BnJob;
 
 /* ---------------------------------------------------------------------------
@@ -73,9 +73,9 @@ bt_bnsync_target_list(BtDatabase *db, gint64 configured)
 void
 bt_bnsync_reconcile_target(BtApp *app)
 {
-    if (!bt_app_config_get_bool("blue_notes_sync", FALSE))
+    if (!bt_app_config_get_bool("notes_sync", FALSE))
         return;
-    gchar *v = bt_app_config_get("blue_notes_embed_list");
+    gchar *v = bt_app_config_get("notes_embed_list");
     gint64 configured = v != NULL ? g_ascii_strtoll(v, NULL, 10) : 0;
     g_free(v);
 
@@ -144,7 +144,7 @@ drain_legacy_flags(BtDatabase *db, gint64 task_id, const gchar *ref)
 /* ---------------------------------------------------------------------------
  * sync_item() — reconcile ONE listed action item with its mirror task.
  * Creates the task when it is new, otherwise pushes any cached local
- * done/due change and then applies whatever Records holds.  Counts land
+ * done/due change and then applies whatever Notes holds.  Counts land
  * in `job`.
  * ------------------------------------------------------------------------- */
 static void
@@ -158,7 +158,7 @@ sync_item(BnJob *job, BtDatabase *db, const BtNoteAction *it, gint64 target)
             job->n_failed++;         /* create failures must not be silent  */
             return;
         }
-        bt_db_task_apply_records(db, id, it->text, it->done, it->due,
+        bt_db_task_apply_notes(db, id, it->text, it->done, it->due,
                                  it->done, it->due);
         bt_db_task_set_bn(db, id, it->uid, it->done, it->due);
         drain_legacy_flags(db, id, it->ref);
@@ -170,7 +170,7 @@ sync_item(BnJob *job, BtDatabase *db, const BtNoteAction *it, gint64 target)
      * the last successful push.                                             */
     gboolean done_dirty = t->done != t->bn_done;
     gboolean due_dirty  = t->due  != t->bn_due;
-    gboolean done_sent  = FALSE;     /* did Records accept the push?        */
+    gboolean done_sent  = FALSE;     /* did Notes accept the push?        */
     gboolean due_sent   = FALSE;
 
     if (done_dirty) {
@@ -188,11 +188,11 @@ sync_item(BnJob *job, BtDatabase *db, const BtNoteAction *it, gint64 target)
 
     /* What the task should hold: a local change stands whether or not
      * the push landed (a refused push must never discard the user's
-     * edit), otherwise Records wins.                                        */
+     * edit), otherwise Notes wins.                                        */
     gboolean new_done = done_dirty ? t->done : it->done;
     gint64   new_due  = due_dirty  ? t->due  : it->due;
 
-    /* What Records now holds: the pushed value only if it was accepted;
+    /* What Notes now holds: the pushed value only if it was accepted;
      * an unsent change keeps the old baseline so it is retried.             */
     gboolean base_done = done_dirty ? (done_sent ? t->done : t->bn_done)
                                     : it->done;
@@ -204,7 +204,7 @@ sync_item(BnJob *job, BtDatabase *db, const BtNoteAction *it, gint64 target)
 
     if (content) {
         /* Stamps updated_at, so the change reaches Google too.              */
-        bt_db_task_apply_records(db, t->id, it->text, new_done, new_due,
+        bt_db_task_apply_notes(db, t->id, it->text, new_done, new_due,
                                  base_done, base_due);
         job->n_updated++;
     } else if (base_done != t->bn_done || base_due != t->bn_due) {
@@ -217,12 +217,12 @@ sync_item(BnJob *job, BtDatabase *db, const BtNoteAction *it, gint64 target)
 }
 
 /* ---------------------------------------------------------------------------
- * reap_missing() — tombstone mirror tasks whose item has left Records
- * (Records is authoritative for existence), and forget suppressions for
+ * reap_missing() — tombstone mirror tasks whose item has left Notes
+ * (Notes is authoritative for existence), and forget suppressions for
  * uids that are gone for good.
  *
  * `present` holds every uid in the listing.  The listing is always FULL
- * — Records has no incremental form — so absence really does mean gone,
+ * — Notes has no incremental form — so absence really does mean gone,
  * unlike the Google pass where a partial listing makes absence
  * meaningless.
  * ------------------------------------------------------------------------- */
@@ -238,7 +238,7 @@ reap_missing(BnJob *job, BtDatabase *db, GHashTable *present,
         bt_db_task_delete(db, t->id);
         /* task_delete parks the uid in bn_deleted so a live item is not
          * re-created after a local delete; here the item is gone from
-         * Records, so that suppression has nothing left to suppress.       */
+         * Notes, so that suppression has nothing left to suppress.       */
         bt_db_bn_deleted_forget(db, t->bn_uid);
         job->n_removed++;
     }
@@ -285,7 +285,7 @@ bn_thread(gpointer data)
     GError *gerr = NULL;
     BtDatabase *db = bt_db_open(job->db_path, &gerr);
     if (db == NULL) {
-        job->message = g_strdup_printf("Records sync failed: %s",
+        job->message = g_strdup_printf("Notes sync failed: %s",
                                        gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
         g_idle_add(bn_apply, job);
@@ -295,15 +295,15 @@ bn_thread(gpointer data)
     gchar *err = NULL;
     GPtrArray *items = bt_bnotes_actions(&err);
     if (items == NULL) {
-        /* Tell "Records is too old" apart from every other failure —
+        /* Tell "Notes is too old" apart from every other failure —
          * the fix is entirely different, and positional addressing is
          * NOT an acceptable fallback (it would bind tasks to whichever
          * item happens to sit at that position).                            */
         if (!bt_bnotes_supports_uid())
-            job->message = g_strdup("Records is too old for action-item "
-                                    "sync \xe2\x80\x94 update Records");
+            job->message = g_strdup("Notes is too old for action-item "
+                                    "sync \xe2\x80\x94 update Notes");
         else
-            job->message = g_strdup_printf("Records sync failed: %s",
+            job->message = g_strdup_printf("Notes sync failed: %s",
                                            err != NULL ? err : "unknown");
         g_free(err);
         bt_db_close(db);
@@ -313,7 +313,7 @@ bn_thread(gpointer data)
 
     gint64 target = bt_bnsync_target_list(db, job->configured_list);
     if (target == 0) {
-        job->message = g_strdup("Records sync failed: cannot create the "
+        job->message = g_strdup("Notes sync failed: cannot create the "
                                 "Action Items list");
         bt_bnotes_actions_free(items);
         bt_db_close(db);
@@ -352,7 +352,7 @@ bn_thread(gpointer data)
         if (job->n_removed > 0)
             g_string_append_printf(s, " %d removed,", job->n_removed);
         if (job->n_pushed > 0)
-            g_string_append_printf(s, " %d sent to Records,", job->n_pushed);
+            g_string_append_printf(s, " %d sent to Notes,", job->n_pushed);
         if (job->n_failed > 0)
             g_string_append_printf(s, " %d failed,", job->n_failed);
         if (s->len > 0 && s->str[s->len - 1] == ',')
@@ -377,10 +377,10 @@ bt_bnsync_start(BtApp *app, const gchar *db_path, BtBnSyncDoneFn done,
 {
     if (app->bn_sync_running)
         return;                      /* silent: a pass is already running   */
-    if (!bt_app_config_get_bool("blue_notes_sync", FALSE)) {
-        bt_app_status(app, "Records integration is off");
+    if (!bt_app_config_get_bool("notes_sync", FALSE)) {
+        bt_app_status(app, "Notes integration is off");
         if (done != NULL)
-            done(app, FALSE, "Records integration is off", user_data);
+            done(app, FALSE, "Notes integration is off", user_data);
         return;
     }
 
@@ -391,7 +391,7 @@ bt_bnsync_start(BtApp *app, const gchar *db_path, BtBnSyncDoneFn done,
     job->user_data = user_data;
     /* Config is read HERE, on the main thread — the worker must not
      * touch the shared GKeyFile.                                            */
-    gchar *v = bt_app_config_get("blue_notes_embed_list");
+    gchar *v = bt_app_config_get("notes_embed_list");
     job->configured_list = v != NULL ? g_ascii_strtoll(v, NULL, 10) : 0;
     g_free(v);
 
@@ -439,7 +439,7 @@ bt_bnsync_auto_start(BtApp *app, const gchar *db_path)
         g_source_remove(app->bn_sync_timer);
         app->bn_sync_timer = 0;
     }
-    if (!bt_app_config_get_bool("blue_notes_sync", FALSE))
+    if (!bt_app_config_get_bool("notes_sync", FALSE))
         return;                      /* integration off: no timer, no pass  */
 
     /* Before the pass: a target list changed while this was switched off
@@ -447,7 +447,7 @@ bt_bnsync_auto_start(BtApp *app, const gchar *db_path)
      * still has to reach the items already mirrored.                       */
     bt_bnsync_reconcile_target(app);
 
-    gchar *v = bt_app_config_get("records_sync_interval_min");
+    gchar *v = bt_app_config_get("notes_sync_interval_min");
     gint minutes = v != NULL ? atoi(v) : 5;
     g_free(v);
     if (minutes > 0) {

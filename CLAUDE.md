@@ -1,35 +1,53 @@
 # Lists — project guide
 
 Task-list app in **plain C + GTK3 + SQLite**, the companion app to
-Records.  Two window types: a Library (lists sidebar + tall task rows)
+Notes.  Two window types: a Library (lists sidebar + tall task rows)
 and one editor window per task.  Two-way Google Tasks sync.  No GNOME
 HeaderBars anywhere — plain `GtkWindow` titlebars, formatted
 `"Lists - <thing>"`.
 
-**Records was called Blue Notes**, and the old names survive in three
-places that are NOT typos — do not "fix" them:
+**The companion app has been renamed twice: Blue Notes → Records →
+Notes** (2026-08-11).  Neither older name was ever publicly released —
+the only copy that runs anywhere is the user's own — so there is no
+compatibility surface to preserve, and every USER-FACING string, config
+key and program name says **Notes**.  What deliberately still carries an
+old name, and is NOT a typo to "fix":
 
-- the config keys `blue_notes_sync` / `blue_notes_cli` /
-  `blue_notes_embed_list` (they sit in users' ini files, so renaming
-  one silently discards that setting);
 - the source names `src/bnotes.[ch]`, `src/bnsync.[ch]`, `bt_bnotes_*`,
   `bt_bnsync_*`, `bn_*`, `SB_KIND_BN_ACTIONS`, and the `bn_deleted`
   table plus the LEGACY `bn_pins` / `bn_priority` ones (renaming tables
   would need a schema migration for no gain).  `tasks.bn_uid` /
-  `bn_done` / `bn_due` follow the same prefix;
-- `blue_notes` as a fallback program name in `bt_bnotes_cli_path`.
+  `bn_done` / `bn_due` follow the same prefix.  These are internal only;
+  nothing a user sees is derived from them.
 
-Everything a USER reads says Records.
+The five integration config keys WERE renamed
+(`blue_notes_sync|cli|embed_list` → `notes_sync|cli|embed_list`,
+`records_sync_interval_min|meta_row` → `notes_sync_interval_min|
+meta_row`).  `config_migrate_renamed_keys` (app.c, run from
+`bt_app_config_init` right after `config_migrate_legacy_group` — that
+order matters, the group fold is what puts a pre-3.0 file's
+`blue_notes_*` keys into the group this pass reads) folds the old
+spellings onto the new ones IN PLACE, then REMOVES them so the pass
+cannot run twice or resurrect a key the user has since cleared.  The
+current name wins when both exist.  `LEGACY_KEYS` still lists the
+`blue_notes_*` spellings, because that allowlist describes what a
+pre-3.0 `[hacienda]` group actually contains.
 
-**Where Records actually is** (the old paths survive as leftovers —
-verify before believing any of them): `~/salt_development/records`, whose
-git remote is still `orange_notes.git` (all three GitHub names redirect;
-the canonical one is `IANatCAMBIO/records`).  The live CLI binary is
-**`records`** — the `blue_notes` binary sitting beside it is the stale
-pre-rename build and answers `action list` with an EMPTY result and
-exit 0, so pointing `blue_notes_cli` at it yields an empty Action Items
-list and no error at all.  There is no `~/salt_development/orange_notes`
-directory any more.
+**Where Notes actually is** (the old paths survive as leftovers — verify
+before believing any of them): `~/salt_development/records` — the
+DIRECTORY was not renamed — whose git remote is still
+`orange_notes.git`, and whose GitHub repo is still named
+`IANatCAMBIO/Records`.  All the names redirect, so the docs' links keep
+pointing at `/Records` while their link TEXT says Notes; fix the URL
+only once the repo itself is renamed.  The live CLI binary is
+**`notes`** (`make` in that directory builds it; the app bundle is
+`dist/Notes.app`, the ini `notes.ini`, the socket
+`~/.cache/notes.sock`).  `bt_bnotes_cli_path` looks for `notes` and
+NOTHING else — deliberately no fallback to `records` / `blue_notes`,
+because a stale pre-rename binary left beside the current one answers
+`action list` with an EMPTY result and exit 0, which reads as "no
+action items" rather than as an error.  There is no
+`~/salt_development/orange_notes` directory any more.
 
 ## Build & run
 
@@ -67,11 +85,11 @@ the user).  A logic test harness lives in the session scratchpad
 | `src/db.[ch]` | SQLite schema (user_version 6) + CRUD; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, multi-select context menu, status bar |
 | `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); read-only "From Google" section |
-| `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Records integration, toolbar style, native menubar |
+| `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Notes integration, toolbar style, native menubar |
 | `src/oauth.[ch]` | OAuth 2.0 installed-app flow: PKCE + loopback listener; refresh token in ini; access tokens in memory |
 | `src/gtasks.[ch]` | Two-way sync engine + move/clear worker jobs |
-| `src/bnotes.[ch]` | Records CLI wrapper — CLI ONLY, never its database; parses `action list --uid` |
-| `src/bnsync.[ch]` | Records action-item mirror: worker-thread pass, bulk write-back, uid identity |
+| `src/bnotes.[ch]` | Notes CLI wrapper — CLI ONLY, never its database; parses `action list --uid` |
+| `src/bnsync.[ch]` | Notes action-item mirror: worker-thread pass, bulk write-back, uid identity |
 | `src/http.[ch]` | libcurl wrapper (blocking; worker threads only) |
 | `src/json.[ch]` | Minimal JSON parser/serializer (no external JSON dep) |
 | `icons/` | Curated toolbar images directly in icons/ (icon names are extension-less basenames — the loader tries `.png` then `.svg`, case-exact for Linux; spares live in `icons/Unused/`) |
@@ -125,7 +143,7 @@ the user).  A logic test harness lives in the session scratchpad
 - Notify hooks on BtApp: `notify_changed` = FULL refresh (sidebar +
   tasks + reload all editors) for structural changes; `notify_tasks` =
   task pane only — editor saves and subtask/attachment edits use this
-  (the full path would re-run the Records CLI per autosave).
+  (the full path would re-run the Notes CLI per autosave).
   `bt_app_status()` for events.  Teardown: NULL the hooks BEFORE
   `bt_editor_close_all` (a closing editor's flush otherwise cascades
   refreshes into destroyed windows).
@@ -134,7 +152,7 @@ the user).  A logic test harness lives in the session scratchpad
   NULL (the window may close mid-flight).  The settings window guards
   the same way (`settings != sw`).
 
-## GUI rules (visual parity with Records)
+## GUI rules (visual parity with Notes)
 
 - Toolbar: `GTK_ICON_SIZE_SMALL_TOOLBAR` metrics; buttons via
   `bt_app_tool_item_new` (local PNG at 24 px logical, Pango-markup glyph
@@ -174,7 +192,7 @@ the user).  A logic test harness lives in the session scratchpad
   separator): the About button — document.png logo in every style
   except text-only, which swaps in an "About" label
   (`about_button_fit_style` on "style-changed"); it opens the
-  Records-style about dialog (`on_menu_about`: HiDPI logo, compile
+  Notes-style about dialog (`on_menu_about`: HiDPI logo, compile
   stamp, `bt_db_totals` vitals), shared with File → About Lists.
   document.png is also the .app bundle icon (Makefile `app` target).
 - View menu: Show Completed, Manual Sort, then Show Sidebar and Compact
@@ -205,7 +223,7 @@ the user).  A logic test harness lives in the session scratchpad
 - Thin `gtk_separator_new` rules under the toolbar and above the status
   bar.  Status bar: margins 8/8/3/3 (NOT border_width) and
   `label { font-size: 85%; }` on both labels — measured pixel-identical
-  to Records.  Event messages posted via `bt_app_status()` hold for
+  to Notes.  Event messages posted via `bt_app_status()` hold for
   3 s then fade out over 1 s (20 × 50 ms alpha steps via Pango markup);
   a new message resets the timer.
 - Task list: alternating white/`ROW_TINT` (#e8f2fb) stripes via a
@@ -283,14 +301,14 @@ the user).  A logic test harness lives in the session scratchpad
   tried and rejected (2026-07-16) — don't reintroduce.
   The row exists only while `weekly_forecast`=1 (Settings →
   Appearance; default on).  The Favorites row exists ONLY while
-  something is pinned (`bt_db_has_pinned`; mirrored Records items carry
+  something is pinned (`bt_db_has_pinned`; mirrored Notes items carry
   the ordinary `pinned` flag, so no bn_pins check remains); editor pin
   flips arrive via
   notify_tasks, so `notify_tasks_hook` rebuilds the sidebar on the
   0 ↔ nonzero transition (tracked in `pinned_row_shown`) — the
   context-menu pin actions already full_refresh.  There is NO pinned
   column in the task list (removed 2026-07-16): pinning happens in the
-  editor or the right-click menu — which mirrored Records items now get
+  editor or the right-click menu — which mirrored Notes items now get
   like any other task.  Real lists nest under a collapsible bold
   "Lists" header whose expansion is SNAPSHOTTED before every rebuild
   (first population expands; force-open when the selection lives
@@ -311,13 +329,13 @@ the user).  A logic test harness lives in the session scratchpad
   `bt_db_lists_reorder`, which writes position = display index; order
   is LOCAL-ONLY — Google tasklists have none — so reorders never dirty
   rows for sync).  The DnD dest protocol is fully custom, copied from
-  Records' quirk #13: GtkTreeView's default drag-motion handler
+  Notes' quirk #13: GtkTreeView's default drag-motion handler
   requests row data per motion, and on quartz the replies land before
   the release, finishing the drag mid-air — so on_sb_drag_motion
   answers gdk_drag_status itself (returning TRUE), only
   on_sb_drag_drop requests the data, and on_sb_drag_received stops the
   default emission and performs the move.  Only SB_KIND_LIST rows may
-  drag or anchor a drop (never the metas, header, group, or Records
+  drag or anchor a drop (never the metas, header, group, or Notes
   row).
 - Window size: tracked via configure-event, persisted as `win_w/win_h`
   on clean close, restored at launch (980×640 fallback).
@@ -340,7 +358,7 @@ the user).  A logic test harness lives in the session scratchpad
   immediately.  NEVER rewrite the due entry while it has focus, and a
   save must not clobber the stored date when the entry holds partial/
   invalid text (`editor_due_entry_parse`).  Editors are singletons per
-  task (`app->editors` gint64 keys) / per Records ref
+  task (`app->editors` gint64 keys) / per Notes ref
   (`app->bn_editors` string keys).
 - Editor foot row (packed LAST so it stays at the window's bottom in both
   fold states): an "Advanced ▾/▴" link at the left, then Save at the
@@ -416,7 +434,7 @@ the user).  A logic test harness lives in the session scratchpad
 - LOCAL-ONLY fields (never sent): `pinned`, task `priority` (binary
   high-priority flag; every view query sorts `priority DESC` first so
   flagged tasks top any list they appear in, 🚨 (siren emoji) in the task cell,
-  which also carries ❗ on every mirrored Records item (innermost prefix,
+  which also carries ❗ on every mirrored Notes item (innermost prefix,
   nearest the title — see `task_desc_markup`; the glyphs stack outwards
   ↳ 🚨 ⭐️ ❗ Title),
   "High Priority" editor checkbox), list `emoji`, attachments.
@@ -452,7 +470,7 @@ the user).  A logic test harness lives in the session scratchpad
   late exchange result.  The consent screen's app name comes from the
   Google Cloud OAuth registration, not from this app.
 
-## Records integration (the action-item MIRROR)
+## Notes integration (the action-item MIRROR)
 
 Rewritten 2026-08-05: action items are no longer a special row type.
 Each one is MIRRORED as an ordinary task, so it carries notes,
@@ -460,47 +478,47 @@ subtasks, attachments, a pin and a priority like anything else — and,
 living in a real list, it syncs on to Google Tasks too.  `bnotes.[ch]`
 is now just the CLI wrapper; `bnsync.[ch]` is the sync.
 
-- ALL access via the `records` CLI (`action list --uid`, `action
-  done/undone/due`), NEVER its database file — Records' GUI/CLI
+- ALL access via the `notes` CLI (`action list --uid`, `action
+  done/undone/due`), NEVER its database file — Notes' GUI/CLI
   coexistence is a single-writer design (CLI routes through the running
   GUI's socket).  Row format with `--uid`:
   `UID \t NOTEID:ORD \t [x]|[ ] \t YYYY-MM-DD|- \t text`.
 - **Identity is the UID, never the position.** `NOTEID:ORD` renumbers
-  whenever a note gains or loses a '!' line (Records assigns ord by
+  whenever a note gains or loses a '!' line (Notes assigns ord by
   position), so a stored ref silently comes to mean a different item —
   a "done" tick would strike the wrong line.  The uid is stable across
-  rewording and renumbering.  A Records too old to know `--uid` makes
-  the pass REFUSE to run ("Records is too old…") rather than fall back
+  rewording and renumbering.  A Notes too old to know `--uid` makes
+  the pass REFUSE to run ("Notes is too old…") rather than fall back
   to positional addressing: `bt_bnotes_supports_uid()` tells that case
   apart on the failure path only, so a healthy pass costs ONE spawn.
   The old ref survives solely to drain the legacy `bn_pins`/
   `bn_priority` tables onto each task as its mirror is created.
-- Field ownership: Records owns TITLE, DONE and DUE; a title edited in
+- Field ownership: Notes owns TITLE, DONE and DUE; a title edited in
   Lists is overwritten next pass (the CLI has no verb to rewrite an
   item's text).  Everything else is Lists-only and never leaves.
 - **Writes are cached, not live.** `tasks.bn_done`/`bn_due` hold what
-  Records was last known to have, so the rows where `done`/`due` differ
+  Notes was last known to have, so the rows where `done`/`due` differ
   from that baseline ARE the pending-write set — no queue table to
   corrupt, and it survives a crash.  Each pass pushes them in bulk on
-  `records_sync_interval_min` (default 5; 0 = only on Sync).  A local
-  change WINS over a concurrent Records-side one: it is pushed first
+  `notes_sync_interval_min` (default 5; 0 = only on Sync).  A local
+  change WINS over a concurrent Notes-side one: it is pushed first
   and the listing reads back what was just written.  A REFUSED push
   keeps the user's local value on the task but leaves the baseline
   alone, so the delta is retried — which is why
-  `bt_db_task_apply_records` takes the baselines separately from the
+  `bt_db_task_apply_notes` takes the baselines separately from the
   applied values.
-- Existence: Records is authoritative, so an item that leaves it
+- Existence: Notes is authoritative, so an item that leaves it
   tombstones its task.  The reverse has no CLI verb, so deleting a
   mirror task in Lists parks its uid in `bn_deleted` (done inside
   `bt_db_task_delete`'s transaction) — without that the very next pass
   would helpfully re-create what the user just deleted.  The
-  suppression is dropped once the item is gone from Records too.
+  suppression is dropped once the item is gone from Notes too.
 - The sidebar's "Action Items" row is a META VIEW (`SB_KIND_BN_ACTIONS`
   among Favorites / All Tasks / Due Today), not a list: it queries
   `bn_uid > 0` across every list, so an item filed anywhere still shows
-  up in one place.  Toggled by `records_meta_row`; `virtual_view` stays
+  up in one place.  Toggled by `notes_meta_row`; `virtual_view` stays
   TRUE so each row keeps its "in <list>" line.
-- Items live in `blue_notes_embed_list` when it names a live list, else
+- Items live in `notes_embed_list` when it names a live list, else
   the managed "Action Items" list (❗), created on first use.  The
   target is consulted when a task is CREATED, so changing the setting
   needs `bt_bnsync_reconcile_target` to carry the existing items over —
@@ -530,7 +548,7 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
    an expression.
 3. A `GtkMenu` built per right-click and attached to a widget leaks
    until that widget dies unless destroyed on "selection-done".
-4. Records gotcha inherited: clearing a tree/list store zeroes the
+4. Notes gotcha inherited: clearing a tree/list store zeroes the
    view's scrollbar (restore idle-deferred) and collapses expansion
    state (snapshot before clear).
 5. `gtk_tree_view_set_enable_search(view, FALSE)` on every tree view —
@@ -567,7 +585,7 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
     push).  Handled ACCURATELY (no hidden state): every sync GETs
     `…/lists/@default` and stores its id as
     `sync_state.default_list_gid`; on_delete_list refuses that list up
-    front (like the Records list), and if a stale tombstone for it
+    front (like the Notes list), and if a stale tombstone for it
     exists anyway, sync_lists RESTORES the list + its same-moment task
     tombstones (`bt_db_list_restore`) instead of deleting or hiding
     anything.  sync_lists also seeds the default list's emoji to 🔴
@@ -594,10 +612,13 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
     batch — it takes the rest of the schema setup with it, leaving the
     database unopenable.  Fresh files hide this completely: they only
     ever exercise the path where every column already exists.  (Learned
-    the same day in Records, which hit it for real on `action_items`.)
-17. A Records CLI call is answered by whichever Records instance owns
-    `~/.cache/records.sock`, NOT by the binary on disk: `cli.c` forwards
+    the same day in Notes, which hit it for real on `action_items`.)
+17. A Notes CLI call is answered by whichever Notes instance owns
+    `~/.cache/notes.sock`, NOT by the binary on disk: `cli.c` forwards
     argv to the running GUI.  So an old GUI left running makes a new
     CLI feature look missing — `action list --uid` answers with usage
     and exit 1 while the on-disk binary supports it perfectly.  Check
-    `lsof -U | grep records.sock` before concluding a verb is absent.
+    `lsof -U | grep notes.sock` before concluding a verb is absent.
+    The socket was `records.sock` before the 2026-08-11 rename, so a GUI
+    started before it still owns the OLD path and answers nothing on the
+    new one — restart that GUI rather than debugging the CLI.

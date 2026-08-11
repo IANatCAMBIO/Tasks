@@ -228,7 +228,7 @@ bt_app_init_icons_dir(BtApp *app)
  * (see app.h).  Rasterizes at the display's scale factor: `size` is the
  * LOGICAL size, the backing pixels are size × sf, and the cairo
  * surface's device scale maps between the two (raw pixbufs render
- * 1 buffer-pixel = 1 logical px and blur on Retina — Records
+ * 1 buffer-pixel = 1 logical px and blur on Retina — Notes
  * gotcha #5).
  * ------------------------------------------------------------------------- */
 GtkWidget *
@@ -358,7 +358,7 @@ style_menu_toggled(GtkCheckMenuItem *item, gpointer data)
 /* ---------------------------------------------------------------------------
  * toolbar_context_menu() — "popup-context-menu": right-clicking a
  * toolbar offers the icons/both/text radio choices (fires on empty
- * toolbar area only, like Records).
+ * toolbar area only, like Notes).
  * ------------------------------------------------------------------------- */
 static gboolean
 toolbar_context_menu(GtkToolbar *toolbar, gint x, gint y, gint button,
@@ -482,7 +482,8 @@ bt_app_exe_dir(void)
 static const gchar *const LEGACY_KEYS[] = {
     /* sync */
     "google_sync_enabled", "sync_interval_min", "sync_toolbar_button",
-    /* Records */
+    /* Notes integration — the names a pre-3.0 file actually used; the
+     * rename pass below folds them onto the current notes_* keys.          */
     "blue_notes_sync", "blue_notes_cli", "blue_notes_embed_list",
     /* database */
     "db_dir", "db_integrity_check",
@@ -581,6 +582,67 @@ config_migrate_legacy_group(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * Key-rename migration (the companion app's two renames).
+ *
+ * The companion app was Blue Notes, then Records, then Notes, and the
+ * integration's config keys were named after whichever it was at the
+ * time.  They now all read `notes_*`, and this folds the old spellings
+ * onto the new ones IN PLACE so an existing ini keeps its values —
+ * without it, renaming a key silently reverts that setting to its
+ * default, which for `notes_cli` means an integration that was working
+ * yesterday quietly stops finding the binary.
+ *
+ * Unlike the group migration this is a pure RENAME: the old key is
+ * removed either way, so the pass cannot run twice and cannot resurrect
+ * a key the user has since cleared.  The current name still wins when
+ * both exist (the user may already have set the new one).
+ * ------------------------------------------------------------------------- */
+static const struct { const gchar *old_key, *new_key; } RENAMED_KEYS[] = {
+    { "blue_notes_sync",           "notes_sync"               },
+    { "blue_notes_cli",            "notes_cli"                },
+    { "blue_notes_embed_list",     "notes_embed_list"         },
+    { "records_sync_interval_min", "notes_sync_interval_min"  },
+    { "records_meta_row",          "notes_meta_row"           },
+};
+
+static void
+config_migrate_renamed_keys(void)
+{
+    if (config_kf == NULL || config_path == NULL)
+        return;
+
+    guint moved = 0;                 /* values carried onto the new key     */
+    guint seen  = 0;                 /* old keys found, carried or not      */
+    for (gsize i = 0; i < G_N_ELEMENTS(RENAMED_KEYS); i++) {
+        const gchar *old_key = RENAMED_KEYS[i].old_key;
+        const gchar *new_key = RENAMED_KEYS[i].new_key;
+        if (!g_key_file_has_key(config_kf, BT_INI_GROUP, old_key, NULL))
+            continue;
+        seen++;
+        if (!g_key_file_has_key(config_kf, BT_INI_GROUP, new_key, NULL)) {
+            gchar *v = g_key_file_get_string(config_kf, BT_INI_GROUP,
+                                             old_key, NULL);
+            if (v != NULL && *v != '\0') {
+                g_key_file_set_string(config_kf, BT_INI_GROUP, new_key, v);
+                moved++;
+            }
+            g_free(v);
+        }
+        g_key_file_remove_key(config_kf, BT_INI_GROUP, old_key, NULL);
+    }
+    /* Save whenever an old key was REMOVED, not only when one was
+     * carried over: an old key left in the file would be re-examined on
+     * every launch, and the removal is the half that makes this a rename.  */
+    if (seen == 0)
+        return;
+
+    g_key_file_save_to_file(config_kf, config_path, NULL);
+    g_message("Migrated %u Notes-integration setting%s onto the notes_* "
+              "config keys (%u already set there)",
+              moved, moved == 1 ? "" : "s", seen - moved);
+}
+
+/* ---------------------------------------------------------------------------
  * bt_app_config_init() — resolve + load the config file once.  Portable
  * mode: lists.ini next to the binary; when none exists there AND the
  * directory is unwritable, ~/.config/lists/lists.ini.  On first
@@ -620,6 +682,9 @@ bt_app_config_init(const gchar *argv0)
     /* Before any caller reads a key: an ini from a pre-rename build keeps
      * everything in a group this build ignores (see the banner above).      */
     config_migrate_legacy_group();
+    /* Then the per-key renames — it must run AFTER the group fold, which
+     * is what puts a pre-3.0 file's blue_notes_* keys in this group.       */
+    config_migrate_renamed_keys();
     g_free(exe_dir);
 }
 

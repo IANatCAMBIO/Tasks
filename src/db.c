@@ -254,10 +254,10 @@ bt_db_open(const gchar *path, GError **err)
         "  value TEXT)");
     exec(db,
         "CREATE TABLE IF NOT EXISTS bn_pins ("
-        "  ref TEXT PRIMARY KEY)");   /* pinned Records items             */
+        "  ref TEXT PRIMARY KEY)");   /* pinned Notes items             */
     exec(db,
         "CREATE TABLE IF NOT EXISTS bn_priority ("
-        "  ref TEXT PRIMARY KEY)");   /* high-priority Records items      */
+        "  ref TEXT PRIMARY KEY)");   /* high-priority Notes items      */
     exec(db,
         "CREATE TABLE IF NOT EXISTS bn_deleted ("
         "  uid INTEGER PRIMARY KEY)");  /* mirror tasks deleted in Lists   */
@@ -301,9 +301,9 @@ bt_db_open(const gchar *path, GError **err)
             "ALTER TABLE lists ADD COLUMN group_id INTEGER "
             "REFERENCES list_groups(id)", NULL, NULL, NULL);
     if (uv < 6) {
-        /* v6 = the Records mirror: bn_uid is the item's STABLE identity
-         * from `records action list --uid` (0 = an ordinary task), and
-         * bn_done/bn_due are the last state Records was known to hold —
+        /* v6 = the Notes mirror: bn_uid is the item's STABLE identity
+         * from `notes action list --uid` (0 = an ordinary task), and
+         * bn_done/bn_due are the last state Notes was known to hold —
          * the baseline the bulk push diffs against.                        */
         sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN bn_uid "
                      "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
@@ -971,11 +971,11 @@ bt_db_subtask_move(BtDatabase *db, gint64 id, gint direction)
  * bt_db_task_delete() — tombstone the task and its subtasks.
  *
  * A mirror task also records its bn_uid in bn_deleted, in the SAME
- * transaction: Records has no CLI verb that deletes an action item, so
+ * transaction: Notes has no CLI verb that deletes an action item, so
  * the item survives there, and without this the very next mirror pass
  * would see a uid with no task and helpfully re-create the row the user
  * just deleted.  bt_bnsync clears the suppression once the item leaves
- * Records for real.  Subtasks never carry a uid (Records has no
+ * Notes for real.  Subtasks never carry a uid (Notes has no
  * subtasks), so only the task's own row is consulted.
  * ------------------------------------------------------------------------- */
 void
@@ -1301,7 +1301,7 @@ bn_load_ref_set(BtDatabase *db, const gchar *sql, const gchar *ctx)
     return set;
 }
 
-/* bt_db_bn_pin_get() — is this Records item pinned (see db.h)?              */
+/* bt_db_bn_pin_get() — is this Notes item pinned (see db.h)?              */
 gboolean
 bt_db_bn_pin_get(BtDatabase *db, const gchar *ref)
 {
@@ -1309,7 +1309,7 @@ bt_db_bn_pin_get(BtDatabase *db, const gchar *ref)
         "SELECT 1 FROM bn_pins WHERE ref = ?", "bn pin get");
 }
 
-/* bt_db_bn_pin_set() — pin/unpin a Records item (see db.h).                 */
+/* bt_db_bn_pin_set() — pin/unpin a Notes item (see db.h).                 */
 void
 bt_db_bn_pin_set(BtDatabase *db, const gchar *ref, gboolean pinned)
 {
@@ -1325,7 +1325,7 @@ bt_db_bn_pins(BtDatabase *db)
     return bn_load_ref_set(db, "SELECT ref FROM bn_pins", "bn pins query");
 }
 
-/* bt_db_bn_priority_get() — is this Records item high-priority (see
+/* bt_db_bn_priority_get() — is this Notes item high-priority (see
  * db.h)?                                                                    */
 gboolean
 bt_db_bn_priority_get(BtDatabase *db, const gchar *ref)
@@ -1334,7 +1334,7 @@ bt_db_bn_priority_get(BtDatabase *db, const gchar *ref)
         "SELECT 1 FROM bn_priority WHERE ref = ?", "bn priority get");
 }
 
-/* bt_db_bn_priority_set() — flag/unflag a Records item (see db.h).          */
+/* bt_db_bn_priority_set() — flag/unflag a Notes item (see db.h).          */
 void
 bt_db_bn_priority_set(BtDatabase *db, const gchar *ref, gboolean priority)
 {
@@ -1352,7 +1352,7 @@ bt_db_bn_priorities(BtDatabase *db)
 }
 
 /* ---------------------------------------------------------------------------
- * Records mirror — tasks carrying a stable action-item uid.
+ * Notes mirror — tasks carrying a stable action-item uid.
  * ------------------------------------------------------------------------- */
 
 /* bt_db_tasks_bn_mirror() — every visible mirror task (see db.h).           */
@@ -1377,7 +1377,7 @@ bt_db_task_by_bn_uid(BtDatabase *db, gint64 uid)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_db_task_set_bn() — bind a task to a Records item and record the
+ * bt_db_task_set_bn() — bind a task to a Notes item and record the
  * push baseline (see db.h).  NO updated_at bump: the binding is local
  * bookkeeping, and dirtying the row here would buy a no-op Google PATCH
  * on every mirror pass (the same reasoning as set_pinned).
@@ -1395,7 +1395,7 @@ bt_db_task_set_bn(BtDatabase *db, gint64 id, gint64 uid, gboolean done,
 }
 
 /* ---------------------------------------------------------------------------
- * bt_db_task_apply_records() — overwrite the Records-owned fields and
+ * bt_db_task_apply_notes() — overwrite the Notes-owned fields and
  * re-baseline in ONE statement (see db.h).  updated_at IS stamped: the
  * change came from outside Lists and has to reach Google too.  The
  * completed_at CASE repeats set_done's transition rule, which relies on
@@ -1403,11 +1403,11 @@ bt_db_task_set_bn(BtDatabase *db, gint64 id, gint64 uid, gboolean done,
  *
  * The baselines are passed SEPARATELY from the applied values because
  * the two diverge on a failed push: the task keeps the user's local
- * done/due, while bn_done/bn_due must stay at what Records still holds
+ * done/due, while bn_done/bn_due must stay at what Notes still holds
  * so the delta is retried instead of being silently swallowed.
  * ------------------------------------------------------------------------- */
 void
-bt_db_task_apply_records(BtDatabase *db, gint64 id, const gchar *title,
+bt_db_task_apply_notes(BtDatabase *db, gint64 id, const gchar *title,
                          gboolean done, gint64 due, gboolean bn_done,
                          gint64 bn_due)
 {
@@ -1427,9 +1427,9 @@ bt_db_task_apply_records(BtDatabase *db, gint64 id, const gchar *title,
         sqlite3_bind_int(st, 5, bn_done ? 1 : 0);
         sqlite3_bind_int64(st, 6, bn_due);
         sqlite3_bind_int64(st, 7, id);
-        step_done(db, st, "task apply records");
+        step_done(db, st, "task apply notes");
     } else {
-        step_done(db, NULL, "task apply records");
+        step_done(db, NULL, "task apply notes");
     }
     sqlite3_finalize(st);
 }
