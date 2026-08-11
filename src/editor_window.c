@@ -186,19 +186,41 @@ on_toggle_changed(GtkWidget *w, gpointer data)
  * The in-flight in-place subtask edit.
  *
  * GTK hands the renderer's editable (a GtkEntry) to "editing-started"; we
- * hold it so Add can COMMIT half-typed text rather than let the new row
- * yank the cursor away and cancel the edit, which throws the typing out.
- * The pointer is weak — every path that ends an edit ("edited",
- * "editing-canceled", the widget simply dying) clears it, and
+ * hold it so Add and Save can COMMIT half-typed text rather than throw the
+ * typing out.  The pointer is weak — every path that ends an edit
+ * ("edited", "editing-canceled", the widget simply dying) clears it, and
  * on_editor_destroy drops the weak reference before `ed` is freed, since
  * the editable can outlive it (the window's "destroy" handlers run before
  * its children are destroyed).
+ *
+ * Holding the editable is NOT on its own enough, and the reason is worth
+ * writing down: GTK3 treats losing focus as CANCELLING an in-place cell
+ * edit, not as finishing it (GtkCellRendererText's own focus-out handler
+ * sets the entry's "editing-canceled" and tears the editable down).  A
+ * mouse click on Add moves focus on BUTTON-PRESS, so that cancel has
+ * already run — and already emitted "editing-canceled", which clears this
+ * pointer — by the time "clicked" reaches on_sub_add.  Committing from the
+ * button handler therefore found nothing left to commit and the typing was
+ * lost anyway.  So on_sub_edit_focus_out below commits FIRST, from the
+ * entry's own focus-out (a plain g_signal_connect, which runs ahead of the
+ * renderer's g_signal_connect_after one); committing disconnects the
+ * renderer's handler, so the cancel never happens.  Escape is unaffected —
+ * it cancels through the key-press path with no focus change at all
+ * (verified both ways against GTK 3.24).
  * ------------------------------------------------------------------------- */
+static gboolean on_sub_edit_focus_out(GtkWidget *entry, GdkEventFocus *event,
+                                      gpointer data);
+
 static void
 editor_sub_edit_forget(BtEditor *ed)
 {
     if (ed->sub_edit == NULL)
         return;
+    /* Disconnect BEFORE dropping the pointer: the handler captures `ed`,
+     * and the editable outlives it (a window being destroyed hands focus
+     * away as it goes), so a handler left connected is a use-after-free.  */
+    g_signal_handlers_disconnect_by_func(ed->sub_edit,
+                                         (gpointer)on_sub_edit_focus_out, ed);
     g_object_remove_weak_pointer(G_OBJECT(ed->sub_edit),
                                  (gpointer *)&ed->sub_edit);
     ed->sub_edit = NULL;
@@ -358,7 +380,22 @@ sub_refresh(BtEditor *ed)
     bt_ptr_array_free_tasks(subs);
 }
 
-/* on_sub_editing_started() — remember the editable GTK just created.       */
+/* on_sub_edit_focus_out() — the entry lost focus (the user clicked Add,
+ * Save, another field, another window): SAVE the half-typed title instead
+ * of letting GTK's own focus-out handler cancel it.  Returns FALSE so the
+ * entry still gets its ordinary focus-out handling.                        */
+static gboolean
+on_sub_edit_focus_out(GtkWidget *entry, GdkEventFocus *event, gpointer data)
+{
+    (void)event;
+    BtEditor *ed = data;
+    if (ed->sub_edit == (GtkCellEditable *)entry)
+        editor_sub_edit_commit(ed);
+    return FALSE;
+}
+
+/* on_sub_editing_started() — remember the editable GTK just created, and
+ * take over its focus-out (see the block comment above).                   */
 static void
 on_sub_editing_started(GtkCellRenderer *cell, GtkCellEditable *editable,
                        gchar *path_str, gpointer data)
@@ -369,6 +406,9 @@ on_sub_editing_started(GtkCellRenderer *cell, GtkCellEditable *editable,
     editor_sub_edit_forget(ed);
     ed->sub_edit = editable;
     g_object_add_weak_pointer(G_OBJECT(editable), (gpointer *)&ed->sub_edit);
+    if (GTK_IS_WIDGET(editable))
+        g_signal_connect(editable, "focus-out-event",
+                         G_CALLBACK(on_sub_edit_focus_out), ed);
 }
 
 /* on_sub_editing_canceled() — Escape (or GTK cancelling for us).           */
@@ -381,7 +421,10 @@ on_sub_editing_canceled(GtkCellRenderer *cell, gpointer data)
 
 /* on_sub_add() — create a subtask and start editing its title in place.
  * A title still being typed in another row is committed first, so Add
- * never costs the user what they had just written.                         */
+ * never costs the user what they had just written.  A mouse click has
+ * normally already committed it through the focus-out path (see the block
+ * comment above), which leaves this call a no-op; it still matters for a
+ * keyboard/mnemonic activation that never moves focus.                     */
 static void
 on_sub_add(GtkWidget *w, gpointer data)
 {
