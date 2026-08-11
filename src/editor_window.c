@@ -38,6 +38,9 @@ typedef struct {
     GtkTextBuffer *notes_buf;
     GtkListStore *sub_store;         /* NULL for subtask editors            */
     GtkWidget    *sub_view;
+    GtkCellEditable *sub_edit;       /* in-place subtask edit in flight,
+                                      * else NULL (weak: cleared if the
+                                      * editable dies under us)             */
     GtkListStore *att_store;
     GtkWidget    *att_view;
     GtkWidget    *google_box;        /* "From Google" section, or NULL      */
@@ -180,6 +183,45 @@ on_toggle_changed(GtkWidget *w, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
+ * The in-flight in-place subtask edit.
+ *
+ * GTK hands the renderer's editable (a GtkEntry) to "editing-started"; we
+ * hold it so Add can COMMIT half-typed text rather than let the new row
+ * yank the cursor away and cancel the edit, which throws the typing out.
+ * The pointer is weak — every path that ends an edit ("edited",
+ * "editing-canceled", the widget simply dying) clears it, and
+ * on_editor_destroy drops the weak reference before `ed` is freed, since
+ * the editable can outlive it (the window's "destroy" handlers run before
+ * its children are destroyed).
+ * ------------------------------------------------------------------------- */
+static void
+editor_sub_edit_forget(BtEditor *ed)
+{
+    if (ed->sub_edit == NULL)
+        return;
+    g_object_remove_weak_pointer(G_OBJECT(ed->sub_edit),
+                                 (gpointer *)&ed->sub_edit);
+    ed->sub_edit = NULL;
+}
+
+/* editor_sub_edit_commit() — finish an in-flight edit as if the user had
+ * pressed Enter: "editing-done" makes the renderer emit "edited" with the
+ * entry's current text (on_sub_title_edited saves it), and remove-widget
+ * tears the editable down.  No-op when nothing is being edited.            */
+static void
+editor_sub_edit_commit(BtEditor *ed)
+{
+    if (ed->sub_edit == NULL)
+        return;
+    GtkCellEditable *e = ed->sub_edit;
+    g_object_ref(e);                 /* remove_widget may drop the last ref */
+    editor_sub_edit_forget(ed);      /* the callbacks below re-enter here   */
+    gtk_cell_editable_editing_done(e);
+    gtk_cell_editable_remove_widget(e);
+    g_object_unref(e);
+}
+
+/* ---------------------------------------------------------------------------
  * on_editor_save() — the Save button every editor carries: flush the
  * write-through save and close.  Saves are already write-through, so this
  * is a "commit now and get out of my way" button rather than the only way
@@ -190,6 +232,7 @@ on_editor_save(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtEditor *ed = data;
+    editor_sub_edit_commit(ed);      /* a subtask still being typed         */
     editor_save_now(ed);             /* also clears the pending debounce    */
     gtk_widget_destroy(ed->window);
 }
@@ -204,6 +247,10 @@ on_editor_save(GtkWidget *w, gpointer data)
  * into the row we are about to tombstone.  The library is notified after
  * that through the app hook — a vanishing task is structural (list counts,
  * the Favorites row), so it takes the FULL refresh, not notify_tasks.
+ *
+ * A subtask still in its in-place editor is FORGOTTEN, not committed: the
+ * whole task is about to be tombstoned, so on_editor_destroy must not go
+ * writing that title into a row on its way out.
  * ------------------------------------------------------------------------- */
 static void
 on_editor_cancel(GtkWidget *w, gpointer data)
@@ -216,6 +263,7 @@ on_editor_cancel(GtkWidget *w, gpointer data)
         g_source_remove(ed->save_source);
         ed->save_source = 0;
     }
+    editor_sub_edit_forget(ed);
     gtk_widget_destroy(ed->window);
     bt_db_task_delete(app->db, id);
     if (app->notify_changed != NULL)
@@ -310,12 +358,36 @@ sub_refresh(BtEditor *ed)
     bt_ptr_array_free_tasks(subs);
 }
 
-/* on_sub_add() — create a subtask and start editing its title in place.     */
+/* on_sub_editing_started() — remember the editable GTK just created.       */
+static void
+on_sub_editing_started(GtkCellRenderer *cell, GtkCellEditable *editable,
+                       gchar *path_str, gpointer data)
+{
+    (void)cell;
+    (void)path_str;
+    BtEditor *ed = data;
+    editor_sub_edit_forget(ed);
+    ed->sub_edit = editable;
+    g_object_add_weak_pointer(G_OBJECT(editable), (gpointer *)&ed->sub_edit);
+}
+
+/* on_sub_editing_canceled() — Escape (or GTK cancelling for us).           */
+static void
+on_sub_editing_canceled(GtkCellRenderer *cell, gpointer data)
+{
+    (void)cell;
+    editor_sub_edit_forget(data);
+}
+
+/* on_sub_add() — create a subtask and start editing its title in place.
+ * A title still being typed in another row is committed first, so Add
+ * never costs the user what they had just written.                         */
 static void
 on_sub_add(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtEditor *ed = data;
+    editor_sub_edit_commit(ed);
     BtTask *t = bt_db_task_get(ed->app->db, ed->task_id);
     if (t == NULL)
         return;
@@ -419,6 +491,7 @@ on_sub_title_edited(GtkCellRendererText *cell, gchar *path_str,
 {
     (void)cell;
     BtEditor *ed = data;
+    editor_sub_edit_forget(ed);      /* this edit is over                   */
     GtkTreeIter iter;
     GtkTreeModel *model = GTK_TREE_MODEL(ed->sub_store);
     if (!gtk_tree_model_get_iter_from_string(model, &iter, path_str))
@@ -718,12 +791,22 @@ editor_load(BtEditor *ed)
     return TRUE;
 }
 
-/* on_editor_destroy() — flush a pending save and unregister.                */
+/* ---------------------------------------------------------------------------
+ * on_editor_destroy() — flush a pending save and unregister.
+ *
+ * A subtask title still in its in-place editor is committed here too, so
+ * closing the window keeps it — the window's own "destroy" handlers run
+ * BEFORE its children are destroyed, so the editable and its tree view are
+ * both still alive at this point.  The commit also drops the weak pointer,
+ * which must not outlive `ed`.  on_editor_cancel forgets the edit instead:
+ * that path is tombstoning the task, so there is nothing to save into.
+ * ------------------------------------------------------------------------- */
 static void
 on_editor_destroy(GtkWidget *w, gpointer data)
 {
     (void)w;
     BtEditor *ed = data;
+    editor_sub_edit_commit(ed);
     if (ed->save_source != 0)
         editor_save_now(ed);         /* also clears the source              */
     g_hash_table_remove(ed->app->editors, &ed->task_id);
@@ -881,6 +964,13 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
                                    "Task title");
     g_signal_connect(ed->title_entry, "changed",
                      G_CALLBACK(on_field_changed), ed);
+    /* Enter in the title is the Save button: the common case is typing a
+     * new task's title and being done with it, and the notes box (a
+     * GtkTextView) still takes Enter as a newline.  It is deliberately
+     * NOT hooked to Cancel in the New Task variant — Enter must never
+     * discard what was just typed.                                          */
+    g_signal_connect(ed->title_entry, "activate",
+                     G_CALLBACK(on_editor_save), ed);
     gtk_box_pack_start(GTK_BOX(vbox), ed->title_entry, FALSE, FALSE, 0);
 
     /* Done / Pinned / Due row.                                              */
@@ -994,6 +1084,10 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
         g_object_set(text, "editable", TRUE, NULL);
         g_signal_connect(text, "edited",
                          G_CALLBACK(on_sub_title_edited), ed);
+        g_signal_connect(text, "editing-started",
+                         G_CALLBACK(on_sub_editing_started), ed);
+        g_signal_connect(text, "editing-canceled",
+                         G_CALLBACK(on_sub_editing_canceled), ed);
         gtk_tree_view_append_column(GTK_TREE_VIEW(ed->sub_view),
             gtk_tree_view_column_new_with_attributes("Subtask", text,
                 "text", SUB_TITLE, NULL));
