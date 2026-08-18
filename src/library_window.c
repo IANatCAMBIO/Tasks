@@ -61,6 +61,8 @@ enum {
     TL_DUE,                          /* gchar*: formatted due date ("")     */
     TL_DUE_RAW,                      /* gint64: due timestamp (sort/tint)   */
     TL_TITLE,                        /* gchar*: raw task title (sort key)   */
+    TL_COMPLETED,                    /* gchar*: formatted completion date   */
+    TL_COMPLETED_RAW,                /* gint64: completed_at (sort key)     */
     TL_N_COLS
 };
 
@@ -880,21 +882,25 @@ append_task_rows(GtkListStore *store, GPtrArray *tasks,
         gint att_count = GPOINTER_TO_INT(
             g_hash_table_lookup(ctx->att_counts,
                                 GINT_TO_POINTER(t->id)));
-        gchar *desc = task_desc_markup(t, list_name, att_count, subs,
-                                       ctx->bold);
-        gchar *due  = bt_due_format(t->due);
+        gchar *desc      = task_desc_markup(t, list_name, att_count, subs,
+                                            ctx->bold);
+        gchar *due       = bt_due_format(t->due);
+        gchar *completed = bt_due_format(t->completed_at);
         GtkTreeIter iter;
         gtk_list_store_append(store, &iter);
         gtk_list_store_set(store, &iter,
-                           TL_ID, t->id,
-                           TL_DONE, t->done,
-                           TL_DESC, desc,
-                           TL_DUE, due,
-                           TL_DUE_RAW, t->due,
-                           TL_TITLE, t->title,
+                           TL_ID,            t->id,
+                           TL_DONE,          t->done,
+                           TL_DESC,          desc,
+                           TL_DUE,           due,
+                           TL_DUE_RAW,       t->due,
+                           TL_TITLE,         t->title,
+                           TL_COMPLETED,     completed,
+                           TL_COMPLETED_RAW, t->completed_at,
                            -1);
         g_free(desc);
         g_free(due);
+        g_free(completed);
         appended++;
     }
     return appended;
@@ -1624,6 +1630,20 @@ sort_by_due(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
     gint64 da, db;
     gtk_tree_model_get(model, a, TL_DUE_RAW, &da, -1);
     gtk_tree_model_get(model, b, TL_DUE_RAW, &db, -1);
+    if (da == 0) da = G_MAXINT64;
+    if (db == 0) db = G_MAXINT64;
+    return (da > db) - (da < db);
+}
+
+/* sort_by_completed() — oldest-completed first; incomplete rows last.       */
+static gint
+sort_by_completed(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
+                  gpointer data)
+{
+    (void)data;
+    gint64 da, db;
+    gtk_tree_model_get(model, a, TL_COMPLETED_RAW, &da, -1);
+    gtk_tree_model_get(model, b, TL_COMPLETED_RAW, &db, -1);
     if (da == 0) da = G_MAXINT64;
     if (db == 0) db = G_MAXINT64;
     return (da > db) - (da < db);
@@ -3230,7 +3250,8 @@ forecast_day_section(BtLibrary *lw, gint d)
     lw->day_stores[d] = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
                                            G_TYPE_BOOLEAN, G_TYPE_STRING,
                                            G_TYPE_STRING, G_TYPE_INT64,
-                                           G_TYPE_STRING);
+                                           G_TYPE_STRING, G_TYPE_STRING,
+                                           G_TYPE_INT64);
     lw->day_views[d] = gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->day_stores[d]));
     g_object_unref(lw->day_stores[d]);
@@ -3647,10 +3668,13 @@ task_manual_sort_apply(BtLibrary *lw)
         g_object_get_data(G_OBJECT(lw->task_view), "bt-cdesc");
     GtkTreeViewColumn *cdue  =
         g_object_get_data(G_OBJECT(lw->task_view), "bt-cdue");
-    if (cdrag) gtk_tree_view_column_set_visible(cdrag, manual);
-    if (cdone) gtk_tree_view_column_set_clickable(cdone, !manual);
-    if (cdesc) gtk_tree_view_column_set_clickable(cdesc, !manual);
-    if (cdue)  gtk_tree_view_column_set_clickable(cdue,  !manual);
+    GtkTreeViewColumn *ccompleted =
+        g_object_get_data(G_OBJECT(lw->task_view), "bt-ccompleted");
+    if (cdrag)      gtk_tree_view_column_set_visible(cdrag, manual);
+    if (cdone)      gtk_tree_view_column_set_clickable(cdone,      !manual);
+    if (cdesc)      gtk_tree_view_column_set_clickable(cdesc,      !manual);
+    if (cdue)       gtk_tree_view_column_set_clickable(cdue,       !manual);
+    if (ccompleted) gtk_tree_view_column_set_clickable(ccompleted, !manual);
     if (manual)
         gtk_tree_sortable_set_sort_column_id(
             GTK_TREE_SORTABLE(lw->task_store),
@@ -3685,12 +3709,17 @@ task_columns_apply(BtLibrary *lw)
         g_object_get_data(G_OBJECT(lw->task_view), "bt-cdone");
     GtkTreeViewColumn *cdue  =
         g_object_get_data(G_OBJECT(lw->task_view), "bt-cdue");
+    GtkTreeViewColumn *ccompleted =
+        g_object_get_data(G_OBJECT(lw->task_view), "bt-ccompleted");
     if (cdone)
         gtk_tree_view_column_set_visible(cdone,
             bt_app_config_get_bool("col_done_visible", TRUE));
     if (cdue)
         gtk_tree_view_column_set_visible(cdue,
             bt_app_config_get_bool("col_due_visible", TRUE));
+    if (ccompleted)
+        gtk_tree_view_column_set_visible(ccompleted,
+            bt_app_config_get_bool("col_completed_visible", TRUE));
 }
 
 /* on_column_header_press() — right-click on any column header pops a menu
@@ -4047,7 +4076,8 @@ bt_library_window_new(BtApp *app)
     lw->task_store = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
                                         G_TYPE_BOOLEAN, G_TYPE_STRING,
                                         G_TYPE_STRING, G_TYPE_INT64,
-                                        G_TYPE_STRING);
+                                        G_TYPE_STRING, G_TYPE_STRING,
+                                        G_TYPE_INT64);
     lw->task_view = gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->task_store));
     g_object_unref(lw->task_store);
@@ -4125,24 +4155,41 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_column_set_sort_column_id(cdue, TL_DUE_RAW);
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdue);
 
+    /* Completed column — sortable (incomplete rows last).                   */
+    GtkCellRenderer *completed_cell = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn *ccompleted =
+        gtk_tree_view_column_new_with_attributes("Completed", completed_cell,
+            "text", TL_COMPLETED, NULL);
+    gtk_tree_view_column_set_cell_data_func(ccompleted, completed_cell,
+                                            task_row_bg_func, lw, NULL);
+    gtk_tree_view_column_set_resizable(ccompleted, TRUE);
+    gtk_tree_sortable_set_sort_func(
+        GTK_TREE_SORTABLE(lw->task_store), TL_COMPLETED_RAW,
+        sort_by_completed, NULL, NULL);
+    gtk_tree_view_column_set_sort_column_id(ccompleted, TL_COMPLETED_RAW);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), ccompleted);
+
     /* Make Done and Task columns sortable by header click.  Task sorts by
      * the raw title string (TL_TITLE), not the Pango markup (TL_DESC).    */
     gtk_tree_view_column_set_sort_column_id(cdone, TL_DONE);
     gtk_tree_view_column_set_sort_column_id(cdesc, TL_TITLE);
 
-    /* Column hide/show via header right-click.  Done and Due Date are
-     * hidable (Task always shows); bt-colkey/bt-collabel drive the menu.
-     * Store column refs on the view for task_columns_apply and the
-     * realize-time header-button connection.                               */
-    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdrag", cdrag);
-    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdone", cdone);
-    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdesc", cdesc);
-    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdue",  cdue);
-    g_object_set_data(G_OBJECT(cdone), "bt-colkey",   (gpointer)"done");
-    g_object_set_data(G_OBJECT(cdone), "bt-collabel", (gpointer)"Completed");
-    g_object_set_data(G_OBJECT(cdue),  "bt-colkey",   (gpointer)"due");
-    g_object_set_data(G_OBJECT(cdue),  "bt-collabel", (gpointer)"Due Date");
-    GtkTreeViewColumn *header_cols[] = { cdrag, cdone, cdesc, cdue };
+    /* Column hide/show via header right-click.  Done, Due Date, and
+     * Completed are hidable (Task always shows); bt-colkey/bt-collabel
+     * drive the menu.  Store column refs on the view for task_columns_apply
+     * and the realize-time header-button connection.                        */
+    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdrag",      cdrag);
+    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdone",      cdone);
+    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdesc",      cdesc);
+    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdue",       cdue);
+    g_object_set_data(G_OBJECT(lw->task_view), "bt-ccompleted", ccompleted);
+    g_object_set_data(G_OBJECT(cdone),      "bt-colkey",   (gpointer)"done");
+    g_object_set_data(G_OBJECT(cdone),      "bt-collabel", (gpointer)"Done");
+    g_object_set_data(G_OBJECT(cdue),       "bt-colkey",   (gpointer)"due");
+    g_object_set_data(G_OBJECT(cdue),       "bt-collabel", (gpointer)"Due Date");
+    g_object_set_data(G_OBJECT(ccompleted), "bt-colkey",   (gpointer)"completed");
+    g_object_set_data(G_OBJECT(ccompleted), "bt-collabel", (gpointer)"Completion Date");
+    GtkTreeViewColumn *header_cols[] = { cdrag, cdone, cdesc, cdue, ccompleted };
     for (gsize i = 0; i < G_N_ELEMENTS(header_cols); i++) {
         GtkWidget *hbtn = gtk_tree_view_column_get_button(header_cols[i]);
         if (hbtn) {

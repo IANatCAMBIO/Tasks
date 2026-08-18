@@ -17,9 +17,10 @@
 #                     still depends on the MacPorts GTK libraries)
 # =============================================================================
 
-# Semantic version — the single source: baked into the binary (BT_VERSION,
-# shown in the About dialog).
-VERSION  := 3.3.5
+# Semantic version — read from VERSION file (the single source of truth).
+# Baked into the binary as BT_VERSION (shown in the About dialog) and into
+# the .app bundle's Info.plist.  To release: edit VERSION, then `make`.
+VERSION  := $(strip $(shell cat VERSION))
 
 # The compiler to use.  clang is the system compiler on macOS.
 CC       := cc
@@ -108,7 +109,7 @@ $(BIN): $(OBJS)
 # headers for simplicity (the project is small enough that full rebuilds
 # on header change are cheap), and on the Makefile so a VERSION bump
 # recompiles the baked-in BT_VERSION.
-build/%.o: src/%.c $(wildcard src/*.h) Makefile $(wildcard client_credentials.mk)
+build/%.o: src/%.c $(wildcard src/*.h) Makefile VERSION $(wildcard client_credentials.mk)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -121,7 +122,7 @@ build/%.o: src/%.c $(wildcard src/*.h) Makefile $(wildcard client_credentials.mk
 # double-quoting collapses that to \", which is what JSON needs.
 JSONFLAGS := $(subst ",\\\",$(CFLAGS))
 
-compile_commands.json: Makefile $(wildcard client_credentials.mk)
+compile_commands.json: Makefile VERSION $(wildcard client_credentials.mk)
 	@{ echo '['; \
 	first=1; \
 	for f in $(SRCS); do \
