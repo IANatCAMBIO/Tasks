@@ -1,5 +1,5 @@
 /* ===========================================================================
- * db.h — SQLite storage for Lists
+ * db.h — SQLite storage for Tasks
  *
  * Schema (PRAGMA user_version = 7; v2 added lists.emoji, v3 the five
  * Google-mirror task columns, v4 tasks.priority, v5 list_groups +
@@ -23,7 +23,7 @@
  *   attachments  id, task_id, path, added_at   (local-only; never synced)
  *   sync_state   key, value                    (e.g. "last_sync")
  *   bn_deleted   uid                           (mirror tasks deleted in
- *                                               Lists; suppresses the
+ *                                               Tasks; suppresses the
  *                                               re-create, see
  *                                               bt_db_task_delete)
  *   bn_pins      ref                           (LEGACY pre-mirror pins,
@@ -44,8 +44,23 @@
 #include <glib.h>
 #include <sqlite3.h>
 
-/* Database filename, under g_get_user_data_dir()/lists/.                  */
-#define BT_DB_FILENAME "lists.db"
+/* ---------------------------------------------------------------------------
+ * The app's on-disk names.  They live here, in the lowest header everyone
+ * already includes, because three subsystems need the SAME two strings:
+ * the database (this file), the ini (app.c) and the OAuth client-file
+ * lookup (oauth.c).
+ *
+ * BT_APP_DIR is the per-user directory name under the data/config dirs.
+ * The _LEGACY spellings are what a PRE-4.0 install wrote, when the app
+ * was called Lists — they exist only so the adoption paths can find that
+ * install's files and carry them onto the current names.  Nothing writes
+ * them.  (The rename before that one, Hacienda → Lists, never reached
+ * these: it changed only the ini group, see BT_INI_GROUP in app.c.)
+ * ------------------------------------------------------------------------- */
+#define BT_DB_FILENAME        "tasks.db"
+#define BT_DB_FILENAME_LEGACY "lists.db"
+#define BT_APP_DIR            "tasks"
+#define BT_APP_DIR_LEGACY     "lists"
 
 /* ---------------------------------------------------------------------------
  * BtDatabase — one open connection.  A connection must not cross threads:
@@ -66,7 +81,7 @@ typedef struct {
  * hides the row under the completed-visibility toggle, stamps
  * completed_at, and pushes "completed" to Google Tasks / Notes.  NEW and
  * IN_PROGRESS are both "not done" and are indistinguishable to everything
- * outside Lists — neither Google Tasks nor Notes has a third state.
+ * outside Tasks — neither Google Tasks nor Notes has a third state.
  * ------------------------------------------------------------------------- */
 typedef enum {
     BT_STATUS_NEW         = 0,
@@ -169,10 +184,30 @@ BtDatabase *bt_db_open(const gchar *path, GError **err);
 /* bt_db_close() — close the connection and free the handle.  NULL-safe.     */
 void bt_db_close(BtDatabase *db);
 
-/* bt_db_default_path() — "<user data dir>/lists/lists.db" (the filename
- * is BT_DB_FILENAME), creating the directory.  Returns a new string
- * (g_free it).                                                              */
+/* bt_db_default_path() — "<user data dir>/tasks/tasks.db" (the names are
+ * BT_APP_DIR / BT_DB_FILENAME), creating the directory.  Returns a new
+ * string (g_free it).                                                       */
 gchar *bt_db_default_path(void);
+
+/* ---------------------------------------------------------------------------
+ * bt_db_resolve_path() — the database file to open, adopting a pre-4.0
+ * `lists.db` when that is what is actually on disk.
+ *
+ *   dir — the configured db_dir, or NULL/"" for the default location.
+ *
+ * Returns a new string (g_free it): the path bt_db_open should be handed.
+ * When the current-name file is absent and the legacy one is present the
+ * legacy file is RENAMED onto the new name (across directories in the
+ * default case, since the directory was renamed too) and the new path is
+ * returned.  A rename that FAILS is not fatal — the legacy path is
+ * returned instead, so the app opens the user's data where it lies rather
+ * than silently creating an empty database beside it.
+ *
+ * Renaming only the .db is correct: this build never enables WAL, so
+ * there are no -wal/-shm companions, and the rollback journal exists only
+ * inside a transaction (i.e. never while the app is starting up).
+ * ------------------------------------------------------------------------- */
+gchar *bt_db_resolve_path(const gchar *dir);
 
 /* --------------------------------- lists --------------------------------- */
 
@@ -335,7 +370,7 @@ void bt_db_task_set_bn(BtDatabase *db, gint64 id, gint64 uid,
 
 /* Overwrite the Notes-owned fields (title/done/due) from a listing and
  * re-baseline in one statement.  DOES stamp updated_at — the change
- * originated outside Lists and must propagate to Google.  `done` is
+ * originated outside Tasks and must propagate to Google.  `done` is
  * Notes' binary flag and reaches tasks.status through
  * bt_status_apply_done's rule, expressed as a CASE over the OLD row, so
  * a still-unfinished item keeps whichever of New/In Progress it had.
@@ -347,7 +382,7 @@ void bt_db_task_apply_notes(BtDatabase *db, gint64 id, const gchar *title,
                               gboolean done, gint64 due, gboolean bn_done,
                               gint64 bn_due);
 
-/* Uids the user deleted in Lists.  Notes cannot delete an action item
+/* Uids the user deleted in Tasks.  Notes cannot delete an action item
  * from the CLI, so the item survives there; without this set the next
  * mirror pass would re-create the task.  Keys are GSIZE_TO_POINTER'd
  * uids (a uid is 64-bit, so packing it into a gint could collide);
@@ -374,7 +409,7 @@ GHashTable *bt_db_bn_pins(BtDatabase *db);
 /* High-priority state for Notes action items — the same local
  * design as pins (bn_priority table, "NOTEID:ORD" keys): Notes
  * has no priority concept, so the flag only affects where the items
- * appear in Lists' views.                                                   */
+ * appear in Tasks' views.                                                   */
 gboolean    bt_db_bn_priority_get(BtDatabase *db, const gchar *ref);
 void        bt_db_bn_priority_set(BtDatabase *db, const gchar *ref,
                                   gboolean priority);

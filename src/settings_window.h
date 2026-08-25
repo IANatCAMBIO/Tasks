@@ -1,5 +1,5 @@
 /* ===========================================================================
- * settings_window.h — the Lists settings window
+ * settings_window.h — the Tasks settings window
  *
  * One singleton window (File → Settings…), in the Notes settings
  * style: plain GtkWindow, bold section headings, write-through controls

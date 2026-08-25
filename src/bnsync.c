@@ -335,7 +335,7 @@ bn_thread(gpointer data)
     for (guint i = 0; i < items->len; i++) {
         BtNoteAction *it = g_ptr_array_index(items, i);
         if (g_hash_table_contains(suppressed, GSIZE_TO_POINTER(it->uid)))
-            continue;            /* deleted in Lists; do not re-create      */
+            continue;            /* deleted in Tasks; do not re-create      */
         sync_item(job, db, it, target);
     }
     reap_missing(job, db, present, suppressed);

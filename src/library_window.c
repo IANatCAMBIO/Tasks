@@ -1,5 +1,5 @@
 /* ===========================================================================
- * library_window.c — the main Lists window (see library_window.h)
+ * library_window.c — the main Tasks window (see library_window.h)
  * =========================================================================== */
 
 #include "library_window.h"
@@ -96,7 +96,7 @@ typedef struct {
                                       * Delete Task pair (overlay child)    */
     GtkWidget    *status_left;       /* selection info label                */
     GtkWidget    *status_right;      /* latest event message label          */
-    GtkWidget    *sync_item;         /* the Lists-menu Sync item            */
+    GtkWidget    *sync_item;         /* the toolbar's Sync button        */
     GtkWidget    *hide_done_item;    /* completed-visibility toggle button  */
     GtkWidget    *manual_sort_item;  /* manual-sort mode toggle button      */
     GtkWidget    *view_show_done_item;  /* View menu: Show Completed check  */
@@ -2873,7 +2873,7 @@ on_open_db(GtkWidget *widget, gpointer user_data)
         "Open \xe2\x80\x9c%s\xe2\x80\x9d as your new default database, "
         "or for this session only?", display);
     g_free(display);
-    gtk_window_set_title(GTK_WINDOW(dlg), "Lists - Open Database");
+    gtk_window_set_title(GTK_WINDOW(dlg), "Tasks - Open Database");
     gtk_dialog_add_buttons(GTK_DIALOG(dlg),
         "_Cancel",         GTK_RESPONSE_CANCEL,
         "_Session Only",   1,
@@ -2896,7 +2896,7 @@ on_open_db(GtkWidget *widget, gpointer user_data)
 
     if (app->db == NULL) {
         bt_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
-                      "Lists - Database Error",
+                      "Tasks - Database Error",
                       "Could not open:\n%s\n\n%s",
                       file_path,
                       gerr != NULL ? gerr->message : "Unknown error");
@@ -3006,7 +3006,7 @@ on_menu_about(GtkWidget *w, gpointer data)
     gtk_window_set_transient_for(GTK_WINDOW(dialog),
                                  GTK_WINDOW(lw->window));
     gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog),
-                                      "Lists");
+                                      "Tasks");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), BT_VERSION);
     if (logo != NULL) {
         /* set_logo() first (it makes the internal image visible and
@@ -3814,7 +3814,7 @@ bt_library_window_new(BtApp *app)
     lw->group_expanded = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(lw->window), "Lists");
+    gtk_window_set_title(GTK_WINDOW(lw->window), "Tasks");
     /* The last session's closing size (win_w/win_h), else the default.      */
     gchar *ww = bt_app_config_get("win_w");
     gchar *wh = bt_app_config_get("win_h");
@@ -3974,7 +3974,7 @@ bt_library_window_new(BtApp *app)
         g_object_set_data_full(G_OBJECT(about_item), "bt-label",
                                g_object_ref_sink(label), g_object_unref);
     }
-    gtk_tool_item_set_tooltip_text(about_item, "About Lists");
+    gtk_tool_item_set_tooltip_text(about_item, "About Tasks");
     g_signal_connect(about_btn, "clicked",
                      G_CALLBACK(on_menu_about), lw);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), about_item, -1);

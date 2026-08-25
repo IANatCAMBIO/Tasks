@@ -1,11 +1,11 @@
 /* ===========================================================================
- * app.h — shared application context for Lists
+ * app.h — shared application context for Tasks
  *
  * A single BtApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open task-editor windows, and hosts
  * the notification hooks the library window installs.  Companion app to
  * Notes — same design language: plain C + GTK3 + SQLite, no
- * HeaderBars, window titles "Lists - <thing>".
+ * HeaderBars, window titles "Tasks - <thing>".
  * =========================================================================== */
 
 #ifndef BT_APP_H
@@ -57,7 +57,7 @@
  *                    remove themselves on destroy.
  *   icons_dir      — absolute path of the local icons/ folder the
  *                    toolbar button PNGs are loaded from (owned string).
- *   db_dir         — custom directory holding lists.db (owned string),
+ *   db_dir         — custom directory holding tasks.db (owned string),
  *                    or NULL for the default location.  Persisted in the
  *                    ini as "db_dir"; not stored in the database itself.
  * ------------------------------------------------------------------------- */
@@ -148,7 +148,7 @@ void bt_app_status(BtApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 void bt_app_notify_changed(BtApp *app);
 
 /* ---------------------------------------------------------------------------
- * bt_app_switch_database() — move lists.db to `new_dir` (or back to
+ * bt_app_switch_database() — move tasks.db to `new_dir` (or back to
  * the default location when `new_dir` is NULL): closes all editors, copies
  * the database to the new home (if target folder has no existing db),
  * reopens, removes the old file, updates app->db_dir + config, and fires
@@ -172,16 +172,16 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
                         const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
 
 /* ---------------------------------------------------------------------------
- * Config — same model as Notes: lists.ini next to the binary
- * (portable mode) falling back to ~/.config/lists/lists.ini when that
+ * Config — same model as Notes: tasks.ini next to the binary
+ * (portable mode) falling back to ~/.config/tasks/tasks.ini when that
  * directory is unwritable.  Loaded ONCE into memory; written through on
- * every change.  Keys used (see lists.ini.defaults):
+ * every change.  Keys used (see tasks.ini.defaults):
  *   sync       — google_sync_enabled, google_client_id,
  *                google_client_secret, gtasks_refresh_token,
  *                sync_interval_min, sync_toolbar_button
  *   Notes — notes_sync, notes_cli, notes_embed_list,
  *                notes_sync_interval_min, notes_meta_row
- *   database   — db_dir (custom directory for lists.db; absent = default
+ *   database   — db_dir (custom directory for tasks.db; absent = default
  *                location), db_integrity_check
  *   UI         — toolbar_style, bold_task_titles, native_menubar,
  *                show_completed, sidebar_visible, compact_layout,

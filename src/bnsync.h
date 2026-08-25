@@ -1,9 +1,9 @@
 /* ===========================================================================
- * bnsync.h — Notes action-item mirror for Lists
+ * bnsync.h — Notes action-item mirror for Tasks
  *
  * Sync model
  * ----------
- * Every '!' action item in Notes is mirrored as an ORDINARY Lists
+ * Every '!' action item in Notes is mirrored as an ORDINARY Tasks
  * task, so it carries notes, subtasks, attachments, a pin and a
  * priority like any other task — and, living in a real list, it syncs
  * on to Google Tasks as well.  Identity is the item's STABLE uid from
@@ -16,15 +16,15 @@
  *                                 then take Notes' title/done/due
  *   local task, item gone       → tombstone the task (Notes is
  *                                 authoritative for existence)
- *   task deleted in Lists       → uid parked in bn_deleted so the next
+ *   task deleted in Tasks       → uid parked in bn_deleted so the next
  *                                 pass does not re-create it (Notes
  *                                 has no CLI verb to delete an item)
  *
  * Field ownership.  Notes owns TITLE, DONE and DUE.  Everything else
  * — notes, subtasks, attachments, pin, priority, which list the task
- * lives in — is Lists-only and never leaves.  The title is one-way by
+ * lives in — is Tasks-only and never leaves.  The title is one-way by
  * necessity: the CLI has no verb that rewrites an item's text, so a
- * title edited in Lists is overwritten on the next pass.
+ * title edited in Tasks is overwritten on the next pass.
  *
  * Writes are CACHED, not live.  bn_done/bn_due record the state Notes
  * was last known to hold; a row where done/due differ from that

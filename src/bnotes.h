@@ -1,7 +1,7 @@
 /* ===========================================================================
- * bnotes.h — Notes CLI access for Lists
+ * bnotes.h — Notes CLI access for Tasks
  *
- * Lists MIRRORS the companion Notes app's action items ('!' lines) as
+ * Tasks MIRRORS the companion Notes app's action items ('!' lines) as
  * ordinary tasks (see bnsync.h for the sync itself); this module is the
  * thin CLI wrapper underneath it.  ALL access goes through the notes
  * CLI ("action list --uid" / "action done|undone" / "action due"), never

@@ -1,8 +1,10 @@
 /* ===========================================================================
- * db.c — SQLite storage for Lists (see db.h)
+ * db.c — SQLite storage for Tasks (see db.h)
  * =========================================================================== */
 
 #include "db.h"
+#include <glib/gstdio.h>             /* g_rename — the pre-4.0 adoption     */
+#include <errno.h>
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -209,11 +211,57 @@ bt_ptr_array_free_attachments(GPtrArray *a)
 gchar *
 bt_db_default_path(void)
 {
-    gchar *dir = g_build_filename(g_get_user_data_dir(), "lists", NULL);
+    gchar *dir = g_build_filename(g_get_user_data_dir(), BT_APP_DIR, NULL);
     g_mkdir_with_parents(dir, 0755);
     gchar *path = g_build_filename(dir, BT_DB_FILENAME, NULL);
     g_free(dir);
     return path;
+}
+
+/* ---------------------------------------------------------------------------
+ * bt_db_resolve_path() — the file to open, adopting a pre-4.0 lists.db
+ * (see db.h).
+ *
+ * The two cases differ in more than the filename: a CUSTOM db_dir holds
+ * the old and new files side by side, while the DEFAULT location moved
+ * directory as well (…/lists/lists.db → …/tasks/tasks.db), which is why
+ * the legacy path is built separately rather than by swapping a basename.
+ * ------------------------------------------------------------------------- */
+gchar *
+bt_db_resolve_path(const gchar *dir)
+{
+    gchar *want;                     /* the current-name path               */
+    gchar *legacy;                   /* what a pre-4.0 install left         */
+    if (dir != NULL && *dir != '\0') {
+        want   = g_build_filename(dir, BT_DB_FILENAME, NULL);
+        legacy = g_build_filename(dir, BT_DB_FILENAME_LEGACY, NULL);
+    } else {
+        want   = bt_db_default_path();     /* also creates the directory    */
+        legacy = g_build_filename(g_get_user_data_dir(), BT_APP_DIR_LEGACY,
+                                  BT_DB_FILENAME_LEGACY, NULL);
+    }
+
+    /* Only ever act when the new name is ABSENT: once both exist the
+     * user has a current database and the legacy file is somebody else's
+     * business — overwriting it would be the one unrecoverable move here. */
+    if (!g_file_test(want, G_FILE_TEST_EXISTS) &&
+        g_file_test(legacy, G_FILE_TEST_IS_REGULAR)) {
+        if (g_rename(legacy, want) == 0) {
+            g_message("Renamed %s to %s (the app is now called Tasks)",
+                      legacy, want);
+        } else {
+            /* Not fatal, and NOT a reason to start empty: returning
+             * `want` here would hand bt_db_open a nonexistent path, which
+             * it would helpfully create — leaving the user staring at an
+             * empty app with their real database still on disk.           */
+            g_warning("could not rename %s to %s (%s); opening the old "
+                      "file where it is", legacy, want, g_strerror(errno));
+            g_free(want);
+            return legacy;
+        }
+    }
+    g_free(legacy);
+    return want;
 }
 
 /* ---------------------------------------------------------------------------
@@ -288,7 +336,7 @@ bt_db_open(const gchar *path, GError **err)
         "  ref TEXT PRIMARY KEY)");   /* high-priority Notes items      */
     exec(db,
         "CREATE TABLE IF NOT EXISTS bn_deleted ("
-        "  uid INTEGER PRIMARY KEY)");  /* mirror tasks deleted in Lists   */
+        "  uid INTEGER PRIMARY KEY)");  /* mirror tasks deleted in Tasks   */
     exec(db,
         "CREATE TABLE IF NOT EXISTS list_groups ("
         "  id       INTEGER PRIMARY KEY,"
@@ -368,7 +416,27 @@ bt_db_open(const gchar *path, GError **err)
      * leave the database unopenable.                                       */
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_bn_uid "
              "ON tasks(bn_uid)");
+
+    /* Stamp the version, then READ IT BACK.  A PRAGMA that reports success
+     * without taking effect leaves the file claiming an older schema than
+     * it has, and every later launch re-runs migrations it does not need —
+     * silently, since re-running them is harmless.  That is exactly the
+     * "checked, all good, when nothing was checked" failure the error
+     * discipline forbids, so it gets a warning naming the file.  Seen once
+     * on a database living in an iCloud Drive folder, where two copies of
+     * the file can diverge; never reproduced locally.                      */
     exec(db, "PRAGMA user_version = 7");
+    gint uv_after = -1;              /* what the file now claims            */
+    vst = NULL;
+    if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
+        == SQLITE_OK && sqlite3_step(vst) == SQLITE_ROW)
+        uv_after = sqlite3_column_int(vst, 0);
+    sqlite3_finalize(vst);
+    if (uv_after != 7)
+        g_warning("db: %s still reports schema version %d after the "
+                  "migration to 7 — the version stamp did not stick "
+                  "(migrations will re-run harmlessly on every launch)",
+                  path, uv_after);
     return db;
 }
 
@@ -1468,7 +1536,7 @@ bt_db_task_set_bn(BtDatabase *db, gint64 id, gint64 uid, gboolean done,
 /* ---------------------------------------------------------------------------
  * bt_db_task_apply_notes() — overwrite the Notes-owned fields and
  * re-baseline in ONE statement (see db.h).  updated_at IS stamped: the
- * change came from outside Lists and has to reach Google too.  The
+ * change came from outside Tasks and has to reach Google too.  The
  * completed_at CASE repeats set_status's transition rule, which relies
  * on SET expressions reading the OLD row (gotcha 8).
  *

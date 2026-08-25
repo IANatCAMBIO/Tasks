@@ -1,5 +1,5 @@
 /* ===========================================================================
- * main.c — Lists entry point
+ * main.c — Tasks entry point
  *
  * A GTK3 + SQLite task-list application in plain C — the companion app to
  * Notes.  Boot order: config (needs argv[0] for the portable ini) →
@@ -111,7 +111,7 @@ startup_integrity_check(BtApp *app)
          * which is exactly the case this dialog exists to expose.           */
         gboolean ran = ic_fail == NULL && fk_fail == NULL;
         bt_app_notice(NULL, GTK_MESSAGE_WARNING,
-                      "Lists \xe2\x80\x94 Database Integrity Check",
+                      "Tasks \xe2\x80\x94 Database Integrity Check",
                       ran ? "The database integrity check found issues:"
                             "\n\n%s"
                           : "The database integrity check did not "
@@ -128,7 +128,7 @@ startup_integrity_check(BtApp *app)
 }
 
 /* ---------------------------------------------------------------------------
- * startup_first_run() — no lists.db found at the expected location:
+ * startup_first_run() — no tasks.db found at the expected location:
  * ask whether to open an existing file or create a new one there, instead
  * of silently creating an empty database (a user pointing at a shared
  * folder usually means to OPEN a file that is already there).
@@ -147,10 +147,10 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
             NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
             "No tasks database was found at\n%s",
             expected);
-        gtk_window_set_title(GTK_WINDOW(dlg), "Lists - Welcome");
+        gtk_window_set_title(GTK_WINDOW(dlg), "Tasks - Welcome");
         gtk_dialog_add_buttons(GTK_DIALOG(dlg),
-            "_Open a lists.db File",  1,
-            "Create a _New lists.db", 2,
+            "_Open a tasks.db File",  1,
+            "Create a _New tasks.db", 2,
             NULL);
         gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
         gtk_widget_destroy(dlg);
@@ -167,8 +167,8 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
             "_Open",   GTK_RESPONSE_ACCEPT,
             NULL);
         gtk_window_set_title(GTK_WINDOW(chooser),
-                             "Lists - Open Database");
-        /* Filter to lists.db only — the ini stores db_dir, the
+                             "Tasks - Open Database");
+        /* Filter to tasks.db only — the ini stores db_dir, the
          * filename is always the fixed constant.                           */
         GtkFileFilter *ff = gtk_file_filter_new();
         gtk_file_filter_add_pattern(ff, BT_DB_FILENAME);
@@ -271,10 +271,13 @@ main(int argc, char **argv)
      * possibly concurrently.  Initialize once before any thread exists.     */
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
+    /* bt_db_resolve_path, not a bare g_build_filename: it also adopts a
+     * pre-4.0 lists.db, which is what an install from before the Tasks
+     * rename has sitting there.  Without it the first launch after the
+     * rename would find no tasks.db, offer the first-run dialog, and
+     * create an empty database beside the user's real one.                 */
     gchar *db_dir  = bt_app_config_get("db_dir");
-    gchar *db_path = (db_dir != NULL && *db_dir != '\0')
-                     ? g_build_filename(db_dir, BT_DB_FILENAME, NULL)
-                     : bt_db_default_path();
+    gchar *db_path = bt_db_resolve_path(db_dir);
 
     /* First-run: if the database file does not yet exist, ask the user
      * whether to open an existing file or create a fresh one — silently
@@ -296,7 +299,7 @@ main(int argc, char **argv)
     GError *gerr = NULL;
     BtDatabase *db = bt_db_open(db_path, &gerr);
     if (db == NULL) {
-        g_printerr("lists: %s\n",
+        g_printerr("tasks: %s\n",
                    gerr != NULL ? gerr->message : "cannot open database");
         g_clear_error(&gerr);
         g_free(db_dir);
@@ -319,7 +322,7 @@ main(int argc, char **argv)
         bt_app_config_get_bool("db_integrity_check", TRUE);
 
     BtBoot boot = { app, db_path };
-    app->gtk_app = gtk_application_new("org.example.lists",
+    app->gtk_app = gtk_application_new("org.example.tasks",
                                        G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app->gtk_app, "activate",
                      G_CALLBACK(on_activate), &boot);

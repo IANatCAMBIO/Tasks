@@ -1,12 +1,21 @@
-# Lists — default settings, copied into the live lists.ini on
+# Tasks — default settings, copied into the live tasks.ini on
 # first launch.  The live ini is rewritten by the app and is gitignored.
 #
-# The group name below is load-bearing: an ini written before the 3.0
-# rename keeps its settings under [hacienda] instead, which this build
-# does not read.  Such a file is migrated once on launch (a copy is left
-# as lists.ini.pre-3.0.bak) — everything carries over except the Google
-# refresh token and client keys, so sync needs a single new sign-in.
-[lists]
+# The group name below is load-bearing, and the app has been renamed
+# twice: an ini written before the 4.0 rename keeps its settings under
+# [lists], and one written before 3.0 under [hacienda] — neither of which
+# this build reads.  Such a file is migrated once on launch, and the file
+# it was migrated FROM is left as a .pre-4.0.bak / .pre-3.0.bak copy.
+#
+# From [lists] everything carries over, refresh token included: same
+# build lineage, same OAuth client.  From [hacienda] the Google refresh
+# token and client keys are deliberately dropped (that token was issued
+# to a different OAuth client and Google refuses it), so a pre-3.0
+# upgrade needs one new sign-in.
+#
+# The pre-4.0 ini FILE was called lists.ini.  It is copied to tasks.ini
+# on first launch and the original is left untouched.
+[tasks]
 # Google Tasks sync — the OAuth client comes from Google's downloaded
 # client_secret.apps.googleusercontent.com.json placed next to the app
 # (gitignored — never commit it), or from a baked-in build default; the
@@ -82,7 +91,7 @@ col_completed_visible=1
 # Run PRAGMA integrity_check + foreign_key_check on the database at
 # startup (1|0, default 1); the result lands in the status bar.
 db_integrity_check=1
-# db_dir — a custom directory holding lists.db (Settings → Database);
+# db_dir — a custom directory holding tasks.db (Settings → Database);
 # absent = the default location under the user data dir.  Per-machine,
 # so it is not seeded here.
 # win_w/win_h — the library window size, written on clean close and

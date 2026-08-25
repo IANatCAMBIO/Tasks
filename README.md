@@ -1,18 +1,18 @@
-# Lists
+# Tasks
 
 Make lists of things. If your things are tasks, you can give them a due date. If the task is too big, break it down into subtasks.
 
-Lists is written in classic C with GTK3 and SQLite. It is a companion app to
+Tasks is written in classic C with GTK3 and SQLite. It is a companion app to
 [Notes](https://github.com/IANatCAMBIO/Records), built the same way and **with the help
 of Claude Code for edits, testing, and code organization**. 
 No Electron or interpreted code. 
 Low resource usage, and runs on macOS and Linux.
 
-![Lists](Screenshot.png)
+![Tasks](Screenshot.png)
 
 TLDR; Your tasks live in a single SQLite file you can take anywhere.
 You organize them in a Library window — lists in the sidebar, tasks in a listview. 
-Add subtasks and a color-coded due date to each item. Lists also syncs both ways with
+Add subtasks and a color-coded due date to each item. Tasks also syncs both ways with
 Google Tasks and Notes action items. 
 
 Want more detail?
@@ -26,12 +26,12 @@ Want more detail?
 ## Syncing with Google Tasks
 
 Open the Settings window to enable Google Tasks sync and login. Once authenticated,
-Lists will automatically sync on the interval specified in settings. 
+Tasks will automatically sync on the interval specified in settings. 
 
 ## Syncing with Notes
 
 You can also enable sync with Notes in the Settings window. Specify the path to your
-Notes binary and tell Lists which list to file the Action Items into. Each `!` action
+Notes binary and tell Tasks which list to file the Action Items into. Each `!` action
 item becomes an ordinary task — with notes, subtasks, attachments and Google Tasks sync
 like any other — while ticking it done or changing its due date is batched back to
 Notes on its own interval. The item's text belongs to the note, so edit that in
@@ -61,7 +61,7 @@ make
 make run
 ```
 
-Lists uses emoji extensively (list icons, sidebar labels, task
+Tasks uses emoji extensively (list icons, sidebar labels, task
 markers). Debian ships the Noto Color Emoji font, but for Apple-style
 emoji install the Apple Color Emoji TTF:
 
@@ -74,7 +74,7 @@ sudo dpkg -i fonts-apple-color-emoji.deb
 The Makefile auto-detects `gtk-mac-integration-gtk3`; if you install
 it later, rebuild from clean (`make clean && make`) so every file sees
 it. On macOS, `make app` wraps the binary into
-`dist/Lists.app` (it still links against the MacPorts GTK
+`dist/Tasks.app` (it still links against the MacPorts GTK
 libraries, so the bundle runs on the machine that built it).
 
 One more step if you want Google sync: set up `client_credentials.mk`

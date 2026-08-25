@@ -1,6 +1,6 @@
-# Lists — User Guide
+# Tasks — User Guide
 
-Everyday use of Lists: the library, the task editor, settings,
+Everyday use of Tasks: the library, the task editor, settings,
 storage, Google Tasks sync, and the Notes integration. For build
 instructions and OAuth client setup see the [README](README.md); for
 the database schema and the sync engine see [Internals](Internals.md).
@@ -24,7 +24,7 @@ the database schema and the sync engine see [Internals](Internals.md).
   caveat if you launch from a terminal on macOS: dragging a list may
   print a `Gdk-CRITICAL … gdk_atom_intern` line on the console. It is
   harmless noise from a bug in the Mac build of the GTK library
-  itself, not in Lists — the drag works fine. Right-click to manage
+  itself, not in Tasks — the drag works fine. Right-click to manage
   lists: the **Lists** header offers *New List* and *New Group*, and a
   list offers *Edit List* (name plus an emoji picker), *Delete List*,
   *Move to Group* and *Remove from Group*; double-clicking a list opens
@@ -43,7 +43,7 @@ the database schema and the sync engine see [Internals](Internals.md).
   their own checkboxes rendered inline. Tasks marked **High
   Priority** (a checkbox in the editor, or the right-click menu) sort
   to the top of every list they appear in and wear a 🚨 beside the
-  title. The flag is local to Lists — Google Tasks has no priority, so
+  title. The flag is local to Tasks — Google Tasks has no priority, so
   it never syncs. A task mirrored from a Notes action item wears a
   ❗ beside its title in every view, so it is always clear which tasks
   came from your notes. Columns: a done checkbox, the task, the status,
@@ -67,7 +67,7 @@ the database schema and the sync engine see [Internals](Internals.md).
   Sort*) switches the task pane to hand ordering: a ⠿ handle column
   appears and you drag rows into the order you want. The order is
   remembered per view — each list, All Tasks, Favorites, Due Today and
-  the Notes section keep their own — and is local to Lists.
+  the Notes section keep their own — and is local to Tasks.
 - **Toolbar** — the Sidebar toggle, then Sync, a visibility toggle that
   shows or hides completed tasks (it applies to every view, Notes
   items included), the Manual Sort toggle, then New Task and Delete
@@ -162,7 +162,7 @@ window per task: opening it again focuses the one you already have.
   the toolbar Sync button always works), and whether the Sync button
   appears in the toolbar at all.
 
-All changes apply live and persist (in `lists.ini` next to the
+All changes apply live and persist (in `tasks.ini` next to the
 binary). Toolbar icons are PNGs bundled in `icons/` — replaceable by
 dropping in files.
 
@@ -170,14 +170,43 @@ dropping in files.
 
 Everything lives in a single SQLite database:
 
-- `~/.local/share/lists/lists.db` (GLib's user-data directory).
+- `~/.local/share/tasks/tasks.db` (GLib's user-data directory).
   Any standard SQLite tool can read it — the schema is documented in
   [Internals](Internals.md). Back it up by copying the file while the
   app is closed.
-- Settings live in `lists.ini` next to the binary (portable mode),
-  falling back to `~/.config/lists/` when that directory is not
-  writable; it is seeded from `lists.ini.defaults` on first launch
+- Settings live in `tasks.ini` next to the binary (portable mode),
+  falling back to `~/.config/tasks/` when that directory is not
+  writable; it is seeded from `tasks.ini.defaults` on first launch
   and rewritten by the app as you change things.
+
+### Upgrading from Lists (version 3.x)
+
+The app used to be called **Lists**, and its files were named after it.
+Version 4.0 carries them over on the first launch — you should not have
+to do anything, and you stay signed in to Google:
+
+- `lists.db` is **renamed** to `tasks.db`, wherever it lives (including
+  a custom folder you chose in Settings → Database).
+- `lists.ini` is **copied** to `tasks.ini`, and the settings inside it
+  are moved from the old `[lists]` section to `[tasks]`. Your Google
+  sign-in, your database location and every preference come with it.
+  The original `lists.ini` is deliberately left where it is, untouched,
+  as a fallback; a copy of the file as it stood just before the section
+  was rewritten is saved as `tasks.ini.pre-4.0.bak`. **Both hold your
+  Google refresh token**, so treat them like passwords — don't put them
+  somewhere shared.
+- Each of these happens only when the new file is not already there, so
+  it cannot run twice or overwrite work you have done since.
+
+If the database rename fails (a permissions problem, or a sync folder
+that has the file locked), the app says so on the console and opens
+your old `lists.db` where it is rather than starting empty. Nothing is
+lost — quit, fix the cause, and relaunch.
+
+An upgrade from before 3.0, when the app was **Hacienda**, still works
+too, with one difference: it needs a fresh Google sign-in, because that
+version's saved token belonged to a different Google client and Google
+will not honor it.
 
 ## Google Tasks sync
 
@@ -219,7 +248,7 @@ How it behaves:
   delete-and-recreate when offline). Tasks cleared on Google's side
   stay cleared — they are never resurrected here.
 - Google's default tasklist cannot be deleted (their rule, enforced
-  by their API); Lists refuses up front rather than failing
+  by their API); Tasks refuses up front rather than failing
   mid-sync.
 
 Signing out drops the tokens; the grant can also be revoked at
@@ -230,7 +259,7 @@ myaccount.google.com/permissions at any time.
 If you keep meeting notes in
 [Notes](https://github.com/IANatCAMBIO/Records), its `!`
 action items can live here as **ordinary tasks**. Enable the
-integration in Settings and Lists mirrors each item into a real list —
+integration in Settings and Tasks mirrors each item into a real list —
 the managed **Action Items** list by default, or any list you pick
 under "Mirror action items into".
 
@@ -255,13 +284,13 @@ another list, and Google Tasks sync all work. Nothing is locked.
   every N minutes", 5 by default; set 0 to only sync when you press
   Sync). If Notes can't be reached, your change simply waits and goes
   out on a later pass — it is never dropped.
-- **Deleting** — an item deleted in Notes disappears from Lists on
+- **Deleting** — an item deleted in Notes disappears from Tasks on
   the next pass, along with any notes or subtasks you attached to it.
-  Deleting the task in Lists keeps it deleted: it will not come back on
+  Deleting the task in Tasks keeps it deleted: it will not come back on
   the next sync, even though the item still exists in Notes.
 - Everything goes through the `notes` command-line interface —
-  never its database file — so a running Notes GUI and Lists
+  never its database file — so a running Notes GUI and Tasks
   cooperate safely (the CLI forwards to the GUI over its socket).
-  This needs a current version of Notes; against an older one Lists
+  This needs a current version of Notes; against an older one Tasks
   says so and leaves your tasks alone rather than guessing which item
   is which.

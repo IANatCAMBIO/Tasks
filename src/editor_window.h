@@ -1,5 +1,5 @@
 /* ===========================================================================
- * editor_window.h — the per-task editor window for Lists
+ * editor_window.h — the per-task editor window for Tasks
  *
  * One window per task (double-click in the library), tracked in
  * app->editors keyed by task id.  Edits all task properties — title,

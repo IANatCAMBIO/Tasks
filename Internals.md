@@ -1,6 +1,6 @@
-# Lists — Internals
+# Tasks — Internals
 
-How Lists is put together: the source layout, the database schema,
+How Tasks is put together: the source layout, the database schema,
 and the sync engine. For everyday use see the
 [User Guide](User_Guide.md); for build instructions see the
 [README](README.md).
@@ -202,7 +202,7 @@ loopback `GSocketService` on an ephemeral port for the redirect, and
 resolve in order: a `client_secret….json` next to the binary (or in
 the user config dir) → legacy `google_client_id`/`google_client_secret`
 ini keys → a baked-in default from `client_credentials.mk`. The
-refresh token persists in `lists.ini` (`gtasks_refresh_token`);
+refresh token persists in `tasks.ini` (`gtasks_refresh_token`);
 access tokens live in memory only. The redirect listener redeems the
 authorization code exactly once — browsers sometimes replay the
 redirect GET, and a second exchange would revoke the first grant.

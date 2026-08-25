@@ -1,10 +1,87 @@
-# Lists — project guide
+# Tasks — project guide
 
 Task-list app in **plain C + GTK3 + SQLite**, the companion app to
 Notes.  Two window types: a Library (lists sidebar + tall task rows)
 and one editor window per task.  Two-way Google Tasks sync.  No GNOME
 HeaderBars anywhere — plain `GtkWindow` titlebars, formatted
-`"Lists - <thing>"`.
+`"Tasks - <thing>"`.
+
+## THIS app's renames: Hacienda → Lists → Tasks
+
+Renamed to **Tasks** at version 4.0 (2026-08-25).  Everything a user
+sees says Tasks; the binary is `tasks`, the ini `tasks.ini` under the
+group `[tasks]`, the database `tasks.db` under `<data>/tasks/`, the
+bundle `dist/Tasks.app`, the GtkApplication id `org.example.tasks`.
+
+**"Lists" is still a real word in this app** and most occurrences are
+NOT the old name — do not sweep them.  The sidebar has a collapsible
+**Lists** section holding the user's task lists; `BtList`, the `lists`
+and `list_groups` TABLES, `bt_db_lists*`, `SB_KIND_LIST`,
+`manual_order_list_<id>` and Google's own `/users/@me/lists` API paths
+all mean lists-the-data-type.  The surviving deliberate uses are the
+sidebar section label + its comments (library_window.c), the ASCII
+sidebar sketch in library_window.h, and the word as a VERB in
+settings_window.c ("Lists every mirrored action item…").
+
+**The `bt_`/`Bt` prefix stays.**  It is "Blue Tasks" — the same lineage
+as the companion app's `bn_` for Blue Notes — so the Tasks name makes
+it MORE apt, not less.  There is no `bt_` → anything rename pending.
+
+Three name-shaped things were deliberately NOT changed, and are not
+oversights: the repo DIRECTORY `~/salt_development/lists`, the git
+remote `IANatCAMBIO/Lists.git`, and the GitHub repo name.  Renaming the
+GitHub repo would leave every doc link needing a pass; GitHub redirects,
+so the links still work.  Fix the URLs only once the repo itself is
+renamed — exactly the state the companion app is in.
+
+### The upgrade path (this is the part that breaks silently)
+
+The 3.0 rename taught the lesson the hard way: the ini GROUP NAME is
+part of the file format, so a rename orphans the whole file and the user
+silently reverts to defaults — losing `gtasks_refresh_token` (signed
+out) and `db_dir` (a database outside the default location becomes
+invisible, and the first-run dialog cheerfully offers to create an empty
+one beside it).  4.0 renames the FILES too, so there are three adoptions,
+each guarded by "only when the new name is absent" so it can never run
+twice or clobber newer work:
+
+- **`lists.ini` → `tasks.ini`** — `config_adopt_legacy_file` (app.c), a
+  COPY not a rename: the original is left byte-identical, so a bad
+  outcome is recoverable.  Runs in `bt_app_config_init` BEFORE the load,
+  in whichever location applies (beside the binary, or the config-dir
+  fallback — which moved directory too, so its legacy path is built
+  from scratch rather than by swapping a basename).  Portable mode now
+  also triggers on finding only the OLD name there.
+- **`[lists]` → `[tasks]`** — `config_migrate_legacy_group`, now
+  parameterized and driven by `LEGACY_GROUPS`, NEWEST FIRST.  Order is
+  the precedence rule: each pass only fills keys `[tasks]` lacks, so
+  folding 3.x before pre-3.0 means the newer value wins.  `[lists]` is
+  folded WHOLE (`allowlist = FALSE`) — same build lineage, same baked-in
+  OAuth client, so the refresh token IS carried and the user stays
+  signed in.  `[hacienda]` keeps the allowlist and still drops the token
+  (different OAuth client; Google answers `invalid_grant`).  Backups are
+  named per version (`.pre-4.0.bak` / `.pre-3.0.bak`) so two migrations
+  on one file leave two distinguishable copies.
+- **`lists.db` → `tasks.db`** — `bt_db_resolve_path` (db.c), called from
+  main() in place of the old `g_build_filename`/`bt_db_default_path`
+  pair.  A real `g_rename`.  Custom `db_dir` = siblings; the DEFAULT
+  location changed directory as well (`<data>/lists/lists.db` →
+  `<data>/tasks/tasks.db`), which is why the legacy path is built
+  separately.  A FAILED rename returns the LEGACY path — returning the
+  new one would hand `bt_db_open` a nonexistent file, which it would
+  helpfully create, leaving the user staring at an empty app with their
+  real database still on disk.  Renaming only the `.db` is correct: this
+  build never enables WAL, so there are no `-wal`/`-shm` companions.
+
+`config_migrate_renamed_keys` (the Notes key renames) still runs LAST,
+after both group folds — they are what put an older file's
+`blue_notes_*` keys into the group it reads.
+
+Verified end-to-end against a synthetic pre-4.0 install (a `[lists]` ini
+with a token + `db_dir` + a `blue_notes_cli` key, and a v6 `lists.db` in
+that `db_dir`): all three adoptions ran, the per-key rename still fired,
+the schema migrated v6 → v7, and the original `lists.ini` came out
+byte-identical to its `.bak`.
 
 **The companion app has been renamed twice: Blue Notes → Records →
 Notes** (2026-08-11).  Neither older name was ever publicly released —
@@ -53,7 +130,7 @@ action items" rather than as an error.  There is no
 
 ```sh
 export PATH=/opt/local/bin:$PATH   # MacPorts pkg-config
-make          # builds ./lists  (-Wall -Wextra must stay clean)
+make          # builds ./tasks  (-Wall -Wextra must stay clean)
 make run
 ```
 
@@ -70,7 +147,7 @@ library twice (`ld: warning: ignoring duplicate libraries`).  That is
 why `HAVE_GTKOSX` is detected above the flag definitions; the link must
 stay warning-free so a real warning is visible.
 
-Launch for testing: `pkill -f './lists'; nohup ./lists
+Launch for testing: `pkill -f './tasks'; nohup ./tasks
 >/tmp/bt_launch.log 2>&1 &` then `screencapture -x` for screenshots.
 Do NOT drive the GUI with osascript accessibility clicks (rejected by
 the user).  A logic test harness lives in the session scratchpad
@@ -103,29 +180,28 @@ the user).  A logic test harness lives in the session scratchpad
   x.h" plus the how.  Non-obvious variables get column-aligned trailing
   comments; ~78-col lines.  UTF-8 escapes (`\xe2\x80\xa6`) for …/—/✓ in
   source strings.
-- Config: `lists.ini` NEXT TO THE BINARY (portable mode), fallback
-  `~/.config/lists/` when unwritable; seeded from
-  `lists.ini.defaults`; loaded ONCE, written through on change,
+- Config: `tasks.ini` NEXT TO THE BINARY (portable mode), fallback
+  `~/.config/tasks/` when unwritable; seeded from
+  `tasks.ini.defaults`; loaded ONCE, written through on change,
   never re-read.  Everything except the OAuth client keys and the
   window geometry is editable in File → Settings….
-  The ini GROUP NAME is `[lists]`, and it is part of the file format —
-  a pre-3.0 ini keeps everything under `[hacienda]`, which this build
-  does not read, so the rename silently reverted upgraders to defaults.
-  `config_migrate_legacy_group` (app.c, run from `bt_app_config_init`
-  before any key is read) folds that group in ONCE and removes it,
-  backing the file up to `lists.ini.pre-3.0.bak` first.  It merges PER
-  KEY with the CURRENT group winning — the user may already have been
-  running the renamed build, and their newer choices must not be
-  reverted.  It is an ALLOWLIST (`LEGACY_KEYS` + the `manual_order_`
-  prefix): dead keys like `task_columns` / `task_sort_manual` are
-  dropped, and the three sync keys `google_client_id`,
-  `google_client_secret` and **`gtasks_refresh_token`** are deliberately
-  NOT carried over — a pre-rename token was issued to that build's OAuth
-  client, Google answers the refresh with `invalid_grant` (verified), and
-  a failed refresh does NOT clear the token, so migrating it would leave
-  the app reporting "signed in" while every sync failed.  Signed-out
-  plus one sign-in click beats silent breakage.  The `.bak` holds the
-  same refresh token as the live file, so it is gitignored (`*.bak`).
+  The ini GROUP NAME is `[tasks]` and it is part of the file format, so
+  each rename orphaned the file: a 3.x ini keeps everything under
+  `[lists]` and a pre-3.0 one under `[hacienda]`, neither of which this
+  build reads, and the 3.0 rename silently reverted upgraders to
+  defaults for exactly that reason.  Both folds and the FILE-level
+  adoption are described in "THIS app's renames" at the top — the short
+  version being that `[lists]` carries EVERYTHING (token included, same
+  OAuth client) while `[hacienda]` goes through the `LEGACY_KEYS`
+  allowlist and deliberately drops `google_client_id`,
+  `google_client_secret` and **`gtasks_refresh_token`**: a pre-3.0 token
+  was issued to that build's OAuth client, Google answers the refresh
+  with `invalid_grant` (verified), and a failed refresh does NOT clear
+  the token, so migrating it would leave the app reporting "signed in"
+  while every sync failed.  Signed-out plus one sign-in click beats
+  silent breakage.  Every `.bak` holds the same refresh token as the
+  live file, so they are gitignored (`*.bak`), and so is the `lists.ini`
+  the 4.0 adoption deliberately leaves behind.
 - **Error discipline**: every prepared WRITE goes through `step_done()`
   (logs sqlite's message on prepare/step failure — silent write loss is
   the unacceptable outcome); multi-statement writes go through
@@ -239,7 +315,7 @@ already-Done task keeps its first stamp.
   except text-only, which swaps in an "About" label
   (`about_button_fit_style` on "style-changed"); it opens the
   Notes-style about dialog (`on_menu_about`: HiDPI logo, compile
-  stamp, `bt_db_totals` vitals), shared with File → About Lists.
+  stamp, `bt_db_totals` vitals), shared with File → About Tasks.
   document.png is also the .app bundle icon (Makefile `app` target).
 - View menu: Show Completed, Manual Sort, then Show Sidebar and Compact
   Layout.  Show Sidebar is the menu twin of the toolbar Sidebar button —
@@ -562,8 +638,8 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
   The old ref survives solely to drain the legacy `bn_pins`/
   `bn_priority` tables onto each task as its mirror is created.
 - Field ownership: Notes owns TITLE, DONE and DUE; a title edited in
-  Lists is overwritten next pass (the CLI has no verb to rewrite an
-  item's text).  Everything else is Lists-only and never leaves.
+  Tasks is overwritten next pass (the CLI has no verb to rewrite an
+  item's text).  Everything else is Tasks-only and never leaves.
   Notes' DONE is binary, so the mirror speaks only in the DONE-ness of
   `status` (`local_done` in `sync_item`): a New ↔ In Progress move is
   not a pending write and has nothing to push, and an item Notes
@@ -582,7 +658,7 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
   applied values.
 - Existence: Notes is authoritative, so an item that leaves it
   tombstones its task.  The reverse has no CLI verb, so deleting a
-  mirror task in Lists parks its uid in `bn_deleted` (done inside
+  mirror task in Tasks parks its uid in `bn_deleted` (done inside
   `bt_db_task_delete`'s transaction) — without that the very next pass
   would helpfully re-create what the user just deleted.  The
   suppression is dropped once the item is gone from Notes too.
@@ -636,7 +712,7 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
 10. macOS AX geometry (osascript) reports frame incl. titlebar;
     `gtk_window_get_size` is the client area (~28 pt difference).
 11. The live ini rewrites drop comments and carry per-machine values —
-    it stays gitignored; document defaults in `lists.ini.defaults`.
+    it stays gitignored; document defaults in `tasks.ini.defaults`.
 12. `Gdk-CRITICAL … gdk_atom_intern: assertion 'atom_name != NULL'` on
     the console during a sidebar list drag (or exotic clipboard
     flavors) is a GTK-quartz bug, NOT ours — do not re-investigate:

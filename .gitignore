@@ -4,26 +4,33 @@ dist/
 # The compiled binary: a build artifact, and it BAKES the Google OAuth
 # client id/secret in from client_credentials.mk — committing it
 # publishes them (GitHub push protection caught exactly that).
-lists
+tasks
 # `make app` builds into dist/ (ignored above); this only guards a stray
 # bundle left at the repo root.
-Lists.app/
+Tasks.app/
 
 # The LIVE config: per-machine values, and it holds the OAuth refresh
-# token.  Only lists.ini.defaults belongs in git (see the "Config"
+# token.  Only tasks.ini.defaults belongs in git (see the "Config"
 # convention in CLAUDE.md).  Kept as an anchored pattern so it cannot
-# match lists.ini.defaults.
-/lists.ini
+# match tasks.ini.defaults.
+/tasks.ini
 
-# The pre-3.0 config migration writes a verbatim copy of the old ini
-# before rewriting it — same secrets as the live file, refresh token and
-# all, so it must be just as uncommittable.  The bare *.bak rule is the
+# The rename migrations write a verbatim copy of the old ini before
+# rewriting it — same secrets as the live file, refresh token and all,
+# so they must be just as uncommittable.  The bare *.bak rule is the
 # backstop: no editor or script backup belongs in this repo.
-/lists.ini.pre-3.0.bak
+/tasks.ini.pre-4.0.bak
+/tasks.ini.pre-3.0.bak
 *.bak
 
-# Pre-rename names, still ignored so an old build/config left in a
-# working copy cannot be committed.
+# Pre-rename names (Hacienda → Lists → Tasks), still ignored so an old
+# build, config or database left in a working copy cannot be committed.
+# /lists.ini in particular SURVIVES the 4.0 rename: the migration copies
+# it to tasks.ini and deliberately leaves the original in place.
+lists
+Lists.app/
+/lists.ini
+/lists.ini.pre-3.0.bak
 hacienda
 hacienda.ini
 

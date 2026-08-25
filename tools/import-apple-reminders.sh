@@ -1,12 +1,12 @@
 #!/bin/sh
 # =============================================================================
-# import-apple-reminders.sh — migrate Apple Reminders into Hacienda.
+# import-apple-reminders.sh — migrate Apple Reminders into Tasks.
 #
 # Usage:
 #   tools/import-apple-reminders.sh [DB_PATH] [EXPORT_FILE]
 #
-#   DB_PATH     — the Hacienda database (default:
-#                 ~/.local/share/hacienda/hacienda.db).
+#   DB_PATH     — the Tasks database (default:
+#                 ~/.local/share/tasks/tasks.db).
 #   EXPORT_FILE — a previously produced export to (re)import, skipping
 #                 the AppleScript step (mainly for testing/reruns).
 #
@@ -16,18 +16,18 @@
 #      are BATCHED per list — one Apple Event per property, not one per
 #      reminder — so large databases export in seconds.  The first run
 #      pops macOS's automation-permission prompt for Reminders.
-#   2. Imports into the Hacienda database with python3 (stdlib
+#   2. Imports into the Tasks database with python3 (stdlib
 #      sqlite3): lists are matched by name (existing lists are reused),
 #      tasks are appended after existing ones, and a task whose exact
 #      title already exists in the target list is skipped — so the
 #      script is safe to re-run.
 #
 # Notes / limitations:
-#   - Hacienda must NOT be running (no CLI/socket like Blue Notes; the
+#   - Tasks must NOT be running (no CLI/socket like Blue Notes; the
 #     script writes the database directly).
 #   - Apple exposes NO API for Reminders subtasks — they import as
 #     top-level tasks of their list.
-#   - Reminder due TIMES are dropped (Hacienda due dates are date-only,
+#   - Reminder due TIMES are dropped (Tasks due dates are date-only,
 #     matching what Google Tasks can sync); priorities and flags are not
 #     carried over.
 #   - Imported rows are stamped dirty: the NEXT SYNC PUSHES THEM ALL to
@@ -36,18 +36,18 @@
 
 set -e
 
-DB="${1:-$HOME/.local/share/hacienda/hacienda.db}"
+DB="${1:-$HOME/.local/share/tasks/tasks.db}"
 EXPORT="${2:-}"
 
 if [ ! -f "$DB" ]; then
-    echo "error: no Hacienda database at $DB" >&2
-    echo "       (launch Hacienda once to create it, then retry)" >&2
+    echo "error: no Tasks database at $DB" >&2
+    echo "       (launch Tasks once to create it, then retry)" >&2
     exit 1
 fi
 
-if pgrep -f '\./hacienda' >/dev/null 2>&1 || \
-   pgrep -x hacienda >/dev/null 2>&1; then
-    echo "error: Hacienda is running — quit it first (the importer" >&2
+if pgrep -f '\./tasks' >/dev/null 2>&1 || \
+   pgrep -x tasks >/dev/null 2>&1; then
+    echo "error: Tasks is running — quit it first (the importer" >&2
     echo "       writes the database directly)" >&2
     exit 1
 fi
@@ -111,7 +111,7 @@ EOS
     echo "Exported $(wc -c < "$EXPORT" | tr -d ' ') bytes."
 fi
 
-# --- 2. Import into the Hacienda database ----------------------------------
+# --- 2. Import into the Tasks database ----------------------------------
 python3 - "$DB" "$EXPORT" <<'EOF'
 import sqlite3, sys, time
 from datetime import datetime
@@ -126,9 +126,12 @@ con = sqlite3.connect(db_path)
 cur = con.cursor()
 try:
     cur.execute("SELECT COUNT(*) FROM lists")
-    cur.execute("SELECT completed_at FROM tasks LIMIT 0")
+    # `status` (schema v7) replaced the old boolean `done` column, so
+    # probing for it also rejects a database the app has not opened since
+    # the upgrade — which is exactly when the INSERT below would fail.
+    cur.execute("SELECT completed_at, status FROM tasks LIMIT 0")
 except sqlite3.Error:
-    sys.exit("error: %s is not a current Hacienda database "
+    sys.exit("error: %s is not a current Tasks database "
              "(launch the app once to create/migrate it)" % db_path)
 
 
@@ -206,11 +209,15 @@ for rec in data.split(RS):
         completed_at = local_datetime(completed) if is_done else 0
         if is_done and completed_at == 0:
             completed_at = now
+        # Reminders is binary, so an incomplete reminder imports as New
+        # (0), not In Progress: nothing in the export says work has
+        # started, and guessing would be inventing state.
+        status = 2 if is_done else 0
         cur.execute(
-            "INSERT INTO tasks(list_id, title, notes, due, done, "
+            "INSERT INTO tasks(list_id, title, notes, due, status, "
             "completed_at, position, updated_at) "
             "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-            (lid, title, notes, local_midnight(due), is_done,
+            (lid, title, notes, local_midnight(due), status,
              completed_at, next_pos[lid], now))
         next_pos[lid] += 1
         stats["tasks"] += 1
@@ -221,6 +228,6 @@ print("Imported %d task(s) into %d list(s) (%d new, %d reused); "
       "%d duplicate(s) skipped." % (
           stats["tasks"], stats["lists_new"] + stats["lists_reused"],
           stats["lists_new"], stats["lists_reused"], stats["skipped"]))
-print("Launch Hacienda — the next sync will push the imported tasks "
+print("Launch Tasks — the next sync will push the imported tasks "
       "to Google Tasks.")
 EOF

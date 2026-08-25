@@ -1,7 +1,7 @@
 # =============================================================================
-# Lists — Makefile
+# Tasks — Makefile
 #
-# Builds the Lists application (a GTK3 + SQLite task-list app written
+# Builds the Tasks application (a GTK3 + SQLite task-list app written
 # in plain C — the companion app to Blue Notes).  Requires GTK3, SQLite3
 # and libcurl, discovered via pkg-config.
 #
@@ -9,10 +9,10 @@
 #     sudo port install pkgconf gtk3 +quartz curl
 #
 # Targets:
-#     make          — build the `lists` binary
+#     make          — build the `tasks` binary
 #     make clean    — remove build artifacts (including dist/)
 #     make run      — build and launch the app
-#     make app      — macOS .app bundle → dist/Lists.app
+#     make app      — macOS .app bundle → dist/Tasks.app
 #                     (needs the macOS sips/iconutil tools; the bundle
 #                     still depends on the MacPorts GTK libraries)
 # =============================================================================
@@ -95,7 +95,7 @@ SRCS     := src/main.c \
 OBJS     := $(SRCS:src/%.c=build/%.o)
 
 # The final executable name.
-BIN      := lists
+BIN      := tasks
 
 # Default target: build the application binary (and keep the clangd
 # compilation database fresh — it only regenerates on Makefile changes).
@@ -153,7 +153,7 @@ DIST     := dist
 # to argv[0]).  document.png becomes the bundle icon via sips + iconutil.
 # The binary still links against the MacPorts GTK dylibs (absolute install
 # names), so the bundle runs on this machine but is NOT self-contained.
-# The live lists.ini is NEVER copied (it holds the refresh token);
+# The live tasks.ini is NEVER copied (it holds the refresh token);
 # the OAuth client json IS copied when present so Sync sign-in works from
 # the bundle (installed-app client secrets are not confidential — the
 # same rationale as the baked client_credentials.mk defaults).
@@ -163,7 +163,7 @@ DIST     := dist
 # working after a VERSION bump.  The version still ships INSIDE, in
 # CFBundleShortVersionString/CFBundleVersion below and in the binary's
 # baked-in BT_VERSION (the About dialog).
-APP_DIR  := $(DIST)/Lists.app
+APP_DIR  := $(DIST)/Tasks.app
 ICONSET  := $(DIST)/document.iconset
 
 app: $(BIN)
@@ -173,14 +173,14 @@ app: $(BIN)
 	rm -rf "$(APP_DIR)" "$(ICONSET)"
 	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" \
 	         "$(ICONSET)"
-	# The executable is named "Lists": for NIB-less apps (the
+	# The executable is named "Tasks": for NIB-less apps (the
 	# gtkosx menubar is built programmatically) macOS titles the app
 	# menu with the PROCESS name, not CFBundleName — the binary's
 	# filename is the only lever.  argv[0]-relative lookups (icons,
 	# ini, client json) resolve by directory, so the rename is harmless.
-	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Lists"
+	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Tasks"
 	cp -R icons "$(APP_DIR)/Contents/MacOS/icons"
-	cp lists.ini.defaults "$(APP_DIR)/Contents/MacOS/"
+	cp tasks.ini.defaults "$(APP_DIR)/Contents/MacOS/"
 	@if [ -f client_secret.apps.googleusercontent.com.json ]; then \
 	  cp client_secret.apps.googleusercontent.com.json \
 	     "$(APP_DIR)/Contents/MacOS/"; \
@@ -201,10 +201,10 @@ app: $(BIN)
 	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
 	  '<plist version="1.0">' \
 	  '<dict>' \
-	  '  <key>CFBundleName</key><string>Lists</string>' \
-	  '  <key>CFBundleDisplayName</key><string>Lists</string>' \
-	  '  <key>CFBundleIdentifier</key><string>org.example.lists</string>' \
-	  '  <key>CFBundleExecutable</key><string>Lists</string>' \
+	  '  <key>CFBundleName</key><string>Tasks</string>' \
+	  '  <key>CFBundleDisplayName</key><string>Tasks</string>' \
+	  '  <key>CFBundleIdentifier</key><string>org.example.tasks</string>' \
+	  '  <key>CFBundleExecutable</key><string>Tasks</string>' \
 	  '  <key>CFBundleIconFile</key><string>document</string>' \
 	  '  <key>CFBundlePackageType</key><string>APPL</string>' \
 	  '  <key>CFBundleShortVersionString</key><string>$(VERSION)</string>' \

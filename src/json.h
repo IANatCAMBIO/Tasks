@@ -1,5 +1,5 @@
 /* ===========================================================================
- * json.h — minimal JSON parser + string escaping for Lists
+ * json.h — minimal JSON parser + string escaping for Tasks
  *
  * Neither json-glib nor json-c is a Notes-family dependency, and the
  * Google Tasks API only needs a small subset of JSON: parse a response

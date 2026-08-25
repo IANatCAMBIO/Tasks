@@ -1,5 +1,5 @@
 /* ===========================================================================
- * app.c — shared application context for Lists (see app.h)
+ * app.c — shared application context for Tasks (see app.h)
  * =========================================================================== */
 
 #include "app.h"
@@ -115,7 +115,7 @@ copy_file(const gchar *src, const gchar *dest)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_switch_database() — move lists.db to a new directory (see app.h).
+ * bt_app_switch_database() — move tasks.db to a new directory (see app.h).
  * ------------------------------------------------------------------------- */
 gboolean
 bt_app_switch_database(BtApp *app, const gchar *new_dir)
@@ -146,7 +146,7 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
             "of your current database?\n"
             "(Overwriting permanently replaces the file at %s.)", target);
         gtk_window_set_title(GTK_WINDOW(dialog),
-                             "Lists - Existing Database");
+                             "Tasks - Existing Database");
         gtk_dialog_add_buttons(GTK_DIALOG(dialog),
             "_Cancel",                GTK_RESPONSE_CANCEL,
             "_Use Existing Database", 1,
@@ -419,15 +419,22 @@ bt_app_register_toolbar(BtApp *app, GtkWidget *toolbar)
  * Config — ini next to the binary, ~/.config fallback (see app.h).
  * =========================================================================== */
 
-#define BT_INI_GROUP "lists"
+#define BT_INI_GROUP "tasks"
 
-/* The pre-3.0 ini group.  The app was called Hacienda before the rename,
- * and the GROUP NAME is part of the file format — so an ini written by a
- * pre-rename build carries every setting under a name this build does not
- * read.  Without the migration below, upgrading silently reverted the user
- * to defaults and, because gtasks_refresh_token was among the abandoned
- * keys, made them re-authorize Google.                                     */
-#define BT_INI_GROUP_LEGACY "hacienda"
+/* The two older ini groups.  The GROUP NAME is part of the file format, so
+ * every rename of the app orphaned the whole file: an ini written by an
+ * earlier build carries every setting under a name this build does not
+ * read.  Left unmigrated, upgrading silently reverts the user to defaults
+ * — and with gtasks_refresh_token and db_dir among the abandoned keys,
+ * that means re-authorizing Google AND losing the pointer to a database
+ * kept outside the default location.
+ *
+ * "hacienda" is pre-3.0; "lists" is 3.x, the name this app carried until
+ * the 4.0 rename to Tasks.  They are folded in NEWEST FIRST (see
+ * LEGACY_GROUPS) so that when a file somehow holds both, the newer value
+ * is the one that survives.                                                */
+#define BT_INI_GROUP_V3       "lists"
+#define BT_INI_GROUP_HACIENDA "hacienda"
 
 static GKeyFile *config_kf   = NULL; /* the in-memory config                */
 static gchar    *config_path = NULL; /* written through on every change     */
@@ -454,14 +461,28 @@ bt_app_exe_dir(void)
 }
 
 /* ---------------------------------------------------------------------------
- * Legacy-group migration (pre-3.0 "hacienda" ini → "lists").
+ * Legacy-group migration — an older group folded into "tasks".
  *
- * An ALLOWLIST, deliberately, not a blind group copy: the old group also
- * holds keys this build no longer has (`task_columns`, `task_sort_manual`)
- * which would just be dead weight in the new group.  Add a key here when a
- * pre-3.0 build could have written it AND the current build still reads it.
+ * The two legacy groups need DIFFERENT rules, which is what `allowlist`
+ * below selects between:
  *
- * Three sync keys are knowingly LEFT BEHIND:
+ *   "lists" (3.x) is the SAME build lineage under a different name: same
+ *     key spellings, same baked-in OAuth client.  It is folded WHOLE, the
+ *     refresh token included — a 3.x token is still valid against the
+ *     client this build carries, so making the user sign in again would
+ *     be gratuitous.
+ *
+ *   "hacienda" (pre-3.0) predates several key renames and one OAuth
+ *     client, so it goes through the allowlist below and leaves three
+ *     keys behind (see the note).
+ *
+ * The allowlist is deliberately not a blind group copy: the pre-3.0 group
+ * also holds keys this build no longer has (`task_columns`,
+ * `task_sort_manual`) which would just be dead weight.  Add a key here
+ * when a pre-3.0 build could have written it AND the current build still
+ * reads it.
+ *
+ * Three sync keys are knowingly LEFT BEHIND (pre-3.0 only):
  *
  *   google_client_id / google_client_secret — the current build still
  *     honors them, but no UI writes them, so one that exists is a
@@ -508,16 +529,29 @@ legacy_key_wanted(const gchar *key)
     return FALSE;
 }
 
+/* The legacy groups, NEWEST FIRST.  Order is the precedence rule: each
+ * pass only fills keys the "tasks" group does not already have, so
+ * folding 3.x before pre-3.0 means a 3.x value wins over an older one
+ * for the same key.  `allowlist` selects the two rule sets described in
+ * the banner above.                                                        */
+static const struct {
+    const gchar *group;
+    const gchar *label;              /* what to call it on the console      */
+    gboolean     allowlist;          /* FALSE = fold the group whole        */
+} LEGACY_GROUPS[] = {
+    { BT_INI_GROUP_V3,       "pre-4.0", FALSE },
+    { BT_INI_GROUP_HACIENDA, "pre-3.0", TRUE  },
+};
+
 /* ---------------------------------------------------------------------------
- * config_migrate_legacy_group() — fold a pre-3.0 "hacienda" group into
- * "lists", then drop it.  No-op when there is no legacy group, which is
- * every launch after the first and every fresh install.
+ * config_migrate_legacy_group() — fold one older group into "tasks", then
+ * drop it.  No-op when the group is absent, which is every launch after
+ * the first and every fresh install.
  *
  * Merged PER KEY, and the CURRENT group always wins: this runs against
  * files where the user has already been using the renamed build, so their
  * post-rename choices must not be reverted by an older value.  The legacy
- * group only fills gaps — e.g. db_dir stays whatever "lists" says, while
- * gtasks_refresh_token arrives because "lists" has none.
+ * group only fills gaps.
  *
  * The file is BACKED UP before the first rewrite (it holds an OAuth refresh
  * token, and this is the one operation that removes lines from it), and the
@@ -525,21 +559,24 @@ legacy_key_wanted(const gchar *key)
  * would otherwise resurrect keys the user has since deliberately cleared.
  * ------------------------------------------------------------------------- */
 static void
-config_migrate_legacy_group(void)
+config_migrate_legacy_group(const gchar *group, const gchar *label,
+                            gboolean allowlist)
 {
     if (config_kf == NULL || config_path == NULL ||
-        !g_key_file_has_group(config_kf, BT_INI_GROUP_LEGACY))
+        !g_key_file_has_group(config_kf, group))
         return;
 
     gsize   nkeys = 0;
-    gchar **keys  = g_key_file_get_keys(config_kf, BT_INI_GROUP_LEGACY,
-                                        &nkeys, NULL);
+    gchar **keys  = g_key_file_get_keys(config_kf, group, &nkeys, NULL);
     if (keys == NULL)
         return;
 
     /* Backup first — best effort: a failure here must not block the
-     * migration, but the user gets told where the copy went (or didn't).    */
-    gchar *backup = g_strconcat(config_path, ".pre-3.0.bak", NULL);
+     * migration, but the user gets told where the copy went (or didn't).
+     * Named for the version being left behind, so two migrations on one
+     * file leave two distinguishable copies rather than one overwriting
+     * the other.                                                            */
+    gchar *backup = g_strdup_printf("%s.%s.bak", config_path, label);
     if (!g_file_test(backup, G_FILE_TEST_EXISTS)) {
         gchar *raw = NULL;
         gsize  len = 0;
@@ -551,7 +588,7 @@ config_migrate_legacy_group(void)
     guint moved = 0, kept = 0, dropped = 0;
     for (gsize i = 0; i < nkeys; i++) {
         const gchar *key = keys[i];
-        if (!legacy_key_wanted(key)) {
+        if (allowlist && !legacy_key_wanted(key)) {
             dropped++;               /* no longer part of the config        */
             continue;
         }
@@ -559,8 +596,7 @@ config_migrate_legacy_group(void)
             kept++;                  /* the newer value stands              */
             continue;
         }
-        gchar *v = g_key_file_get_string(config_kf, BT_INI_GROUP_LEGACY,
-                                         key, NULL);
+        gchar *v = g_key_file_get_string(config_kf, group, key, NULL);
         if (v != NULL && *v != '\0') {
             g_key_file_set_string(config_kf, BT_INI_GROUP, key, v);
             moved++;
@@ -569,16 +605,26 @@ config_migrate_legacy_group(void)
     }
     g_strfreev(keys);
 
-    g_key_file_remove_group(config_kf, BT_INI_GROUP_LEGACY, NULL);
+    g_key_file_remove_group(config_kf, group, NULL);
     g_key_file_save_to_file(config_kf, config_path, NULL);
 
     /* Worth a line on the console: it happens once, silently changes the
      * running configuration, and names the backup if anything looks wrong.  */
-    g_message("Migrated %u setting%s from the pre-3.0 [%s] config group "
+    g_message("Migrated %u setting%s from the %s [%s] config group "
               "(%u already set here, %u no longer used); backup: %s",
-              moved, moved == 1 ? "" : "s", BT_INI_GROUP_LEGACY,
+              moved, moved == 1 ? "" : "s", label, group,
               kept, dropped, backup);
     g_free(backup);
+}
+
+/* config_migrate_legacy_groups() — run every fold in LEGACY_GROUPS order. */
+static void
+config_migrate_legacy_groups(void)
+{
+    for (gsize i = 0; i < G_N_ELEMENTS(LEGACY_GROUPS); i++)
+        config_migrate_legacy_group(LEGACY_GROUPS[i].group,
+                                    LEGACY_GROUPS[i].label,
+                                    LEGACY_GROUPS[i].allowlist);
 }
 
 /* ---------------------------------------------------------------------------
@@ -642,11 +688,53 @@ config_migrate_renamed_keys(void)
               moved, moved == 1 ? "" : "s", seen - moved);
 }
 
+/* The ini's names, current and pre-4.0 (when the app was called Lists).   */
+#define BT_INI_FILE          "tasks.ini"
+#define BT_INI_FILE_LEGACY   "lists.ini"
+#define BT_INI_DEFAULTS      "tasks.ini.defaults"
+
+/* ---------------------------------------------------------------------------
+ * config_adopt_legacy_file() — carry a pre-4.0 lists.ini onto tasks.ini.
+ *
+ * A COPY, not a rename: the original is left byte-identical and untouched,
+ * so a rename that turns out badly is recoverable and the user keeps a
+ * verbatim record of what the old build had.  (It holds an OAuth refresh
+ * token, which is why .gitignore covers both names.)  Only ever runs when
+ * the new file is ABSENT — once tasks.ini exists it is the truth, and
+ * re-copying would silently revert every setting changed since.
+ *
+ * Nothing here understands the ini's contents; the [lists] → [tasks] group
+ * fold happens afterwards, on the copy.
+ * ------------------------------------------------------------------------- */
+static void
+config_adopt_legacy_file(const gchar *want, const gchar *legacy)
+{
+    if (g_file_test(want, G_FILE_TEST_EXISTS) ||
+        !g_file_test(legacy, G_FILE_TEST_IS_REGULAR))
+        return;
+    gchar *raw = NULL;
+    gsize  len = 0;
+    if (!g_file_get_contents(legacy, &raw, &len, NULL))
+        return;
+    if (g_file_set_contents(want, raw, (gssize)len, NULL))
+        g_message("Adopted the pre-4.0 config %s as %s (the original is "
+                  "left in place)", legacy, want);
+    else
+        g_warning("could not write %s from %s — settings will fall back "
+                  "to defaults", want, legacy);
+    g_free(raw);
+}
+
 /* ---------------------------------------------------------------------------
  * bt_app_config_init() — resolve + load the config file once.  Portable
- * mode: lists.ini next to the binary; when none exists there AND the
- * directory is unwritable, ~/.config/lists/lists.ini.  On first
- * run it is seeded from lists.ini.defaults next to the binary.
+ * mode: tasks.ini next to the binary; when none exists there AND the
+ * directory is unwritable, ~/.config/tasks/tasks.ini.  On first
+ * run it is seeded from tasks.ini.defaults next to the binary.
+ *
+ * Before any of that, a pre-4.0 lists.ini in the SAME location is copied
+ * onto the new name — that file holds the OAuth refresh token and db_dir,
+ * so leaving it behind is what would turn this rename into a silent
+ * "signed out, and where did my database go?" on first launch.
  * ------------------------------------------------------------------------- */
 void
 bt_app_config_init(const gchar *argv0)
@@ -656,34 +744,47 @@ bt_app_config_init(const gchar *argv0)
 
     gchar *exe_dir = exe_dir_from_argv0(argv0);
     exe_dir_cached = g_strdup(exe_dir);
-    gchar *local = g_build_filename(exe_dir, "lists.ini", NULL);
+    gchar *local        = g_build_filename(exe_dir, BT_INI_FILE, NULL);
+    gchar *local_legacy = g_build_filename(exe_dir, BT_INI_FILE_LEGACY,
+                                           NULL);
+    /* Portable mode also when only the OLD name is there: that install
+     * was portable, and its ini is about to become ours.                   */
     if (g_file_test(local, G_FILE_TEST_EXISTS) ||
+        g_file_test(local_legacy, G_FILE_TEST_EXISTS) ||
         g_access(exe_dir, W_OK) == 0) {
         config_path = local;         /* portable mode                       */
+        config_adopt_legacy_file(config_path, local_legacy);
     } else {
         g_free(local);
         gchar *dir = g_build_filename(g_get_user_config_dir(),
-                                      "lists", NULL);
+                                      BT_APP_DIR, NULL);
         g_mkdir_with_parents(dir, 0700);
-        config_path = g_build_filename(dir, "lists.ini", NULL);
+        config_path = g_build_filename(dir, BT_INI_FILE, NULL);
         g_free(dir);
+        /* The fallback location moved directory too, so the legacy path is
+         * built from scratch rather than by swapping a basename.           */
+        gchar *old = g_build_filename(g_get_user_config_dir(),
+                                      BT_APP_DIR_LEGACY,
+                                      BT_INI_FILE_LEGACY, NULL);
+        config_adopt_legacy_file(config_path, old);
+        g_free(old);
     }
+    g_free(local_legacy);
 
     config_kf = g_key_file_new();
     if (!g_key_file_load_from_file(config_kf, config_path,
                                    G_KEY_FILE_NONE, NULL)) {
         /* First launch: seed from the committed defaults, if present.       */
-        gchar *defaults = g_build_filename(exe_dir,
-                                           "lists.ini.defaults", NULL);
+        gchar *defaults = g_build_filename(exe_dir, BT_INI_DEFAULTS, NULL);
         g_key_file_load_from_file(config_kf, defaults,
                                   G_KEY_FILE_NONE, NULL);
         g_free(defaults);
     }
     /* Before any caller reads a key: an ini from a pre-rename build keeps
      * everything in a group this build ignores (see the banner above).      */
-    config_migrate_legacy_group();
-    /* Then the per-key renames — it must run AFTER the group fold, which
-     * is what puts a pre-3.0 file's blue_notes_* keys in this group.       */
+    config_migrate_legacy_groups();
+    /* Then the per-key renames — it must run AFTER the group folds, which
+     * are what put an older file's blue_notes_* keys in this group.        */
     config_migrate_renamed_keys();
     g_free(exe_dir);
 }

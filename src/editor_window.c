@@ -92,13 +92,13 @@ editor_due_entry_parse(BtEditor *ed, gint64 current)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_title_refresh() — window title "Lists - <task title>".
+ * editor_title_refresh() — window title "Tasks - <task title>".
  * ------------------------------------------------------------------------- */
 static void
 editor_title_refresh(BtEditor *ed)
 {
     const gchar *t = gtk_entry_get_text(GTK_ENTRY(ed->title_entry));
-    gchar *title = g_strdup_printf("Lists - %s",
+    gchar *title = g_strdup_printf("Tasks - %s",
                                    *t != '\0' ? t : "Untitled Task");
     gtk_window_set_title(GTK_WINDOW(ed->window), title);
     g_free(title);

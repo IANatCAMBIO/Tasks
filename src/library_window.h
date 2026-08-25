@@ -1,5 +1,5 @@
 /* ===========================================================================
- * library_window.h — the main Lists window
+ * library_window.h — the main Tasks window
  *
  * Layout (Notes design language: plain GtkWindow, one unified
  * toolbar, sidebar | content pane, bottom status bar):
