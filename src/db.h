@@ -1,16 +1,19 @@
 /* ===========================================================================
  * db.h — SQLite storage for Lists
  *
- * Schema (PRAGMA user_version = 6; v2 added lists.emoji, v3 the five
+ * Schema (PRAGMA user_version = 7; v2 added lists.emoji, v3 the five
  * Google-mirror task columns, v4 tasks.priority, v5 list_groups +
- * lists.group_id, v6 the three Notes-mirror task columns):
+ * lists.group_id, v6 the three Notes-mirror task columns, v7 replaced
+ * tasks.done with the tri-state tasks.status):
  *
  *   list_groups  id, name, position              (local-only; never synced)
  *   lists        id, name, emoji, position, gtasks_id, updated_at, deleted,
  *                group_id (FK → list_groups.id; NULL = ungrouped)
  *   tasks        id, list_id, parent_id (NULL = top-level; ONE level of
  *                nesting only — a subtask can never be a parent),
- *                title, notes, due (unix local midnight; 0 = none), done,
+ *                title, notes, due (unix local midnight; 0 = none),
+ *                status (BtTaskStatus — the SUCCESSOR of the old boolean
+ *                `done` column, which v7 drops),
  *                pinned, priority (local-only; sorts first in every
  *                view), position, gtasks_id, updated_at, deleted,
  *                completed_at, etag, web_link, glinks, assigned,
@@ -53,6 +56,47 @@ typedef struct {
     gchar   *path;                   /* absolute file path (owned)          */
 } BtDatabase;
 
+/* ---------------------------------------------------------------------------
+ * BtTaskStatus — a task's progress, and the ONLY completion state stored.
+ * The values are the on-disk encoding of tasks.status, so they must not
+ * be renumbered; New is 0 so a freshly INSERTed row needs no explicit
+ * value.
+ *
+ * DONE is exactly the old boolean `done`: it strikes the title through,
+ * hides the row under the completed-visibility toggle, stamps
+ * completed_at, and pushes "completed" to Google Tasks / Notes.  NEW and
+ * IN_PROGRESS are both "not done" and are indistinguishable to everything
+ * outside Lists — neither Google Tasks nor Notes has a third state.
+ * ------------------------------------------------------------------------- */
+typedef enum {
+    BT_STATUS_NEW         = 0,
+    BT_STATUS_IN_PROGRESS = 1,
+    BT_STATUS_DONE        = 2
+} BtTaskStatus;
+
+/* Number of values, for the editor's dropdown and bounds checks.           */
+#define BT_STATUS_N_VALUES 3
+
+/* bt_status_label() — the user-facing name ("New" / "In Progress" /
+ * "Done").  Returns a static string; an out-of-range value reads "New"
+ * so a hand-edited database can never blank a cell.                        */
+const gchar *bt_status_label(BtTaskStatus status);
+
+/* ---------------------------------------------------------------------------
+ * bt_status_apply_done() — the SINGLE rule mapping a binary done flag
+ * onto the tri-state status, shared by every source that only knows
+ * "done or not": the task list's checkbox column, the context menu, the
+ * Google Tasks sync and the Notes mirror.
+ *
+ *   done = TRUE   → BT_STATUS_DONE.
+ *   done = FALSE  → BT_STATUS_IN_PROGRESS when `cur` was DONE (unticking
+ *                   an item means work resumed on it, not that it was
+ *                   never started), otherwise `cur` UNCHANGED — so a New
+ *                   task stays New, and a round trip through a
+ *                   done-only system cannot silently promote it.
+ * ------------------------------------------------------------------------- */
+BtTaskStatus bt_status_apply_done(BtTaskStatus cur, gboolean done);
+
 /* One task list.  Strings are owned by the struct.                          */
 typedef struct {
     gint64    id;
@@ -84,7 +128,9 @@ typedef struct {
     gchar    *title;
     gchar    *notes;
     gint64    due;                   /* unix local midnight; 0 = no date    */
-    gboolean  done;
+    BtTaskStatus status;             /* New / In Progress / Done — DONE is
+                                      * what every "is it complete?" test
+                                      * asks for                            */
     gboolean  pinned;
     gboolean  priority;              /* high priority — local-only, like
                                       * pinned (Google has no priority);
@@ -214,15 +260,16 @@ GPtrArray *bt_db_tasks_in_list_all(BtDatabase *db, gint64 list_id);
 gint64 bt_db_task_create(BtDatabase *db, gint64 list_id, gint64 parent_id,
                          const gchar *title);
 
-/* Write the editable fields (title/notes/due/done/pinned/priority) from
+/* Write the editable fields (title/notes/due/status/pinned/priority) from
  * `t` back to its row and stamp updated_at.                                 */
 void bt_db_task_update(BtDatabase *db, const BtTask *t);
 
-/* Field setters used by the list-view toggles.  `done` is a SYNCED field
- * and stamps updated_at; `pinned` and `priority` are LOCAL-ONLY and
- * deliberately do NOT — stamping them would mark the row sync-dirty and
- * cost a no-op PATCH per toggle (see the .c banners).                       */
-void bt_db_task_set_done(BtDatabase *db, gint64 id, gboolean done);
+/* Field setters used by the list-view toggles.  `status` is the
+ * successor of a SYNCED field, so EVERY change to it stamps updated_at
+ * and dirties the row — including New ↔ In Progress, which neither
+ * Google nor Notes can represent.  `pinned` and `priority` are
+ * LOCAL-ONLY and never stamp (see the .c banners).                         */
+void bt_db_task_set_status(BtDatabase *db, gint64 id, BtTaskStatus status);
 void bt_db_task_set_pinned(BtDatabase *db, gint64 id, gboolean pinned);
 void bt_db_task_set_priority(BtDatabase *db, gint64 id, gboolean priority);
 
@@ -288,10 +335,14 @@ void bt_db_task_set_bn(BtDatabase *db, gint64 id, gint64 uid,
 
 /* Overwrite the Notes-owned fields (title/done/due) from a listing and
  * re-baseline in one statement.  DOES stamp updated_at — the change
- * originated outside Lists and must propagate to Google.  bn_done/bn_due
- * are passed separately from done/due because a FAILED push keeps the
- * user's local value on the task while leaving the baseline at what
- * Notes still holds, so the delta is retried next pass.               */
+ * originated outside Lists and must propagate to Google.  `done` is
+ * Notes' binary flag and reaches tasks.status through
+ * bt_status_apply_done's rule, expressed as a CASE over the OLD row, so
+ * a still-unfinished item keeps whichever of New/In Progress it had.
+ * bn_done/bn_due are passed separately from done/due because a FAILED
+ * push keeps the user's local value on the task while leaving the
+ * baseline at what Notes still holds, so the delta is retried next
+ * pass.                                                                */
 void bt_db_task_apply_notes(BtDatabase *db, gint64 id, const gchar *title,
                               gboolean done, gint64 due, gboolean bn_done,
                               gint64 bn_due);

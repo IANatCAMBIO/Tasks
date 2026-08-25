@@ -56,13 +56,17 @@ enum {
 enum {
     TL_ID = 0,                       /* gint64: task id (0 only for the
                                       * forecast's placeholder rows)        */
-    TL_DONE,                         /* gboolean                            */
+    TL_DONE,                         /* gboolean: status == BT_STATUS_DONE,
+                                      * the checkbox column's view of the
+                                      * status — never stored separately   */
     TL_DESC,                         /* gchar*: the tall markup cell        */
     TL_DUE,                          /* gchar*: formatted due date ("")     */
     TL_DUE_RAW,                      /* gint64: due timestamp (sort/tint)   */
     TL_TITLE,                        /* gchar*: raw task title (sort key)   */
     TL_COMPLETED,                    /* gchar*: formatted completion date   */
     TL_COMPLETED_RAW,                /* gint64: completed_at (sort key)     */
+    TL_STATUS,                       /* gint: BtTaskStatus (sort key)       */
+    TL_STATUS_TEXT,                  /* gchar*: its label ("In Progress")   */
     TL_N_COLS
 };
 
@@ -366,7 +370,7 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
         *t->title != '\0' ? t->title : "Untitled Task");
     const gchar *open  = bold ? "<b>" : "";
     const gchar *close = bold ? "</b>" : "";
-    gchar *line = t->done
+    gchar *line = t->status == BT_STATUS_DONE
         ? g_strdup_printf("%s<s>%s</s>%s", open, title, close)
         : g_strdup_printf("%s%s%s", open, title, close);
     if (t->bn_uid != 0) {            /* mirrored Notes action item        */
@@ -481,7 +485,7 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
         BtTask *sub = g_ptr_array_index(subs, i);
         gchar *esc = markup_escape_db(
             *sub->title != '\0' ? sub->title : "Untitled");
-        gchar *l = sub->done
+        gchar *l = sub->status == BT_STATUS_DONE
             ? g_strdup_printf("<small>\xe2\x98\x91 <span "
                               "alpha=\"55%%\"><s>%s</s></span>"
                               "</small>", esc)
@@ -869,7 +873,8 @@ append_task_rows(GtkListStore *store, GPtrArray *tasks,
     guint appended = 0;              /* rows actually in the pane           */
     for (guint i = 0; i < tasks->len; i++) {
         BtTask *t = g_ptr_array_index(tasks, i);
-        if (!ctx->show_done && t->done)
+        gboolean done = t->status == BT_STATUS_DONE;
+        if (!ctx->show_done && done)
             continue;                /* toolbar completed-visibility toggle */
         GPtrArray *subs = t->parent_id == 0
             ? g_hash_table_lookup(ctx->subs_by_parent,
@@ -890,13 +895,15 @@ append_task_rows(GtkListStore *store, GPtrArray *tasks,
         gtk_list_store_append(store, &iter);
         gtk_list_store_set(store, &iter,
                            TL_ID,            t->id,
-                           TL_DONE,          t->done,
+                           TL_DONE,          done,
                            TL_DESC,          desc,
                            TL_DUE,           due,
                            TL_DUE_RAW,       t->due,
                            TL_TITLE,         t->title,
                            TL_COMPLETED,     completed,
                            TL_COMPLETED_RAW, t->completed_at,
+                           TL_STATUS,        (gint)t->status,
+                           TL_STATUS_TEXT,   bt_status_label(t->status),
                            -1);
         g_free(desc);
         g_free(due);
@@ -1453,8 +1460,9 @@ fade_step_cb(gpointer data)
 }
 
 /* start_fade() — kick off a fade-out for iter in store.  Reads orig_desc
- * from the store, updates TL_DONE=TRUE, posts a status, and fires the
- * repeating timer.                                                          */
+ * from the store, marks the row done (checkbox AND status cell, which
+ * the row wears until the refresh removes it), posts a status message,
+ * and fires the repeating timer.                                            */
 static void
 start_fade(BtLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
            const gchar *title)
@@ -1462,7 +1470,11 @@ start_fade(BtLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
     gchar *orig_desc = NULL;
     gtk_tree_model_get(GTK_TREE_MODEL(store), iter, TL_DESC, &orig_desc, -1);
 
-    gtk_list_store_set(store, iter, TL_DONE, TRUE, -1);
+    gtk_list_store_set(store, iter,
+                       TL_DONE,        TRUE,
+                       TL_STATUS,      (gint)BT_STATUS_DONE,
+                       TL_STATUS_TEXT, bt_status_label(BT_STATUS_DONE),
+                       -1);
 
     /* The RAW title: the status bar is a plain-text label (set_text, no
      * markup), so escaping here put a literal "&amp;" on screen for any
@@ -1487,8 +1499,15 @@ start_fade(BtLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
     g_timeout_add(FADE_INTERVAL, fade_step_cb, ctx);
 }
 
-/* on_task_done_toggled() / on_task_pinned_toggled() — the two toggle
- * columns write straight through to the row.                                */
+/* ---------------------------------------------------------------------------
+ * on_task_done_toggled() — the ✓ column.  The checkbox is a VIEW of the
+ * status, not a field of its own: it shows ticked exactly when the status
+ * is Done, and clicking it writes a status back through
+ * bt_status_apply_done's rule — ticking means Done, unticking means In
+ * Progress (a task that was ticked has plainly been worked on, so
+ * dropping it back to New would lose that).  New is reachable only from
+ * the editor's dropdown.
+ * ------------------------------------------------------------------------- */
 static void
 on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
                      gpointer data)
@@ -1509,7 +1528,8 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
      * lands in the database now and rides to Notes with the next
      * mirror pass (bnsync.h) — that is what makes the write-back bulk
      * rather than one CLI spawn per click.                                 */
-    bt_db_task_set_done(lw->app->db, id, !done);
+    bt_db_task_set_status(lw->app->db, id,
+                          done ? BT_STATUS_IN_PROGRESS : BT_STATUS_DONE);
 
     /* When hiding completed tasks and a task is just being ticked done,
      * animate a 1 s fade-out before the full_refresh removes the row.      */
@@ -1546,7 +1566,8 @@ on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
         g_free(title);
         return;
     }
-    bt_db_task_set_done(lw->app->db, id, !done);
+    bt_db_task_set_status(lw->app->db, id,
+                          done ? BT_STATUS_IN_PROGRESS : BT_STATUS_DONE);
 
     gboolean hiding = !bt_app_config_get_bool("show_completed", TRUE);
     if (!done && hiding) {
@@ -2381,7 +2402,11 @@ item_ids(GtkWidget *item)
     return g_object_get_data(G_OBJECT(item), "bt-ids");
 }
 
-/* on_ctx_set_done() — Mark Complete / Mark Incomplete on the selection.     */
+/* on_ctx_set_done() — Mark Complete / Mark Incomplete on the selection.
+ * These are the checkbox's two verbs in menu form and take the same
+ * route: Complete → Done, Incomplete → In Progress.  Per row, so a
+ * multi-row "Mark All Incomplete" over a mixed selection settles every
+ * one of them on In Progress rather than half-reverting.                   */
 static void
 on_ctx_set_done(GtkWidget *item, gpointer data)
 {
@@ -2389,9 +2414,10 @@ on_ctx_set_done(GtkWidget *item, gpointer data)
     GArray *ids = item_ids(item);
     gboolean done = GPOINTER_TO_INT(
         g_object_get_data(G_OBJECT(item), "bt-done"));
+    BtTaskStatus status = done ? BT_STATUS_DONE : BT_STATUS_IN_PROGRESS;
     for (guint i = 0; i < ids->len; i++)
-        bt_db_task_set_done(lw->app->db,
-                            g_array_index(ids, gint64, i), done);
+        bt_db_task_set_status(lw->app->db,
+                              g_array_index(ids, gint64, i), status);
     full_refresh(lw);
     bt_app_status(lw->app, "Marked %u task%s %s", ids->len,
                   ids->len == 1 ? "" : "s",
@@ -2590,7 +2616,8 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     /* Mark Complete / Mark Incomplete — single row: only the applicable
      * direction; multi: both (selection may be mixed).                      */
     if (single && t != NULL)
-        ctx_done_item(lw, menu, ids, TRUE, !t->done);
+        ctx_done_item(lw, menu, ids, TRUE,
+                      t->status != BT_STATUS_DONE);
     else {
         ctx_done_item(lw, menu, ids, FALSE, TRUE);
         ctx_done_item(lw, menu, ids, FALSE, FALSE);
@@ -3251,7 +3278,8 @@ forecast_day_section(BtLibrary *lw, gint d)
                                            G_TYPE_BOOLEAN, G_TYPE_STRING,
                                            G_TYPE_STRING, G_TYPE_INT64,
                                            G_TYPE_STRING, G_TYPE_STRING,
-                                           G_TYPE_INT64);
+                                           G_TYPE_INT64, G_TYPE_INT,
+                                           G_TYPE_STRING);
     lw->day_views[d] = gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->day_stores[d]));
     g_object_unref(lw->day_stores[d]);
@@ -3666,6 +3694,8 @@ task_manual_sort_apply(BtLibrary *lw)
         g_object_get_data(G_OBJECT(lw->task_view), "bt-cdone");
     GtkTreeViewColumn *cdesc =
         g_object_get_data(G_OBJECT(lw->task_view), "bt-cdesc");
+    GtkTreeViewColumn *cstatus =
+        g_object_get_data(G_OBJECT(lw->task_view), "bt-cstatus");
     GtkTreeViewColumn *cdue  =
         g_object_get_data(G_OBJECT(lw->task_view), "bt-cdue");
     GtkTreeViewColumn *ccompleted =
@@ -3673,6 +3703,7 @@ task_manual_sort_apply(BtLibrary *lw)
     if (cdrag)      gtk_tree_view_column_set_visible(cdrag, manual);
     if (cdone)      gtk_tree_view_column_set_clickable(cdone,      !manual);
     if (cdesc)      gtk_tree_view_column_set_clickable(cdesc,      !manual);
+    if (cstatus)    gtk_tree_view_column_set_clickable(cstatus,    !manual);
     if (cdue)       gtk_tree_view_column_set_clickable(cdue,       !manual);
     if (ccompleted) gtk_tree_view_column_set_clickable(ccompleted, !manual);
     if (manual)
@@ -3707,6 +3738,8 @@ task_columns_apply(BtLibrary *lw)
 {
     GtkTreeViewColumn *cdone =
         g_object_get_data(G_OBJECT(lw->task_view), "bt-cdone");
+    GtkTreeViewColumn *cstatus =
+        g_object_get_data(G_OBJECT(lw->task_view), "bt-cstatus");
     GtkTreeViewColumn *cdue  =
         g_object_get_data(G_OBJECT(lw->task_view), "bt-cdue");
     GtkTreeViewColumn *ccompleted =
@@ -3714,6 +3747,12 @@ task_columns_apply(BtLibrary *lw)
     if (cdone)
         gtk_tree_view_column_set_visible(cdone,
             bt_app_config_get_bool("col_done_visible", TRUE));
+    /* Status defaults to HIDDEN: the ✓ column already says what most
+     * rows need, and the header right-click menu is where anyone who
+     * wants the third state on screen turns it on.                        */
+    if (cstatus)
+        gtk_tree_view_column_set_visible(cstatus,
+            bt_app_config_get_bool("col_status_visible", FALSE));
     if (cdue)
         gtk_tree_view_column_set_visible(cdue,
             bt_app_config_get_bool("col_due_visible", TRUE));
@@ -3723,8 +3762,8 @@ task_columns_apply(BtLibrary *lw)
 }
 
 /* on_column_header_press() — right-click on any column header pops a menu
- * of check items for the hidable columns (Done and Due Date; Task always
- * shows and has no entry).                                                  */
+ * of check items for the hidable columns (Done, Status, Due Date and
+ * Completion Date; Task always shows and has no entry).                     */
 static gboolean
 on_column_header_press(GtkWidget *btn, GdkEventButton *ev, gpointer data)
 {
@@ -4077,7 +4116,8 @@ bt_library_window_new(BtApp *app)
                                         G_TYPE_BOOLEAN, G_TYPE_STRING,
                                         G_TYPE_STRING, G_TYPE_INT64,
                                         G_TYPE_STRING, G_TYPE_STRING,
-                                        G_TYPE_INT64);
+                                        G_TYPE_INT64, G_TYPE_INT,
+                                        G_TYPE_STRING);
     lw->task_view = gtk_tree_view_new_with_model(
         GTK_TREE_MODEL(lw->task_store));
     g_object_unref(lw->task_store);
@@ -4114,8 +4154,11 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_column_set_fixed_width(cdrag, 26);
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdrag);
 
-    /* Done checkbox column.  Every column's renderer also runs the
-     * stripe data func — the alternating background must span the row.     */
+    /* Done checkbox column — a convenience VIEW of the status column two
+     * places to its right: ticked means Done, and a click writes Done or
+     * In Progress back (on_task_done_toggled).  Every column's renderer
+     * also runs the stripe data func — the alternating background must
+     * span the row.                                                        */
     GtkCellRenderer *done_cell = gtk_cell_renderer_toggle_new();
     g_signal_connect(done_cell, "toggled",
                      G_CALLBACK(on_task_done_toggled), lw);
@@ -4140,6 +4183,19 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_column_set_expand(cdesc, TRUE);
     gtk_tree_view_column_set_resizable(cdesc, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdesc);
+
+    /* Status column — New / In Progress / Done, sorted by the enum
+     * (TL_STATUS) rather than the label, so the order is the workflow's
+     * and not the alphabet's.                                              */
+    GtkCellRenderer *status_cell = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn *cstatus =
+        gtk_tree_view_column_new_with_attributes("Status", status_cell,
+            "text", TL_STATUS_TEXT, NULL);
+    gtk_tree_view_column_set_cell_data_func(cstatus, status_cell,
+                                            task_row_bg_func, lw, NULL);
+    gtk_tree_view_column_set_resizable(cstatus, TRUE);
+    gtk_tree_view_column_set_sort_column_id(cstatus, TL_STATUS);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cstatus);
 
     /* Due Date column, urgency-tinted, sortable (undated last).             */
     GtkCellRenderer *due_cell = gtk_cell_renderer_text_new();
@@ -4174,22 +4230,26 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_column_set_sort_column_id(cdone, TL_DONE);
     gtk_tree_view_column_set_sort_column_id(cdesc, TL_TITLE);
 
-    /* Column hide/show via header right-click.  Done, Due Date, and
+    /* Column hide/show via header right-click.  Done, Status, Due Date and
      * Completed are hidable (Task always shows); bt-colkey/bt-collabel
      * drive the menu.  Store column refs on the view for task_columns_apply
      * and the realize-time header-button connection.                        */
     g_object_set_data(G_OBJECT(lw->task_view), "bt-cdrag",      cdrag);
     g_object_set_data(G_OBJECT(lw->task_view), "bt-cdone",      cdone);
     g_object_set_data(G_OBJECT(lw->task_view), "bt-cdesc",      cdesc);
+    g_object_set_data(G_OBJECT(lw->task_view), "bt-cstatus",    cstatus);
     g_object_set_data(G_OBJECT(lw->task_view), "bt-cdue",       cdue);
     g_object_set_data(G_OBJECT(lw->task_view), "bt-ccompleted", ccompleted);
     g_object_set_data(G_OBJECT(cdone),      "bt-colkey",   (gpointer)"done");
     g_object_set_data(G_OBJECT(cdone),      "bt-collabel", (gpointer)"Done");
+    g_object_set_data(G_OBJECT(cstatus),    "bt-colkey",   (gpointer)"status");
+    g_object_set_data(G_OBJECT(cstatus),    "bt-collabel", (gpointer)"Status");
     g_object_set_data(G_OBJECT(cdue),       "bt-colkey",   (gpointer)"due");
     g_object_set_data(G_OBJECT(cdue),       "bt-collabel", (gpointer)"Due Date");
     g_object_set_data(G_OBJECT(ccompleted), "bt-colkey",   (gpointer)"completed");
     g_object_set_data(G_OBJECT(ccompleted), "bt-collabel", (gpointer)"Completion Date");
-    GtkTreeViewColumn *header_cols[] = { cdrag, cdone, cdesc, cdue, ccompleted };
+    GtkTreeViewColumn *header_cols[] = { cdrag, cdone, cdesc, cstatus, cdue,
+                                         ccompleted };
     for (gsize i = 0; i < G_N_ELEMENTS(header_cols); i++) {
         GtkWidget *hbtn = gtk_tree_view_column_get_button(header_cols[i]);
         if (hbtn) {

@@ -54,7 +54,9 @@ CREATE TABLE tasks (
   title        TEXT    NOT NULL DEFAULT '',
   notes        TEXT    NOT NULL DEFAULT '',
   due          INTEGER NOT NULL DEFAULT 0,    -- UNIX local midnight; 0 = none
-  done         INTEGER NOT NULL DEFAULT 0,
+  status       INTEGER NOT NULL DEFAULT 0,    -- 0 New, 1 In Progress,
+                                              -- 2 Done (v7; replaced the
+                                              -- boolean `done`)
   pinned       INTEGER NOT NULL DEFAULT 0,    -- local-only, never synced
   priority     INTEGER NOT NULL DEFAULT 0,    -- local-only high-priority flag (v4)
   position     INTEGER NOT NULL DEFAULT 0,
@@ -93,12 +95,19 @@ schema above: on an existing file `bn_uid` does not exist until the
 `ALTER` has run, and a failing `CREATE INDEX` in that batch would take
 the rest of the schema setup down with it.
 
-The schema version rides in `PRAGMA user_version` (currently **6**);
+The schema version rides in `PRAGMA user_version` (currently **7**);
 older files are migrated in place at open.  Migration history: v2 adds
 `lists.emoji`; v3 adds five Google-mirror task columns (`completed_at`,
 `etag`, `web_link`, `glinks`, `assigned`); v4 adds `tasks.priority`;
 v5 adds `lists.group_id`; v6 adds the three Notes-mirror task columns
-(`bn_uid`, `bn_done`, `bn_due`).
+(`bn_uid`, `bn_done`, `bn_due`); v7 adds `tasks.status`, copies
+`done = 1` onto it as `2`, and DROPS `tasks.done`.
+
+The v7 drop only runs if the backfill `UPDATE` returned `SQLITE_OK` —
+dropping the source column after a copy that never happened would throw
+every completion away.  An sqlite older than 3.35 has no `DROP COLUMN`
+and simply leaves `done` behind, unread; its `NOT NULL DEFAULT 0` keeps
+`INSERT`s working, so nothing breaks either way.
 
 Semantics worth knowing when querying directly:
 
@@ -121,6 +130,19 @@ Semantics worth knowing when querying directly:
   concurrent remote edit behind a 412 skip. Only fields that Google
   actually stores may stamp it. (A full-row `bt_db_task_update` still
   stamps, since it writes the synced fields too.)
+- `status` is **not** in that category: it is the successor of the
+  synced `done` column, so every write to it stamps `updated_at` and
+  dirties the row — a `0 ↔ 1` move (New ↔ In Progress) included, even
+  though neither Google nor Notes can represent it. The alternative
+  would leave such a move invisible to everything that reads
+  `updated_at`. The cost is that on the incremental sync path (where an
+  unchanged remote task is simply absent from the listing) a dirty row
+  gets an etag-guarded PATCH whose body matches what the remote already
+  holds; on a full listing nothing is sent, since the content compare
+  finds no difference.
+- `completed_at` is stamped when a row enters status `2` and cleared
+  when it leaves; re-marking an already-Done row keeps its first stamp.
+  That rule is written as an SQL `CASE` over the OLD row values.
 - `sync_state` is a key/value scratchpad: `last_sync` (start time of
   the last successful pass), `default_list_gid` (Google's undeletable
   default tasklist), `lists_custom_order` (set once the user

@@ -46,9 +46,18 @@ the database schema and the sync engine see [Internals](Internals.md).
   title. The flag is local to Lists — Google Tasks has no priority, so
   it never syncs. A task mirrored from a Notes action item wears a
   ❗ beside its title in every view, so it is always clear which tasks
-  came from your notes. Columns: a done checkbox, the task, and the due date;
-  right-click any column header to hide or show the Done and Due Date
-  columns (the Task column always stays). Favoriting is done from the
+  came from your notes. Columns: a done checkbox, the task, the status,
+  and the due date; right-click any column header to hide or show the
+  Done, Status, Due Date and Completion Date columns (the Task column
+  always stays). **Status** — *New*, *In Progress* or *Done* — starts
+  hidden, because the checkbox beside each task is the same thing seen
+  as a tick: a task shows ticked exactly when its status is Done.
+  Ticking the box sets the status to Done; unticking a task that was
+  ticked sets it to *In Progress*, on the reasoning that a task you had
+  marked finished has plainly been started. *New* is set from the
+  editor's Status dropdown. Turn the Status column on to sort by it —
+  it sorts New → In Progress → Done, in that order rather than
+  alphabetically. Favoriting is done from the
   editor window's **Favorite** checkbox or the task's right-click menu.
   Rows alternate white/light-blue; click the Due header to sort
   (soonest first, undated rows last). Due dates are color-coded: green
@@ -97,7 +106,9 @@ Every task opens in its own window, centered on the screen, with a
 standard titlebar (no GNOME header bars anywhere) — and only one
 window per task: opening it again focuses the one you already have.
 
-- **Fields** — title, **Done**, **Favorite**, **High Priority**, and a
+- **Fields** — title, **Status** (a *New* / *In Progress* / *Done*
+  dropdown — the only place *New* can be chosen outright), **Favorite**,
+  **High Priority**, and a
   due date you can type (`YYYY-MM-DD`) or pick from the calendar button.
   The entry is forgiving: while it holds a partial or invalid date
   nothing is clobbered — the stored date only changes once the text
@@ -127,8 +138,8 @@ window per task: opening it again focuses the one you already have.
   a Docs/Chat assignment origin, and any Google-attached links (for
   example the Gmail message a task was created from).
 - **Autosave** — edits persist about half a second after you stop
-  typing; the Done, Favorite and High Priority checkboxes save
-  immediately.
+  typing; the Status dropdown and the Favorite and High Priority
+  checkboxes save immediately.
 
 ## Settings (*File → Settings…*)
 
@@ -177,7 +188,13 @@ on demand. The GUI stays live throughout — sync happens on a worker
 thread.
 
 What maps: tasklists ↔ lists, tasks ↔ tasks (with the same single
-level of subtasks), due date ↔ due date, done ↔ completed. Four
+level of subtasks), due date ↔ due date, and the *Done* status ↔
+completed. Google's own status is only ever "completed" or "not
+completed", so *New* and *In Progress* both reach it as not completed
+and the difference between the two stays on this machine. Changing the
+status still counts as changing the task, though — the row is marked as
+edited and picked up by the next sync like any other change, even when
+the only thing Google ends up hearing is what it already knew. Four
 things are **local-only** and never leave the machine: Favorite flags,
 High Priority flags, list emoji, and attachments — Google Tasks has no
 equivalent. Your list order and any manual task order are local-only

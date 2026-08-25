@@ -114,6 +114,34 @@ bt_task_free(BtTask *t)
     g_free(t);
 }
 
+/* bt_status_label() — the user-facing status name (see db.h).  The
+ * default arm is not dead code: the value comes off disk, so a
+ * hand-edited or future-version row can carry anything at all, and a
+ * NULL here would blank the whole cell rather than one word of it.        */
+const gchar *
+bt_status_label(BtTaskStatus status)
+{
+    switch (status) {
+    case BT_STATUS_IN_PROGRESS: return "In Progress";
+    case BT_STATUS_DONE:        return "Done";
+    case BT_STATUS_NEW:
+    default:                    return "New";
+    }
+}
+
+/* bt_status_apply_done() — fold a binary done flag into the tri-state
+ * (see db.h).  Every done-only source funnels through here so the
+ * "untick means In Progress, and only from Done" rule has exactly one
+ * definition; the SQL paths that need the OLD row value spell the same
+ * rule as a CASE and say so.                                               */
+BtTaskStatus
+bt_status_apply_done(BtTaskStatus cur, gboolean done)
+{
+    if (done)
+        return BT_STATUS_DONE;
+    return cur == BT_STATUS_DONE ? BT_STATUS_IN_PROGRESS : cur;
+}
+
 /* bt_attachment_free() — free one attachment row.  NULL-safe.               */
 static void
 bt_attachment_free(BtAttachment *a)
@@ -229,7 +257,7 @@ bt_db_open(const gchar *path, GError **err)
         "  title        TEXT    NOT NULL DEFAULT '',"
         "  notes        TEXT    NOT NULL DEFAULT '',"
         "  due          INTEGER NOT NULL DEFAULT 0,"
-        "  done         INTEGER NOT NULL DEFAULT 0,"
+        "  status       INTEGER NOT NULL DEFAULT 0,"
         "  pinned       INTEGER NOT NULL DEFAULT 0,"
         "  priority     INTEGER NOT NULL DEFAULT 0,"
         "  position     INTEGER NOT NULL DEFAULT 0,"
@@ -271,7 +299,8 @@ bt_db_open(const gchar *path, GError **err)
 
     /* Guarded migrations (on fresh files the ALTERs fail silently —
      * CREATE already has the columns): v2 = lists.emoji; v3 = the five
-     * Google-mirror task columns; v4 = tasks.priority (local-only).         */
+     * Google-mirror task columns; v4 = tasks.priority (local-only);
+     * v7 = tasks.status replacing tasks.done.                              */
     sqlite3_stmt *vst = NULL;
     gint uv = 0;                     /* the file's schema version           */
     if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
@@ -312,13 +341,34 @@ bt_db_open(const gchar *path, GError **err)
         sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN bn_due "
                      "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
     }
+    if (uv < 7) {
+        /* v7 = the tri-state tasks.status REPLACING the boolean
+         * tasks.done.  A completed row becomes BT_STATUS_DONE (2) and
+         * everything else BT_STATUS_NEW (0, the column default) — there
+         * is no way to tell which of the untouched rows had been
+         * STARTED, so none is guessed into In Progress.
+         *
+         * The drop is CONDITIONAL on the backfill having actually run:
+         * if the ADD COLUMN failed for any reason the UPDATE fails too,
+         * and dropping the source column after a copy that never
+         * happened would throw every completion away.  The reverse
+         * order of failure is harmless — a `done` left behind by an
+         * sqlite too old for DROP COLUMN (< 3.35) is simply never read
+         * again, and its NOT NULL DEFAULT 0 keeps INSERTs working.       */
+        sqlite3_exec(sq, "ALTER TABLE tasks ADD COLUMN status "
+                     "INTEGER NOT NULL DEFAULT 0", NULL, NULL, NULL);
+        if (sqlite3_exec(sq, "UPDATE tasks SET status = 2 WHERE done = 1",
+                         NULL, NULL, NULL) == SQLITE_OK)
+            sqlite3_exec(sq, "ALTER TABLE tasks DROP COLUMN done",
+                         NULL, NULL, NULL);
+    }
     /* AFTER the migrations, never in the schema block above: on an
      * existing file the column does not exist until the ALTER has run,
      * and a CREATE INDEX naming it fails the whole batch — which would
      * leave the database unopenable.                                       */
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_bn_uid "
              "ON tasks(bn_uid)");
-    exec(db, "PRAGMA user_version = 6");
+    exec(db, "PRAGMA user_version = 7");
     return db;
 }
 
@@ -626,7 +676,7 @@ bt_db_list_emoji_if_empty(BtDatabase *db, const gchar *gtasks_id,
  * read_task() — build a BtTask from the standard tasks SELECT.
  * ------------------------------------------------------------------------- */
 #define TASK_COLS "id, list_id, COALESCE(parent_id, 0), title, notes, due, " \
-                  "done, pinned, position, gtasks_id, updated_at, deleted, " \
+                  "status, pinned, position, gtasks_id, updated_at, deleted, "\
                   "completed_at, etag, web_link, glinks, assigned, priority, "\
                   "bn_uid, bn_done, bn_due"
 
@@ -640,7 +690,7 @@ read_task(sqlite3_stmt *st)
     t->title        = column_text_dup(st, 3);
     t->notes        = column_text_dup(st, 4);
     t->due          = sqlite3_column_int64(st, 5);
-    t->done         = sqlite3_column_int(st, 6) != 0;
+    t->status       = (BtTaskStatus)sqlite3_column_int(st, 6);
     t->pinned       = sqlite3_column_int(st, 7) != 0;
     t->position     = sqlite3_column_int(st, 8);
     t->gtasks_id    = column_text_dup(st, 9);
@@ -839,21 +889,25 @@ bt_db_task_create(BtDatabase *db, gint64 list_id, gint64 parent_id,
 void
 bt_db_task_update(BtDatabase *db, const BtTask *t)
 {
-    /* completed_at follows done: stamped when done flips on (the CASE
-     * reads the OLD row values), cleared when it flips off.                  */
+    /* completed_at follows the DONE status: stamped when the row enters
+     * it (the CASE reads the OLD row values, gotcha 8), cleared when it
+     * leaves.  An already-done task keeps its original stamp, so a New →
+     * Done → In Progress → Done round trip re-stamps only on the way
+     * back in.  updated_at is stamped unconditionally here — this path
+     * also writes title/notes/due, which Google does want.                  */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
             "UPDATE tasks SET title = ?1, notes = ?2, due = ?3, "
-            "completed_at = CASE WHEN ?4 = 1 AND done = 0 THEN ?6 "
-            "                    WHEN ?4 = 0 THEN 0 "
+            "completed_at = CASE WHEN ?4 = 2 AND status <> 2 THEN ?6 "
+            "                    WHEN ?4 <> 2 THEN 0 "
             "                    ELSE completed_at END, "
-            "done = ?4, pinned = ?5, updated_at = ?6, priority = ?8 "
+            "status = ?4, pinned = ?5, updated_at = ?6, priority = ?8 "
             "WHERE id = ?7", -1,
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 2, t->notes, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, t->due);
-        sqlite3_bind_int(st, 4, t->done ? 1 : 0);
+        sqlite3_bind_int(st, 4, (gint)t->status);
         sqlite3_bind_int(st, 5, t->pinned ? 1 : 0);
         sqlite3_bind_int64(st, 6, now());
         sqlite3_bind_int64(st, 7, t->id);
@@ -865,26 +919,41 @@ bt_db_task_update(BtDatabase *db, const BtTask *t)
     sqlite3_finalize(st);
 }
 
-/* bt_db_task_set_done() — toggle done, stamping/clearing completed_at
- * and updated_at (see db.h).  Same CASE as bt_db_task_update, so both
- * done paths agree: an already-done task keeps its original stamp.          */
+/* ---------------------------------------------------------------------------
+ * bt_db_task_set_status() — write the status, stamping/clearing
+ * completed_at (see db.h).  Same completed_at CASE as bt_db_task_update,
+ * so both paths agree: an already-done task keeps its original stamp.
+ * It reads the OLD row (gotcha 8).
+ *
+ * updated_at is stamped for EVERY status change, including New ↔ In
+ * Progress.  That is deliberate and costs something: neither Google
+ * Tasks nor Notes has a third state, so such a move dirties a row whose
+ * remote content is unchanged, and the incremental listing path (where
+ * an unchanged remote task is simply absent) answers a dirty row with an
+ * etag-guarded PATCH carrying a body identical to what is already there.
+ * The alternative was worse — a status move that stamps nothing is
+ * invisible to every consumer of updated_at, so the row reads as
+ * untouched since the last sync and there is no record that anything
+ * happened.  Status is the successor of a SYNCED field, not a local flag
+ * like pinned/priority: a change to it is a change to the task.
+ * ------------------------------------------------------------------------- */
 void
-bt_db_task_set_done(BtDatabase *db, gint64 id, gboolean done)
+bt_db_task_set_status(BtDatabase *db, gint64 id, BtTaskStatus status)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
             "UPDATE tasks SET completed_at = CASE "
-            "                    WHEN ?1 = 1 AND done = 0 THEN ?2 "
-            "                    WHEN ?1 = 0 THEN 0 "
+            "                    WHEN ?1 = 2 AND status <> 2 THEN ?2 "
+            "                    WHEN ?1 <> 2 THEN 0 "
             "                    ELSE completed_at END, "
-            "done = ?1, updated_at = ?2 WHERE id = ?3", -1,
+            "updated_at = ?2, status = ?1 WHERE id = ?3", -1,
             &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_int(st, 1, done ? 1 : 0);
+        sqlite3_bind_int(st, 1, (gint)status);
         sqlite3_bind_int64(st, 2, now());
         sqlite3_bind_int64(st, 3, id);
-        step_done(db, st, "task set done");
+        step_done(db, st, "task set status");
     } else {
-        step_done(db, NULL, "task set done");
+        step_done(db, NULL, "task set status");
     }
     sqlite3_finalize(st);
 }
@@ -1182,22 +1251,24 @@ bt_db_list_apply_remote(BtDatabase *db, gint64 id, const gchar *name,
 }
 
 /* bt_db_task_apply_remote() — overwrite the synced fields (title, notes,
- * due, done) plus the Google-mirror metadata (completed_at, etag,
+ * due, status) plus the Google-mirror metadata (completed_at, etag,
  * web_link, glinks, assigned) from remote data; pinned and priority are
- * local-only and untouched.                                                  */
+ * local-only and untouched.  `t->status` is written VERBATIM: Google
+ * only ever reports done-ness, so the caller has already folded that
+ * through bt_status_apply_done against the row it read.                     */
 void
 bt_db_task_apply_remote(BtDatabase *db, const BtTask *t)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
-            "UPDATE tasks SET title = ?, notes = ?, due = ?, done = ?, "
+            "UPDATE tasks SET title = ?, notes = ?, due = ?, status = ?, "
             "updated_at = ?, completed_at = ?, etag = ?, web_link = ?, "
             "glinks = ?, assigned = ? WHERE id = ?", -1, &st, NULL)
         == SQLITE_OK) {
         sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 2, t->notes, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, t->due);
-        sqlite3_bind_int(st, 4, t->done ? 1 : 0);
+        sqlite3_bind_int(st, 4, (gint)t->status);
         sqlite3_bind_int64(st, 5, t->updated_at);
         sqlite3_bind_int64(st, 6, t->completed_at);
         sqlite3_bind_text(st, 7, t->etag, -1, SQLITE_TRANSIENT);
@@ -1240,8 +1311,8 @@ bt_db_purge_done(BtDatabase *db, gint64 list_id)
 {
     gchar *sql = sqlite3_mprintf(
         "DELETE FROM tasks WHERE list_id = %lld AND parent_id IN "
-        "  (SELECT id FROM tasks WHERE list_id = %lld AND done = 1);"
-        "DELETE FROM tasks WHERE list_id = %lld AND done = 1;",
+        "  (SELECT id FROM tasks WHERE list_id = %lld AND status = 2);"
+        "DELETE FROM tasks WHERE list_id = %lld AND status = 2;",
         (long long)list_id, (long long)list_id, (long long)list_id);
     exec_txn(db, sql);
     sqlite3_free(sql);
@@ -1398,8 +1469,13 @@ bt_db_task_set_bn(BtDatabase *db, gint64 id, gint64 uid, gboolean done,
  * bt_db_task_apply_notes() — overwrite the Notes-owned fields and
  * re-baseline in ONE statement (see db.h).  updated_at IS stamped: the
  * change came from outside Lists and has to reach Google too.  The
- * completed_at CASE repeats set_done's transition rule, which relies on
- * SET expressions reading the OLD row (gotcha 8).
+ * completed_at CASE repeats set_status's transition rule, which relies
+ * on SET expressions reading the OLD row (gotcha 8).
+ *
+ * Notes has no third state, so its binary `done` reaches tasks.status
+ * through bt_status_apply_done's rule, spelled here as a CASE for the
+ * same reason: it needs the status the row already held, and reading it
+ * back in C would be a second statement racing the first.
  *
  * The baselines are passed SEPARATELY from the applied values because
  * the two diverge on a failed push: the task keeps the user's local
@@ -1414,10 +1490,13 @@ bt_db_task_apply_notes(BtDatabase *db, gint64 id, const gchar *title,
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
             "UPDATE tasks SET completed_at = CASE "
-            "                     WHEN ?1 = 1 AND done = 0 THEN ?2 "
+            "                     WHEN ?1 = 1 AND status <> 2 THEN ?2 "
             "                     WHEN ?1 = 0 THEN 0 "
             "                     ELSE completed_at END, "
-            "title = ?3, done = ?1, due = ?4, bn_done = ?5, bn_due = ?6, "
+            "title = ?3, due = ?4, bn_done = ?5, bn_due = ?6, "
+            "status = CASE WHEN ?1 = 1   THEN 2 "     /* → Done            */
+            "              WHEN status = 2 THEN 1 "   /* Done → In Progress*/
+            "              ELSE status END, "         /* New/In Prog. stay */
             "updated_at = ?2 WHERE id = ?7", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int(st, 1, done ? 1 : 0);
         sqlite3_bind_int64(st, 2, now());

@@ -3,16 +3,22 @@
  *
  * One window per task (double-click in the library), tracked in
  * app->editors keyed by task id.  Edits all task properties — title,
- * notes, due date, done, pinned — plus the task's attachments and (for
+ * notes, due date, status, pinned — plus the task's attachments and (for
  * top-level tasks) its subtasks.  Subtasks cannot have subtasks: editing
  * a subtask shows a "part of" note instead of a subtask section.
+ *
+ * Status is a New / In Progress / Done dropdown, the full tri-state
+ * (db.h): the task list's checkbox column can only reach two of those
+ * three values, so this is the only place In Progress can be chosen
+ * outright.
  *
  * Saves are write-through with a short debounce (like the Notes
  * editor autosave): every change lands in the database within ~600 ms
  * and the library refreshes.  Closing the window flushes a pending save.
  * A task mirroring a Notes action item is no different here — its
- * done and due reach Notes with the next mirror pass (bnsync.h),
- * never from this window.
+ * status and due reach Notes with the next mirror pass (bnsync.h),
+ * never from this window, and Notes sees only whether the status is
+ * Done.
  *
  * Subtasks and Attachments are folded away behind an "Advanced" link at
  * the foot of the window: collapsed for a task that has neither, expanded

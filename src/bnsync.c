@@ -166,16 +166,21 @@ sync_item(BnJob *job, BtDatabase *db, const BtNoteAction *it, gint64 target)
         return;
     }
 
+    /* Notes has no third state, so the whole exchange speaks in the
+     * DONE-ness of the status: a New ↔ In Progress move is not a
+     * pending write and has nothing to push.                              */
+    gboolean local_done = t->status == BT_STATUS_DONE;
+
     /* The pending-write set: fields that drifted from the baseline since
      * the last successful push.                                             */
-    gboolean done_dirty = t->done != t->bn_done;
+    gboolean done_dirty = local_done != t->bn_done;
     gboolean due_dirty  = t->due  != t->bn_due;
     gboolean done_sent  = FALSE;     /* did Notes accept the push?        */
     gboolean due_sent   = FALSE;
 
     if (done_dirty) {
         gchar *err = NULL;
-        done_sent = bt_bnotes_action_set_done(it->uid, t->done, &err);
+        done_sent = bt_bnotes_action_set_done(it->uid, local_done, &err);
         if (done_sent) job->n_pushed++; else job->n_failed++;
         g_free(err);
     }
@@ -189,18 +194,18 @@ sync_item(BnJob *job, BtDatabase *db, const BtNoteAction *it, gint64 target)
     /* What the task should hold: a local change stands whether or not
      * the push landed (a refused push must never discard the user's
      * edit), otherwise Notes wins.                                        */
-    gboolean new_done = done_dirty ? t->done : it->done;
-    gint64   new_due  = due_dirty  ? t->due  : it->due;
+    gboolean new_done = done_dirty ? local_done : it->done;
+    gint64   new_due  = due_dirty  ? t->due     : it->due;
 
     /* What Notes now holds: the pushed value only if it was accepted;
      * an unsent change keeps the old baseline so it is retried.             */
-    gboolean base_done = done_dirty ? (done_sent ? t->done : t->bn_done)
+    gboolean base_done = done_dirty ? (done_sent ? local_done : t->bn_done)
                                     : it->done;
     gint64   base_due  = due_dirty  ? (due_sent  ? t->due  : t->bn_due)
                                     : it->due;
 
     gboolean content = g_strcmp0(t->title, it->text) != 0 ||
-                       new_done != t->done || new_due != t->due;
+                       new_done != local_done || new_due != t->due;
 
     if (content) {
         /* Stamps updated_at, so the change reaches Google too.              */

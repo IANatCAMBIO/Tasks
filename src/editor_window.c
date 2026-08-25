@@ -31,7 +31,8 @@ typedef struct {
     gint64        parent_id;         /* 0 when the task is top-level        */
     GtkWidget    *window;
     GtkWidget    *title_entry;
-    GtkWidget    *done_check;
+    GtkWidget    *status_combo;      /* New / In Progress / Done — index
+                                      * IS the BtTaskStatus value           */
     GtkWidget    *pinned_check;
     GtkWidget    *priority_check;
     GtkWidget    *due_entry;
@@ -103,14 +104,30 @@ editor_title_refresh(BtEditor *ed)
     g_free(title);
 }
 
+/* editor_status_get() — the status dropdown's current value.  The combo
+ * is built with one row per BtTaskStatus IN ORDER, so the active index
+ * IS the enum value; -1 (nothing active, which only happens if the combo
+ * has not been loaded yet) reads as New rather than as a negative
+ * status.                                                                   */
+static BtTaskStatus
+editor_status_get(BtEditor *ed)
+{
+    gint active =
+        gtk_combo_box_get_active(GTK_COMBO_BOX(ed->status_combo));
+    if (active < 0 || active >= BT_STATUS_N_VALUES)
+        return BT_STATUS_NEW;
+    return (BtTaskStatus)active;
+}
+
 /* ---------------------------------------------------------------------------
  * editor_save_now() — write every editable field through to the row and
  * notify the library.  The debounce timer funnels here.
  *
- * A mirrored Notes item saves exactly like any other task: its done
+ * A mirrored Notes item saves exactly like any other task: its status
  * and due land in the database, and the next mirror pass carries them
- * to Notes in bulk (bnsync.h).  The editor no longer shells the CLI
- * per keystroke-debounce, which is what made every autosave wait on a
+ * to Notes in bulk (bnsync.h) — flattened there to the done flag Notes
+ * understands.  The editor no longer shells the CLI per
+ * keystroke-debounce, which is what made every autosave wait on a
  * process spawn.
  * ------------------------------------------------------------------------- */
 static void
@@ -129,8 +146,7 @@ editor_save_now(BtEditor *ed)
     GtkTextIter a, b;
     gtk_text_buffer_get_bounds(ed->notes_buf, &a, &b);
     t->notes = gtk_text_buffer_get_text(ed->notes_buf, &a, &b, FALSE);
-    t->done   = gtk_toggle_button_get_active(
-                    GTK_TOGGLE_BUTTON(ed->done_check));
+    t->status = editor_status_get(ed);
     t->pinned = gtk_toggle_button_get_active(
                     GTK_TOGGLE_BUTTON(ed->pinned_check));
     t->priority = gtk_toggle_button_get_active(
@@ -171,8 +187,10 @@ on_field_changed(GtkWidget *w, gpointer data)
     editor_queue_save(data);
 }
 
-/* on_toggle_changed() — done/pinned change → save immediately (these
- * drive the library's meta lists).                                          */
+/* on_toggle_changed() — status/pinned change → save immediately (these
+ * drive the library's meta lists).  The status combo shares it: a
+ * dropdown pick is a deliberate act like a tick, not something the
+ * 600 ms debounce should sit on.                                            */
 static void
 on_toggle_changed(GtkWidget *w, gpointer data)
 {
@@ -373,7 +391,7 @@ sub_refresh(BtEditor *ed)
         gtk_list_store_append(ed->sub_store, &iter);
         gtk_list_store_set(ed->sub_store, &iter,
                            SUB_ID, s->id,
-                           SUB_DONE, s->done,
+                           SUB_DONE, s->status == BT_STATUS_DONE,
                            SUB_TITLE, s->title,
                            -1);
     }
@@ -509,7 +527,12 @@ on_sub_move(GtkWidget *w, gpointer data)
     }
 }
 
-/* on_sub_toggled() — the subtask done checkbox in the list.                 */
+/* on_sub_toggled() — the subtask done checkbox in the list.  Subtasks
+ * have a status like any other task and get the same checkbox rule as
+ * the task pane's: ticking means Done, unticking means In Progress (a
+ * subtask that was ticked HAD been worked on).  There is no per-subtask
+ * status dropdown — the row is one line in a compact list — but opening
+ * the subtask in its own editor offers the full choice.                    */
 static void
 on_sub_toggled(GtkCellRendererToggle *cell, gchar *path_str, gpointer data)
 {
@@ -522,7 +545,8 @@ on_sub_toggled(GtkCellRendererToggle *cell, gchar *path_str, gpointer data)
     gint64 id;
     gboolean done;
     gtk_tree_model_get(model, &iter, SUB_ID, &id, SUB_DONE, &done, -1);
-    bt_db_task_set_done(ed->app->db, id, !done);
+    bt_db_task_set_status(ed->app->db, id,
+                          done ? BT_STATUS_IN_PROGRESS : BT_STATUS_DONE);
     gtk_list_store_set(ed->sub_store, &iter, SUB_DONE, !done, -1);
     editor_notify(ed);
 }
@@ -738,7 +762,7 @@ google_section_load(BtEditor *ed, const BtTask *t)
     if (ed->google_box == NULL)
         return;
     GString *info = g_string_new(NULL);
-    if (t->done && t->completed_at != 0) {
+    if (t->status == BT_STATUS_DONE && t->completed_at != 0) {
         GDateTime *dt = g_date_time_new_from_unix_local(t->completed_at);
         gchar *when = g_date_time_format(dt, "%b %-e, %Y at %H:%M");
         g_string_append_printf(info, "Completed %s", when);
@@ -810,8 +834,12 @@ editor_load(BtEditor *ed)
     }
     ed->loading = TRUE;
     set_entry_if_differs(ed->title_entry, t->title);
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->done_check),
-                                 t->done);
+    /* The combo's rows are the BtTaskStatus values in order, so the enum
+     * value doubles as the active index.  An out-of-range status off
+     * disk would leave the combo blank, so it clamps to New.               */
+    gtk_combo_box_set_active(GTK_COMBO_BOX(ed->status_combo),
+        t->status >= 0 && t->status < BT_STATUS_N_VALUES
+            ? (gint)t->status : (gint)BT_STATUS_NEW);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->pinned_check),
                                  t->pinned);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->priority_check),
@@ -1016,21 +1044,28 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
                      G_CALLBACK(on_editor_save), ed);
     gtk_box_pack_start(GTK_BOX(vbox), ed->title_entry, FALSE, FALSE, 0);
 
-    /* Done / Pinned / Due row.                                              */
+    /* Status / Due row, then the flags row beneath it.
+     *
+     * The status dropdown is where the Done checkbox used to sit, and it
+     * is a good deal wider than one.  Two rows, not one: the window asks
+     * for 490 px and takes its NATURAL height, so an over-wide row would
+     * silently widen every editor, while an extra row costs one row of
+     * height and nothing else.                                             */
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    ed->done_check = gtk_check_button_new_with_label("Done");
-    g_signal_connect(ed->done_check, "toggled",
-                     G_CALLBACK(on_toggle_changed), ed);
-    gtk_box_pack_start(GTK_BOX(row), ed->done_check, FALSE, FALSE, 0);
-    ed->pinned_check = gtk_check_button_new_with_label("Favorite");
-    g_signal_connect(ed->pinned_check, "toggled",
-                     G_CALLBACK(on_toggle_changed), ed);
-    gtk_box_pack_start(GTK_BOX(row), ed->pinned_check, FALSE, FALSE, 0);
-    ed->priority_check = gtk_check_button_new_with_label("High Priority");
-    g_signal_connect(ed->priority_check, "toggled",
-                     G_CALLBACK(on_toggle_changed), ed);
-    gtk_box_pack_start(GTK_BOX(row), ed->priority_check,
+    gtk_box_pack_start(GTK_BOX(row), gtk_label_new("Status:"),
                        FALSE, FALSE, 0);
+    /* One row per BtTaskStatus, appended IN ENUM ORDER — the active
+     * index is read back as the status value (editor_status_get).          */
+    ed->status_combo = gtk_combo_box_text_new();
+    for (gint s = 0; s < BT_STATUS_N_VALUES; s++)
+        gtk_combo_box_text_append_text(
+            GTK_COMBO_BOX_TEXT(ed->status_combo),
+            bt_status_label((BtTaskStatus)s));
+    gtk_combo_box_set_active(GTK_COMBO_BOX(ed->status_combo),
+                             (gint)BT_STATUS_NEW);
+    g_signal_connect(ed->status_combo, "changed",
+                     G_CALLBACK(on_toggle_changed), ed);
+    gtk_box_pack_start(GTK_BOX(row), ed->status_combo, FALSE, FALSE, 0);
 
     GtkWidget *due_btn = small_button("\xf0\x9f\x93\x85",
                                       G_CALLBACK(on_due_calendar), ed);
@@ -1046,6 +1081,19 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
     gtk_box_pack_end(GTK_BOX(row), gtk_label_new("Due:"),
                      FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), row, FALSE, FALSE, 0);
+
+    /* Favorite / High Priority — the two local-only flags.                 */
+    GtkWidget *flags = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    ed->pinned_check = gtk_check_button_new_with_label("Favorite");
+    g_signal_connect(ed->pinned_check, "toggled",
+                     G_CALLBACK(on_toggle_changed), ed);
+    gtk_box_pack_start(GTK_BOX(flags), ed->pinned_check, FALSE, FALSE, 0);
+    ed->priority_check = gtk_check_button_new_with_label("High Priority");
+    g_signal_connect(ed->priority_check, "toggled",
+                     G_CALLBACK(on_toggle_changed), ed);
+    gtk_box_pack_start(GTK_BOX(flags), ed->priority_check,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), flags, FALSE, FALSE, 0);
 
     /* Notes.                                                                */
     GtkWidget *notes_label = gtk_label_new(NULL);

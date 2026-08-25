@@ -71,10 +71,14 @@ due_today_show_overdue=0
 # manual_order_all, manual_order_pinned, manual_order_today and
 # manual_order_bn_actions — written by the app, not hand-edited.
 task_list_manual_sort=0
-# Task-pane column visibility (1|0, default 1 each; right-click a column
-# header).  The Task column is always shown and has no key.
+# Task-pane column visibility (1|0; right-click a column header).  The
+# Task column is always shown and has no key.  Status (New / In Progress
+# / Done) defaults to HIDDEN: the ✓ column is the same field seen as a
+# tick, and most rows need nothing more than that.
 col_done_visible=1
+col_status_visible=0
 col_due_visible=1
+col_completed_visible=1
 # Run PRAGMA integrity_check + foreign_key_check on the database at
 # startup (1|0, default 1); the result lands in the status bar.
 db_integrity_check=1

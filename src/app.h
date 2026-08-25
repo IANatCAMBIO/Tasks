@@ -187,7 +187,8 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
  *                show_completed, sidebar_visible, compact_layout,
  *                weekly_forecast, due_today_show_overdue,
  *                task_list_manual_sort, col_done_visible,
- *                col_due_visible, win_w, win_h
+ *                col_status_visible, col_due_visible,
+ *                col_completed_visible, win_w, win_h
  *   per-view   — manual_order_list_<id>, manual_order_all,
  *                manual_order_pinned, manual_order_today,
  *                manual_order_bn_actions (drag-reorder positions)

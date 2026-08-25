@@ -82,9 +82,9 @@ the user).  A logic test harness lives in the session scratchpad
 |---|---|
 | `src/main.c` | GtkApplication entry; config → curl_global_init → db → oauth snapshot → window → auto-sync; icon-theme path for HiDPI expanders |
 | `src/app.[ch]` | Shared `BtApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
-| `src/db.[ch]` | SQLite schema (user_version 6) + CRUD; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
+| `src/db.[ch]` | SQLite schema (user_version 7) + CRUD; `BtTaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, multi-select context menu, status bar |
-| `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); read-only "From Google" section |
+| `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); Status dropdown; read-only "From Google" section |
 | `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Notes integration, toolbar style, native menubar |
 | `src/oauth.[ch]` | OAuth 2.0 installed-app flow: PKCE + loopback listener; refresh token in ini; access tokens in memory |
 | `src/gtasks.[ch]` | Two-way sync engine + move/clear worker jobs |
@@ -151,6 +151,52 @@ the user).  A logic test harness lives in the session scratchpad
   worker/idle callback — re-resolve via `lib_of(app)` and no-op when
   NULL (the window may close mid-flight).  The settings window guards
   the same way (`settings != sw`).
+
+## Task status (the tri-state that replaced `done`)
+
+A task's completion is ONE field, `tasks.status` (`BtTaskStatus`: 0 New,
+1 In Progress, 2 Done — the values are the on-disk encoding, do not
+renumber).  Schema v7 added it, backfilled `done = 1` → Done, and
+**DROPPED `tasks.done`**; the drop is conditional on the backfill's
+`sqlite3_exec` having returned OK, because dropping the source column
+after a copy that never ran would throw every completion away.  An
+sqlite too old for DROP COLUMN (< 3.35) just leaves `done` behind
+unread, which is harmless — its `NOT NULL DEFAULT 0` keeps INSERTs
+working.  There is no `t->done` any more: every "is it complete?" test
+is `t->status == BT_STATUS_DONE`.
+
+Google Tasks and Notes are both BINARY, so the third state is local by
+construction.  `bt_status_apply_done(cur, done)` is the single rule
+every done-only source folds through — the ✓ column, the context menu's
+Mark Complete/Incomplete, the subtask checkboxes, a Google pull, a Notes
+listing:
+
+- `done` → **Done**;
+- `!done` → **In Progress** if it WAS Done (a ticked task has plainly
+  been worked on), else `cur` **unchanged** — so a New task survives a
+  round trip through a done-only system instead of being promoted.
+
+The SQL paths that need the row's OLD status (`bt_db_task_apply_notes`)
+spell the same rule as a CASE rather than reading it back in a second
+statement.  **New is reachable only from the editor's dropdown.**
+
+**Every status change stamps `updated_at`** — `bt_db_task_set_status`
+and `bt_db_task_update` alike, New ↔ In Progress included.  Status is
+the successor of a SYNCED field, NOT a local flag like
+`pinned`/`priority`, so it does not get their deliberate missing bump: a
+status move that stamps nothing is invisible to every consumer of
+`updated_at`, leaving the row reading as untouched since the last sync
+with no record that anything happened.  The known cost, accepted
+deliberately (2026-08-25): a New ↔ In Progress move dirties a row whose
+REMOTE content is unchanged, and on the incremental-listing path — where
+an unchanged remote task is simply absent — `sync_tasks` answers a dirty
+row with an etag-guarded PATCH carrying a body identical to what is
+already there.  On a FULL listing nothing is sent, because `differs`
+compares done-ness and finds none.  Don't "optimize" this back into a
+conditional bump.
+
+`completed_at` is stamped on ENTERING Done and cleared on leaving; an
+already-Done task keeps its first stamp.
 
 ## GUI rules (visual parity with Notes)
 
@@ -232,9 +278,18 @@ the user).  A logic test harness lives in the session scratchpad
   func).  Dimmed markup uses Pango `alpha`, NEVER a fixed gray —
   hardcoded grays are unreadable on the blue selection.  Due tint:
   overdue #c01c28, today #d19a00, ahead #26a269, computed at draw time.
-  Right-clicking any column header shows a hide/show menu for the Done
-  and Due Date columns; visibility persists in `col_done_visible` /
-  `col_due_visible`.  On **macOS only** (`#ifndef GDK_WINDOWING_QUARTZ`
+  The **Status** column (New / In Progress / Done) sits between Task and
+  Due Date, sorted by `TL_STATUS` (the enum, so the order is the
+  workflow's and not the alphabet's) while its text comes from
+  `TL_STATUS_TEXT`.  It defaults to **HIDDEN** (`col_status_visible`,
+  default 0) — the ✓ column is the same field seen as a tick.  That ✓
+  column is kept as a CONVENIENCE VIEW, never a second field: `TL_DONE`
+  is `status == BT_STATUS_DONE`, and a click writes Done (ticking) or In
+  Progress (unticking) back through the status rule above.
+  Right-clicking any column header shows a hide/show menu for the Done,
+  Status, Due Date and Completion Date columns; visibility persists in
+  `col_done_visible` / `col_status_visible` / `col_due_visible` /
+  `col_completed_visible`.  On **macOS only** (`#ifndef GDK_WINDOWING_QUARTZ`
   compiles it out — the quartz backend's button drawing is the reason to
   restyle, so an X11 build on a Mac keeps its theme, and Linux keeps the
   standard GTK theme untouched) column headers are flattened to the
@@ -354,8 +409,16 @@ the user).  A logic test harness lives in the session scratchpad
   Tasks" is single-row only.  Bulk data
   rides on menu items as `g_array_ref`'d id arrays with destroy
   notifies.
-- Editor: 600 ms debounced write-through saves; done/pinned save
-  immediately.  NEVER rewrite the due entry while it has focus, and a
+- Editor: 600 ms debounced write-through saves; status/pinned save
+  immediately.  The first row is `Status: [combo]` … `Due: [entry] 📅`
+  and the Favorite / High Priority checkboxes moved to a row of their
+  own — TWO rows, because the window asks for 490 px and takes its
+  NATURAL height, so an over-wide row would silently widen every editor
+  while an extra row costs one row of height (measured 307 → 335
+  folded).  The combo's rows are the `BtTaskStatus` values IN ORDER, so
+  the active index IS the enum value (`editor_status_get`, which clamps
+  an out-of-range value off disk to New rather than leaving the combo
+  blank).  NEVER rewrite the due entry while it has focus, and a
   save must not clobber the stored date when the entry holds partial/
   invalid text (`editor_due_entry_parse`).  Editors are singletons per
   task (`app->editors` gint64 keys) / per Notes ref
@@ -445,7 +508,12 @@ the user).  A logic test harness lives in the session scratchpad
   412 skip for as long as the flag keeps changing.
   The API has NO starring and `due` is DATE-ONLY (time is documented as
   discarded and unreadable) — both confirmed against the docs; don't
-  re-attempt.
+  re-attempt.  Its own `status` is BINARY too (completed /
+  needsAction), so New and In Progress both push needsAction and the
+  difference between them never leaves this machine; the dirty-compare
+  therefore tests `(t->status == BT_STATUS_DONE) != match->done`, not
+  the whole field, or a New → In Progress move would push a body
+  identical to what is already there.
 - `hidden` remote tasks (completed + cleared) are never re-created
   locally — that's what keeps Clear Completed from resurrecting rows.
 - Cross-list move: `tasks.move` + `destinationTasklist` on a worker
@@ -496,8 +564,13 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
 - Field ownership: Notes owns TITLE, DONE and DUE; a title edited in
   Lists is overwritten next pass (the CLI has no verb to rewrite an
   item's text).  Everything else is Lists-only and never leaves.
+  Notes' DONE is binary, so the mirror speaks only in the DONE-ness of
+  `status` (`local_done` in `sync_item`): a New ↔ In Progress move is
+  not a pending write and has nothing to push, and an item Notes
+  reports as unfinished keeps whichever of the two it already had.
 - **Writes are cached, not live.** `tasks.bn_done`/`bn_due` hold what
-  Notes was last known to have, so the rows where `done`/`due` differ
+  Notes was last known to have, so the rows whose done-ness
+  (`status == BT_STATUS_DONE`) or `due` differs
   from that baseline ARE the pending-write set — no queue table to
   corrupt, and it survives a crash.  Each pass pushes them in bulk on
   `notes_sync_interval_min` (default 5; 0 = only on Sync).  A local

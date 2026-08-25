@@ -392,15 +392,20 @@ task_body(const BtTask *t)
     bt_json_escape(s, t->title);
     g_string_append(s, ", \"notes\": ");
     bt_json_escape(s, t->notes);
+    /* Google's own "status" is BINARY (completed / needsAction), so our
+     * tri-state flattens onto it: New and In Progress both push
+     * needsAction, and the distinction between them stays local — the
+     * API has no third value and no field to smuggle one in.               */
     g_string_append(s, ", \"status\": ");
-    bt_json_escape(s, t->done ? "completed" : "needsAction");
+    bt_json_escape(s, t->status == BT_STATUS_DONE ? "completed"
+                                                  : "needsAction");
     gchar *due = due_to_rfc3339(t->due);
     g_string_append(s, ", \"due\": ");
     bt_json_escape(s, due);         /* NULL → the literal `null`            */
     g_free(due);
     /* Preserve the real completion time across the sync (Google would
      * otherwise stamp "now" when status flips to completed).                */
-    if (t->done && t->completed_at != 0) {
+    if (t->status == BT_STATUS_DONE && t->completed_at != 0) {
         gchar *completed = unix_to_rfc3339(t->completed_at);
         g_string_append(s, ", \"completed\": ");
         bt_json_escape(s, completed);
@@ -830,11 +835,14 @@ sync_tasks_for_list(BtDatabase *db, const gchar *token, gint64 list_id,
             continue;
         }
 
-        /* Both sides live: compare the synced fields.                       */
+        /* Both sides live: compare the synced fields.  Only the DONE-ness
+         * of the status counts — a New ↔ In Progress move is invisible to
+         * Google, so treating it as a difference would push a body
+         * identical to what is already there.                              */
         gboolean differs = strcmp(t->title, match->title) != 0 ||
                            strcmp(t->notes, match->notes) != 0 ||
                            t->due != match->due ||
-                           t->done != match->done;
+                           (t->status == BT_STATUS_DONE) != match->done;
         if (!differs) {
             /* Content equal — still refresh the mirror metadata when the
              * remote bumped OR the row predates the metadata columns
@@ -862,7 +870,11 @@ sync_tasks_for_list(BtDatabase *db, const gchar *token, gint64 list_id,
             apply.title        = match->title;
             apply.notes        = match->notes;
             apply.due          = match->due;
-            apply.done         = match->done;
+            /* Google reports done-ness only, so fold it onto the status
+             * the row already holds: a remote un-tick lands on In
+             * Progress, and a still-unfinished New task stays New.         */
+            apply.status       = bt_status_apply_done(t->status,
+                                                      match->done);
             apply.updated_at   = match->updated;
             apply.completed_at = match->completed;
             apply.etag         = match->etag;
@@ -903,7 +915,9 @@ sync_tasks_for_list(BtDatabase *db, const gchar *token, gint64 list_id,
             nt.title        = r->title;
             nt.notes        = r->notes;
             nt.due          = r->due;
-            nt.done         = r->done;
+            /* A row that did not exist here a moment ago: nothing to
+             * preserve, so not-done means NEW.                             */
+            nt.status       = r->done ? BT_STATUS_DONE : BT_STATUS_NEW;
             nt.updated_at   = r->updated;
             nt.completed_at = r->completed;
             nt.etag         = r->etag;
@@ -1359,7 +1373,7 @@ bt_gtasks_clear_completed(BtApp *app, gint64 list_id)
         guint n = 0;                 /* how many rows went                  */
         for (guint i = 0; i < tasks->len; i++) {
             BtTask *t = g_ptr_array_index(tasks, i);
-            if (t->done) {
+            if (t->status == BT_STATUS_DONE) {
                 bt_db_task_delete(app->db, t->id);
                 n++;
             }
