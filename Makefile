@@ -9,7 +9,8 @@
 #     sudo port install pkgconf gtk3 +quartz curl
 #
 # Targets:
-#     make          — build the `tasks` binary
+#     make          — build the `tasks` binary and its plugins
+#     make plugins  — build only plugins/ from src/plugins/
 #     make clean    — remove build artifacts (including dist/)
 #     make run      — build and launch the app
 #     make app      — macOS .app bundle → dist/Tasks.app
@@ -82,6 +83,9 @@ SRCS     := src/main.c \
             src/app.c \
             src/task_ops.c \
             src/task_worker.c \
+            src/plugin_loader.c \
+            src/task_view.c \
+            src/core_views.c \
             src/bnotes.c \
             src/bnsync.c \
             src/db.c \
@@ -100,9 +104,49 @@ OBJS     := $(SRCS:src/%.c=build/%.o)
 # The final executable name.
 BIN      := tasks
 
+# --- Plugins -----------------------------------------------------------------
+# Each src/plugins/<id>.c builds into plugins/<id>.<ext>, loaded at startup
+# by src/plugin_loader.c.  The FILENAME is the plugin id (the loader reads
+# the enabled setting from it before dlopen, so a disabled plugin is never
+# mapped) and must match the id in its TaskPlugin struct.
+#
+# A plugin imports NOTHING from the host — everything arrives in the
+# TaskHostApi table (see plugin.h) — so these link against no host object
+# and need no symbol-resolution flags.  That is also why the host is NOT
+# built with -rdynamic: exporting the app's symbols would cost the app a
+# larger dynamic symbol table for a mechanism it does not use.
+#
+# -fvisibility=hidden keeps everything but task_plugin_entry (marked
+# TASK_PLUGIN_EXPORT) out of the module's dynamic symbol table: a smaller
+# table resolves faster under RTLD_NOW, and nothing else is callable.
+PLUGIN_SRCS := $(wildcard src/plugins/*.c)
+PLUGIN_DIR  := plugins
+
+# .so everywhere, including macOS: the extension is a build convention,
+# not a format, and one name keeps the docs and the loader honest.  Only
+# the LINK flag genuinely differs between the two platforms.
+PLUGIN_EXT  := so
+UNAME_S     := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+PLUGIN_LDFLAGS := -dynamiclib -undefined dynamic_lookup
+else
+PLUGIN_LDFLAGS := -shared
+endif
+
+PLUGINS := $(patsubst src/plugins/%.c,$(PLUGIN_DIR)/%.$(PLUGIN_EXT),$(PLUGIN_SRCS))
+
+$(PLUGIN_DIR)/%.$(PLUGIN_EXT): src/plugins/%.c $(wildcard src/*.h) Makefile
+	@mkdir -p $(PLUGIN_DIR)
+	$(CC) $(CFLAGS) -fPIC -fvisibility=hidden -Isrc \
+	      $(PLUGIN_LDFLAGS) -o $@ $<
+
+# NOTE: the `plugins` convenience target is declared BELOW `all`.  make
+# builds the first target in the file, so declaring it here would make
+# `make` stop building the binary.
+
 # Default target: build the application binary (and keep the clangd
 # compilation database fresh — it only regenerates on Makefile changes).
-all: $(BIN) compile_commands.json
+all: $(BIN) $(PLUGINS) compile_commands.json
 
 # Link all object files into the final binary.
 $(BIN): $(OBJS)
@@ -136,13 +180,16 @@ compile_commands.json: Makefile VERSION $(wildcard client_credentials.mk)
 	echo; echo ']'; } > $@
 	@echo "wrote $@"
 
+# Build only the plugins.
+plugins: $(PLUGINS)
+
 # Build and launch the application.
 run: $(BIN)
 	./$(BIN)
 
 # Remove all build artifacts.
 clean:
-	rm -rf build $(BIN) $(DIST)
+	rm -rf build $(BIN) $(DIST) $(PLUGIN_DIR)
 
 # =============================================================================
 # Optional packaging targets — everything lands in dist/.
@@ -218,4 +265,4 @@ app: $(BIN)
 	  > "$(APP_DIR)/Contents/Info.plist"
 	@echo "built $(APP_DIR)"
 
-.PHONY: all run clean app
+.PHONY: all run clean app plugins

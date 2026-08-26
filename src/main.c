@@ -17,6 +17,8 @@
 #include "bnsync.h"
 #include "backup.h"
 #include "task_worker.h"
+#include "core_views.h"
+#include "plugin_loader.h"
 #include "library_window.h"
 #ifdef HAVE_GTKOSX
 #include <gtkosxapplication.h>
@@ -326,9 +328,18 @@ main(int argc, char **argv)
      * registries are unlocked (see task_worker.h and task_ops.h).  The
      * app has to be built first — a worker definition points at the
      * app's own in-flight flag and GSource id.                          */
+    task_core_views_init();          /* the app's own sidebar views first  */
     task_gtasks_init(app);
     task_bnsync_init(app);
     task_backup_init(app);
+
+    /* Plugins load LAST of the registrants but still before the window:
+     * the sidebar is built from the view registry, so a plugin's view has
+     * to be in it by then.  Loading after the app's own registrations
+     * also means a plugin's view sorts after the built-ins at equal
+     * `sort`, which is the expected reading order.                       */
+    task_plugins_load(app);
+    task_plugins_db_open(app, db);
 
     TaskBoot boot = { app, db_path };
     app->gtk_app = gtk_application_new("org.example.tasks",
@@ -346,6 +357,7 @@ main(int argc, char **argv)
     g_slist_free_full(app->changed_l, g_free);
     g_slist_free_full(app->tasks_l,   g_free);
     g_slist_free_full(app->status_l,  g_free);
+    task_plugins_shutdown(app);
     task_db_close(app->db);
     g_free(app->db_dir);
     g_free(app);

@@ -6,6 +6,7 @@
 #include "bnotes.h"
 #include "task_ops.h"                /* cross-list moves are a core op       */
 #include "task_worker.h"             /* the shared periodic-pass scheduler   */
+#include "task_view.h"               /* the "Action Items" sidebar view      */
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -458,6 +459,46 @@ task_bnsync_auto_start(TaskApp *app, const gchar *db_path)
 }
 
 /* ---------------------------------------------------------------------------
+ * The "Action Items" sidebar view.
+ *
+ * A FILTERED view over every mirrored task, wherever each one actually
+ * lives — not a list of its own.  That is why virtual_rows is TRUE: each
+ * row keeps its "in <list>" line, which is the only thing that says
+ * where the task really sits.
+ * ------------------------------------------------------------------------- */
+static gboolean
+bn_view_visible(TaskApp *app, gpointer d)
+{
+    (void)app;
+    (void)d;
+    return task_app_config_get_bool("notes_sync", FALSE) &&
+           task_app_config_get_bool("notes_meta_row", TRUE);
+}
+
+static GPtrArray *
+bn_view_query(TaskApp *app, gpointer d)
+{
+    (void)d;
+    return task_db_tasks_bn_mirror(app->db);
+}
+
+/* The id is "bn_actions" because that is what manual_order_bn_actions and
+ * kanban_order_bn_actions already say in users' ini files — the order
+ * keys are derived from it (see task_view.h).                             */
+static const TaskView bn_view = {
+    .id           = "bn_actions",
+    .label        = "\xe2\x9d\x97\xef\xb8\x8f  Action Items",
+    .name         = "Action Items",
+    .unit         = "action item",
+    .sort         = 30,
+    .visible      = bn_view_visible,
+    .query        = bn_view_query,
+    .virtual_rows = TRUE,
+    .not_a_list   = "Action Items is a view, not a list \xe2\x80\x94 "
+                    "hide it in File \xe2\x86\x92 Settings\xe2\x80\xa6",
+};
+
+/* ---------------------------------------------------------------------------
  * task_bnsync_init() — register the mirror's worker and db hooks (see bnsync.h).
  * ------------------------------------------------------------------------- */
 void
@@ -469,4 +510,5 @@ task_bnsync_init(TaskApp *app)
     task_worker_register(&bn_worker_live);
 
     task_db_add_delete_hook(bn_delete_hook, NULL);
+    task_view_register(&bn_view);
 }

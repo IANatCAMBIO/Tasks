@@ -10,6 +10,7 @@
 #include "task_ops.h"
 #include "backup.h"
 #include "task_worker.h"
+#include "task_view.h"
 #include "settings_window.h"
 #include <stdlib.h>
 #include <string.h>
@@ -35,12 +36,11 @@
 
 /* Sidebar row kinds (SB_KIND column).                                      */
 enum {
-    SB_KIND_PINNED = 0,              /* "Pinned Tasks" virtual list         */
-    SB_KIND_ALL,                     /* "All Tasks" virtual list            */
-    SB_KIND_BN_ACTIONS,              /* "Action Items" — a filtered view
-                                      * of every mirrored Notes item      */
-    SB_KIND_TODAY,                   /* "Due Today" virtual list            */
-    SB_KIND_FORECAST,                /* "Weekly Forecast" virtual list      */
+    SB_KIND_VIEW = 0,                /* a registered virtual view; SB_ID
+                                      * holds its registry INDEX, not a
+                                      * list id (see task_view.h).  Panel
+                                      * views (the Weekly Forecast) are
+                                      * registered like any other          */
     SB_KIND_HEADER,                  /* the "Lists" section header          */
     SB_KIND_LIST,                    /* a real list                         */
     SB_KIND_GROUP                    /* a list-group sub-header             */
@@ -87,6 +87,8 @@ typedef struct {
     GtkWidget    *task_view;
     GtkWidget    *task_scroll;       /* the regular task pane; swapped
                                       * with forecast_box (visibility)      */
+    GPtrArray    *panels;            /* GtkWidget* per view index, NULL
+                                      * for a query view (see task_view.h) */
     GtkWidget    *forecast_box;      /* Weekly Forecast: the scroller
                                       * holding the 7 stacked day lists     */
     GtkWidget    *day_labels[7];     /* the day headings, Sunday first      */
@@ -618,26 +620,63 @@ static gchar   *list_order_key(gint64 list_id);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
 static void     on_toggle_kanban(GtkWidget *, gpointer);
 static void     full_refresh(TaskLibrary *lw);
+static GtkWidget *forecast_day_section(TaskLibrary *lw, gint d);
 
-/* sidebar_show_pinned() — whether the Pinned Tasks meta row should
- * exist: any pinned task.  Mirrored Notes items are ordinary tasks
- * carrying the ordinary `pinned` flag, so no separate check remains.       */
+/* sel_view() — the registered view the sidebar is sitting on, or NULL
+ * when the selection is a list or a group.                                 */
+static const TaskView *
+sel_view(TaskLibrary *lw)
+{
+    if (lw->sel_kind != SB_KIND_VIEW)
+        return NULL;
+    return task_view_nth((guint)lw->sel_id);
+}
+
+/* view_refuse() — a virtual view is not a list, so Edit List / Delete
+ * List have nothing to act on.  Posts the view's own explanation (or a
+ * generic one) and returns TRUE when the caller should stop.
+ *
+ * `alternative` completes the sentence for a view that did not supply
+ * its own `not_a_list` text.                                              */
+static gboolean
+view_refuse(TaskLibrary *lw, const gchar *alternative)
+{
+    const TaskView *v = sel_view(lw);
+    if (v == NULL)
+        return FALSE;
+    if (v->not_a_list != NULL)
+        task_app_status(lw->app, "%s", v->not_a_list);
+    else
+        task_app_status(lw->app,
+                        "%s is a view, not a list \xe2\x80\x94 %s",
+                        v->name != NULL ? v->name : v->id, alternative);
+    return TRUE;
+}
+
+/* panel_widget() — the widget a panel view built, or NULL (query view,
+ * or the pane has not been constructed yet).                              */
+static GtkWidget *
+panel_widget(TaskLibrary *lw, guint view_index)
+{
+    if (lw->panels == NULL || view_index >= lw->panels->len)
+        return NULL;
+    return g_ptr_array_index(lw->panels, view_index);
+}
+
+/* view_visible() — whether a view's sidebar row should exist right now.   */
+static gboolean
+view_visible(TaskLibrary *lw, const TaskView *v)
+{
+    return v->visible == NULL || v->visible(lw->app, v->user_data);
+}
+
+/* sidebar_show_pinned() — the Favorites row's visibility, which the
+ * light notify hook watches for a 0 <-> nonzero transition.               */
 static gboolean
 sidebar_show_pinned(TaskLibrary *lw)
 {
-    return task_db_has_pinned(lw->app->db);
-}
-
-/* sidebar_show_actions() — whether the "Action Items" meta row should
- * exist: the Notes integration on, and the row not switched off in
- * Settings.  It is a FILTERED VIEW over every mirrored task, wherever
- * each one actually lives, which is why it sits with the other meta
- * rows instead of among the real lists.                                    */
-static gboolean
-sidebar_show_actions(void)
-{
-    return task_app_config_get_bool("notes_sync", FALSE) &&
-           task_app_config_get_bool("notes_meta_row", TRUE);
+    const TaskView *v = task_view_find("pinned");
+    return v != NULL && view_visible(lw, v);
 }
 
 static void
@@ -689,30 +728,19 @@ refresh_sidebar(TaskLibrary *lw)
         }
     }
     gtk_tree_store_clear(lw->sb_store);
-    struct {
-        gint kind;
-        const gchar *label;
-    } metas[] = {                    /* emoji + two spaces, like lists      */
-        { SB_KIND_PINNED,     "\xe2\xad\x90\xef\xb8\x8f  Favorites" },
-        { SB_KIND_ALL,        "\xf0\x9f\x94\xae  All Tasks" },
-        { SB_KIND_BN_ACTIONS, "\xe2\x9d\x97\xef\xb8\x8f  Action Items" },
-        { SB_KIND_TODAY,      "\xe2\x98\x80\xef\xb8\x8f  Due Today" },
-        { SB_KIND_FORECAST, "\xf0\x9f\x8c\xa4\xef\xb8\x8f  Weekly Forecast" },
-    };
+    /* The virtual views, straight from the registry — each one decides
+     * for itself whether it exists right now.  SB_ID carries the view's
+     * registry INDEX so the selection handler can find it again.          */
     lw->pinned_row_shown = sidebar_show_pinned(lw);
-    for (gsize i = 0; i < G_N_ELEMENTS(metas); i++) {
-        if (metas[i].kind == SB_KIND_PINNED && !lw->pinned_row_shown)
-            continue;                /* hidden while nothing is pinned      */
-        if (metas[i].kind == SB_KIND_BN_ACTIONS && !sidebar_show_actions())
-            continue;                /* integration or row off in Settings  */
-        if (metas[i].kind == SB_KIND_FORECAST &&
-            !task_app_config_get_bool("weekly_forecast", TRUE))
-            continue;                /* disabled in Settings                */
+    for (guint i = 0; i < task_view_count(); i++) {
+        const TaskView *v = task_view_nth(i);
+        if (!view_visible(lw, v))
+            continue;
         gtk_tree_store_append(lw->sb_store, &iter, NULL);
         gtk_tree_store_set(lw->sb_store, &iter,
-                           SB_KIND, metas[i].kind,
-                           SB_ID, (gint64)0,
-                           SB_LABEL, metas[i].label,
+                           SB_KIND, SB_KIND_VIEW,
+                           SB_ID, (gint64)i,
+                           SB_LABEL, v->label,
                            SB_WEIGHT, PANGO_WEIGHT_BOLD,
                            -1);
     }
@@ -815,9 +843,14 @@ refresh_sidebar(TaskLibrary *lw)
         lw->sel_kind != SB_KIND_GROUP &&
         gtk_tree_model_get_iter_first(model, &iter)) {
         do {
-            gint kind;
-            gtk_tree_model_get(model, &iter, SB_KIND, &kind, -1);
-            if (kind == lw->sel_kind) {
+            gint   kind;
+            gint64 id;
+            gtk_tree_model_get(model, &iter, SB_KIND, &kind, SB_ID, &id, -1);
+            /* SB_ID matters as much as the kind now: every virtual view
+             * shares SB_KIND_VIEW and is told apart by its registry index,
+             * so matching on kind alone would reselect whichever view
+             * happened to come first.                                      */
+            if (kind == lw->sel_kind && id == lw->sel_id) {
                 selected = iter;
                 have_selected = TRUE;
                 break;
@@ -834,8 +867,8 @@ refresh_sidebar(TaskLibrary *lw)
         gtk_tree_model_get_iter_first(model, &iter)) {
         selected = iter;             /* first meta row                      */
         have_selected = TRUE;
-        gtk_tree_model_get(model, &iter, SB_KIND, &lw->sel_kind, -1);
-        lw->sel_id = 0;
+        gtk_tree_model_get(model, &iter, SB_KIND, &lw->sel_kind,
+                           SB_ID, &lw->sel_id, -1);
     }
 
     /* Restore the Lists section expansion and force it open when the
@@ -1661,16 +1694,10 @@ card_drag_stop(TaskLibrary *lw)
 static gchar *
 kanban_order_key(TaskLibrary *lw)
 {
-    switch (lw->sel_kind) {
-    case SB_KIND_LIST:
+    if (lw->sel_kind == SB_KIND_LIST)
         return g_strdup_printf("kanban_order_list_%" G_GINT64_FORMAT,
                                lw->sel_id);
-    case SB_KIND_ALL:        return g_strdup("kanban_order_all");
-    case SB_KIND_PINNED:     return g_strdup("kanban_order_pinned");
-    case SB_KIND_TODAY:      return g_strdup("kanban_order_today");
-    case SB_KIND_BN_ACTIONS: return g_strdup("kanban_order_bn_actions");
-    default:                 return NULL;
-    }
+    return task_view_order_key(sel_view(lw), "kanban_order");
 }
 
 /* ---------------------------------------------------------------------------
@@ -2459,6 +2486,90 @@ refresh_forecast(TaskLibrary *lw)
 }
 
 /* ---------------------------------------------------------------------------
+ * The Weekly Forecast as a registered PANEL view (see task_view.h).
+ *
+ * It is not a task list with a layout — it is seven dated day sections
+ * in one scroller — so there is nothing for the core's list or board to
+ * render, and nothing for a manual or card order to order.  That is what
+ * `panel_new` means, and it is why a panel view outranks Kanban.
+ *
+ * `panel_selection` is deliberately absent: the seven day views are
+ * SELECTION_MODE_NONE (seven views would otherwise each keep their own
+ * selection), so the honest answer to "what is selected" is nothing, and
+ * Delete Task correctly has nothing to act on while the forecast is up.
+ *
+ * user_data is the library window, bound at registration.  That is sound
+ * only because the window is a process singleton — see
+ * task_library_views_register().
+ * ------------------------------------------------------------------------- */
+static gboolean
+forecast_visible(TaskApp *app, gpointer user_data)
+{
+    (void)app;
+    (void)user_data;
+    return task_app_config_get_bool("weekly_forecast", TRUE);
+}
+
+static GtkWidget *
+forecast_panel_new(TaskApp *app, gpointer user_data)
+{
+    (void)app;
+    TaskLibrary *lw = user_data;
+    /* Seven full-width day sections stacked vertically, 6 px apart so the
+     * lists never touch, scrolling together in one outer scroller.        */
+    GtkWidget *week_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(week_box), 6);
+    for (gint d = 0; d < 7; d++)
+        gtk_box_pack_start(GTK_BOX(week_box),
+                           forecast_day_section(lw, d), FALSE, FALSE, 0);
+    lw->forecast_box = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lw->forecast_box),
+                                   GTK_POLICY_NEVER,
+                                   GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(lw->forecast_box), week_box);
+    return lw->forecast_box;
+}
+
+static void
+forecast_panel_refresh(TaskApp *app, GtkWidget *panel, gpointer user_data)
+{
+    (void)app;
+    (void)panel;
+    refresh_forecast(user_data);
+}
+
+static TaskView forecast_view = {
+    .id       = "forecast",
+    .label    = "\xf0\x9f\x8c\xa4\xef\xb8\x8f  Weekly Forecast",
+    .name     = "Weekly Forecast",
+    .sort     = 50,
+    .visible  = forecast_visible,
+    .panel_new     = forecast_panel_new,
+    .panel_refresh = forecast_panel_refresh,
+};
+
+/* ---------------------------------------------------------------------------
+ * task_library_views_register() — register the views the library window
+ * itself implements.
+ *
+ * Called from task_library_window_new BEFORE the pane is built, and safe
+ * to bind `lw` into the registry only because there is exactly one
+ * library window per process (main.c's on_activate presents the existing
+ * one rather than making a second).  When the forecast moves out to a
+ * plugin it will own its own state and this goes away.
+ * ------------------------------------------------------------------------- */
+static void
+task_library_views_register(TaskLibrary *lw)
+{
+    static gboolean done = FALSE;
+    if (done)
+        return;
+    forecast_view.user_data = lw;
+    task_view_register(&forecast_view);
+    done = TRUE;
+}
+
+/* ---------------------------------------------------------------------------
  * task_pane_mode_apply() — show exactly ONE of the three task-pane
  * variants.  The single place that answers "which pane is on screen":
  * refresh_tasks calls it, and so does the construction path after
@@ -2472,11 +2583,17 @@ refresh_forecast(TaskLibrary *lw)
 static void
 task_pane_mode_apply(TaskLibrary *lw)
 {
-    gboolean forecast = lw->sel_kind == SB_KIND_FORECAST;
-    gboolean kanban   = !forecast && lw->kanban;
-    gtk_widget_set_visible(lw->task_scroll,  !forecast && !kanban);
-    gtk_widget_set_visible(lw->forecast_box,  forecast);
-    gtk_widget_set_visible(lw->kanban_box,    kanban);
+    const TaskView *view  = sel_view(lw);
+    gboolean        panel = task_view_is_panel(view);
+    gboolean        kanban = !panel && lw->kanban;
+    gtk_widget_set_visible(lw->task_scroll, !panel && !kanban);
+    gtk_widget_set_visible(lw->kanban_box,   kanban);
+    /* Exactly one panel at most: show the selected view's, hide the rest. */
+    for (guint i = 0; i < task_view_count(); i++) {
+        GtkWidget *w = panel_widget(lw, i);
+        if (w != NULL)
+            gtk_widget_set_visible(w, panel && task_view_nth(i) == view);
+    }
 
     /* The sort toggle is INERT while Kanban View is on: the board is
      * always drag-sorted (its own per-lane order, kanban_order_*), and the
@@ -2549,14 +2666,20 @@ task_pane_mode_apply(TaskLibrary *lw)
 static void
 refresh_tasks(TaskLibrary *lw)
 {
-    gboolean forecast = lw->sel_kind == SB_KIND_FORECAST;
-    gboolean kanban   = !forecast && lw->kanban;
+    const TaskView *panel_view = sel_view(lw);
+    if (!task_view_is_panel(panel_view))
+        panel_view = NULL;
+    gboolean kanban = panel_view == NULL && lw->kanban;
     task_pane_mode_apply(lw);
-    if (forecast) {
+    if (panel_view != NULL) {
         /* Drop the hidden regular pane's rows: a stale selection there
          * would still feed the toolbar's Delete Task.                      */
         gtk_list_store_clear(lw->task_store);
-        refresh_forecast(lw);
+        /* sel_id IS the registry index (see SB_KIND_VIEW), so there is
+         * nothing to look up.                                             */
+        GtkWidget *w = panel_widget(lw, (guint)lw->sel_id);
+        if (w != NULL && panel_view->panel_refresh != NULL)
+            panel_view->panel_refresh(lw->app, w, panel_view->user_data);
         return;
     }
 
@@ -2567,41 +2690,22 @@ refresh_tasks(TaskLibrary *lw)
      * On the board that job belongs to lw->kanban_sel.                     */
     gtk_list_store_clear(lw->task_store);
 
-    /* Collect the tasks of the current view.                               */
+    /* Collect the tasks of the current view.  A registered view answers
+     * for itself (see task_view.h); anything else is a real list.          */
+    const TaskView *view = sel_view(lw);
     GPtrArray *tasks;                /* Task* rows to show                */
-    gboolean virtual_view = TRUE;    /* show the "in <list>" line           */
+    gboolean virtual_view;           /* show the "in <list>" line           */
     const gchar *view_name = "";
-    switch (lw->sel_kind) {
-    case SB_KIND_PINNED:
-        tasks = task_db_tasks_pinned(lw->app->db);
-        view_name = "Favorites";
-        break;
-    case SB_KIND_ALL:
-        tasks = task_db_tasks_all_visible(lw->app->db);
-        view_name = "All Tasks";
-        break;
-    case SB_KIND_BN_ACTIONS:
-        /* A FILTERED view over the mirrored Notes items, wherever
-         * each one lives — not a list of its own.  virtual_view stays
-         * TRUE so every row keeps its "in <list>" line, the only thing
-         * that says where the task actually sits.                          */
-        tasks = task_db_tasks_bn_mirror(lw->app->db);
-        view_name = "Action Items";
-        break;
-    case SB_KIND_TODAY: {
-        gint64 lo, hi;
-        task_day_bounds(0, &lo, &hi);
-        if (task_app_config_get_bool("due_today_show_overdue", FALSE))
-            lo = 1;          /* include all past-due tasks (due > 0)        */
-        tasks = task_db_tasks_due_between(lw->app->db, lo, hi);
-        view_name = "Due Today";
-        break;
-    }
-    case SB_KIND_LIST:
-    default:
-        tasks = task_db_tasks_toplevel(lw->app->db, lw->sel_id);
+    const gchar *unit      = "task";
+    if (view != NULL) {
+        tasks        = view->query(lw->app, view->user_data);
+        virtual_view = view->virtual_rows;
+        view_name    = view->name != NULL ? view->name : "";
+        if (view->unit != NULL)
+            unit = view->unit;
+    } else {
+        tasks        = task_db_tasks_toplevel(lw->app->db, lw->sel_id);
         virtual_view = FALSE;
-        break;
     }
 
     TaskRowCtx ctx;                  /* shared lookups (see above)          */
@@ -2623,11 +2727,10 @@ refresh_tasks(TaskLibrary *lw)
                        : task_db_list_get(lw->app->db, lw->sel_id);
     const gchar *where = virtual_view    ? view_name
                        : sel_list != NULL ? sel_list->name : "?";
-    gchar *loc = lw->sel_kind == SB_KIND_BN_ACTIONS
-        ? g_strdup_printf("%s - %u action item%s",
-                          where, shown, shown == 1 ? "" : "s")
-        : g_strdup_printf("%s - %u task%s",
-                          where, shown, shown == 1 ? "" : "s");
+    /* The view names its own noun ("action item" reads better than
+     * "task" for a mirrored list); only the plural "s" is ours.           */
+    gchar *loc = g_strdup_printf("%s - %u %s%s", where, shown, unit,
+                                 shown == 1 ? "" : "s");
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
     g_free(loc);
     task_list_free(sel_list);
@@ -2909,7 +3012,18 @@ selected_list_id(TaskLibrary *lw)
 static GArray *
 selected_task_ids(TaskLibrary *lw)
 {
-    if (lw->kanban && lw->sel_kind != SB_KIND_FORECAST)
+    /* A panel view owns its pane, so only it can answer.  NULL is a fine
+     * answer — the forecast's day views deliberately have no selection.   */
+    const TaskView *view = sel_view(lw);
+    if (task_view_is_panel(view)) {
+        GArray *ids = NULL;
+        GtkWidget *w = panel_widget(lw, (guint)lw->sel_id);
+        if (w != NULL && view->panel_selection != NULL)
+            ids = view->panel_selection(lw->app, w, view->user_data);
+        return ids != NULL ? ids
+                           : g_array_new(FALSE, FALSE, sizeof(gint64));
+    }
+    if (lw->kanban)
         return card_sel_ids(lw);
     GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
     GtkTreeSelection *sel =
@@ -3762,11 +3876,8 @@ on_edit_list(GtkWidget *w, gpointer data)
 {
     (void)w;
     TaskLibrary *lw = data;
-    if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        task_app_status(lw->app, "Action Items is a view, not a list \xe2\x80\x94 "
-                        "edit the list each item lives in");
+    if (view_refuse(lw, "edit the list each item lives in"))
         return;
-    }
     gint64 id = selected_list_id(lw);
     if (id == 0) {
         task_app_status(lw->app, "Select a list to edit");
@@ -3831,11 +3942,8 @@ on_delete_list(GtkWidget *w, gpointer data)
         }
         return;
     }
-    if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        task_app_status(lw->app, "Action Items is a view, not a list \xe2\x80\x94 "
-                        "hide it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
+    if (view_refuse(lw, "hide it in File \xe2\x86\x92 Settings\xe2\x80\xa6"))
         return;
-    }
     gint64 id = selected_list_id(lw);
     if (id == 0) {
         task_app_status(lw->app, "Select a list to delete");
@@ -5007,6 +5115,9 @@ on_library_destroy(GtkWidget *w, gpointer data)
      * can destroy sibling editors mid-teardown (a failing Notes CLI
      * closes its editors on reload) and leave close_all's snapshot list
      * holding freed windows.                                               */
+    /* The widgets belong to the pane and die with it; only the index
+     * array is ours.                                                       */
+    g_clear_pointer(&lw->panels, (GDestroyNotify)g_ptr_array_unref);
     task_app_unlisten(lw->app, lw->listen_changed);
     task_app_unlisten(lw->app, lw->listen_tasks);
     task_app_unlisten(lw->app, lw->listen_status);
@@ -5050,20 +5161,9 @@ list_order_key(gint64 list_id)
 static gchar *
 view_order_key(TaskLibrary *lw)
 {
-    switch (lw->sel_kind) {
-    case SB_KIND_LIST:
+    if (lw->sel_kind == SB_KIND_LIST)
         return list_order_key(lw->sel_id);
-    case SB_KIND_ALL:
-        return g_strdup("manual_order_all");
-    case SB_KIND_PINNED:
-        return g_strdup("manual_order_pinned");
-    case SB_KIND_TODAY:
-        return g_strdup("manual_order_today");
-    case SB_KIND_BN_ACTIONS:
-        return g_strdup("manual_order_bn_actions");
-    default:
-        return NULL;
-    }
+    return task_view_order_key(sel_view(lw), "manual_order");
 }
 
 /* task_view_save_manual_order() — serialize the task pane's current row
@@ -5435,6 +5535,9 @@ task_library_window_new(TaskApp *app)
 {
     TaskLibrary *lw = g_new0(TaskLibrary, 1);
     lw->app = app;
+    /* Before anything reads the registry: the sidebar, the pane builder
+     * and refresh_tasks all walk it.                                       */
+    task_library_views_register(lw);
     /* Seeded here, not left to task_manual_sort_apply at the end of this
      * function: the toolbar icon, tooltip and View-menu check are all built
      * before that call and read the cache.                                 */
@@ -5931,20 +6034,17 @@ task_library_window_new(TaskApp *app)
                                    GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(lw->task_scroll), lw->task_view);
 
-    /* The Weekly Forecast panel: seven full-width day sections stacked
-     * vertically, 6 px apart so the lists never touch, scrolling
-     * together in one outer scroller.  It shares the pane with the
-     * regular task list; refresh_tasks swaps their visibility.             */
-    GtkWidget *week_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(week_box), 6);
-    for (gint d = 0; d < 7; d++)
-        gtk_box_pack_start(GTK_BOX(week_box),
-                           forecast_day_section(lw, d), FALSE, FALSE, 0);
-    lw->forecast_box = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lw->forecast_box),
-                                   GTK_POLICY_NEVER,
-                                   GTK_POLICY_AUTOMATIC);
-    gtk_container_add(GTK_CONTAINER(lw->forecast_box), week_box);
+    /* Every panel view builds its pane here (see task_view.h).  The
+     * Weekly Forecast is currently the only one, and the core still owns
+     * its implementation — but it goes through the same interface a
+     * plugin would, so moving it out is relocation, not redesign.         */
+    lw->panels = g_ptr_array_new();
+    for (guint i = 0; i < task_view_count(); i++) {
+        const TaskView *v = task_view_nth(i);
+        GtkWidget *w = task_view_is_panel(v)
+                     ? v->panel_new(lw->app, v->user_data) : NULL;
+        g_ptr_array_add(lw->panels, w);
+    }
 
     /* The Kanban board: three equal lanes side by side, 6 px apart, in
      * one outer scroller — the forecast's construction with the sections
@@ -5968,8 +6068,11 @@ task_library_window_new(TaskApp *app)
     GtkWidget *task_pane = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_pack_start(GTK_BOX(task_pane), lw->task_scroll,
                        TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(task_pane), lw->forecast_box,
-                       TRUE, TRUE, 0);
+    for (guint i = 0; i < lw->panels->len; i++) {
+        GtkWidget *w = g_ptr_array_index(lw->panels, i);
+        if (w != NULL)
+            gtk_box_pack_start(GTK_BOX(task_pane), w, TRUE, TRUE, 0);
+    }
     gtk_box_pack_start(GTK_BOX(task_pane), lw->kanban_box,
                        TRUE, TRUE, 0);
     gtk_paned_pack2(GTK_PANED(paned), task_pane, TRUE, FALSE);
