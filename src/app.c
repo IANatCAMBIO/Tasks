@@ -8,35 +8,143 @@
 #include "gtasks.h"
 #include "bnsync.h"
 #include "backup.h"
+#include "task_worker.h"
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
 /* ---------------------------------------------------------------------------
- * task_app_status() — post an event message to the library status bar.
+ * Change notification (see app.h).  One entry per subscription; `fn` is
+ * a TaskAppNotifyFn on the changed/tasks lists and a TaskAppStatusFn on
+ * the status list.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    guint    id;
+    gpointer fn;
+    gpointer user_data;
+} TaskAppListener;
+
+/* listener_add() — append a subscription, returning its id.               */
+static guint
+listener_add(TaskApp *app, GSList **list, gpointer fn, gpointer user_data)
+{
+    if (app == NULL || fn == NULL)
+        return 0;
+    TaskAppListener *l = g_new0(TaskAppListener, 1);
+    l->id        = ++app->listener_next;
+    l->fn        = fn;
+    l->user_data = user_data;
+    *list = g_slist_append(*list, l);
+    return l->id;
+}
+
+guint
+task_app_listen_changed(TaskApp *app, TaskAppNotifyFn fn, gpointer user_data)
+{
+    return listener_add(app, &app->changed_l, (gpointer)fn, user_data);
+}
+
+guint
+task_app_listen_tasks(TaskApp *app, TaskAppNotifyFn fn, gpointer user_data)
+{
+    return listener_add(app, &app->tasks_l, (gpointer)fn, user_data);
+}
+
+guint
+task_app_listen_status(TaskApp *app, TaskAppStatusFn fn, gpointer user_data)
+{
+    return listener_add(app, &app->status_l, (gpointer)fn, user_data);
+}
+
+/* unlisten_from() — drop subscription `id` from one list; TRUE if found. */
+static gboolean
+unlisten_from(GSList **list, guint id)
+{
+    for (GSList *n = *list; n != NULL; n = n->next) {
+        TaskAppListener *l = n->data;
+        if (l->id == id) {
+            *list = g_slist_delete_link(*list, n);
+            g_free(l);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+void
+task_app_unlisten(TaskApp *app, guint id)
+{
+    if (app == NULL || id == 0)
+        return;
+    unlisten_from(&app->changed_l, id) ||
+    unlisten_from(&app->tasks_l,   id) ||
+    unlisten_from(&app->status_l,  id);
+}
+
+/* fire() — call every listener on `list`.
+ *
+ * The list is COPIED first because a listener may unsubscribe itself (or
+ * another) while it runs — the library window's own refresh can close an
+ * editor — and walking the live list would then step through a freed
+ * link.  The copy holds borrowed pointers, so an entry unsubscribed
+ * earlier in the same fire would be a use-after-free; ids are checked
+ * against the live list to skip exactly that.                            */
+static void
+fire(TaskApp *app, GSList *list, const gchar *message)
+{
+    GSList *snapshot = g_slist_copy(list);
+    for (GSList *n = snapshot; n != NULL; n = n->next) {
+        TaskAppListener *l = n->data;
+        if (g_slist_find(list, l) == NULL)
+            continue;                /* unsubscribed mid-fire              */
+        if (message != NULL)
+            ((TaskAppStatusFn)l->fn)(app, message, l->user_data);
+        else
+            ((TaskAppNotifyFn)l->fn)(app, l->user_data);
+    }
+    g_slist_free(snapshot);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_app_status() — post an event message to every status listener.
  * ------------------------------------------------------------------------- */
 void
 task_app_status(TaskApp *app, const gchar *fmt, ...)
 {
-    if (app == NULL || app->notify_status == NULL)
+    if (app == NULL || app->status_l == NULL)
         return;
     va_list ap;
     va_start(ap, fmt);
     gchar *msg = g_strdup_vprintf(fmt, ap);
     va_end(ap);
-    app->notify_status(app, msg);
+    fire(app, app->status_l, msg);
     g_free(msg);
 }
 
 /* ---------------------------------------------------------------------------
- * task_app_notify_changed() — fire the full-refresh hook if installed.
+ * task_app_notify_changed() — fire the full-refresh event (see app.h).
  * ------------------------------------------------------------------------- */
 void
 task_app_notify_changed(TaskApp *app)
 {
-    if (app != NULL && app->notify_changed != NULL)
-        app->notify_changed(app);
+    if (app != NULL)
+        fire(app, app->changed_l, NULL);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_app_notify_tasks() — fire the task-pane event, falling back to
+ * the full one when nothing listens for it (see app.h).
+ * ------------------------------------------------------------------------- */
+void
+task_app_notify_tasks(TaskApp *app)
+{
+    if (app == NULL)
+        return;
+    if (app->tasks_l != NULL)
+        fire(app, app->tasks_l, NULL);
+    else
+        fire(app, app->changed_l, NULL);
 }
 
 /* dialog_run() — shared core of notice/confirm: run a modal message
@@ -256,13 +364,14 @@ task_app_switch_database(TaskApp *app, const gchar *new_dir)
 
         /* RE-ARM ALL THREE TIMERS on the new path.  Each one captured the
          * old path when it was installed, and that file has just been
-         * deleted — left alone, the sync and Notes workers would open a
-         * path that no longer exists and helpfully CREATE an empty
-         * database there, then sync against it.  (CLAUDE.md long claimed
-         * this happened; it did not until 2026-08-26.)                     */
-        task_sync_auto_start(app, app->db->path);
-        task_bnsync_auto_start(app, app->db->path);
-        task_backup_auto_start(app, app->db->path);
+         * deleted — left alone, a worker would open a path that no longer
+         * exists and helpfully CREATE an empty database there, then sync
+         * against it.  (CLAUDE.md long claimed this happened; it did not
+         * until 2026-08-26.)
+         *
+         * Arm-ALL rather than naming them: naming timers here is exactly
+         * how the File → Open Database path came to re-arm two of three.  */
+        task_worker_arm_all(app, app->db->path);
     }
     g_free(copy_err);
 
@@ -609,6 +718,43 @@ task_app_config_get_bool(const gchar *key, gboolean def)
         return def;
     gboolean b = strcmp(v, "0") != 0;
     g_free(v);
+    return b;
+}
+
+/* ---------------------------------------------------------------------------
+ * Namespaced config (see app.h) — "<ns>_<key>" against the same store.
+ * ------------------------------------------------------------------------- */
+
+/* ns_key() — build the prefixed key.  g_free the result.                  */
+static gchar *
+ns_key(const gchar *ns, const gchar *key)
+{
+    return g_strdup_printf("%s_%s", ns, key);
+}
+
+gchar *
+task_app_config_get_ns(const gchar *ns, const gchar *key)
+{
+    gchar *k = ns_key(ns, key);
+    gchar *v = task_app_config_get(k);
+    g_free(k);
+    return v;
+}
+
+void
+task_app_config_set_ns(const gchar *ns, const gchar *key, const gchar *value)
+{
+    gchar *k = ns_key(ns, key);
+    task_app_config_set(k, value);
+    g_free(k);
+}
+
+gboolean
+task_app_config_get_bool_ns(const gchar *ns, const gchar *key, gboolean def)
+{
+    gchar *k = ns_key(ns, key);
+    gboolean b = task_app_config_get_bool(k, def);
+    g_free(k);
     return b;
 }
 

@@ -1177,29 +1177,66 @@ task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction)
 }
 
 /* ---------------------------------------------------------------------------
+ * Delete hooks (see db.h).  One process-wide list; entries are never
+ * removed, so no lock is needed as long as registration happens at
+ * startup before any worker thread exists — which is the documented
+ * contract.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    TaskDbDeleteSqlFn fn;
+    gpointer          user_data;
+} DeleteHook;
+
+static GSList *delete_hooks = NULL;  /* DeleteHook*, registration order     */
+
+/* ---------------------------------------------------------------------------
+ * task_db_add_delete_hook() — register a delete hook (see db.h).
+ * ------------------------------------------------------------------------- */
+void
+task_db_add_delete_hook(TaskDbDeleteSqlFn fn, gpointer user_data)
+{
+    if (fn == NULL)
+        return;
+    DeleteHook *h = g_new0(DeleteHook, 1);
+    h->fn        = fn;
+    h->user_data = user_data;
+    delete_hooks = g_slist_append(delete_hooks, h);
+}
+
+/* ---------------------------------------------------------------------------
  * task_db_task_delete() — tombstone the task and its subtasks.
  *
- * A mirror task also records its bn_uid in bn_deleted, in the SAME
- * transaction: Notes has no CLI verb that deletes an action item, so
- * the item survives there, and without this the very next mirror pass
- * would see a uid with no task and helpfully re-create the row the user
- * just deleted.  task_bnsync clears the suppression once the item leaves
- * Notes for real.  Subtasks never carry a uid (Notes has no
- * subtasks), so only the task's own row is consulted.
+ * Registered delete hooks contribute their statements FIRST, while the
+ * row is still untouched: a hook that copies an identity out of the row
+ * (the Notes mirror parks its bn_uid so the next pass cannot helpfully
+ * re-create what the user just deleted) must see the row as it was.  The
+ * tombstone is a soft delete, so the ordering is belt and braces — but
+ * it is the ordering those hooks were written against.
+ *
+ * Everything runs in ONE transaction, which is the point: a suppression
+ * that commits without its delete, or a delete that commits without its
+ * suppression, are both worse than neither.
  * ------------------------------------------------------------------------- */
 void
 task_db_task_delete(TaskDatabase *db, gint64 id)
 {
-    gchar *sql = sqlite3_mprintf(
-        "INSERT OR IGNORE INTO bn_deleted (uid) "
-        "  SELECT bn_uid FROM tasks WHERE id = %lld AND bn_uid > 0;"
+    GString *sql = g_string_new(NULL);
+
+    for (GSList *l = delete_hooks; l != NULL; l = l->next) {
+        DeleteHook *h = l->data;
+        h->fn(db, id, sql, h->user_data);
+    }
+
+    gchar *own = sqlite3_mprintf(
         "UPDATE tasks SET deleted = 1, updated_at = %lld "
         "  WHERE parent_id = %lld;"
         "UPDATE tasks SET deleted = 1, updated_at = %lld WHERE id = %lld;",
-        (long long)id,
         (long long)now(), (long long)id, (long long)now(), (long long)id);
-    exec_txn(db, sql);
-    sqlite3_free(sql);
+    g_string_append(sql, own);
+    sqlite3_free(own);
+
+    exec_txn(db, sql->str);
+    g_string_free(sql, TRUE);
 }
 
 /* ---------------------------------------------------------------------------

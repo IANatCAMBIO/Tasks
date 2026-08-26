@@ -105,4 +105,11 @@ void task_backup_start(TaskApp *app, const gchar *db_path,
  * ------------------------------------------------------------------------- */
 void task_backup_auto_start(TaskApp *app, const gchar *db_path);
 
+/* ---------------------------------------------------------------------------
+ * task_backup_init() — register the backup's periodic worker with the
+ * shared scheduler (see task_worker.h).  Call ONCE from main(), before
+ * any thread exists.
+ * ------------------------------------------------------------------------- */
+void task_backup_init(TaskApp *app);
+
 #endif /* TASK_BACKUP_H */

@@ -6,6 +6,8 @@
 #include "oauth.h"
 #include "http.h"
 #include "json.h"
+#include "task_ops.h"                /* the hooks the remote half rides on  */
+#include "task_worker.h"             /* the shared periodic-pass scheduler  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1246,26 +1248,35 @@ move_thread(gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
- * task_gtasks_move_task() — move a top-level task to another list (see
- * gtasks.h).  The local move happens immediately; the remote side uses
- * tasks.move with destinationTasklist when possible, else the
- * delete-and-recreate fallback.
+ * gtasks_task_moved() — the Google half of a cross-list move, run as a
+ * task_ops "moved" hook (see task_ops.h).
+ *
+ * The LOCAL move has already happened and committed by the time this
+ * runs, which is why the hook is handed `from_list`: the row now reads
+ * as belonging to the destination, and tasks.move has to address the
+ * task through the list it is moving OUT of.  Everything else this needs
+ * survives the local move untouched — the task's own gtasks_id, its
+ * subtasks' gtasks_ids, and both lists' gtasks_ids.
+ *
+ * Validation ("is it top-level, is it actually changing list") is
+ * task_ops' job and has already passed.
  * ------------------------------------------------------------------------- */
-void
-task_gtasks_move_task(TaskApp *app, gint64 task_id, gint64 dest_list_id)
+static void
+gtasks_task_moved(TaskApp *app, gint64 task_id, gint64 from_list,
+                  gint64 to_list, gpointer user_data)
 {
+    (void)user_data;
     Task *t = task_db_task_get(app->db, task_id);
-    if (t == NULL || t->parent_id != 0 || t->list_id == dest_list_id) {
-        task_free(t);
-        return;
-    }
-    TaskList *src  = task_db_list_get(app->db, t->list_id);
-    TaskList *dest = task_db_list_get(app->db, dest_list_id);
+    if (t == NULL)
+        return;                      /* deleted between the write and here  */
+
+    TaskList *src  = task_db_list_get(app->db, from_list);
+    TaskList *dest = task_db_list_get(app->db, to_list);
 
     MoveJob *job = g_new0(MoveJob, 1);
     job->app         = app;
     job->task_id     = task_id;
-    job->src_list_id = t->list_id;
+    job->src_list_id = from_list;
     job->src_gid     = src != NULL ? g_strdup(src->gtasks_id) : NULL;
     job->dest_gid    = dest != NULL ? g_strdup(dest->gtasks_id) : NULL;
     job->task_gid    = g_strdup(t->gtasks_id);
@@ -1280,9 +1291,6 @@ task_gtasks_move_task(TaskApp *app, gint64 task_id, gint64 dest_list_id)
     task_list_free(src);
     task_list_free(dest);
     task_free(t);
-
-    /* Local move first — the UI reflects it immediately.                   */
-    task_db_task_move_list(app->db, task_id, dest_list_id);
 
     if (job->task_gid != NULL && job->src_gid != NULL &&
         job->dest_gid != NULL && task_oauth_authenticated()) {
@@ -1302,24 +1310,40 @@ typedef struct {
     TaskApp   *app;
     gchar   *list_gid;
     gint64   list_id;
+    GArray  *ids;                    /* gint64; the rows task_ops cleared   */
     gboolean ok;
     gchar   *error;
 } ClearJob;
 
-/* clear_apply() — main-thread completion: purge the local rows (Google
- * hid its copies, and the hidden guard keeps them from resurrecting).      */
+/* clear_apply() — main-thread completion.
+ *
+ * On success the rows are purged for real: task_ops already tombstoned
+ * them, and Google has now hidden its own copies, so there is no delete
+ * left to propagate and the hidden guard keeps them from resurrecting.
+ * Exactly the ids task_ops reported are purged, rather than re-running a
+ * "delete every done task of this list" query — a task completed while
+ * the request was in flight was never part of this clear and must keep
+ * its tombstone so the next pass still tells Google about it.
+ *
+ * On FAILURE nothing is purged, and that is the whole recovery: the
+ * tombstones task_ops wrote are still there and sync as ordinary
+ * deletes.                                                                */
 static gboolean
 clear_apply(gpointer data)
 {
     ClearJob *job = data;
     if (job->ok) {
-        task_db_purge_done(job->app->db, job->list_id);
-        task_app_status(job->app, "Completed tasks cleared");
+        for (guint i = 0; i < job->ids->len; i++)
+            task_db_task_purge(job->app->db,
+                               g_array_index(job->ids, gint64, i));
+        task_app_status(job->app, "Completed tasks cleared in Google Tasks");
     } else {
-        task_app_status(job->app, "Clear failed: %s",
-                        job->error != NULL ? job->error : "unknown error");
+        task_app_status(job->app, "Cleared locally; Google will catch up "
+                        "on the next sync (%s)",
+                        job->error != NULL ? job->error : "clear failed");
     }
     task_app_notify_changed(job->app);
+    g_array_free(job->ids, TRUE);
     g_free(job->list_gid);
     g_free(job->error);
     g_free(job);
@@ -1348,14 +1372,29 @@ clear_thread(gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
- * task_gtasks_clear_completed() — archive a list's done tasks (see
- * gtasks.h).  Synced list + signed in → Google's tasks.clear (hides
- * them there) then a local purge; otherwise the done tasks are
- * tombstone-deleted so the removal still propagates.
+ * gtasks_completed_cleared() — the Google half of Clear Completed, run
+ * as a task_ops "cleared" hook (see task_ops.h).
+ *
+ * task_ops has already tombstoned the rows, which is the answer that is
+ * correct on its own: those tombstones sync as ordinary deletes and the
+ * completed tasks disappear from Google on the next pass.  All this adds
+ * is the SHORTCUT — one tasks.clear call archives the lot server-side,
+ * after which the local rows can be purged outright instead of waiting
+ * to be pushed one delete at a time.  That is also why the hook wants a
+ * single "cleared" event rather than N delete events: the batch call has
+ * nothing to batch otherwise.
+ *
+ * Doing nothing here is therefore always safe, and is what happens when
+ * the list has never synced or nobody is signed in.
  * ------------------------------------------------------------------------- */
-void
-task_gtasks_clear_completed(TaskApp *app, gint64 list_id)
+static void
+gtasks_completed_cleared(TaskApp *app, gint64 list_id, GArray *task_ids,
+                         gpointer user_data)
 {
+    (void)user_data;
+    if (task_ids->len == 0)
+        return;                      /* nothing went; nothing to archive    */
+
     TaskList *l = task_db_list_get(app->db, list_id);
     if (l == NULL)
         return;
@@ -1364,81 +1403,106 @@ task_gtasks_clear_completed(TaskApp *app, gint64 list_id)
         job->app      = app;
         job->list_id  = list_id;
         job->list_gid = g_strdup(l->gtasks_id);
+        /* Own copy: the event's array is borrowed for the call only.      */
+        job->ids      = g_array_sized_new(FALSE, FALSE, sizeof(gint64),
+                                          task_ids->len);
+        g_array_append_vals(job->ids, task_ids->data, task_ids->len);
         GThread *th = g_thread_new("task-clear", clear_thread, job);
         g_thread_unref(th);
-    } else {
-        /* No remote side to archive on: delete instead (tombstones
-         * propagate if the list ever syncs).                               */
-        GPtrArray *tasks = task_db_tasks_toplevel(app->db, list_id);
-        guint n = 0;                 /* how many rows went                  */
-        for (guint i = 0; i < tasks->len; i++) {
-            Task *t = g_ptr_array_index(tasks, i);
-            if (t->status == TASK_STATUS_DONE) {
-                task_db_task_delete(app->db, t->id);
-                n++;
-            }
-        }
-        task_ptr_array_free_tasks(tasks);
-        task_app_status(app, "Deleted %u completed task%s", n,
-                        n == 1 ? "" : "s");
-        task_app_notify_changed(app);
     }
     task_list_free(l);
 }
 
 /* ---------------------------------------------------------------------------
- * Periodic auto-sync (see gtasks.h) — the timer payload and callbacks.
+ * Periodic auto-sync — the scheduler drives it (see task_worker.h).
  * ------------------------------------------------------------------------- */
-typedef struct {
-    TaskApp *app;
-    gchar *db_path;
-} AutoSync;
 
-/* auto_sync_tick() — the periodic timer body: start a pass when signed
- * in and idle.  `data` is the timer-owned AutoSync.                        */
-static gboolean
-auto_sync_tick(gpointer data)
-{
-    AutoSync *as = data;
-    if (task_oauth_authenticated() && !as->app->sync_running)
-        task_sync_start(as->app, as->db_path, NULL, NULL);
-    return G_SOURCE_CONTINUE;
-}
-
-/* auto_sync_free() — GDestroyNotify for the timer payload: without it,
- * every re-arm (each Settings interval change) leaked the old struct.      */
+/* sync_run() / sync_ready() — the two callbacks the scheduler needs.
+ * `ready` gates both the periodic tick and the pass that arming runs:
+ * there is nothing to sync while signed out, and asking would only
+ * produce an error message nobody asked for.                              */
 static void
-auto_sync_free(gpointer data)
+sync_run(TaskApp *app, const gchar *db_path)
 {
-    AutoSync *as = data;
-    g_free(as->db_path);
-    g_free(as);
+    task_sync_start(app, db_path, NULL, NULL);
 }
+
+static gboolean
+sync_ready(TaskApp *app)
+{
+    (void)app;
+    return task_oauth_authenticated();
+}
+
+static const TaskWorkerDef sync_worker = {
+    .id               = "gtasks",
+    .enabled_key      = "google_sync_enabled",
+    .enabled_default  = TRUE,
+    .interval_key     = "sync_interval_min",
+    .interval_default = 5,
+    .initial          = TASK_WORKER_INITIAL_ARMED,
+    .running          = NULL,        /* filled in by task_gtasks_init       */
+    .timer            = NULL,
+    .run              = sync_run,
+    .ready            = sync_ready,
+    .on_arm           = NULL,
+};
+
+/* The def carries POINTERS to the app's own flag and GSource id, which
+ * are not known until an app exists — so the static above is completed
+ * once, at registration.                                                  */
+static TaskWorkerDef sync_worker_live;
 
 /* task_sync_auto_start() — (re)arm the auto-sync timer (see gtasks.h).     */
 void
 task_sync_auto_start(TaskApp *app, const gchar *db_path)
 {
-    if (app->sync_timer != 0) {
-        g_source_remove(app->sync_timer);
-        app->sync_timer = 0;
-    }
-    if (!task_app_config_get_bool("google_sync_enabled", TRUE))
-        return;                      /* master switch off: no timer, no
-                                      * initial pass                        */
-    gchar *v = task_app_config_get("sync_interval_min");
-    gint minutes = v != NULL ? atoi(v) : 5;
-    g_free(v);
-    if (minutes <= 0)
-        return;
+    task_worker_arm(app, &sync_worker_live, db_path);
+}
 
-    AutoSync *as = g_new0(AutoSync, 1);
-    as->app = app;
-    as->db_path = g_strdup(db_path);
-    app->sync_timer = g_timeout_add_seconds_full(G_PRIORITY_DEFAULT,
-                                                 (guint)(minutes * 60),
-                                                 auto_sync_tick, as,
-                                                 auto_sync_free);
-    if (task_oauth_authenticated())
-        task_sync_start(app, db_path, NULL, NULL);
+/* ---------------------------------------------------------------------------
+ * gtasks_list_veto() — refuse to delete Google's default tasklist, run
+ * as a task_ops list veto (see task_ops.h).
+ *
+ * tasklists.delete answers 400 "Invalid Value" for the default list from
+ * any client, so there is no way to honour the delete remotely.  Vetoing
+ * up front is what keeps the local side honest: without it the list is
+ * tombstoned here, the push fails, and sync_lists has to RESTORE it —
+ * the list visibly vanishes and comes back a few seconds later.
+ *
+ * A list that is not bound to Google, or a database that has not yet
+ * learned which list is the default, is nobody's business here.
+ * ------------------------------------------------------------------------- */
+static gboolean
+gtasks_list_veto(TaskApp *app, const TaskList *list, gchar **why,
+                 gpointer user_data)
+{
+    (void)user_data;
+    if (list->gtasks_id == NULL)
+        return TRUE;
+    gchar *default_gid = task_db_state_get(app->db, "default_list_gid");
+    gboolean ok = default_gid == NULL ||
+                  strcmp(list->gtasks_id, default_gid) != 0;
+    if (!ok && why != NULL)
+        *why = g_strdup_printf("\xe2\x80\x9c%s\xe2\x80\x9d is Google's "
+                               "default list and cannot be deleted",
+                               list->name);
+    g_free(default_gid);
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * task_gtasks_init() — register the sync engine's hooks (see gtasks.h).
+ * ------------------------------------------------------------------------- */
+void
+task_gtasks_init(TaskApp *app)
+{
+    sync_worker_live         = sync_worker;
+    sync_worker_live.running = &app->sync_running;
+    sync_worker_live.timer   = &app->sync_timer;
+    task_worker_register(&sync_worker_live);
+
+    task_ops_add_moved_hook(gtasks_task_moved, NULL);
+    task_ops_add_cleared_hook(gtasks_completed_cleared, NULL);
+    task_ops_add_list_veto(gtasks_list_veto, NULL);
 }

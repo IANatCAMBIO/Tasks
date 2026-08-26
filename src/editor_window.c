@@ -65,10 +65,7 @@ typedef struct {
 static void
 editor_notify(TaskEditor *ed)
 {
-    if (ed->app->notify_tasks != NULL)
-        ed->app->notify_tasks(ed->app);
-    else if (ed->app->notify_changed != NULL)
-        ed->app->notify_changed(ed->app);
+    task_app_notify_tasks(ed->app);  /* falls back to the full event       */
 }
 
 /* editor_due_entry_parse() — the due entry's text as a timestamp, with
@@ -306,8 +303,7 @@ on_editor_cancel(GtkWidget *w, gpointer data)
     editor_sub_edit_forget(ed);
     gtk_widget_destroy(ed->window);
     task_db_task_delete(app->db, id);
-    if (app->notify_changed != NULL)
-        app->notify_changed(app);
+    task_app_notify_changed(app);
     task_app_status(app, "Discarded the new task");
 }
 

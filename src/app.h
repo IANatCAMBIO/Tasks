@@ -3,7 +3,7 @@
  *
  * A single TaskApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open task-editor windows, and hosts
- * the notification hooks the library window installs.  Companion app to
+ * the change-notification events windows and plugins subscribe to.  Companion app to
  * Notes — same design language: plain C + GTK3 + SQLite, no
  * HeaderBars, window titles "Tasks - <thing>".
  * =========================================================================== */
@@ -30,20 +30,21 @@
  *                    items are ordinary tasks (see bnsync.h), so they
  *                    live in this map like everything else.
  *   library_window — the (single) library window, or NULL before startup.
- *   notify_changed — hook installed by the library window: FULL refresh
- *                    (sidebar + task pane + open editors).  For
- *                    structural changes: lists created/renamed/deleted,
- *                    sync applied.  May be NULL.
- *   notify_tasks   — lighter hook, also installed by the library window:
- *                    refreshes only the task pane.  Editor saves and
- *                    subtask/attachment edits use this — they can never
- *                    change the sidebar, and the saving editor is itself
- *                    the source of truth (reloading every editor per
- *                    autosave would also re-run the Notes CLI).
- *                    May be NULL.
- *   notify_status  — hook installed by the library window: shows an event
- *                    message on its status bar.  Post through
- *                    task_app_status(), which handles the hook being NULL.
+ *   changed_l      — listeners for a FULL refresh (sidebar + task pane +
+ *                    open editors).  For structural changes: lists
+ *                    created/renamed/deleted, sync applied.  The library
+ *                    window is normally one of them; a plugin may be
+ *                    another.  Fire through task_app_notify_changed().
+ *   tasks_l        — listeners for the LIGHTER event: the task pane only.
+ *                    Editor saves and subtask/attachment edits use this —
+ *                    they can never change the sidebar, and the saving
+ *                    editor is itself the source of truth (reloading every
+ *                    editor per autosave would also re-run the Notes CLI).
+ *                    Fire through task_app_notify_tasks(), which falls
+ *                    back to the full event when nothing is listening for
+ *                    the light one.
+ *   status_l       — listeners for a one-line event message.  Post through
+ *                    task_app_status().
  *   sync_running   — TRUE while the Google Tasks sync worker is running
  *                    (main-thread flag; blocks a second concurrent sync).
  *   sync_timer     — the periodic auto-sync GSource id, or 0.
@@ -64,15 +65,23 @@
  *   db_dir         — custom directory holding tasks.db (owned string),
  *                    or NULL for the default location.  Persisted in the
  *                    ini as "db_dir"; not stored in the database itself.
+ *
+ * The three event lists are lists rather than single hooks because more
+ * than one subscriber is now normal, and because a subscriber that
+ * cannot register without displacing the previous one is not a
+ * subscriber.  They start empty, and firing an empty list is a no-op —
+ * which is what makes every notify safe both before the library window
+ * exists and after it has gone.
  * ------------------------------------------------------------------------- */
 typedef struct TaskApp {
     GtkApplication  *gtk_app;
     TaskDatabase      *db;
     GHashTable      *editors;
     GtkWidget       *library_window;
-    void           (*notify_changed)(struct TaskApp *app);
-    void           (*notify_tasks)(struct TaskApp *app);
-    void           (*notify_status)(struct TaskApp *app, const gchar *message);
+    GSList          *changed_l;          /* TaskAppListener*, in order      */
+    GSList          *tasks_l;
+    GSList          *status_l;
+    guint            listener_next;      /* next subscription id            */
     gboolean         sync_running;
     guint            sync_timer;
     gboolean         bn_sync_running;
@@ -163,16 +172,54 @@ void task_app_load_toolbar_style(TaskApp *app);
 /* ---------------------------------------------------------------------------
  * task_app_status() — post a one-line event message to the library window's
  * status bar (printf-style).  Safe to call from anywhere on the main
- * thread: a no-op until the library window has installed notify_status.
+ * thread: a no-op until something is listening for status events.
  * ------------------------------------------------------------------------- */
 void task_app_status(TaskApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 
 /* ---------------------------------------------------------------------------
- * task_app_notify_changed() — fire the notify_changed hook (full refresh:
- * sidebar + task pane + open editors).  Safe when the hook is NULL or
- * not yet installed.
+ * Change notification.
+ *
+ * task_app_notify_changed() — FULL refresh: sidebar + task pane + open
+ * editors.  For structural changes (a list created, renamed or deleted;
+ * a sync applied).
+ *
+ * task_app_notify_tasks() — the task pane only, for changes that cannot
+ * touch the sidebar.  Falls back to the full event when nothing is
+ * listening for this one, so a caller never has to ask which listeners
+ * exist.
+ *
+ * Both are safe with no listeners at all, which is what makes them safe
+ * before the library window is built and after it has gone.  Main thread
+ * only — a worker marshals through g_idle_add first.
  * ------------------------------------------------------------------------- */
 void task_app_notify_changed(TaskApp *app);
+void task_app_notify_tasks(TaskApp *app);
+
+/* ---------------------------------------------------------------------------
+ * Subscribing to those events.
+ *
+ * Each listen call returns a subscription id for task_app_unlisten();
+ * ids are never reused.  Listeners fire in registration order.
+ *
+ * A listener MUST be removed before the thing it refreshes is destroyed.
+ * The library window does exactly this, and the ordering is load-bearing
+ * rather than tidy: a closing editor's final save fires the task event,
+ * which would otherwise reach a window mid-teardown.
+ *
+ * Removing a listener from inside its own callback is safe; adding one
+ * during a fire is not observed until the next fire.
+ * ------------------------------------------------------------------------- */
+typedef void (*TaskAppNotifyFn)(TaskApp *app, gpointer user_data);
+typedef void (*TaskAppStatusFn)(TaskApp *app, const gchar *message,
+                                gpointer user_data);
+
+guint task_app_listen_changed(TaskApp *app, TaskAppNotifyFn fn,
+                              gpointer user_data);
+guint task_app_listen_tasks(TaskApp *app, TaskAppNotifyFn fn,
+                            gpointer user_data);
+guint task_app_listen_status(TaskApp *app, TaskAppStatusFn fn,
+                             gpointer user_data);
+void  task_app_unlisten(TaskApp *app, guint id);
 
 /* ---------------------------------------------------------------------------
  * task_app_switch_database() — move tasks.db to `new_dir` (or back to
@@ -231,6 +278,26 @@ void      task_app_config_set(const gchar *key, const gchar *value);
 /* task_app_config_get_bool() — read a 0/1 setting; `def` when unset.  The
  * app only ever writes "0"/"1", so any other stored value reads as "1".    */
 gboolean  task_app_config_get_bool(const gchar *key, gboolean def);
+
+/* ---------------------------------------------------------------------------
+ * Namespaced config — the same store, with the key prefixed by a
+ * feature's id: task_app_config_get_ns("notes", "sync") reads
+ * "notes_sync", exactly the key that is already in users' ini files.
+ *
+ * There is ONE ini group ("[tasks]", part of the file format), so a
+ * feature's key space is carved out by name rather than by section.  That
+ * is not a workaround: prefixes are already the convention here
+ * (google_*, notes_*, backup_*), so this only makes the existing rule
+ * something a caller cannot get wrong, and lets an integration that does
+ * not know the app's key inventory still avoid colliding with it.
+ *
+ * `ns` must not be NULL; use the plain accessors above for core keys.
+ * ------------------------------------------------------------------------- */
+gchar    *task_app_config_get_ns(const gchar *ns, const gchar *key);
+void      task_app_config_set_ns(const gchar *ns, const gchar *key,
+                                 const gchar *value);
+gboolean  task_app_config_get_bool_ns(const gchar *ns, const gchar *key,
+                                      gboolean def);
 
 /* task_app_exe_dir() — the directory holding the binary, resolved once by
  * task_app_config_init().  Borrowed string; do not free.                   */

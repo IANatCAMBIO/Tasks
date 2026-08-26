@@ -3,6 +3,7 @@
  * =========================================================================== */
 
 #include "backup.h"
+#include "task_worker.h"             /* the shared periodic-pass scheduler  */
 #include "db.h"
 #include <glib/gstdio.h>
 #include <stdlib.h>
@@ -46,10 +47,11 @@ source_stamp(const gchar *path, const gchar *dest_dir)
                            (gint64)sb.st_size, (gint64)sb.st_mtime);
 }
 
-/* backup_keep() / backup_interval() — the two bounds, read from config
- * with the shared defaults and clamped to something sane.  A hand-edited
- * ini must not be able to ask for zero retention (which would delete a
- * backup the moment it was made) or a negative interval.                  */
+/* backup_keep() — the retention bound, read from config with the shared
+ * default and clamped to something sane: a hand-edited ini must not be
+ * able to ask for zero retention, which would delete a backup the moment
+ * it was made.  The interval is the scheduler's business now (see
+ * task_worker.h), and it applies the same guard against a negative.       */
 static gint
 backup_keep(void)
 {
@@ -57,15 +59,6 @@ backup_keep(void)
     gint n = v != NULL ? atoi(v) : TASK_BACKUP_KEEP_DEFAULT;
     g_free(v);
     return CLAMP(n, 1, 500);
-}
-
-static gint
-backup_interval(void)
-{
-    gchar *v = task_app_config_get("backup_interval_min");
-    gint n = v != NULL ? atoi(v) : TASK_BACKUP_INTERVAL_DEFAULT;
-    g_free(v);
-    return n < 0 ? 0 : n;            /* 0 = manual only                     */
 }
 
 /* ---------------------------------------------------------------------------
@@ -345,47 +338,47 @@ task_backup_start(TaskApp *app, const gchar *db_path, TaskBackupDoneFn done,
 }
 
 /* ---------------------------------------------------------------------------
- * The periodic timer.
+ * The periodic timer — the shared scheduler drives it (task_worker.h).
+ *
+ * INITIAL_NEVER: an unprompted copy at every launch is not what the
+ * setting promises, and a pass whose source is unchanged writes nothing
+ * anyway (see the source stamp in task_backup_start).
  * ------------------------------------------------------------------------- */
-typedef struct {
-    TaskApp *app;
-    gchar *db_path;                  /* the timer carries its own path      */
-} BackupAuto;
-
 static void
-backup_auto_free(gpointer data)
+backup_run(TaskApp *app, const gchar *db_path)
 {
-    BackupAuto *au = data;
-    g_free(au->db_path);
-    g_free(au);
+    task_backup_start(app, db_path, NULL, NULL);
 }
 
-static gboolean
-backup_auto_tick(gpointer data)
-{
-    BackupAuto *au = data;
-    task_backup_start(au->app, au->db_path, NULL, NULL);
-    return G_SOURCE_CONTINUE;
-}
+static const TaskWorkerDef backup_worker = {
+    .id               = "backup",
+    .enabled_key      = "backup_enabled",
+    .enabled_default  = FALSE,
+    .interval_key     = "backup_interval_min",
+    .interval_default = TASK_BACKUP_INTERVAL_DEFAULT,
+    .initial          = TASK_WORKER_INITIAL_NEVER,
+    .running          = NULL,        /* completed by task_backup_init       */
+    .timer            = NULL,
+    .run              = backup_run,
+    .ready            = NULL,
+    .on_arm           = NULL,
+};
+
+static TaskWorkerDef backup_worker_live;
 
 /* task_backup_auto_start() — see backup.h.                                 */
 void
 task_backup_auto_start(TaskApp *app, const gchar *db_path)
 {
-    if (app->backup_timer != 0) {
-        g_source_remove(app->backup_timer);
-        app->backup_timer = 0;
-    }
-    if (!task_app_config_get_bool("backup_enabled", FALSE))
-        return;                      /* off: no timer at all               */
-    gint minutes = backup_interval();
-    if (minutes <= 0)
-        return;                      /* manual only                        */
+    task_worker_arm(app, &backup_worker_live, db_path);
+}
 
-    BackupAuto *au = g_new0(BackupAuto, 1);
-    au->app     = app;
-    au->db_path = g_strdup(db_path);
-    app->backup_timer = g_timeout_add_seconds_full(
-        G_PRIORITY_DEFAULT, (guint)(minutes * 60), backup_auto_tick, au,
-        backup_auto_free);
+/* task_backup_init() — see backup.h.                                       */
+void
+task_backup_init(TaskApp *app)
+{
+    backup_worker_live         = backup_worker;
+    backup_worker_live.running = &app->backup_running;
+    backup_worker_live.timer   = &app->backup_timer;
+    task_worker_register(&backup_worker_live);
 }

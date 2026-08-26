@@ -32,9 +32,10 @@
 #include "app.h"
 
 /* ---------------------------------------------------------------------------
- * task_library_window_new() — build and show the library window; installs
- * app->notify_changed / notify_tasks / notify_status and stores itself
- * in app->library_window.
+ * task_library_window_new() — build and show the library window; it
+ * subscribes to the three TaskApp events (see app.h) and stores itself
+ * in app->library_window.  Its subscriptions come down in its destroy
+ * handler, BEFORE the open editors are closed.
  * ------------------------------------------------------------------------- */
 GtkWidget *task_library_window_new(TaskApp *app);
 

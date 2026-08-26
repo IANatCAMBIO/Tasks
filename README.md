@@ -1,6 +1,6 @@
 # Tasks
 
-Make lists of things. If your things are tasks, you can give them a due date. If the task is too big, break it down into subtasks.
+Make lists of tasks. You can give them a due date, or if the task is too big, break it down into subtasks.
 
 Tasks is written in classic C with GTK3 and SQLite. It is a companion app to
 [Notes](https://github.com/IANatCAMBIO/Records), built the same way and **with the help

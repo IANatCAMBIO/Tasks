@@ -80,6 +80,8 @@ endif
 # All C source files that make up the application.
 SRCS     := src/main.c \
             src/app.c \
+            src/task_ops.c \
+            src/task_worker.c \
             src/bnotes.c \
             src/bnsync.c \
             src/db.c \

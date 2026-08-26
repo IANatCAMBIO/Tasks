@@ -4,7 +4,8 @@
 
 #include "bnsync.h"
 #include "bnotes.h"
-#include "gtasks.h"                  /* cross-list moves carry a remote half */
+#include "task_ops.h"                /* cross-list moves are a core op       */
+#include "task_worker.h"             /* the shared periodic-pass scheduler   */
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -14,6 +15,32 @@
  * list.                                                                    */
 #define BN_LIST_NAME  "Action Items"
 #define BN_LIST_EMOJI "\xe2\x9d\x97"          /* ❗                          */
+
+/* ---------------------------------------------------------------------------
+ * bn_delete_hook() — contribute the mirror's half of a task delete (see
+ * task_db_add_delete_hook in db.h).
+ *
+ * Notes has no CLI verb that deletes an action item, so the item
+ * survives there after its mirror task is deleted here.  Parking the uid
+ * in bn_deleted is what stops the very next pass from seeing a uid with
+ * no task and helpfully re-creating the row the user just deleted;
+ * reap_missing() drops the suppression once the item leaves Notes for
+ * real.  Subtasks never carry a uid (Notes has no subtasks), so only the
+ * task's own row is consulted.
+ * ------------------------------------------------------------------------- */
+static void
+bn_delete_hook(TaskDatabase *db, gint64 task_id, GString *sql,
+               gpointer user_data)
+{
+    (void)db;                        /* hooks contribute SQL, never run it  */
+    (void)user_data;
+    gchar *s = sqlite3_mprintf(
+        "INSERT OR IGNORE INTO bn_deleted (uid) "
+        "  SELECT bn_uid FROM tasks WHERE id = %lld AND bn_uid > 0;",
+        (long long)task_id);
+    g_string_append(sql, s);
+    sqlite3_free(s);
+}
 
 /* ---------------------------------------------------------------------------
  * One mirror pass in flight.  Built on the main thread, handed to the
@@ -101,10 +128,8 @@ task_bnsync_reconcile_target(TaskApp *app)
         Task *t = g_ptr_array_index(mirror, i);
         /* Subtasks travel with their parent; mirror rows are top-level
          * anyway, so this only guards against hand-edited data.            */
-        if (t->parent_id == 0 && t->list_id != target) {
-            task_gtasks_move_task(app, t->id, target);
-            moved++;
-        }
+        if (task_ops_move_to_list(app, t->id, target))
+            moved++;                 /* it declines subtasks and no-op moves */
     }
     task_ptr_array_free_tasks(mirror);
 
@@ -384,32 +409,44 @@ task_bnsync_start(TaskApp *app, const gchar *db_path, TaskBnSyncDoneFn done,
 }
 
 /* ---------------------------------------------------------------------------
- * Periodic mirror pass — timer payload and callbacks (see bnsync.h).
+ * Periodic mirror pass — the scheduler drives it (see task_worker.h).
  * ------------------------------------------------------------------------- */
-typedef struct {
-    TaskApp *app;
-    gchar *db_path;
-} BnAuto;
 
-/* bn_auto_tick() — the periodic timer body.                                */
-static gboolean
-bn_auto_tick(gpointer data)
-{
-    BnAuto *au = data;
-    if (!au->app->bn_sync_running)
-        task_bnsync_start(au->app, au->db_path, NULL, NULL);
-    return G_SOURCE_CONTINUE;
-}
-
-/* bn_auto_free() — GDestroyNotify for the timer payload (re-arming on
- * every Settings change would otherwise leak the old struct).              */
+/* bn_run() — start one pass.                                              */
 static void
-bn_auto_free(gpointer data)
+bn_run(TaskApp *app, const gchar *db_path)
 {
-    BnAuto *au = data;
-    g_free(au->db_path);
-    g_free(au);
+    task_bnsync_start(app, db_path, NULL, NULL);
 }
+
+/* bn_on_arm() — before the timer goes in: a target list changed while
+ * the mirror was switched off (or by an earlier build that only honored
+ * the setting at creation time) still has to reach the items already
+ * mirrored.                                                               */
+static void
+bn_on_arm(TaskApp *app)
+{
+    task_bnsync_reconcile_target(app);
+}
+
+static const TaskWorkerDef bn_worker = {
+    .id               = "notes",
+    .enabled_key      = "notes_sync",
+    .enabled_default  = FALSE,
+    .interval_key     = "notes_sync_interval_min",
+    .interval_default = 5,
+    /* ALWAYS, not ARMED: at interval 0 the user asked for manual passes,
+     * but the Action Items view is EMPTY until one has run — so "manual
+     * only" still has to mean "populate it now".                          */
+    .initial          = TASK_WORKER_INITIAL_ALWAYS,
+    .running          = NULL,        /* completed by task_bnsync_init       */
+    .timer            = NULL,
+    .run              = bn_run,
+    .ready            = NULL,        /* the CLI is always worth asking      */
+    .on_arm           = bn_on_arm,
+};
+
+static TaskWorkerDef bn_worker_live;
 
 /* ---------------------------------------------------------------------------
  * task_bnsync_auto_start() — (re)arm the mirror timer (see bnsync.h).
@@ -417,30 +454,19 @@ bn_auto_free(gpointer data)
 void
 task_bnsync_auto_start(TaskApp *app, const gchar *db_path)
 {
-    if (app->bn_sync_timer != 0) {
-        g_source_remove(app->bn_sync_timer);
-        app->bn_sync_timer = 0;
-    }
-    if (!task_app_config_get_bool("notes_sync", FALSE))
-        return;                      /* integration off: no timer, no pass  */
+    task_worker_arm(app, &bn_worker_live, db_path);
+}
 
-    /* Before the pass: a target list changed while this was switched off
-     * (or by an earlier build that only honored it at creation time)
-     * still has to reach the items already mirrored.                       */
-    task_bnsync_reconcile_target(app);
+/* ---------------------------------------------------------------------------
+ * task_bnsync_init() — register the mirror's worker and db hooks (see bnsync.h).
+ * ------------------------------------------------------------------------- */
+void
+task_bnsync_init(TaskApp *app)
+{
+    bn_worker_live         = bn_worker;
+    bn_worker_live.running = &app->bn_sync_running;
+    bn_worker_live.timer   = &app->bn_sync_timer;
+    task_worker_register(&bn_worker_live);
 
-    gchar *v = task_app_config_get("notes_sync_interval_min");
-    gint minutes = v != NULL ? atoi(v) : 5;
-    g_free(v);
-    if (minutes > 0) {
-        BnAuto *au = g_new0(BnAuto, 1);
-        au->app     = app;
-        au->db_path = g_strdup(db_path);
-        app->bn_sync_timer = g_timeout_add_seconds_full(
-            G_PRIORITY_DEFAULT, (guint)(minutes * 60), bn_auto_tick, au,
-            bn_auto_free);
-    }
-    /* One pass now even when the interval is 0 (manual): the mirror has
-     * to be populated before the user can act on it.                       */
-    task_bnsync_start(app, db_path, NULL, NULL);
+    task_db_add_delete_hook(bn_delete_hook, NULL);
 }

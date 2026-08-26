@@ -23,8 +23,11 @@
  *   sync_state   key, value                    (e.g. "last_sync")
  *   bn_deleted   uid                           (mirror tasks deleted in
  *                                               Tasks; suppresses the
- *                                               re-create, see
- *                                               task_db_task_delete)
+ *                                               re-create.  Written by
+ *                                               the Notes mirror's own
+ *                                               delete hook, not by
+ *                                               task_db_task_delete —
+ *                                               see task_db_add_delete_hook)
  *
  * Deletion is a SOFT flag everywhere (`deleted` = tombstone): the Google
  * Tasks sync needs to see "this existed and was deleted locally" to
@@ -316,8 +319,35 @@ void task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status);
 void task_db_task_set_pinned(TaskDatabase *db, gint64 id, gboolean pinned);
 void task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority);
 
-/* Tombstone the task and its subtasks.                                     */
+/* Tombstone the task and its subtasks.  Every registered delete hook
+ * contributes its own statements to the SAME transaction — see
+ * task_db_add_delete_hook().                                               */
 void task_db_task_delete(TaskDatabase *db, gint64 id);
+
+/* ---------------------------------------------------------------------------
+ * Delete hooks — how a feature that keeps its own per-task row reacts to
+ * a task being tombstoned, without db.c knowing that feature exists.
+ *
+ * A hook APPENDS complete, semicolon-terminated SQL to `sql`; those
+ * statements run inside task_db_task_delete()'s transaction, BEFORE the
+ * tombstone UPDATEs and while the row is still untouched.  Splicing SQL
+ * rather than calling back out is what keeps the whole delete atomic: a
+ * hook that ran as its own transaction could commit while the tombstone
+ * rolled back, or vice versa.
+ *
+ * The registry is process-wide, not per-connection, because a worker
+ * thread deletes through its OWN connection (see TaskDatabase above) and
+ * must get the same treatment.  Registration is not undoable and is
+ * expected once, at startup, before any thread exists.
+ *
+ *   db        — the connection the delete is running on, for context;
+ *               a hook must NOT execute on it.
+ *   task_id   — the task being tombstoned.
+ *   sql       — append here; never read or truncate what is already in it.
+ * ------------------------------------------------------------------------- */
+typedef void (*TaskDbDeleteSqlFn)(TaskDatabase *db, gint64 task_id,
+                                  GString *sql, gpointer user_data);
+void task_db_add_delete_hook(TaskDbDeleteSqlFn fn, gpointer user_data);
 
 /* Swap the display position of subtask `id` with its neighbor in the
  * current sorted order (direction = -1 up, +1 down).  No-op at the

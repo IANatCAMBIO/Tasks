@@ -16,6 +16,7 @@
 #include "gtasks.h"
 #include "bnsync.h"
 #include "backup.h"
+#include "task_worker.h"
 #include "library_window.h"
 #ifdef HAVE_GTKOSX
 #include <gtkosxapplication.h>
@@ -242,12 +243,10 @@ on_activate(GtkApplication *gtk_app, gpointer data)
                      || startup_integrity_check(boot->app);
 
     task_library_window_new(boot->app);
-    task_sync_auto_start(boot->app, boot->db_path);
-    task_bnsync_auto_start(boot->app, boot->db_path);
-    /* Third timer, off unless the user turned backups on.  It carries its
-     * own db path like the other two, so task_app_switch_database re-arms
-     * all THREE.                                                          */
-    task_backup_auto_start(boot->app, boot->db_path);
+    /* Arm every registered worker (see task_worker.h).  The window comes
+     * first because an arming pass can post status, and a message posted
+     * before anything is listening is simply dropped.                     */
+    task_worker_arm_all(boot->app, boot->db_path);
 
     if (boot->app->db_integrity_check && db_ok)
         task_app_status(boot->app, "DB at %s loaded, integrity check passed",
@@ -321,6 +320,16 @@ main(int argc, char **argv)
     app->db_integrity_check =
         task_app_config_get_bool("db_integrity_check", TRUE);
 
+    /* Register every subsystem: its periodic worker with the shared
+     * scheduler, and its hooks into the core operations.  All of it must
+     * happen before the first window or thread exists, because those
+     * registries are unlocked (see task_worker.h and task_ops.h).  The
+     * app has to be built first — a worker definition points at the
+     * app's own in-flight flag and GSource id.                          */
+    task_gtasks_init(app);
+    task_bnsync_init(app);
+    task_backup_init(app);
+
     TaskBoot boot = { app, db_path };
     app->gtk_app = gtk_application_new("org.example.tasks",
                                        G_APPLICATION_DEFAULT_FLAGS);
@@ -332,6 +341,11 @@ main(int argc, char **argv)
     g_object_unref(app->gtk_app);
     g_hash_table_destroy(app->editors);
     g_ptr_array_free(app->toolbars, TRUE);
+    /* Any listener still subscribed here outlived its window, which is
+     * not an error — a plugin may subscribe for the whole run.           */
+    g_slist_free_full(app->changed_l, g_free);
+    g_slist_free_full(app->tasks_l,   g_free);
+    g_slist_free_full(app->status_l,  g_free);
     task_db_close(app->db);
     g_free(app->db_dir);
     g_free(app);

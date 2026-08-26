@@ -7,6 +7,9 @@
 #include "editor_window.h"
 #include "gtasks.h"
 #include "oauth.h"
+#include "task_ops.h"
+#include "backup.h"
+#include "task_worker.h"
 #include "settings_window.h"
 #include <stdlib.h>
 #include <string.h>
@@ -142,6 +145,9 @@ typedef struct {
                                       * Delete Task pair (overlay child)    */
     GtkWidget    *status_left;       /* selection info label                */
     GtkWidget    *status_right;      /* latest event message label          */
+    guint         listen_changed;    /* TaskApp event subscriptions —       */
+    guint         listen_tasks;      /* dropped in on_library_destroy       */
+    guint         listen_status;     /* BEFORE the editors close            */
     GtkWidget    *sync_item;         /* the toolbar's Sync button        */
     GtkWidget    *hide_done_item;    /* completed-visibility toggle button  */
     GtkWidget    *manual_sort_item;  /* manual-sort mode toggle button      */
@@ -2730,10 +2736,14 @@ on_toggle_manual_sort(GtkWidget *w, gpointer data)
 }
 
 /* notify_changed_hook() / notify_tasks_hook() / notify_status_hook() —
- * the TaskApp hooks.                                                       */
+ * the window's subscriptions to the three TaskApp events (see app.h).
+ * Each re-resolves the window through lib_of() rather than trusting the
+ * user_data pointer: an event can arrive from a worker's idle callback
+ * after the window has gone.                                              */
 static void
-notify_changed_hook(TaskApp *app)
+notify_changed_hook(TaskApp *app, gpointer user_data)
 {
+    (void)user_data;
     TaskLibrary *lw = lib_of(app);
     if (lw != NULL)
         full_refresh(lw);
@@ -2744,8 +2754,9 @@ notify_changed_hook(TaskApp *app)
  * adds/removes the sidebar's Pinned Tasks row — rebuild the sidebar
  * only on that 0 <-> nonzero transition (it never runs the BN CLI).        */
 static void
-notify_tasks_hook(TaskApp *app)
+notify_tasks_hook(TaskApp *app, gpointer user_data)
 {
+    (void)user_data;
     TaskLibrary *lw = lib_of(app);
     if (lw == NULL)
         return;
@@ -2818,8 +2829,9 @@ status_fade_start_cb(gpointer data)
 }
 
 static void
-notify_status_hook(TaskApp *app, const gchar *message)
+notify_status_hook(TaskApp *app, const gchar *message, gpointer user_data)
 {
+    (void)user_data;
     TaskLibrary *lw = lib_of(app);
     if (lw == NULL)
         return;
@@ -3832,18 +3844,16 @@ on_delete_list(GtkWidget *w, gpointer data)
     TaskList *l = task_db_list_get(lw->app->db, id);
     if (l == NULL)
         return;
-    /* Google's default tasklist cannot be deleted (the API refuses with
-     * 400 from any client) — block it here, like the Notes list.          */
-    gchar *default_gid = task_db_state_get(lw->app->db, "default_list_gid");
-    if (l->gtasks_id != NULL && default_gid != NULL &&
-        strcmp(l->gtasks_id, default_gid) == 0) {
-        task_app_status(lw->app, "\xe2\x80\x9c%s\xe2\x80\x9d is Google's "
-                        "default list and cannot be deleted", l->name);
-        g_free(default_gid);
+    /* Ask every registered veto first — an integration may know its
+     * remote side will refuse the delete (see task_ops.h).                */
+    gchar *why = NULL;
+    if (!task_ops_list_can_delete(lw->app, l, &why)) {
+        task_app_status(lw->app, "%s", why != NULL ? why
+                        : "That list cannot be deleted");
+        g_free(why);
         task_list_free(l);
         return;
     }
-    g_free(default_gid);
     gboolean yes = task_app_confirm(GTK_WINDOW(lw->window), "Delete List",
         "Delete the list \xe2\x80\x9c%s\xe2\x80\x9d and all of its "
         "tasks?", l->name);
@@ -4089,12 +4099,8 @@ on_ctx_move(GtkWidget *item, gpointer data)
     guint moved = 0;                 /* how many actually went              */
     for (guint i = 0; i < ids->len; i++) {
         gint64 id = g_array_index(ids, gint64, i);
-        Task *t = task_db_task_get(lw->app->db, id);
-        if (t != NULL && t->parent_id == 0 && t->list_id != dest_id) {
-            task_gtasks_move_task(lw->app, id, dest_id);
-            moved++;
-        }
-        task_free(t);
+        if (task_ops_move_to_list(lw->app, id, dest_id))
+            moved++;                 /* it declines subtasks and no-op moves */
     }
     if (moved > 0) {
         full_refresh(lw);
@@ -4416,8 +4422,12 @@ on_menu_clear_completed(GtkWidget *w, gpointer data)
         return;
     if (task_app_confirm(GTK_WINDOW(lw->window), "Clear Completed",
                          "Remove all completed tasks from \xe2\x80\x9c%s"
-                       "\xe2\x80\x9d?", l->name))
-        task_gtasks_clear_completed(lw->app, id);
+                       "\xe2\x80\x9d?", l->name)) {
+        guint n = task_ops_clear_completed(lw->app, id);
+        task_app_status(lw->app, "Cleared %u completed task%s", n,
+                        n == 1 ? "" : "s");
+        full_refresh(lw);
+    }
     task_list_free(l);
 }
 
@@ -4530,10 +4540,11 @@ on_open_db(GtkWidget *widget, gpointer user_data)
     g_free(old_path);
     g_free(file_path);
 
-    /* Both timers carry the db path they were armed with, so a switch
-     * must re-arm BOTH or the mirror keeps writing to the old file.       */
-    task_sync_auto_start(app, app->db->path);
-    task_bnsync_auto_start(app, app->db->path);
+    /* Every timer carries the db path it was armed with, so a switch must
+     * re-arm all of them or that worker keeps writing to the file we just
+     * moved away from.  This site used to name them one by one and had
+     * silently fallen one short of task_app_switch_database's list.       */
+    task_worker_arm_all(app, app->db->path);
     task_app_notify_changed(app);
     task_app_status(app, "Opened %s", app->db->path);
 }
@@ -4996,9 +5007,10 @@ on_library_destroy(GtkWidget *w, gpointer data)
      * can destroy sibling editors mid-teardown (a failing Notes CLI
      * closes its editors on reload) and leave close_all's snapshot list
      * holding freed windows.                                               */
-    lw->app->notify_changed = NULL;
-    lw->app->notify_tasks   = NULL;
-    lw->app->notify_status  = NULL;
+    task_app_unlisten(lw->app, lw->listen_changed);
+    task_app_unlisten(lw->app, lw->listen_tasks);
+    task_app_unlisten(lw->app, lw->listen_status);
+    lw->listen_changed = lw->listen_tasks = lw->listen_status = 0;
     lw->app->library_window = NULL;
     status_fade_cancel(lw);
     /* A card drag in flight holds a POINTER GRAB and owns a ghost window.
@@ -5999,9 +6011,11 @@ task_library_window_new(TaskApp *app)
     /* --- Hooks + first population ------------------------------------------ */
     app->library_window = lw->window;
     g_object_set_data(G_OBJECT(lw->window), "task-library", lw);
-    app->notify_changed = notify_changed_hook;
-    app->notify_tasks   = notify_tasks_hook;
-    app->notify_status  = notify_status_hook;
+    lw->listen_changed = task_app_listen_changed(app, notify_changed_hook,
+                                                 NULL);
+    lw->listen_tasks   = task_app_listen_tasks(app, notify_tasks_hook, NULL);
+    lw->listen_status  = task_app_listen_status(app, notify_status_hook,
+                                                NULL);
     g_signal_connect(lw->window, "destroy",
                      G_CALLBACK(on_library_destroy), lw);
 

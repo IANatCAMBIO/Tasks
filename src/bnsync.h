@@ -84,9 +84,10 @@ void task_bnsync_auto_start(TaskApp *app, const gchar *db_path);
  * fighting the user: a task moved to another list by hand stays there
  * until the setting itself changes again.
  *
- * Goes through task_gtasks_move_task, so the Google side moves too
- * rather than stranding the remote copy in the old list — which is why
- * this is MAIN THREAD ONLY and not part of the worker pass.
+ * Goes through task_ops_move_to_list(), so any integration watching for
+ * moves gets its say — the Google plugin moves the remote copy rather
+ * than stranding it in the old list.  Those hooks are main-thread-only,
+ * which is why this is too and is not part of the worker pass.
  * ------------------------------------------------------------------------- */
 void task_bnsync_reconcile_target(TaskApp *app);
 
@@ -98,5 +99,20 @@ void task_bnsync_reconcile_target(TaskApp *app);
  * pre-rename name — it sits in users' ini files.
  * ------------------------------------------------------------------------- */
 gint64 task_bnsync_target_list(TaskDatabase *db, gint64 configured);
+
+/* ---------------------------------------------------------------------------
+ * task_bnsync_init() — register the mirror's periodic worker and its
+ * database hooks.  Call ONCE from main(), after task_app_config_init()
+ * and BEFORE any worker thread exists (the registries are process-wide
+ * and unlocked — see task_db_add_delete_hook).
+ *
+ * Registration is unconditional, NOT gated on the "notes_sync" setting:
+ * the hook parks the bn_uid of a deleted mirror task in bn_deleted so a
+ * later pass cannot re-create it, and a user who turns the mirror off,
+ * deletes some items and turns it back on must not have them all
+ * resurrected.  On a row with no uid the hook's statement matches
+ * nothing, so it costs an unsynced database nothing.
+ * ------------------------------------------------------------------------- */
+void task_bnsync_init(TaskApp *app);
 
 #endif /* TASK_BNSYNC_H */
