@@ -39,57 +39,57 @@
  * and anything changed mid-sync is simply picked up by the next pass.
  * =========================================================================== */
 
-#ifndef BT_GTASKS_H
-#define BT_GTASKS_H
+#ifndef TASK_GTASKS_H
+#define TASK_GTASKS_H
 
 #include "app.h"
 
 /* Completion callback; runs on the main thread.  `message` is a short
- * human-readable summary or error (not owned by the callee).                */
-typedef void (*BtSyncDoneFn)(BtApp *app, gboolean ok, const gchar *message,
-                             gpointer user_data);
+ * human-readable summary or error (not owned by the callee).               */
+typedef void (*TaskSyncDoneFn)(TaskApp *app, gboolean ok, const gchar *message,
+                               gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * bt_sync_start() — kick off one sync pass on a worker thread.  Three
+ * task_sync_start() — kick off one sync pass on a worker thread.  Three
  * early-outs, each with a status message: sync disabled in Settings and
  * "not signed in" also fire `done` (FALSE + a short reason); "already
  * running" does not.  `done` may be NULL.  Main thread only.
  * ------------------------------------------------------------------------- */
-void bt_sync_start(BtApp *app, const gchar *db_path,
-                   BtSyncDoneFn done, gpointer user_data);
+void task_sync_start(TaskApp *app, const gchar *db_path,
+                     TaskSyncDoneFn done, gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * bt_sync_signin_done() — shared tail of a browser sign-in that was
+ * task_sync_signin_done() — shared tail of a browser sign-in that was
  * started in order to sync: on success kick off a pass (`done` may be
  * NULL), on failure show the standard sign-in-failed dialog over
  * `parent`.  Main thread only.
  * ------------------------------------------------------------------------- */
-void bt_sync_signin_done(BtApp *app, GtkWindow *parent,
-                         const gchar *db_path, gboolean ok,
-                         const gchar *error, BtSyncDoneFn done);
+void task_sync_signin_done(TaskApp *app, GtkWindow *parent,
+                           const gchar *db_path, gboolean ok,
+                           const gchar *error, TaskSyncDoneFn done);
 
 /* ---------------------------------------------------------------------------
- * bt_sync_auto_start() — install the periodic auto-sync timer from the
+ * task_sync_auto_start() — install the periodic auto-sync timer from the
  * "sync_interval_min" config key (default 5; 0 disables) and run one
  * initial pass when an account is connected.  Safe to call again after
  * the setting changes.
  * ------------------------------------------------------------------------- */
-void bt_sync_auto_start(BtApp *app, const gchar *db_path);
+void task_sync_auto_start(TaskApp *app, const gchar *db_path);
 
 /* ---------------------------------------------------------------------------
- * bt_gtasks_move_task() — move a TOP-LEVEL task (and its subtasks) to
+ * task_gtasks_move_task() — move a TOP-LEVEL task (and its subtasks) to
  * another list.  Local move is immediate; the Google side moves via
  * tasks.move with destinationTasklist on a worker thread when both
  * lists are synced and the user is signed in, else falls back to
  * delete-old + create-new on the next sync.  Main thread only.
  * ------------------------------------------------------------------------- */
-void bt_gtasks_move_task(BtApp *app, gint64 task_id, gint64 dest_list_id);
+void task_gtasks_move_task(TaskApp *app, gint64 task_id, gint64 dest_list_id);
 
 /* ---------------------------------------------------------------------------
- * bt_gtasks_clear_completed() — archive a list's completed tasks:
+ * task_gtasks_clear_completed() — archive a list's completed tasks:
  * Google's tasks.clear (hides them in Google Tasks) plus a local purge
  * when possible, tombstone deletion otherwise.  Main thread only.
  * ------------------------------------------------------------------------- */
-void bt_gtasks_clear_completed(BtApp *app, gint64 list_id);
+void task_gtasks_clear_completed(TaskApp *app, gint64 list_id);
 
-#endif /* BT_GTASKS_H */
+#endif /* TASK_GTASKS_H */

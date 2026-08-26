@@ -6,7 +6,7 @@
 #include <curl/curl.h>
 #include <string.h>
 
-/* write_cb() — libcurl write callback appending into a GString.             */
+/* write_cb() — libcurl write callback appending into a GString.            */
 static size_t
 write_cb(char *data, size_t size, size_t nmemb, void *user)
 {
@@ -16,13 +16,13 @@ write_cb(char *data, size_t size, size_t nmemb, void *user)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_http_request() — perform one HTTPS request (see http.h).
+ * task_http_request() — perform one HTTPS request (see http.h).
  * ------------------------------------------------------------------------- */
 gchar *
-bt_http_request(const gchar *method, const gchar *url,
-                const gchar *bearer, const gchar *content_type,
-                const gchar *extra_header, const gchar *body,
-                glong *status, gchar **err)
+task_http_request(const gchar *method, const gchar *url,
+                  const gchar *bearer, const gchar *content_type,
+                  const gchar *extra_header, const gchar *body,
+                  glong *status, gchar **err)
 {
     *status = 0;
     if (err != NULL)

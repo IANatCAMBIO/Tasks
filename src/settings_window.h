@@ -17,19 +17,19 @@
  *   Database — where the SQLite file lives (informational).
  * =========================================================================== */
 
-#ifndef BT_SETTINGS_WINDOW_H
-#define BT_SETTINGS_WINDOW_H
+#ifndef TASK_SETTINGS_WINDOW_H
+#define TASK_SETTINGS_WINDOW_H
 
 #include "app.h"
 
 /* ---------------------------------------------------------------------------
- * bt_settings_window_open() — show (or raise) the settings window.
+ * task_settings_window_open() — show (or raise) the settings window.
  *   app     — the application context.
  *   parent  — transient parent (the library window).
  *   db_path — the database path shown in the Database section and used
  *             to restart the auto-sync timer when the interval changes.
  * ------------------------------------------------------------------------- */
-void bt_settings_window_open(BtApp *app, GtkWindow *parent,
-                             const gchar *db_path);
+void task_settings_window_open(TaskApp *app, GtkWindow *parent,
+                               const gchar *db_path);
 
-#endif /* BT_SETTINGS_WINDOW_H */
+#endif /* TASK_SETTINGS_WINDOW_H */

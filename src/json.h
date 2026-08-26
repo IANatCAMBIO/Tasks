@@ -7,72 +7,72 @@
  * into hand-built request bodies (GString).  This module is exactly that.
  * =========================================================================== */
 
-#ifndef BT_JSON_H
-#define BT_JSON_H
+#ifndef TASK_JSON_H
+#define TASK_JSON_H
 
 #include <glib.h>
 
-/* The JSON value kinds.                                                     */
+/* The JSON value kinds.                                                    */
 typedef enum {
-    BT_JSON_NULL = 0,
-    BT_JSON_BOOL,
-    BT_JSON_NUMBER,
-    BT_JSON_STRING,
-    BT_JSON_ARRAY,
-    BT_JSON_OBJECT
-} BtJsonType;
+    TASK_JSON_NULL = 0,
+    TASK_JSON_BOOL,
+    TASK_JSON_NUMBER,
+    TASK_JSON_STRING,
+    TASK_JSON_ARRAY,
+    TASK_JSON_OBJECT
+} TaskJsonType;
 
 /* ---------------------------------------------------------------------------
- * BtJson — one parsed JSON value (a tagged union).
+ * TaskJson — one parsed JSON value (a tagged union).
  *   type     — which member is live.
  *   b/num/str — scalar payloads (str is owned, UTF-8, \u-escapes decoded).
- *   items    — BT_JSON_ARRAY: BtJson* children (owned).
- *   keys     — BT_JSON_OBJECT: gchar* member names, parallel to items.
+ *   items    — TASK_JSON_ARRAY: TaskJson* children (owned).
+ *   keys     — TASK_JSON_OBJECT: gchar* member names, parallel to items.
  * ------------------------------------------------------------------------- */
-typedef struct BtJson {
-    BtJsonType  type;
+typedef struct TaskJson {
+    TaskJsonType  type;
     gboolean    b;
     gdouble     num;
     gchar      *str;
     GPtrArray  *items;
     GPtrArray  *keys;
-} BtJson;
+} TaskJson;
 
 /* ---------------------------------------------------------------------------
- * bt_json_parse() — parse a complete JSON document.
+ * task_json_parse() — parse a complete JSON document.
  *   text — the document; len — its byte length, or -1 for NUL-terminated.
- * Returns the root value (free with bt_json_free), or NULL on any syntax
+ * Returns the root value (free with task_json_free), or NULL on any syntax
  * error (this client never needs error detail beyond "bad response").
  * ------------------------------------------------------------------------- */
-BtJson *bt_json_parse(const gchar *text, gssize len);
+TaskJson *task_json_parse(const gchar *text, gssize len);
 
-/* bt_json_free() — free a value and its whole subtree.  NULL-safe.          */
-void bt_json_free(BtJson *v);
+/* task_json_free() — free a value and its whole subtree.  NULL-safe.       */
+void task_json_free(TaskJson *v);
 
 /* ---------------------------------------------------------------------------
  * Tree accessors — every getter is NULL-safe and type-checked, returning
  * NULL / the fallback when the path or type doesn't match, so response
  * handling can chain lookups without intermediate checks.
  * ------------------------------------------------------------------------- */
-BtJson      *bt_json_get(BtJson *obj, const gchar *key);   /* object member  */
-const gchar *bt_json_str(BtJson *obj, const gchar *key);   /* string member  */
-gboolean     bt_json_bool(BtJson *obj, const gchar *key, gboolean def);
-guint        bt_json_len(BtJson *arr);                     /* array length   */
-BtJson      *bt_json_at(BtJson *arr, guint i);             /* array element  */
+TaskJson      *task_json_get(TaskJson *obj, const gchar *key);   /* object member */
+const gchar *task_json_str(TaskJson *obj, const gchar *key);   /* string member */
+gboolean     task_json_bool(TaskJson *obj, const gchar *key, gboolean def);
+guint        task_json_len(TaskJson *arr);                     /* array length */
+TaskJson      *task_json_at(TaskJson *arr, guint i);             /* array element */
 
 /* ---------------------------------------------------------------------------
- * bt_json_escape() — append `s` to `out` as a JSON string INCLUDING the
+ * task_json_escape() — append `s` to `out` as a JSON string INCLUDING the
  * surrounding quotes (control characters and "\ escaped; UTF-8 passes
  * through verbatim).  NULL appends the literal `null` token (no quotes).
  * ------------------------------------------------------------------------- */
-void bt_json_escape(GString *out, const gchar *s);
+void task_json_escape(GString *out, const gchar *s);
 
 /* ---------------------------------------------------------------------------
- * bt_json_write() — append `v`'s compact JSON serialization to `out`
- * (round-trips anything bt_json_parse produced).  Used to persist
+ * task_json_write() — append `v`'s compact JSON serialization to `out`
+ * (round-trips anything task_json_parse produced).  Used to persist
  * read-only API substructures (Google task links/assignment info)
  * verbatim in the database.  NULL-safe (emits `null`).
  * ------------------------------------------------------------------------- */
-void bt_json_write(GString *out, BtJson *v);
+void task_json_write(GString *out, TaskJson *v);
 
-#endif /* BT_JSON_H */
+#endif /* TASK_JSON_H */

@@ -46,34 +46,34 @@
  * bind tasks to the wrong items.
  * =========================================================================== */
 
-#ifndef BT_BNSYNC_H
-#define BT_BNSYNC_H
+#ifndef TASK_BNSYNC_H
+#define TASK_BNSYNC_H
 
 #include "app.h"
 
 /* Completion callback; runs on the main thread.  `message` is a short
- * human-readable summary or error (not owned by the callee).                */
-typedef void (*BtBnSyncDoneFn)(BtApp *app, gboolean ok, const gchar *message,
-                               gpointer user_data);
+ * human-readable summary or error (not owned by the callee).               */
+typedef void (*TaskBnSyncDoneFn)(TaskApp *app, gboolean ok, const gchar *message,
+                                 gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * bt_bnsync_start() — kick off one mirror pass on a worker thread.
+ * task_bnsync_start() — kick off one mirror pass on a worker thread.
  * Early-outs, each with a status message: the Notes integration
  * switched off in Settings, and "already running" (which does not fire
  * `done`).  `done` may be NULL.  Main thread only.
  * ------------------------------------------------------------------------- */
-void bt_bnsync_start(BtApp *app, const gchar *db_path,
-                     BtBnSyncDoneFn done, gpointer user_data);
+void task_bnsync_start(TaskApp *app, const gchar *db_path,
+                       TaskBnSyncDoneFn done, gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * bt_bnsync_auto_start() — install the periodic mirror timer from the
+ * task_bnsync_auto_start() — install the periodic mirror timer from the
  * "notes_sync_interval_min" config key (default 5; 0 disables) and
  * run one initial pass.  Safe to call again after the setting changes.
  * ------------------------------------------------------------------------- */
-void bt_bnsync_auto_start(BtApp *app, const gchar *db_path);
+void task_bnsync_auto_start(TaskApp *app, const gchar *db_path);
 
 /* ---------------------------------------------------------------------------
- * bt_bnsync_reconcile_target() — move every mirrored task into the
+ * task_bnsync_reconcile_target() — move every mirrored task into the
  * configured list when that setting has CHANGED since it was last
  * applied (the applied value lives in sync_state "bn_target_list").
  *
@@ -84,19 +84,19 @@ void bt_bnsync_auto_start(BtApp *app, const gchar *db_path);
  * fighting the user: a task moved to another list by hand stays there
  * until the setting itself changes again.
  *
- * Goes through bt_gtasks_move_task, so the Google side moves too
+ * Goes through task_gtasks_move_task, so the Google side moves too
  * rather than stranding the remote copy in the old list — which is why
  * this is MAIN THREAD ONLY and not part of the worker pass.
  * ------------------------------------------------------------------------- */
-void bt_bnsync_reconcile_target(BtApp *app);
+void task_bnsync_reconcile_target(TaskApp *app);
 
 /* ---------------------------------------------------------------------------
- * bt_bnsync_target_list() — the list mirrored items are filed into: the
+ * task_bnsync_target_list() — the list mirrored items are filed into: the
  * one named by "notes_embed_list" when it still exists, else the
  * app-managed "Action Items" list, created on first use.  Returns 0
  * only when the list could not be created.  The config key keeps its
  * pre-rename name — it sits in users' ini files.
  * ------------------------------------------------------------------------- */
-gint64 bt_bnsync_target_list(BtDatabase *db, gint64 configured);
+gint64 task_bnsync_target_list(TaskDatabase *db, gint64 configured);
 
-#endif /* BT_BNSYNC_H */
+#endif /* TASK_BNSYNC_H */

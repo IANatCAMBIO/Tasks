@@ -27,39 +27,39 @@
  *
  * The foot row also carries a Save button (flush the pending save and
  * close) at the right of every editor; the New Task variant adds Cancel
- * to its right — see bt_editor_open_new().
+ * to its right — see task_editor_open_new().
  * =========================================================================== */
 
-#ifndef BT_EDITOR_WINDOW_H
-#define BT_EDITOR_WINDOW_H
+#ifndef TASK_EDITOR_WINDOW_H
+#define TASK_EDITOR_WINDOW_H
 
 #include "app.h"
 
 /* ---------------------------------------------------------------------------
- * bt_editor_open() — open (or raise) the editor for `task_id`.
+ * task_editor_open() — open (or raise) the editor for `task_id`.
  * ------------------------------------------------------------------------- */
-void bt_editor_open(BtApp *app, gint64 task_id);
+void task_editor_open(TaskApp *app, gint64 task_id);
 
 /* ---------------------------------------------------------------------------
- * bt_editor_open_new() — bt_editor_open() for the row the New Task action
+ * task_editor_open_new() — task_editor_open() for the row the New Task action
  * has just created: the same window plus a Cancel button beside the Save
  * every editor has.  Cancel closes and DELETES the task again (tombstoned
  * with its subtasks, so the delete syncs), which is why this entry point
  * exists at all — Cancel must never do that to a pre-existing task.
  * Opens folded even if the row somehow has subtasks or attachments.
  * ------------------------------------------------------------------------- */
-void bt_editor_open_new(BtApp *app, gint64 task_id);
+void task_editor_open_new(TaskApp *app, gint64 task_id);
 
 /* ---------------------------------------------------------------------------
- * bt_editor_refresh_all() — reload every open editor from the database
+ * task_editor_refresh_all() — reload every open editor from the database
  * (called after a sync or library-side change).  Editors with a pending
  * unsaved edit are skipped; text widgets are only rewritten when the
  * stored content actually differs, so a cursor never jumps mid-typing.
  * Editors whose task disappeared are closed.
  * ------------------------------------------------------------------------- */
-void bt_editor_refresh_all(BtApp *app);
+void task_editor_refresh_all(TaskApp *app);
 
-/* bt_editor_close_all() — destroy every open editor (flushing saves).       */
-void bt_editor_close_all(BtApp *app);
+/* task_editor_close_all() — destroy every open editor (flushing saves).    */
+void task_editor_close_all(TaskApp *app);
 
-#endif /* BT_EDITOR_WINDOW_H */
+#endif /* TASK_EDITOR_WINDOW_H */

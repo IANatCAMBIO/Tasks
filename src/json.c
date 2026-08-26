@@ -11,37 +11,37 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define BT_JSON_MAX_DEPTH 64         /* recursion cap for arrays/objects    */
+#define TASK_JSON_MAX_DEPTH 64         /* recursion cap for arrays/objects  */
 
 /* The parse cursor: current position and end of input.                     */
 typedef struct {
     const gchar *p;
     const gchar *end;
-} BtJsonCursor;
+} TaskJsonCursor;
 
-static BtJson *parse_value(BtJsonCursor *c, gint depth);
+static TaskJson *parse_value(TaskJsonCursor *c, gint depth);
 
-/* json_new() — allocate a zeroed value of `type`.                           */
-static BtJson *
-json_new(BtJsonType type)
+/* json_new() — allocate a zeroed value of `type`.                          */
+static TaskJson *
+json_new(TaskJsonType type)
 {
-    BtJson *v = g_new0(BtJson, 1);
+    TaskJson *v = g_new0(TaskJson, 1);
     v->type = type;
     return v;
 }
 
 /* ---------------------------------------------------------------------------
- * bt_json_free() — free a value and its whole subtree.  NULL-safe.
+ * task_json_free() — free a value and its whole subtree.  NULL-safe.
  * ------------------------------------------------------------------------- */
 void
-bt_json_free(BtJson *v)
+task_json_free(TaskJson *v)
 {
     if (v == NULL)
         return;
     g_free(v->str);
     if (v->items != NULL) {
         for (guint i = 0; i < v->items->len; i++)
-            bt_json_free(g_ptr_array_index(v->items, i));
+            task_json_free(g_ptr_array_index(v->items, i));
         g_ptr_array_free(v->items, TRUE);
     }
     if (v->keys != NULL) {
@@ -52,18 +52,18 @@ bt_json_free(BtJson *v)
     g_free(v);
 }
 
-/* skip_ws() — advance the cursor past JSON whitespace.                      */
+/* skip_ws() — advance the cursor past JSON whitespace.                     */
 static void
-skip_ws(BtJsonCursor *c)
+skip_ws(TaskJsonCursor *c)
 {
     while (c->p < c->end &&
            (*c->p == ' ' || *c->p == '\t' || *c->p == '\n' || *c->p == '\r'))
         c->p++;
 }
 
-/* lit() — consume the literal `word` if it is next; TRUE on match.          */
+/* lit() — consume the literal `word` if it is next; TRUE on match.         */
 static gboolean
-lit(BtJsonCursor *c, const gchar *word)
+lit(TaskJsonCursor *c, const gchar *word)
 {
     gsize n = strlen(word);
     if ((gsize)(c->end - c->p) < n || strncmp(c->p, word, n) != 0)
@@ -72,9 +72,9 @@ lit(BtJsonCursor *c, const gchar *word)
     return TRUE;
 }
 
-/* hex4() — parse exactly four hex digits into `out`; TRUE on success.       */
+/* hex4() — parse exactly four hex digits into `out`; TRUE on success.      */
 static gboolean
-hex4(BtJsonCursor *c, gunichar *out)
+hex4(TaskJsonCursor *c, gunichar *out)
 {
     if (c->end - c->p < 4)
         return FALSE;
@@ -98,7 +98,7 @@ hex4(BtJsonCursor *c, gunichar *out)
  * including UTF-16 surrogate pairs.  Returns NULL on syntax error.
  * ------------------------------------------------------------------------- */
 static gchar *
-parse_string(BtJsonCursor *c)
+parse_string(TaskJsonCursor *c)
 {
     if (c->p >= c->end || *c->p != '"')
         return NULL;
@@ -158,10 +158,10 @@ fail:
 /* parse_number() — parse a JSON number with strtod (a superset that is
  * fine here).  The candidate digits are copied into a bounded,
  * NUL-terminated buffer first: strtod itself knows nothing of c->end,
- * and in the explicit-length mode of bt_json_parse a document ending in
- * digits would otherwise let it read past the buffer.                       */
-static BtJson *
-parse_number(BtJsonCursor *c)
+ * and in the explicit-length mode of task_json_parse a document ending in
+ * digits would otherwise let it read past the buffer.                      */
+static TaskJson *
+parse_number(TaskJsonCursor *c)
 {
     gchar buf[64];                   /* longer than any sane JSON number    */
     gsize n = MIN((gsize)(c->end - c->p), sizeof buf - 1);
@@ -173,16 +173,16 @@ parse_number(BtJsonCursor *c)
     if (after == buf)
         return NULL;
     c->p += after - buf;
-    BtJson *v = json_new(BT_JSON_NUMBER);
+    TaskJson *v = json_new(TASK_JSON_NUMBER);
     v->num = d;
     return v;
 }
 
-/* parse_array() — parse "[ value, ... ]" (cursor past the '[').             */
-static BtJson *
-parse_array(BtJsonCursor *c, gint depth)
+/* parse_array() — parse "[ value, ... ]" (cursor past the '[').            */
+static TaskJson *
+parse_array(TaskJsonCursor *c, gint depth)
 {
-    BtJson *v = json_new(BT_JSON_ARRAY);
+    TaskJson *v = json_new(TASK_JSON_ARRAY);
     v->items = g_ptr_array_new();
     skip_ws(c);
     if (c->p < c->end && *c->p == ']') {
@@ -190,7 +190,7 @@ parse_array(BtJsonCursor *c, gint depth)
         return v;
     }
     for (;;) {
-        BtJson *item = parse_value(c, depth);
+        TaskJson *item = parse_value(c, depth);
         if (item == NULL)
             goto fail;
         g_ptr_array_add(v->items, item);
@@ -202,15 +202,15 @@ parse_array(BtJsonCursor *c, gint depth)
         goto fail;
     }
 fail:
-    bt_json_free(v);
+    task_json_free(v);
     return NULL;
 }
 
-/* parse_object() — parse "{ \"key\": value, ... }" (cursor past the '{').   */
-static BtJson *
-parse_object(BtJsonCursor *c, gint depth)
+/* parse_object() — parse "{ \"key\": value, ... }" (cursor past the '{').  */
+static TaskJson *
+parse_object(TaskJsonCursor *c, gint depth)
 {
-    BtJson *v = json_new(BT_JSON_OBJECT);
+    TaskJson *v = json_new(TASK_JSON_OBJECT);
     v->items = g_ptr_array_new();
     v->keys  = g_ptr_array_new();
     skip_ws(c);
@@ -229,7 +229,7 @@ parse_object(BtJsonCursor *c, gint depth)
             goto fail;
         }
         c->p++;
-        BtJson *item = parse_value(c, depth);
+        TaskJson *item = parse_value(c, depth);
         if (item == NULL) {
             g_free(key);
             goto fail;
@@ -244,15 +244,15 @@ parse_object(BtJsonCursor *c, gint depth)
         goto fail;
     }
 fail:
-    bt_json_free(v);
+    task_json_free(v);
     return NULL;
 }
 
-/* parse_value() — dispatch on the next non-space character.                 */
-static BtJson *
-parse_value(BtJsonCursor *c, gint depth)
+/* parse_value() — dispatch on the next non-space character.                */
+static TaskJson *
+parse_value(TaskJsonCursor *c, gint depth)
 {
-    if (depth > BT_JSON_MAX_DEPTH)
+    if (depth > TASK_JSON_MAX_DEPTH)
         return NULL;
     skip_ws(c);
     if (c->p >= c->end)
@@ -264,42 +264,42 @@ parse_value(BtJsonCursor *c, gint depth)
         gchar *s = parse_string(c);
         if (s == NULL)
             return NULL;
-        BtJson *v = json_new(BT_JSON_STRING);
+        TaskJson *v = json_new(TASK_JSON_STRING);
         v->str = s;
         return v;
     }
     case 't':
         if (!lit(c, "true"))
             return NULL;
-        { BtJson *v = json_new(BT_JSON_BOOL); v->b = TRUE; return v; }
+        { TaskJson *v = json_new(TASK_JSON_BOOL); v->b = TRUE; return v; }
     case 'f':
         if (!lit(c, "false"))
             return NULL;
-        return json_new(BT_JSON_BOOL);
+        return json_new(TASK_JSON_BOOL);
     case 'n':
         if (!lit(c, "null"))
             return NULL;
-        return json_new(BT_JSON_NULL);
+        return json_new(TASK_JSON_NULL);
     default:
         return parse_number(c);
     }
 }
 
 /* ---------------------------------------------------------------------------
- * bt_json_parse() — parse a complete document (see json.h).
+ * task_json_parse() — parse a complete document (see json.h).
  * ------------------------------------------------------------------------- */
-BtJson *
-bt_json_parse(const gchar *text, gssize len)
+TaskJson *
+task_json_parse(const gchar *text, gssize len)
 {
     if (text == NULL)
         return NULL;
-    BtJsonCursor c = { text, text + (len < 0 ? (gssize)strlen(text) : len) };
-    BtJson *v = parse_value(&c, 0);
+    TaskJsonCursor c = { text, text + (len < 0 ? (gssize)strlen(text) : len) };
+    TaskJson *v = parse_value(&c, 0);
     if (v == NULL)
         return NULL;
     skip_ws(&c);
     if (c.p != c.end) {              /* trailing garbage                    */
-        bt_json_free(v);
+        task_json_free(v);
         return NULL;
     }
     return v;
@@ -308,10 +308,10 @@ bt_json_parse(const gchar *text, gssize len)
 /* ---------------------------------------------------------------------------
  * Tree accessors (see json.h for the NULL-safety contract).
  * ------------------------------------------------------------------------- */
-BtJson *
-bt_json_get(BtJson *obj, const gchar *key)
+TaskJson *
+task_json_get(TaskJson *obj, const gchar *key)
 {
-    if (obj == NULL || obj->type != BT_JSON_OBJECT)
+    if (obj == NULL || obj->type != TASK_JSON_OBJECT)
         return NULL;
     for (guint i = 0; i < obj->keys->len; i++)
         if (strcmp(g_ptr_array_index(obj->keys, i), key) == 0)
@@ -320,76 +320,76 @@ bt_json_get(BtJson *obj, const gchar *key)
 }
 
 const gchar *
-bt_json_str(BtJson *obj, const gchar *key)
+task_json_str(TaskJson *obj, const gchar *key)
 {
-    BtJson *v = bt_json_get(obj, key);
-    return (v != NULL && v->type == BT_JSON_STRING) ? v->str : NULL;
+    TaskJson *v = task_json_get(obj, key);
+    return (v != NULL && v->type == TASK_JSON_STRING) ? v->str : NULL;
 }
 
 gboolean
-bt_json_bool(BtJson *obj, const gchar *key, gboolean def)
+task_json_bool(TaskJson *obj, const gchar *key, gboolean def)
 {
-    BtJson *v = bt_json_get(obj, key);
-    return (v != NULL && v->type == BT_JSON_BOOL) ? v->b : def;
+    TaskJson *v = task_json_get(obj, key);
+    return (v != NULL && v->type == TASK_JSON_BOOL) ? v->b : def;
 }
 
 guint
-bt_json_len(BtJson *arr)
+task_json_len(TaskJson *arr)
 {
-    return (arr != NULL && arr->type == BT_JSON_ARRAY) ? arr->items->len : 0;
+    return (arr != NULL && arr->type == TASK_JSON_ARRAY) ? arr->items->len : 0;
 }
 
-BtJson *
-bt_json_at(BtJson *arr, guint i)
+TaskJson *
+task_json_at(TaskJson *arr, guint i)
 {
-    if (arr == NULL || arr->type != BT_JSON_ARRAY || i >= arr->items->len)
+    if (arr == NULL || arr->type != TASK_JSON_ARRAY || i >= arr->items->len)
         return NULL;
     return g_ptr_array_index(arr->items, i);
 }
 
 /* ---------------------------------------------------------------------------
- * bt_json_write() — compact serializer (see json.h).
+ * task_json_write() — compact serializer (see json.h).
  * ------------------------------------------------------------------------- */
 void
-bt_json_write(GString *out, BtJson *v)
+task_json_write(GString *out, TaskJson *v)
 {
     if (v == NULL) {
         g_string_append(out, "null");
         return;
     }
     switch (v->type) {
-    case BT_JSON_NULL:
+    case TASK_JSON_NULL:
         g_string_append(out, "null");
         break;
-    case BT_JSON_BOOL:
+    case TASK_JSON_BOOL:
         g_string_append(out, v->b ? "true" : "false");
         break;
-    case BT_JSON_NUMBER: {
+    case TASK_JSON_NUMBER: {
         gchar buf[G_ASCII_DTOSTR_BUF_SIZE];
         g_ascii_dtostr(buf, sizeof buf, v->num);
         g_string_append(out, buf);
         break;
     }
-    case BT_JSON_STRING:
-        bt_json_escape(out, v->str);
+    case TASK_JSON_STRING:
+        task_json_escape(out, v->str);
         break;
-    case BT_JSON_ARRAY:
+    case TASK_JSON_ARRAY:
         g_string_append_c(out, '[');
         for (guint i = 0; i < v->items->len; i++) {
             if (i > 0)
                 g_string_append_c(out, ',');
-            bt_json_write(out, g_ptr_array_index(v->items, i));
+            task_json_write(out, g_ptr_array_index(v->items, i));
         }
         g_string_append_c(out, ']');
         break;
-    case BT_JSON_OBJECT:
+    case TASK_JSON_OBJECT:
         g_string_append_c(out, '{');
         for (guint i = 0; i < v->items->len; i++) {
             if (i > 0)
                 g_string_append_c(out, ',');
-            bt_json_escape(out, g_ptr_array_index(v->keys, i));
+            task_json_escape(out, g_ptr_array_index(v->keys, i));
             g_string_append_c(out, ':');
-            bt_json_write(out, g_ptr_array_index(v->items, i));
+            task_json_write(out, g_ptr_array_index(v->items, i));
         }
         g_string_append_c(out, '}');
         break;
@@ -397,10 +397,10 @@ bt_json_write(GString *out, BtJson *v)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_json_escape() — append `s` as a quoted JSON string (see json.h).
+ * task_json_escape() — append `s` as a quoted JSON string (see json.h).
  * ------------------------------------------------------------------------- */
 void
-bt_json_escape(GString *out, const gchar *s)
+task_json_escape(GString *out, const gchar *s)
 {
     if (s == NULL) {
         g_string_append(out, "null");

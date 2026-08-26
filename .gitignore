@@ -11,28 +11,12 @@ Tasks.app/
 
 # The LIVE config: per-machine values, and it holds the OAuth refresh
 # token.  Only tasks.ini.defaults belongs in git (see the "Config"
-# convention in CLAUDE.md).  Kept as an anchored pattern so it cannot
-# match tasks.ini.defaults.
+# convention in CLAUDE.md).  Anchored so it cannot match the defaults.
 /tasks.ini
 
-# The rename migrations write a verbatim copy of the old ini before
-# rewriting it — same secrets as the live file, refresh token and all,
-# so they must be just as uncommittable.  The bare *.bak rule is the
-# backstop: no editor or script backup belongs in this repo.
-/tasks.ini.pre-4.0.bak
-/tasks.ini.pre-3.0.bak
+# Any .bak — a schema migration leaves <db>.pre-v<N>.bak beside the
+# database, and no editor or script backup belongs in this repo either.
 *.bak
-
-# Pre-rename names (Hacienda → Lists → Tasks), still ignored so an old
-# build, config or database left in a working copy cannot be committed.
-# /lists.ini in particular SURVIVES the 4.0 rename: the migration copies
-# it to tasks.ini and deliberately leaves the original in place.
-lists
-Lists.app/
-/lists.ini
-/lists.ini.pre-3.0.bak
-hacienda
-hacienda.ini
 
 client_credentials.mk
 .DS_Store

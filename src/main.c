@@ -72,7 +72,7 @@ fk_collect(void *data, int argc, char **argv, char **col_names)
  * sqlite's own message.
  * ------------------------------------------------------------------------- */
 static gboolean
-startup_integrity_check(BtApp *app)
+startup_integrity_check(TaskApp *app)
 {
     GString *ic_errors = g_string_new(NULL);
     gchar   *ic_fail   = NULL;       /* sqlite's message if exec failed     */
@@ -109,11 +109,11 @@ startup_integrity_check(BtApp *app)
             g_string_append(msg, fk_errors->str);
         }
         /* "found issues" would be a lie when the checks never ran at all,
-         * which is exactly the case this dialog exists to expose.           */
+         * which is exactly the case this dialog exists to expose.          */
         gboolean ran = ic_fail == NULL && fk_fail == NULL;
-        bt_app_notice(NULL, GTK_MESSAGE_WARNING,
-                      "Tasks \xe2\x80\x94 Database Integrity Check",
-                      ran ? "The database integrity check found issues:"
+        task_app_notice(NULL, GTK_MESSAGE_WARNING,
+                        "Tasks \xe2\x80\x94 Database Integrity Check",
+                        ran ? "The database integrity check found issues:"
                             "\n\n%s"
                           : "The database integrity check did not "
                             "complete:\n\n%s",
@@ -136,9 +136,9 @@ startup_integrity_check(BtApp *app)
  *   expected — the path where the db was looked for (shown in dialog text).
  *   db_dir   — in/out: the configured db directory; replaced (and
  *              persisted to the ini) when an existing file is opened.
- *   db_path  — in/out: the path handed to bt_db_open(); replaced when an
+ *   db_path  — in/out: the path handed to task_db_open(); replaced when an
  *              existing file is opened.
- * Returns TRUE to proceed with bt_db_open(*db_path), FALSE to quit.        */
+ * Returns TRUE to proceed with task_db_open(*db_path), FALSE to quit.      */
 static gboolean
 startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
 {
@@ -157,7 +157,7 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
         gtk_widget_destroy(dlg);
 
         if (resp == 2)
-            return TRUE;             /* bt_db_open() will create it         */
+            return TRUE;             /* task_db_open() will create it       */
         if (resp != 1)
             return FALSE;            /* dialog closed — quit                */
 
@@ -172,9 +172,9 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
         /* Filter to tasks.db only — the ini stores db_dir, the
          * filename is always the fixed constant.                           */
         GtkFileFilter *ff = gtk_file_filter_new();
-        gtk_file_filter_add_pattern(ff, BT_DB_FILENAME);
+        gtk_file_filter_add_pattern(ff, TASK_DB_FILENAME);
         gtk_file_filter_set_name(ff,
-            "Tasks Database (" BT_DB_FILENAME ")");
+            "Tasks Database (" TASK_DB_FILENAME ")");
         gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), ff);
 
         gchar *file_path = NULL;
@@ -187,19 +187,19 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
 
         gchar *dir = g_path_get_dirname(file_path);
         g_free(file_path);
-        bt_app_config_set("db_dir", dir);
+        task_app_config_set("db_dir", dir);
         g_free(*db_dir);   *db_dir  = dir;
-        g_free(*db_path);  *db_path = g_build_filename(dir, BT_DB_FILENAME,
+        g_free(*db_path);  *db_path = g_build_filename(dir, TASK_DB_FILENAME,
                                                        NULL);
         return TRUE;
     }
 }
 
-/* The single application context, shared with the activate handler.         */
+/* The single application context, shared with the activate handler.        */
 typedef struct {
-    BtApp  *app;
+    TaskApp  *app;
     gchar  *db_path;
-} BtBoot;
+} TaskBoot;
 
 /* ---------------------------------------------------------------------------
  * on_activate() — build the library window (or raise it on re-activate)
@@ -209,7 +209,7 @@ static void
 on_activate(GtkApplication *gtk_app, gpointer data)
 {
     (void)gtk_app;
-    BtBoot *boot = data;
+    TaskBoot *boot = data;
     if (boot->app->library_window != NULL) {
         gtk_window_present(GTK_WINDOW(boot->app->library_window));
         return;
@@ -237,27 +237,27 @@ on_activate(GtkApplication *gtk_app, gpointer data)
     g_free(icon_path);
 #endif
 
-    /* DB integrity check: run PRAGMA integrity_check + foreign_key_check.    */
+    /* DB integrity check: run PRAGMA integrity_check + foreign_key_check.  */
     gboolean db_ok = !boot->app->db_integrity_check
                      || startup_integrity_check(boot->app);
 
-    bt_library_window_new(boot->app);
-    bt_sync_auto_start(boot->app, boot->db_path);
-    bt_bnsync_auto_start(boot->app, boot->db_path);
+    task_library_window_new(boot->app);
+    task_sync_auto_start(boot->app, boot->db_path);
+    task_bnsync_auto_start(boot->app, boot->db_path);
     /* Third timer, off unless the user turned backups on.  It carries its
-     * own db path like the other two, so bt_app_switch_database re-arms
+     * own db path like the other two, so task_app_switch_database re-arms
      * all THREE.                                                          */
-    bt_backup_auto_start(boot->app, boot->db_path);
+    task_backup_auto_start(boot->app, boot->db_path);
 
     if (boot->app->db_integrity_check && db_ok)
-        bt_app_status(boot->app, "DB at %s loaded, integrity check passed",
-                      boot->app->db->path);
+        task_app_status(boot->app, "DB at %s loaded, integrity check passed",
+                        boot->app->db->path);
 
 #ifdef HAVE_GTKOSX
     /* Honor the persisted native-menu-bar preference, then let the macOS
      * integration finish its launch handshake.                             */
-    if (bt_app_config_get_bool("native_menubar", FALSE))
-        bt_library_apply_native_menubar(boot->app, TRUE);
+    if (task_app_config_get_bool("native_menubar", FALSE))
+        task_library_apply_native_menubar(boot->app, TRUE);
     gtkosx_application_ready(gtkosx_application_get());
 #endif
 }
@@ -268,21 +268,16 @@ on_activate(GtkApplication *gtk_app, gpointer data)
 int
 main(int argc, char **argv)
 {
-    /* Config first: everything else may read it.                            */
-    bt_app_config_init(argc > 0 ? argv[0] : NULL);
+    /* Config first: everything else may read it.                           */
+    task_app_config_init(argc > 0 ? argv[0] : NULL);
 
     /* libcurl's global init is NOT thread-safe when left to the first
      * curl_easy_init — and ours happen on sync/OAuth worker threads,
-     * possibly concurrently.  Initialize once before any thread exists.     */
+     * possibly concurrently.  Initialize once before any thread exists.    */
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    /* bt_db_resolve_path, not a bare g_build_filename: it also adopts a
-     * pre-4.0 lists.db, which is what an install from before the Tasks
-     * rename has sitting there.  Without it the first launch after the
-     * rename would find no tasks.db, offer the first-run dialog, and
-     * create an empty database beside the user's real one.                 */
-    gchar *db_dir  = bt_app_config_get("db_dir");
-    gchar *db_path = bt_db_resolve_path(db_dir);
+    gchar *db_dir  = task_app_config_get("db_dir");
+    gchar *db_path = task_db_resolve_path(db_dir);
 
     /* First-run: if the database file does not yet exist, ask the user
      * whether to open an existing file or create a fresh one — silently
@@ -302,7 +297,7 @@ main(int argc, char **argv)
     }
 
     GError *gerr = NULL;
-    BtDatabase *db = bt_db_open(db_path, &gerr);
+    TaskDatabase *db = task_db_open(db_path, &gerr);
     if (db == NULL) {
         g_printerr("tasks: %s\n",
                    gerr != NULL ? gerr->message : "cannot open database");
@@ -312,21 +307,21 @@ main(int argc, char **argv)
         return 1;
     }
 
-    bt_oauth_init();                 /* snapshot Google credentials         */
+    task_oauth_init();                 /* snapshot Google credentials       */
 
-    BtApp *app = g_new0(BtApp, 1);
+    TaskApp *app = g_new0(TaskApp, 1);
     app->db     = db;
     app->db_dir = (db_dir != NULL && *db_dir != '\0')
                   ? g_strdup(db_dir) : NULL;
     app->editors = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                          g_free, NULL);
     app->toolbars = g_ptr_array_new();
-    bt_app_init_icons_dir(app);
-    bt_app_load_toolbar_style(app);
+    task_app_init_icons_dir(app);
+    task_app_load_toolbar_style(app);
     app->db_integrity_check =
-        bt_app_config_get_bool("db_integrity_check", TRUE);
+        task_app_config_get_bool("db_integrity_check", TRUE);
 
-    BtBoot boot = { app, db_path };
+    TaskBoot boot = { app, db_path };
     app->gtk_app = gtk_application_new("org.example.tasks",
                                        G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app->gtk_app, "activate",
@@ -337,7 +332,7 @@ main(int argc, char **argv)
     g_object_unref(app->gtk_app);
     g_hash_table_destroy(app->editors);
     g_ptr_array_free(app->toolbars, TRUE);
-    bt_db_close(app->db);
+    task_db_close(app->db);
     g_free(app->db_dir);
     g_free(app);
     g_free(db_dir);

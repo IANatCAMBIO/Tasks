@@ -3,7 +3,7 @@
  *
  * Implements the "OAuth for native apps" flow (RFC 8252) with PKCE:
  *
- *   1. bt_oauth_begin() starts a loopback listener on 127.0.0.1:<ephemeral>
+ *   1. task_oauth_begin() starts a loopback listener on 127.0.0.1:<ephemeral>
  *      and opens the user's browser on Google's sign-in page.
  *   2. Google redirects the browser to the loopback URL with a one-time
  *      code; the listener catches it and shows a "you can close this tab"
@@ -30,53 +30,53 @@
  * Scope requested: https://www.googleapis.com/auth/tasks (read/write).
  * =========================================================================== */
 
-#ifndef BT_OAUTH_H
-#define BT_OAUTH_H
+#ifndef TASK_OAUTH_H
+#define TASK_OAUTH_H
 
 #include "app.h"
 
-/* Completion callback for bt_oauth_begin(); runs on the main thread.
+/* Completion callback for task_oauth_begin(); runs on the main thread.
  * `error` is a human-readable failure reason (NULL on success; not owned
- * by the callee).                                                           */
-typedef void (*BtOauthDoneFn)(gboolean ok, const gchar *error,
-                              gpointer user_data);
+ * by the callee).                                                          */
+typedef void (*TaskOauthDoneFn)(gboolean ok, const gchar *error,
+                                gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * bt_oauth_init() — snapshot the OAuth client credentials (id/secret,
+ * task_oauth_init() — snapshot the OAuth client credentials (id/secret,
  * resolved as described above) AND the stored refresh token into
  * mutex-guarded statics, so the sync worker thread never touches the
  * main-thread config.  Re-reading the refresh token means calling this
  * also resets the signed-in state to what the ini says.  Call at
  * startup and after the settings change; main thread only.
  * ------------------------------------------------------------------------- */
-void bt_oauth_init(void);
+void task_oauth_init(void);
 
-/* bt_oauth_have_client() — TRUE when a client id is configured.             */
-gboolean bt_oauth_have_client(void);
+/* task_oauth_have_client() — TRUE when a client id is configured.          */
+gboolean task_oauth_have_client(void);
 
 /* ---------------------------------------------------------------------------
- * bt_oauth_begin() — run the interactive browser sign-in flow.  One flow
+ * task_oauth_begin() — run the interactive browser sign-in flow.  One flow
  * at a time; `done` always fires exactly once on the main thread.
  * ------------------------------------------------------------------------- */
-void bt_oauth_begin(GtkWindow *parent, BtOauthDoneFn done,
-                    gpointer user_data);
+void task_oauth_begin(GtkWindow *parent, TaskOauthDoneFn done,
+                      gpointer user_data);
 
-/* bt_oauth_authenticated() — TRUE while sync can get a token without a
+/* task_oauth_authenticated() — TRUE while sync can get a token without a
  * browser trip: a valid in-memory access token OR a stored refresh
- * token.                                                                    */
-gboolean bt_oauth_authenticated(void);
+ * token.                                                                   */
+gboolean task_oauth_authenticated(void);
 
-/* bt_oauth_signout() — drop the in-memory access token AND the stored
- * refresh token (main thread).                                              */
-void bt_oauth_signout(void);
+/* task_oauth_signout() — drop the in-memory access token AND the stored
+ * refresh token (main thread).                                             */
+void task_oauth_signout(void);
 
 /* ---------------------------------------------------------------------------
- * bt_oauth_access_token() — a currently valid access token, silently
+ * task_oauth_access_token() — a currently valid access token, silently
  * refreshing via the stored refresh token when needed.  BLOCKING when a
  * refresh runs (one HTTPS round trip) — call from the sync worker
  * thread only.  Returns a new string (g_free it), or NULL with *err set
  * (g_free it) — e.g. never signed in, or Google revoked the grant.
  * ------------------------------------------------------------------------- */
-gchar *bt_oauth_access_token(gchar **err);
+gchar *task_oauth_access_token(gchar **err);
 
-#endif /* BT_OAUTH_H */
+#endif /* TASK_OAUTH_H */

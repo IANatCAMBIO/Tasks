@@ -9,10 +9,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#define BT_OAUTH_SCOPE     "https://www.googleapis.com/auth/tasks"
-#define BT_OAUTH_AUTH_URL  "https://accounts.google.com/o/oauth2/v2/auth"
-#define BT_OAUTH_TOKEN_URL "https://oauth2.googleapis.com/token"
-#define BT_OAUTH_TIMEOUT_S 300       /* give up waiting for the redirect    */
+#define TASK_OAUTH_SCOPE     "https://www.googleapis.com/auth/tasks"
+#define TASK_OAUTH_AUTH_URL  "https://accounts.google.com/o/oauth2/v2/auth"
+#define TASK_OAUTH_TOKEN_URL "https://oauth2.googleapis.com/token"
+#define TASK_OAUTH_TIMEOUT_S 300       /* give up waiting for the redirect  */
 
 /* ---------------------------------------------------------------------------
  * The app's own OAuth client, baked in at build time (put the values in
@@ -24,11 +24,11 @@
  * The ini keys google_client_id/google_client_secret still OVERRIDE the
  * built-ins for people who want to run their own client.
  * ------------------------------------------------------------------------- */
-#ifndef BT_GOOGLE_CLIENT_ID
-#define BT_GOOGLE_CLIENT_ID ""
+#ifndef TASK_GOOGLE_CLIENT_ID
+#define TASK_GOOGLE_CLIENT_ID ""
 #endif
-#ifndef BT_GOOGLE_CLIENT_SECRET
-#define BT_GOOGLE_CLIENT_SECRET ""
+#ifndef TASK_GOOGLE_CLIENT_SECRET
+#define TASK_GOOGLE_CLIENT_SECRET ""
 #endif
 
 static gboolean token_post(const gchar *form, gchar **access,
@@ -36,7 +36,7 @@ static gboolean token_post(const gchar *form, gchar **access,
                            gchar **error);
 
 /* ---------------------------------------------------------------------------
- * Client credentials + tokens — written on the main thread (bt_oauth_init
+ * Client credentials + tokens — written on the main thread (task_oauth_init
  * and the flow completion), read/refreshed by the sync worker under the
  * mutex.  The refresh token persists in the ini ("gtasks_refresh_token");
  * access tokens stay in memory.
@@ -48,7 +48,7 @@ static gchar  *cred_refresh_token = NULL;   /* the persistent grant         */
 static gchar  *session_access     = NULL;   /* current access token         */
 static gint64  session_expiry     = 0;      /* unix time it goes stale      */
 
-/* esc() — shorthand for the URI escaping every form/URL builder needs.      */
+/* esc() — shorthand for the URI escaping every form/URL builder needs.     */
 static gchar *
 esc(const gchar *s)
 {
@@ -56,7 +56,7 @@ esc(const gchar *s)
 }
 
 /* session_cache() — store a fresh access token; call under cred_lock.
- * The 60 s haircut keeps a token from expiring mid-request.                 */
+ * The 60 s haircut keeps a token from expiring mid-request.                */
 static void
 session_cache(const gchar *access, gint64 expires_in)
 {
@@ -65,22 +65,22 @@ session_cache(const gchar *access, gint64 expires_in)
     session_expiry = g_get_real_time() / G_USEC_PER_SEC + expires_in - 60;
 }
 
-/* The single in-flight interactive flow, or inactive when service==NULL.    */
+/* The single in-flight interactive flow, or inactive when service==NULL.   */
 static struct {
     GSocketService *service;         /* loopback listener                   */
     guint16         port;            /* its bound port                      */
     gchar          *verifier;        /* PKCE code_verifier                  */
     gchar          *state;           /* CSRF state parameter                */
     guint           timeout_id;      /* the give-up timer                   */
-    BtOauthDoneFn   done;            /* completion callback                 */
+    TaskOauthDoneFn   done;            /* completion callback               */
     gpointer        user_data;
     gboolean        exchanging;      /* a code exchange already spawned     */
 } flow;
 
 /* The Google Cloud console's downloaded OAuth client file, looked for
  * next to the binary, then in the user config dir.  It is gitignored —
- * never commit it.                                                          */
-#define BT_CLIENT_FILE "client_secret.apps.googleusercontent.com.json"
+ * never commit it.                                                         */
+#define TASK_CLIENT_FILE "client_secret.apps.googleusercontent.com.json"
 
 /* ---------------------------------------------------------------------------
  * load_client_file() — read client id/secret out of Google's standard
@@ -91,50 +91,45 @@ static struct {
 static gboolean
 load_client_file(gchar **id, gchar **secret)
 {
-    /* Three candidates: beside the binary, then the current config
-     * subdirectory, then the pre-4.0 one.  The last is a READ-ONLY
-     * fallback for an install that predates the Tasks rename — nothing
-     * writes this file, so there is nothing to migrate, and looking in
-     * the old place costs one stat on the failure path.                    */
-    const gchar *dirs[3] = { bt_app_exe_dir(), g_get_user_config_dir(),
-                             g_get_user_config_dir() };
-    const gchar *subdirs[3] = { NULL, BT_APP_DIR, BT_APP_DIR_LEGACY };
+    /* Two candidates: beside the binary, then the config subdirectory.     */
+    const gchar *dirs[2]    = { task_app_exe_dir(), g_get_user_config_dir() };
+    const gchar *subdirs[2] = { NULL, TASK_APP_DIR };
     for (gsize i = 0; i < G_N_ELEMENTS(dirs); i++) {
         if (dirs[i] == NULL)
             continue;
         gchar *path = subdirs[i] == NULL
-            ? g_build_filename(dirs[i], BT_CLIENT_FILE, NULL)
-            : g_build_filename(dirs[i], subdirs[i], BT_CLIENT_FILE,
+            ? g_build_filename(dirs[i], TASK_CLIENT_FILE, NULL)
+            : g_build_filename(dirs[i], subdirs[i], TASK_CLIENT_FILE,
                                NULL);
         gchar *text = NULL;
         gboolean loaded = g_file_get_contents(path, &text, NULL, NULL);
         g_free(path);
         if (!loaded)
             continue;
-        BtJson *root = bt_json_parse(text, -1);
+        TaskJson *root = task_json_parse(text, -1);
         g_free(text);
-        BtJson *client = bt_json_get(root, "installed");
+        TaskJson *client = task_json_get(root, "installed");
         if (client == NULL)
-            client = bt_json_get(root, "web");
-        const gchar *cid = bt_json_str(client, "client_id");
+            client = task_json_get(root, "web");
+        const gchar *cid = task_json_str(client, "client_id");
         if (cid != NULL) {
             *id = g_strdup(cid);
-            *secret = g_strdup(bt_json_str(client, "client_secret"));
-            bt_json_free(root);
+            *secret = g_strdup(task_json_str(client, "client_secret"));
+            task_json_free(root);
             return TRUE;
         }
-        bt_json_free(root);
+        task_json_free(root);
     }
     return FALSE;
 }
 
 /* ---------------------------------------------------------------------------
- * bt_oauth_init() — snapshot the client credentials (see oauth.h):
+ * task_oauth_init() — snapshot the client credentials (see oauth.h):
  * Google's client-secret JSON file first, then the legacy ini keys,
  * then the baked-in client.
  * ------------------------------------------------------------------------- */
 void
-bt_oauth_init(void)
+task_oauth_init(void)
 {
     gchar *file_id = NULL, *file_secret = NULL;
     load_client_file(&file_id, &file_secret);
@@ -145,21 +140,21 @@ bt_oauth_init(void)
     g_free(cred_refresh_token);
     cred_client_id     = file_id;
     cred_client_secret = file_secret;
-    cred_refresh_token = bt_app_config_get("gtasks_refresh_token");
+    cred_refresh_token = task_app_config_get("gtasks_refresh_token");
     if (cred_client_id == NULL) {
-        cred_client_id     = bt_app_config_get("google_client_id");
-        cred_client_secret = bt_app_config_get("google_client_secret");
+        cred_client_id     = task_app_config_get("google_client_id");
+        cred_client_secret = task_app_config_get("google_client_secret");
     }
-    if (cred_client_id == NULL && *BT_GOOGLE_CLIENT_ID != '\0')
-        cred_client_id = g_strdup(BT_GOOGLE_CLIENT_ID);
-    if (cred_client_secret == NULL && *BT_GOOGLE_CLIENT_SECRET != '\0')
-        cred_client_secret = g_strdup(BT_GOOGLE_CLIENT_SECRET);
+    if (cred_client_id == NULL && *TASK_GOOGLE_CLIENT_ID != '\0')
+        cred_client_id = g_strdup(TASK_GOOGLE_CLIENT_ID);
+    if (cred_client_secret == NULL && *TASK_GOOGLE_CLIENT_SECRET != '\0')
+        cred_client_secret = g_strdup(TASK_GOOGLE_CLIENT_SECRET);
     g_mutex_unlock(&cred_lock);
 }
 
-/* bt_oauth_have_client() — TRUE when a client id is configured.             */
+/* task_oauth_have_client() — TRUE when a client id is configured.          */
 gboolean
-bt_oauth_have_client(void)
+task_oauth_have_client(void)
 {
     g_mutex_lock(&cred_lock);
     gboolean yes = cred_client_id != NULL;
@@ -167,10 +162,10 @@ bt_oauth_have_client(void)
     return yes;
 }
 
-/* bt_oauth_authenticated() — TRUE when sync can get a token without a
- * browser trip (valid session token OR stored refresh token).               */
+/* task_oauth_authenticated() — TRUE when sync can get a token without a
+ * browser trip (valid session token OR stored refresh token).              */
 gboolean
-bt_oauth_authenticated(void)
+task_oauth_authenticated(void)
 {
     g_mutex_lock(&cred_lock);
     gboolean yes = cred_refresh_token != NULL ||
@@ -180,11 +175,11 @@ bt_oauth_authenticated(void)
     return yes;
 }
 
-/* bt_oauth_signout() — drop the session token AND the stored grant.         */
+/* task_oauth_signout() — drop the session token AND the stored grant.      */
 void
-bt_oauth_signout(void)
+task_oauth_signout(void)
 {
-    bt_app_config_set("gtasks_refresh_token", NULL);
+    task_app_config_set("gtasks_refresh_token", NULL);
     g_mutex_lock(&cred_lock);
     g_clear_pointer(&session_access, g_free);
     g_clear_pointer(&cred_refresh_token, g_free);
@@ -193,12 +188,12 @@ bt_oauth_signout(void)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_oauth_access_token() — cached token, or a silent refresh via the
+ * task_oauth_access_token() — cached token, or a silent refresh via the
  * stored refresh token (see oauth.h).  BLOCKING on refresh; sync worker
  * thread only.
  * ------------------------------------------------------------------------- */
 gchar *
-bt_oauth_access_token(gchar **err)
+task_oauth_access_token(gchar **err)
 {
     *err = NULL;
     g_mutex_lock(&cred_lock);
@@ -220,7 +215,7 @@ bt_oauth_access_token(gchar **err)
     gchar *rtok = g_strdup(cred_refresh_token);
     g_mutex_unlock(&cred_lock);
 
-    /* Silent refresh — network I/O runs OUTSIDE the lock.                   */
+    /* Silent refresh — network I/O runs OUTSIDE the lock.                  */
     gchar *rtok_esc = esc(rtok);
     gchar *form = g_strdup_printf(
         "grant_type=refresh_token&refresh_token=%s&client_id=%s"
@@ -246,7 +241,7 @@ bt_oauth_access_token(gchar **err)
 
     /* Cache only while still signed in: Sign Out may have cleared the
      * refresh token while this round trip was in flight, and re-caching
-     * would resurrect the "signed-out" session for another hour.            */
+     * would resurrect the "signed-out" session for another hour.           */
     g_mutex_lock(&cred_lock);
     if (cred_refresh_token != NULL)
         session_cache(access, expires_in);
@@ -271,7 +266,7 @@ base64url(const guchar *data, gsize len)
 
 /* random_urlsafe() — base64url of `n` bytes of OS randomness (PKCE
  * verifier / state).  Falls back to GRand only if /dev/urandom is
- * unreadable, which does not happen on the supported platforms.             */
+ * unreadable, which does not happen on the supported platforms.            */
 static gchar *
 random_urlsafe(gsize n)
 {
@@ -288,7 +283,7 @@ random_urlsafe(gsize n)
     return base64url(buf, n);
 }
 
-/* sha256_base64url() — the PKCE S256 code challenge for a verifier.         */
+/* sha256_base64url() — the PKCE S256 code challenge for a verifier.        */
 static gchar *
 sha256_base64url(const gchar *verifier)
 {
@@ -310,7 +305,7 @@ flow_finish(gboolean ok, const gchar *error)
 {
     if (flow.service == NULL)
         return;
-    BtOauthDoneFn done = flow.done;  /* fire after teardown                 */
+    TaskOauthDoneFn done = flow.done;  /* fire after teardown               */
     gpointer user     = flow.user_data;
     if (flow.timeout_id != 0)
         g_source_remove(flow.timeout_id);
@@ -342,37 +337,37 @@ token_post(const gchar *form, gchar **access, gchar **refresh,
         *refresh = NULL;
     glong status = 0;
     gchar *terr = NULL;
-    gchar *body = bt_http_request("POST", BT_OAUTH_TOKEN_URL, NULL,
-                                  "application/x-www-form-urlencoded",
-                                  NULL, form, &status, &terr);
+    gchar *body = task_http_request("POST", TASK_OAUTH_TOKEN_URL, NULL,
+                                    "application/x-www-form-urlencoded",
+                                    NULL, form, &status, &terr);
     if (body == NULL) {
         *error = terr != NULL ? terr : g_strdup("network failure");
         return FALSE;
     }
     g_free(terr);
-    BtJson *root = bt_json_parse(body, -1);
+    TaskJson *root = task_json_parse(body, -1);
     gboolean ok = FALSE;
-    if (status == 200 && bt_json_str(root, "access_token") != NULL) {
-        *access = g_strdup(bt_json_str(root, "access_token"));
+    if (status == 200 && task_json_str(root, "access_token") != NULL) {
+        *access = g_strdup(task_json_str(root, "access_token"));
         if (refresh != NULL)
-            *refresh = g_strdup(bt_json_str(root, "refresh_token"));
-        BtJson *exp = bt_json_get(root, "expires_in");
-        *expires_in = (exp != NULL && exp->type == BT_JSON_NUMBER)
+            *refresh = g_strdup(task_json_str(root, "refresh_token"));
+        TaskJson *exp = task_json_get(root, "expires_in");
+        *expires_in = (exp != NULL && exp->type == TASK_JSON_NUMBER)
                       ? (gint64)exp->num : 3600;
         ok = TRUE;
     } else {
-        const gchar *desc = bt_json_str(root, "error_description");
-        const gchar *code = bt_json_str(root, "error");
+        const gchar *desc = task_json_str(root, "error_description");
+        const gchar *code = task_json_str(root, "error");
         /* Google's error bodies name the failing parameter (and carry no
-         * secrets) — log the whole thing; the dialog shows the summary.     */
-        g_printerr("bt-oauth: token endpoint HTTP %ld: %s\n", status, body);
+         * secrets) — log the whole thing; the dialog shows the summary.    */
+        g_printerr("task-oauth: token endpoint HTTP %ld: %s\n", status, body);
         *error = g_strdup_printf("token request failed (HTTP %ld): %s%s%s",
                                  status,
                                  code != NULL ? code : "unknown error",
                                  desc != NULL ? " - " : "",
                                  desc != NULL ? desc : "");
     }
-    bt_json_free(root);
+    task_json_free(root);
     g_free(body);
     return ok;
 }
@@ -391,7 +386,7 @@ typedef struct {
     gchar    *error;                 /* out: failure reason                 */
 } ExchangeJob;
 
-/* exchange_job_free() — free an ExchangeJob and everything it owns.         */
+/* exchange_job_free() — free an ExchangeJob and everything it owns.        */
 static void
 exchange_job_free(ExchangeJob *job)
 {
@@ -409,7 +404,7 @@ exchange_job_free(ExchangeJob *job)
  * flow.  When the flow already ended (the 5-minute timeout fired while
  * the exchange was in flight), the tokens are DISCARDED — the user was
  * just told sign-in failed, and silently storing a grant anyway would
- * leave the UI saying signed-out while the app syncs.                       */
+ * leave the UI saying signed-out while the app syncs.                      */
 static gboolean
 exchange_apply(gpointer data)
 {
@@ -420,7 +415,7 @@ exchange_apply(gpointer data)
     }
     if (job->error == NULL && job->access != NULL) {
         if (job->refresh != NULL)
-            bt_app_config_set("gtasks_refresh_token", job->refresh);
+            task_app_config_set("gtasks_refresh_token", job->refresh);
         g_mutex_lock(&cred_lock);
         if (job->refresh != NULL) {
             g_free(cred_refresh_token);
@@ -437,7 +432,7 @@ exchange_apply(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
-/* exchange_thread() — worker: authorization code → access token.            */
+/* exchange_thread() — worker: authorization code → access token.           */
 static gpointer
 exchange_thread(gpointer data)
 {
@@ -496,7 +491,7 @@ redirect_param(const gchar *request, const gchar *name)
     return value;
 }
 
-/* redirect_respond() — write the tiny "done" HTML page and close.           */
+/* redirect_respond() — write the tiny "done" HTML page and close.          */
 static void
 redirect_respond(GSocketConnection *conn, const gchar *message)
 {
@@ -516,12 +511,12 @@ redirect_respond(GSocketConnection *conn, const gchar *message)
 }
 
 /* redirect_read_done() — the browser's request arrived: validate it,
- * answer it, and hand the code to the exchange worker.                      */
+ * answer it, and hand the code to the exchange worker.                     */
 static void
 redirect_read_done(GObject *src, GAsyncResult *res, gpointer data)
 {
     GSocketConnection *conn = data;
-    gchar *buf = g_object_get_data(G_OBJECT(conn), "bt-buf");
+    gchar *buf = g_object_get_data(G_OBJECT(conn), "task-buf");
     gssize n = g_input_stream_read_finish(G_INPUT_STREAM(src), res, NULL);
     if (n <= 0 || flow.service == NULL) {
         g_io_stream_close(G_IO_STREAM(conn), NULL, NULL);
@@ -531,7 +526,7 @@ redirect_read_done(GObject *src, GAsyncResult *res, gpointer data)
     buf[MIN(n, 8191)] = '\0';
 
     /* Browsers also ask for /favicon.ico — ignore everything that is not
-     * the redirect (no code/error parameter).                               */
+     * the redirect (no code/error parameter).                              */
     gchar *code  = redirect_param(buf, "code");
     gchar *error = redirect_param(buf, "error");
     gchar *state = redirect_param(buf, "state");
@@ -556,8 +551,8 @@ redirect_read_done(GObject *src, GAsyncResult *res, gpointer data)
          * NOT redeem the code again: Google answers the reuse with
          * invalid_grant ("Bad Request") and revokes the grant the first
          * exchange just obtained, failing the whole sign-in.  Serve the
-         * page again, exchange nothing.                                     */
-        g_printerr("bt-oauth: duplicate redirect ignored\n");
+         * page again, exchange nothing.                                    */
+        g_printerr("task-oauth: duplicate redirect ignored\n");
         redirect_respond(conn, "Signed in \xe2\x9c\x93");
     } else {
         flow.exchanging = TRUE;
@@ -567,11 +562,11 @@ redirect_read_done(GObject *src, GAsyncResult *res, gpointer data)
         job->redirect_uri = g_strdup_printf("http://127.0.0.1:%u",
                                             (guint)flow.port);
         job->verifier     = g_strdup(flow.verifier);
-        GThread *th = g_thread_new("bt-oauth-exchange",
+        GThread *th = g_thread_new("task-oauth-exchange",
                                    exchange_thread, job);
         g_thread_unref(th);
         /* The flow stays "open" until exchange_apply finishes it — but
-         * the listener has served its purpose.                              */
+         * the listener has served its purpose.                             */
     }
     g_free(code);
     g_free(error);
@@ -579,14 +574,14 @@ redirect_read_done(GObject *src, GAsyncResult *res, gpointer data)
     g_object_unref(conn);
 }
 
-/* redirect_incoming() — a browser connected to the loopback listener.       */
+/* redirect_incoming() — a browser connected to the loopback listener.      */
 static gboolean
 redirect_incoming(GSocketService *service, GSocketConnection *conn,
                   GObject *source, gpointer data)
 {
     (void)service; (void)source; (void)data;
     gchar *buf = g_new0(gchar, 8192);
-    g_object_set_data_full(G_OBJECT(conn), "bt-buf", buf, g_free);
+    g_object_set_data_full(G_OBJECT(conn), "task-buf", buf, g_free);
     g_input_stream_read_async(
         g_io_stream_get_input_stream(G_IO_STREAM(conn)),
         buf, 8191, G_PRIORITY_DEFAULT, NULL,
@@ -594,7 +589,7 @@ redirect_incoming(GSocketService *service, GSocketConnection *conn,
     return TRUE;
 }
 
-/* flow_timeout() — nobody came back from the browser.                       */
+/* flow_timeout() — nobody came back from the browser.                      */
 static gboolean
 flow_timeout(gpointer data)
 {
@@ -605,16 +600,16 @@ flow_timeout(gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_oauth_begin() — run the interactive sign-in flow (see oauth.h).
+ * task_oauth_begin() — run the interactive sign-in flow (see oauth.h).
  * access_type=offline requests the refresh token; prompt=consent forces
  * the consent screen so Google issues one EVERY interactive sign-in —
  * without it, only the first-ever grant includes a refresh token and a
  * re-sign-in after Sign Out would leave us with nothing to store.
  * ------------------------------------------------------------------------- */
 void
-bt_oauth_begin(GtkWindow *parent, BtOauthDoneFn done, gpointer user_data)
+task_oauth_begin(GtkWindow *parent, TaskOauthDoneFn done, gpointer user_data)
 {
-    bt_oauth_init();
+    task_oauth_init();
     g_mutex_lock(&cred_lock);
     gchar *cid = g_strdup(cred_client_id);
     g_mutex_unlock(&cred_lock);
@@ -623,7 +618,7 @@ bt_oauth_begin(GtkWindow *parent, BtOauthDoneFn done, gpointer user_data)
         if (done != NULL)
             done(FALSE, "No OAuth client configured.  Place the Google "
                  "Cloud console's \xe2\x80\x9c""Desktop app\xe2\x80\x9d "
-                 "client-secret JSON (" BT_CLIENT_FILE ") next to the "
+                 "client-secret JSON (" TASK_CLIENT_FILE ") next to the "
                  "app, or build with client_credentials.mk (Google "
                  "Tasks API enabled either way).", user_data);
         return;
@@ -635,7 +630,7 @@ bt_oauth_begin(GtkWindow *parent, BtOauthDoneFn done, gpointer user_data)
         return;
     }
 
-    /* Loopback listener on an ephemeral port.                               */
+    /* Loopback listener on an ephemeral port.                              */
     GError *gerr = NULL;
     flow.service = g_socket_service_new();
     flow.port = g_socket_listener_add_any_inet_port(
@@ -655,7 +650,7 @@ bt_oauth_begin(GtkWindow *parent, BtOauthDoneFn done, gpointer user_data)
     flow.state      = random_urlsafe(16);
     flow.done       = done;
     flow.user_data  = user_data;
-    flow.timeout_id = g_timeout_add_seconds(BT_OAUTH_TIMEOUT_S,
+    flow.timeout_id = g_timeout_add_seconds(TASK_OAUTH_TIMEOUT_S,
                                             flow_timeout, NULL);
     g_signal_connect(flow.service, "incoming",
                      G_CALLBACK(redirect_incoming), NULL);
@@ -663,11 +658,11 @@ bt_oauth_begin(GtkWindow *parent, BtOauthDoneFn done, gpointer user_data)
 
     gchar *challenge = sha256_base64url(flow.verifier);
     gchar *cid_esc   = esc(cid);
-    gchar *scope_esc = esc(BT_OAUTH_SCOPE);
+    gchar *scope_esc = esc(TASK_OAUTH_SCOPE);
     gchar *redirect  = g_strdup_printf("http%%3A%%2F%%2F127.0.0.1%%3A%u",
                                        (guint)flow.port);
     gchar *url = g_strdup_printf(
-        BT_OAUTH_AUTH_URL "?client_id=%s&redirect_uri=%s"
+        TASK_OAUTH_AUTH_URL "?client_id=%s&redirect_uri=%s"
         "&response_type=code&scope=%s&code_challenge=%s"
         "&code_challenge_method=S256&state=%s"
         "&access_type=offline&prompt=consent",

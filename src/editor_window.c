@@ -6,7 +6,7 @@
 #include "json.h"
 #include <string.h>
 
-/* Columns of the subtasks list store.                                       */
+/* Columns of the subtasks list store.                                      */
 enum {
     SUB_ID = 0,                      /* gint64: subtask id                  */
     SUB_DONE,                        /* gboolean                            */
@@ -14,7 +14,7 @@ enum {
     SUB_N_COLS
 };
 
-/* Columns of the attachments list store.                                    */
+/* Columns of the attachments list store.                                   */
 enum {
     ATT_ID = 0,                      /* gint64: attachment id               */
     ATT_PATH,                        /* gchar*: full path                   */
@@ -23,16 +23,16 @@ enum {
 };
 
 /* ---------------------------------------------------------------------------
- * BtEditor — one open editor window's state.
+ * TaskEditor — one open editor window's state.
  * ------------------------------------------------------------------------- */
 typedef struct {
-    BtApp        *app;
+    TaskApp        *app;
     gint64        task_id;
     gint64        parent_id;         /* 0 when the task is top-level        */
     GtkWidget    *window;
     GtkWidget    *title_entry;
     GtkWidget    *status_combo;      /* New / In Progress / Done — index
-                                      * IS the BtTaskStatus value           */
+                                      * IS the TaskStatus value           */
     GtkWidget    *pinned_check;
     GtkWidget    *priority_check;
     GtkWidget    *due_entry;
@@ -55,15 +55,15 @@ typedef struct {
                                       * given back on collapse             */
     guint         save_source;       /* pending debounce save, or 0         */
     gboolean      loading;           /* suppress change handlers            */
-} BtEditor;
+} TaskEditor;
 
 /* editor_notify() — tell the library something changed.  Editor saves
  * use the LIGHT hook (task pane only): they can never change the
  * sidebar, and the saving editor is itself the source of truth — the
  * full notify would reload every open editor (and re-run the Notes
- * CLI) per autosave.                                                        */
+ * CLI) per autosave.                                                       */
 static void
-editor_notify(BtEditor *ed)
+editor_notify(TaskEditor *ed)
 {
     if (ed->app->notify_tasks != NULL)
         ed->app->notify_tasks(ed->app);
@@ -74,9 +74,9 @@ editor_notify(BtEditor *ed)
 /* editor_due_entry_parse() — the due entry's text as a timestamp, with
  * the mid-typing guard: blank clears (0), a valid date parses, and
  * PARTIAL/invalid text keeps `current` — a debounced save firing while
- * the user is still typing must not wipe the stored date.                   */
+ * the user is still typing must not wipe the stored date.                  */
 static gint64
-editor_due_entry_parse(BtEditor *ed, gint64 current)
+editor_due_entry_parse(TaskEditor *ed, gint64 current)
 {
     gchar *trim = g_strstrip(
         g_strdup(gtk_entry_get_text(GTK_ENTRY(ed->due_entry))));
@@ -84,7 +84,7 @@ editor_due_entry_parse(BtEditor *ed, gint64 current)
     if (*trim == '\0')
         due = 0;
     else {
-        gint64 parsed = bt_due_parse(trim);
+        gint64 parsed = task_due_parse(trim);
         due = parsed != 0 ? parsed : current;
     }
     g_free(trim);
@@ -95,7 +95,7 @@ editor_due_entry_parse(BtEditor *ed, gint64 current)
  * editor_title_refresh() — window title "Tasks - <task title>".
  * ------------------------------------------------------------------------- */
 static void
-editor_title_refresh(BtEditor *ed)
+editor_title_refresh(TaskEditor *ed)
 {
     const gchar *t = gtk_entry_get_text(GTK_ENTRY(ed->title_entry));
     gchar *title = g_strdup_printf("Tasks - %s",
@@ -105,18 +105,18 @@ editor_title_refresh(BtEditor *ed)
 }
 
 /* editor_status_get() — the status dropdown's current value.  The combo
- * is built with one row per BtTaskStatus IN ORDER, so the active index
+ * is built with one row per TaskStatus IN ORDER, so the active index
  * IS the enum value; -1 (nothing active, which only happens if the combo
  * has not been loaded yet) reads as New rather than as a negative
- * status.                                                                   */
-static BtTaskStatus
-editor_status_get(BtEditor *ed)
+ * status.                                                                  */
+static TaskStatus
+editor_status_get(TaskEditor *ed)
 {
     gint active =
         gtk_combo_box_get_active(GTK_COMBO_BOX(ed->status_combo));
-    if (active < 0 || active >= BT_STATUS_N_VALUES)
-        return BT_STATUS_NEW;
-    return (BtTaskStatus)active;
+    if (active < 0 || active >= TASK_STATUS_N_VALUES)
+        return TASK_STATUS_NEW;
+    return (TaskStatus)active;
 }
 
 /* ---------------------------------------------------------------------------
@@ -131,13 +131,13 @@ editor_status_get(BtEditor *ed)
  * process spawn.
  * ------------------------------------------------------------------------- */
 static void
-editor_save_now(BtEditor *ed)
+editor_save_now(TaskEditor *ed)
 {
     if (ed->save_source != 0) {
         g_source_remove(ed->save_source);
         ed->save_source = 0;
     }
-    BtTask *t = bt_db_task_get(ed->app->db, ed->task_id);
+    Task *t = task_db_task_get(ed->app->db, ed->task_id);
     if (t == NULL)
         return;
     g_free(t->title);
@@ -152,25 +152,25 @@ editor_save_now(BtEditor *ed)
     t->priority = gtk_toggle_button_get_active(
                     GTK_TOGGLE_BUTTON(ed->priority_check));
     t->due    = editor_due_entry_parse(ed, t->due);
-    bt_db_task_update(ed->app->db, t);
-    bt_task_free(t);
+    task_db_task_update(ed->app->db, t);
+    task_free(t);
     editor_title_refresh(ed);
     editor_notify(ed);
 }
 
-/* save_timeout() — the debounce timer body.                                 */
+/* save_timeout() — the debounce timer body.                                */
 static gboolean
 save_timeout(gpointer data)
 {
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     ed->save_source = 0;
     editor_save_now(ed);
     return G_SOURCE_REMOVE;
 }
 
-/* editor_queue_save() — (re)arm the ~600 ms debounce.                       */
+/* editor_queue_save() — (re)arm the ~600 ms debounce.                      */
 static void
-editor_queue_save(BtEditor *ed)
+editor_queue_save(TaskEditor *ed)
 {
     if (ed->loading)
         return;
@@ -179,7 +179,7 @@ editor_queue_save(BtEditor *ed)
     ed->save_source = g_timeout_add(600, save_timeout, ed);
 }
 
-/* on_field_changed() — any text/toggle edit → debounce a save.              */
+/* on_field_changed() — any text/toggle edit → debounce a save.             */
 static void
 on_field_changed(GtkWidget *w, gpointer data)
 {
@@ -190,12 +190,12 @@ on_field_changed(GtkWidget *w, gpointer data)
 /* on_toggle_changed() — status/pinned change → save immediately (these
  * drive the library's meta lists).  The status combo shares it: a
  * dropdown pick is a deliberate act like a tick, not something the
- * 600 ms debounce should sit on.                                            */
+ * 600 ms debounce should sit on.                                           */
 static void
 on_toggle_changed(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     if (!ed->loading)
         editor_save_now(ed);
 }
@@ -230,7 +230,7 @@ static gboolean on_sub_edit_focus_out(GtkWidget *entry, GdkEventFocus *event,
                                       gpointer data);
 
 static void
-editor_sub_edit_forget(BtEditor *ed)
+editor_sub_edit_forget(TaskEditor *ed)
 {
     if (ed->sub_edit == NULL)
         return;
@@ -249,7 +249,7 @@ editor_sub_edit_forget(BtEditor *ed)
  * entry's current text (on_sub_title_edited saves it), and remove-widget
  * tears the editable down.  No-op when nothing is being edited.            */
 static void
-editor_sub_edit_commit(BtEditor *ed)
+editor_sub_edit_commit(TaskEditor *ed)
 {
     if (ed->sub_edit == NULL)
         return;
@@ -271,7 +271,7 @@ static void
 on_editor_save(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     editor_sub_edit_commit(ed);      /* a subtask still being typed         */
     editor_save_now(ed);             /* also clears the pending debounce    */
     gtk_widget_destroy(ed->window);
@@ -296,8 +296,8 @@ static void
 on_editor_cancel(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
-    BtApp  *app = ed->app;           /* `ed` dies with the window below     */
+    TaskEditor *ed = data;
+    TaskApp  *app = ed->app;           /* `ed` dies with the window below   */
     gint64  id  = ed->task_id;
     if (ed->save_source != 0) {
         g_source_remove(ed->save_source);
@@ -305,10 +305,10 @@ on_editor_cancel(GtkWidget *w, gpointer data)
     }
     editor_sub_edit_forget(ed);
     gtk_widget_destroy(ed->window);
-    bt_db_task_delete(app->db, id);
+    task_db_task_delete(app->db, id);
     if (app->notify_changed != NULL)
         app->notify_changed(app);
-    bt_app_status(app, "Discarded the new task");
+    task_app_status(app, "Discarded the new task");
 }
 
 /* ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ static void
 on_due_calendar(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     GtkWidget *dlg = gtk_dialog_new_with_buttons("Due Date",
         GTK_WINDOW(ed->window),
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
@@ -327,8 +327,8 @@ on_due_calendar(GtkWidget *w, gpointer data)
         "_OK", GTK_RESPONSE_OK, NULL);
     GtkWidget *cal = gtk_calendar_new();
 
-    /* Preselect the current due date, if any.                               */
-    gint64 due = bt_due_parse(gtk_entry_get_text(GTK_ENTRY(ed->due_entry)));
+    /* Preselect the current due date, if any.                              */
+    gint64 due = task_due_parse(gtk_entry_get_text(GTK_ENTRY(ed->due_entry)));
     if (due != 0) {
         GDateTime *dt = g_date_time_new_from_unix_local(due);
         gtk_calendar_select_month(GTK_CALENDAR(cal),
@@ -362,9 +362,9 @@ on_due_calendar(GtkWidget *w, gpointer data)
  * Subtasks section (top-level tasks only).
  * =========================================================================== */
 
-/* sub_selected_id() — id of the selected subtask row, or 0.                 */
+/* sub_selected_id() — id of the selected subtask row, or 0.                */
 static gint64
-sub_selected_id(BtEditor *ed)
+sub_selected_id(TaskEditor *ed)
 {
     GtkTreeSelection *sel =
         gtk_tree_view_get_selection(GTK_TREE_VIEW(ed->sub_view));
@@ -377,25 +377,25 @@ sub_selected_id(BtEditor *ed)
     return id;
 }
 
-/* sub_refresh() — repopulate the subtasks store from the database.          */
+/* sub_refresh() — repopulate the subtasks store from the database.         */
 static void
-sub_refresh(BtEditor *ed)
+sub_refresh(TaskEditor *ed)
 {
     if (ed->sub_store == NULL)
         return;
     gtk_list_store_clear(ed->sub_store);
-    GPtrArray *subs = bt_db_subtasks(ed->app->db, ed->task_id);
+    GPtrArray *subs = task_db_subtasks(ed->app->db, ed->task_id);
     for (guint i = 0; i < subs->len; i++) {
-        BtTask *s = g_ptr_array_index(subs, i);
+        Task *s = g_ptr_array_index(subs, i);
         GtkTreeIter iter;
         gtk_list_store_append(ed->sub_store, &iter);
         gtk_list_store_set(ed->sub_store, &iter,
                            SUB_ID, s->id,
-                           SUB_DONE, s->status == BT_STATUS_DONE,
+                           SUB_DONE, s->status == TASK_STATUS_DONE,
                            SUB_TITLE, s->title,
                            -1);
     }
-    bt_ptr_array_free_tasks(subs);
+    task_ptr_array_free_tasks(subs);
 }
 
 /* on_sub_edit_focus_out() — the entry lost focus (the user clicked Add,
@@ -406,7 +406,7 @@ static gboolean
 on_sub_edit_focus_out(GtkWidget *entry, GdkEventFocus *event, gpointer data)
 {
     (void)event;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     if (ed->sub_edit == (GtkCellEditable *)entry)
         editor_sub_edit_commit(ed);
     return FALSE;
@@ -420,7 +420,7 @@ on_sub_editing_started(GtkCellRenderer *cell, GtkCellEditable *editable,
 {
     (void)cell;
     (void)path_str;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     editor_sub_edit_forget(ed);
     ed->sub_edit = editable;
     g_object_add_weak_pointer(G_OBJECT(editable), (gpointer *)&ed->sub_edit);
@@ -447,22 +447,22 @@ static void
 on_sub_add(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     editor_sub_edit_commit(ed);
-    BtTask *t = bt_db_task_get(ed->app->db, ed->task_id);
+    Task *t = task_db_task_get(ed->app->db, ed->task_id);
     if (t == NULL)
         return;
-    gint64 id = bt_db_task_create(ed->app->db, t->list_id, ed->task_id,
-                                  "New subtask");
-    bt_task_free(t);
+    gint64 id = task_db_task_create(ed->app->db, t->list_id, ed->task_id,
+                                    "New subtask");
+    task_free(t);
     if (id == 0) {                   /* refused (nesting) or write failed   */
-        bt_app_status(ed->app, "Could not create the subtask");
+        task_app_status(ed->app, "Could not create the subtask");
         return;
     }
     sub_refresh(ed);
     editor_notify(ed);
 
-    /* Put the fresh row's title straight into edit mode.                    */
+    /* Put the fresh row's title straight into edit mode.                   */
     GtkTreeModel *model = GTK_TREE_MODEL(ed->sub_store);
     GtkTreeIter iter;
     gboolean valid = gtk_tree_model_get_iter_first(model, &iter);
@@ -482,31 +482,31 @@ on_sub_add(GtkWidget *w, gpointer data)
 }
 
 /* on_sub_remove() — delete the selected subtask (no confirm — it is one
- * line of text; the delete propagates to Google on the next sync).          */
+ * line of text; the delete propagates to Google on the next sync).         */
 static void
 on_sub_remove(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     gint64 id = sub_selected_id(ed);
     if (id == 0)
         return;
-    bt_db_task_delete(ed->app->db, id);
+    task_db_task_delete(ed->app->db, id);
     sub_refresh(ed);
     editor_notify(ed);
 }
 
-/* on_sub_move() — move the selected subtask up (-1) or down (+1).           */
+/* on_sub_move() — move the selected subtask up (-1) or down (+1).          */
 static void
 on_sub_move(GtkWidget *w, gpointer data)
 {
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     gint direction = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w),
-                                                       "bt-direction"));
+                                                       "task-direction"));
     gint64 id = sub_selected_id(ed);
     if (id == 0)
         return;
-    bt_db_subtask_move(ed->app->db, id, direction);
+    task_db_subtask_move(ed->app->db, id, direction);
     sub_refresh(ed);
     editor_notify(ed);
 
@@ -527,17 +527,55 @@ on_sub_move(GtkWidget *w, gpointer data)
     }
 }
 
+/*
+ * editor_status_resync() — re-read this task's status off the row and put
+ * it in the combo, without saving.
+ *
+ * Inputs:  ed — the editor
+ * Output:  none.
+ *
+ * For the case where something OTHER than this combo moved the status:
+ * ticking a subtask promotes its parent New → In Progress in the
+ * database, and this editor may BE that parent.  Leaving the combo stale
+ * would not merely look wrong — editor_save_now reads the combo and
+ * writes it back, so the next debounced save would quietly undo the
+ * promotion.
+ *
+ * `loading` is raised around the set_active for the same reason
+ * editor_load raises it: "changed" fires on a programmatic set, and
+ * on_toggle_changed would answer it with a save.                          */
+static void
+editor_status_resync(TaskEditor *ed)
+{
+    Task *t = task_db_task_get(ed->app->db, ed->task_id);
+    if (t == NULL)
+        return;
+    gboolean was = ed->loading;
+    ed->loading = TRUE;
+    gtk_combo_box_set_active(GTK_COMBO_BOX(ed->status_combo),
+        t->status >= 0 && t->status < TASK_STATUS_N_VALUES
+            ? (gint)t->status : (gint)TASK_STATUS_NEW);
+    ed->loading = was;
+    task_free(t);
+}
+
 /* on_sub_toggled() — the subtask done checkbox in the list.  Subtasks
  * have a status like any other task and get the same checkbox rule as
  * the task pane's: ticking means Done, unticking means In Progress (a
  * subtask that was ticked HAD been worked on).  There is no per-subtask
  * status dropdown — the row is one line in a compact list — but opening
- * the subtask in its own editor offers the full choice.                    */
+ * the subtask in its own editor offers the full choice.
+ *
+ * Completing a subtask also moves the PARENT off New (parent_started in
+ * db.c, which every write path folds through), so the combo above is
+ * resynced: it is the parent's own status, and a stale one would be
+ * written back by the next debounced save.  Unticking is not the mirror
+ * of that — see parent_started.                                           */
 static void
 on_sub_toggled(GtkCellRendererToggle *cell, gchar *path_str, gpointer data)
 {
     (void)cell;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     GtkTreeIter iter;
     GtkTreeModel *model = GTK_TREE_MODEL(ed->sub_store);
     if (!gtk_tree_model_get_iter_from_string(model, &iter, path_str))
@@ -545,19 +583,21 @@ on_sub_toggled(GtkCellRendererToggle *cell, gchar *path_str, gpointer data)
     gint64 id;
     gboolean done;
     gtk_tree_model_get(model, &iter, SUB_ID, &id, SUB_DONE, &done, -1);
-    bt_db_task_set_status(ed->app->db, id,
-                          done ? BT_STATUS_IN_PROGRESS : BT_STATUS_DONE);
+    task_db_task_set_status(ed->app->db, id,
+                            done ? TASK_STATUS_IN_PROGRESS : TASK_STATUS_DONE);
     gtk_list_store_set(ed->sub_store, &iter, SUB_DONE, !done, -1);
+    if (!done)                       /* the tick just COMPLETED it         */
+        editor_status_resync(ed);
     editor_notify(ed);
 }
 
-/* on_sub_title_edited() — in-place subtask rename.                          */
+/* on_sub_title_edited() — in-place subtask rename.                         */
 static void
 on_sub_title_edited(GtkCellRendererText *cell, gchar *path_str,
                     gchar *new_text, gpointer data)
 {
     (void)cell;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     editor_sub_edit_forget(ed);      /* this edit is over                   */
     GtkTreeIter iter;
     GtkTreeModel *model = GTK_TREE_MODEL(ed->sub_store);
@@ -565,13 +605,13 @@ on_sub_title_edited(GtkCellRendererText *cell, gchar *path_str,
         return;
     gint64 id;
     gtk_tree_model_get(model, &iter, SUB_ID, &id, -1);
-    BtTask *t = bt_db_task_get(ed->app->db, id);
+    Task *t = task_db_task_get(ed->app->db, id);
     if (t == NULL)
         return;
     g_free(t->title);
     t->title = g_strdup(new_text);
-    bt_db_task_update(ed->app->db, t);
-    bt_task_free(t);
+    task_db_task_update(ed->app->db, t);
+    task_free(t);
     gtk_list_store_set(ed->sub_store, &iter, SUB_TITLE, new_text, -1);
     editor_notify(ed);
 }
@@ -580,14 +620,14 @@ on_sub_title_edited(GtkCellRendererText *cell, gchar *path_str,
  * Attachments section.
  * =========================================================================== */
 
-/* att_refresh() — repopulate the attachments store.                         */
+/* att_refresh() — repopulate the attachments store.                        */
 static void
-att_refresh(BtEditor *ed)
+att_refresh(TaskEditor *ed)
 {
     gtk_list_store_clear(ed->att_store);
-    GPtrArray *atts = bt_db_attachments(ed->app->db, ed->task_id);
+    GPtrArray *atts = task_db_attachments(ed->app->db, ed->task_id);
     for (guint i = 0; i < atts->len; i++) {
-        BtAttachment *a = g_ptr_array_index(atts, i);
+        TaskAttachment *a = g_ptr_array_index(atts, i);
         gchar *name = g_path_get_basename(a->path);
         GtkTreeIter iter;
         gtk_list_store_append(ed->att_store, &iter);
@@ -598,12 +638,12 @@ att_refresh(BtEditor *ed)
                            -1);
         g_free(name);
     }
-    bt_ptr_array_free_attachments(atts);
+    task_ptr_array_free_attachments(atts);
 }
 
-/* att_selected() — id and (optionally) path of the selected row.            */
+/* att_selected() — id and (optionally) path of the selected row.           */
 static gint64
-att_selected(BtEditor *ed, gchar **path_out)
+att_selected(TaskEditor *ed, gchar **path_out)
 {
     GtkTreeSelection *sel =
         gtk_tree_view_get_selection(GTK_TREE_VIEW(ed->att_view));
@@ -618,12 +658,12 @@ att_selected(BtEditor *ed, gchar **path_out)
     return id;
 }
 
-/* on_att_add() — file chooser → new attachment row.                         */
+/* on_att_add() — file chooser → new attachment row.                        */
 static void
 on_att_add(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     GtkWidget *dlg = gtk_file_chooser_dialog_new("Attach File",
         GTK_WINDOW(ed->window), GTK_FILE_CHOOSER_ACTION_OPEN,
         "_Cancel", GTK_RESPONSE_CANCEL, "_Attach", GTK_RESPONSE_ACCEPT,
@@ -632,7 +672,7 @@ on_att_add(GtkWidget *w, gpointer data)
         gchar *path =
             gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
         if (path != NULL) {
-            bt_db_attachment_add(ed->app->db, ed->task_id, path);
+            task_db_attachment_add(ed->app->db, ed->task_id, path);
             g_free(path);
             att_refresh(ed);
             editor_notify(ed);
@@ -642,23 +682,23 @@ on_att_add(GtkWidget *w, gpointer data)
 }
 
 /* on_att_remove() — drop the selected attachment (the file itself is
- * never touched — attachments are references).                              */
+ * never touched — attachments are references).                             */
 static void
 on_att_remove(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     gint64 id = att_selected(ed, NULL);
     if (id == 0)
         return;
-    bt_db_attachment_remove(ed->app->db, id);
+    task_db_attachment_remove(ed->app->db, id);
     att_refresh(ed);
     editor_notify(ed);
 }
 
-/* att_open_path() — hand a path to the platform's default opener.           */
+/* att_open_path() — hand a path to the platform's default opener.          */
 static void
-att_open_path(BtEditor *ed, const gchar *path)
+att_open_path(TaskEditor *ed, const gchar *path)
 {
     gchar *uri = g_filename_to_uri(path, NULL, NULL);
     if (uri == NULL)
@@ -666,33 +706,33 @@ att_open_path(BtEditor *ed, const gchar *path)
     GError *gerr = NULL;
     if (!gtk_show_uri_on_window(GTK_WINDOW(ed->window), uri,
                                 GDK_CURRENT_TIME, &gerr)) {
-        bt_app_notice(GTK_WINDOW(ed->window), GTK_MESSAGE_ERROR, NULL,
-                      "Cannot open %s: %s", path,
-                      gerr != NULL ? gerr->message : "?");
+        task_app_notice(GTK_WINDOW(ed->window), GTK_MESSAGE_ERROR, NULL,
+                        "Cannot open %s: %s", path,
+                        gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
     }
     g_free(uri);
 }
 
-/* on_att_open() — the Open button.                                          */
+/* on_att_open() — the Open button.                                         */
 static void
 on_att_open(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     gchar *path = NULL;
     if (att_selected(ed, &path) != 0 && path != NULL)
         att_open_path(ed, path);
     g_free(path);
 }
 
-/* on_att_activated() — double-click a row = open it.                        */
+/* on_att_activated() — double-click a row = open it.                       */
 static void
 on_att_activated(GtkTreeView *view, GtkTreePath *tp,
                  GtkTreeViewColumn *col, gpointer data)
 {
     (void)col;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     GtkTreeModel *model = gtk_tree_view_get_model(view);
     GtkTreeIter iter;
     if (!gtk_tree_model_get_iter(model, &iter, tp))
@@ -709,7 +749,7 @@ on_att_activated(GtkTreeView *view, GtkTreePath *tp,
  * =========================================================================== */
 
 /* set_entry_if_differs() — rewrite an entry only when the text really
- * changed, so refreshes never move a cursor needlessly.                     */
+ * changed, so refreshes never move a cursor needlessly.                    */
 static void
 set_entry_if_differs(GtkWidget *entry, const gchar *text)
 {
@@ -721,16 +761,16 @@ set_entry_if_differs(GtkWidget *entry, const gchar *text)
  * user is mid-edit: never rewrite the entry while it has focus (the
  * canonical form would replace their half-typed text).                     */
 static void
-due_entry_refresh(BtEditor *ed, gint64 due)
+due_entry_refresh(TaskEditor *ed, gint64 due)
 {
     if (gtk_widget_has_focus(ed->due_entry))
         return;
-    gchar *text = bt_due_format_iso(due);
+    gchar *text = task_due_format_iso(due);
     set_entry_if_differs(ed->due_entry, text);
     g_free(text);
 }
 
-/* clear_children() — empty a container.                                     */
+/* clear_children() — empty a container.                                    */
 static void
 clear_children(GtkWidget *box)
 {
@@ -740,7 +780,7 @@ clear_children(GtkWidget *box)
     g_list_free(kids);
 }
 
-/* add_link_button() — a left-aligned GtkLinkButton row.                      */
+/* add_link_button() — a left-aligned GtkLinkButton row.                    */
 static void
 add_link_button(GtkWidget *box, const gchar *uri, const gchar *label)
 {
@@ -757,12 +797,12 @@ add_link_button(GtkWidget *box, const gchar *uri, const gchar *label)
  *   links[] · the webViewLink deep link.
  * ------------------------------------------------------------------------- */
 static void
-google_section_load(BtEditor *ed, const BtTask *t)
+google_section_load(TaskEditor *ed, const Task *t)
 {
     if (ed->google_box == NULL)
         return;
     GString *info = g_string_new(NULL);
-    if (t->status == BT_STATUS_DONE && t->completed_at != 0) {
+    if (t->status == TASK_STATUS_DONE && t->completed_at != 0) {
         GDateTime *dt = g_date_time_new_from_unix_local(t->completed_at);
         gchar *when = g_date_time_format(dt, "%b %-e, %Y at %H:%M");
         g_string_append_printf(info, "Completed %s", when);
@@ -770,29 +810,29 @@ google_section_load(BtEditor *ed, const BtTask *t)
         g_date_time_unref(dt);
     }
     if (t->assigned != NULL) {
-        BtJson *ai = bt_json_parse(t->assigned, -1);
-        const gchar *surface = bt_json_str(ai, "surfaceType");
+        TaskJson *ai = task_json_parse(t->assigned, -1);
+        const gchar *surface = task_json_str(ai, "surfaceType");
         if (info->len > 0)
             g_string_append_c(info, '\n');
         g_string_append_printf(info, "Assigned task (from %s)",
             g_strcmp0(surface, "DOCUMENT") == 0 ? "Google Docs"
             : g_strcmp0(surface, "SPACE") == 0  ? "Google Chat"
                                                 : "Google Workspace");
-        bt_json_free(ai);
+        task_json_free(ai);
     }
     gtk_label_set_text(GTK_LABEL(ed->google_info), info->str);
 
     clear_children(ed->glinks_box);
     if (t->glinks != NULL) {
-        BtJson *links = bt_json_parse(t->glinks, -1);
-        for (guint i = 0; i < bt_json_len(links); i++) {
-            BtJson *lk = bt_json_at(links, i);
-            const gchar *uri = bt_json_str(lk, "link");
+        TaskJson *links = task_json_parse(t->glinks, -1);
+        for (guint i = 0; i < task_json_len(links); i++) {
+            TaskJson *lk = task_json_at(links, i);
+            const gchar *uri = task_json_str(lk, "link");
             if (uri != NULL)
                 add_link_button(ed->glinks_box, uri,
-                                bt_json_str(lk, "description"));
+                                task_json_str(lk, "description"));
         }
-        bt_json_free(links);
+        task_json_free(links);
     }
     if (t->web_link != NULL)
         add_link_button(ed->glinks_box, t->web_link,
@@ -806,7 +846,7 @@ google_section_load(BtEditor *ed, const BtTask *t)
          * cannot reveal an empty section — but that same flag makes
          * gtk_widget_show_all(google_box) return EARLY (it tests the
          * widget's own flag before recursing), so the section would never
-         * appear at all.  Lift the flag across the show.                    */
+         * appear at all.  Lift the flag across the show.                   */
         gtk_widget_set_no_show_all(ed->google_box, FALSE);
         gtk_widget_show_all(ed->google_box);
         gtk_widget_set_no_show_all(ed->google_box, TRUE);
@@ -824,22 +864,22 @@ google_section_load(BtEditor *ed, const BtTask *t)
  * must not be touched afterwards.
  * ------------------------------------------------------------------------- */
 static gboolean
-editor_load(BtEditor *ed)
+editor_load(TaskEditor *ed)
 {
-    BtTask *t = bt_db_task_get(ed->app->db, ed->task_id);
+    Task *t = task_db_task_get(ed->app->db, ed->task_id);
     if (t == NULL || t->deleted) {
-        bt_task_free(t);
+        task_free(t);
         gtk_widget_destroy(ed->window);
         return FALSE;
     }
     ed->loading = TRUE;
     set_entry_if_differs(ed->title_entry, t->title);
-    /* The combo's rows are the BtTaskStatus values in order, so the enum
+    /* The combo's rows are the TaskStatus values in order, so the enum
      * value doubles as the active index.  An out-of-range status off
      * disk would leave the combo blank, so it clamps to New.               */
     gtk_combo_box_set_active(GTK_COMBO_BOX(ed->status_combo),
-        t->status >= 0 && t->status < BT_STATUS_N_VALUES
-            ? (gint)t->status : (gint)BT_STATUS_NEW);
+        t->status >= 0 && t->status < TASK_STATUS_N_VALUES
+            ? (gint)t->status : (gint)TASK_STATUS_NEW);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->pinned_check),
                                  t->pinned);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->priority_check),
@@ -858,7 +898,7 @@ editor_load(BtEditor *ed)
     google_section_load(ed, t);
     editor_title_refresh(ed);
     ed->loading = FALSE;
-    bt_task_free(t);
+    task_free(t);
     return TRUE;
 }
 
@@ -876,7 +916,7 @@ static void
 on_editor_destroy(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     editor_sub_edit_commit(ed);
     if (ed->save_source != 0)
         editor_save_now(ed);         /* also clears the source              */
@@ -916,7 +956,7 @@ make_list_section(const gchar *heading, GtkWidget *view,
     return outer;
 }
 
-/* small_button() — a compact labelled button wired to `cb`.                 */
+/* small_button() — a compact labelled button wired to `cb`.                */
 static GtkWidget *
 small_button(const gchar *label, GCallback cb, gpointer data)
 {
@@ -936,26 +976,43 @@ small_button(const gchar *label, GCallback cb, gpointer data)
  * only, so re-measuring a folded box would read 0).
  * ------------------------------------------------------------------------- */
 static void
-editor_advanced_set(BtEditor *ed, gboolean shown)
+editor_advanced_reveal(TaskEditor *ed)
 {
-    ed->adv_shown = shown;
+    ed->adv_shown = TRUE;
     gtk_label_set_markup(GTK_LABEL(ed->adv_label),
-        shown ? "<u>Advanced \xe2\x96\xb4</u>"
-              : "<u>Advanced \xe2\x96\xbe</u>");
+                         "<u>Advanced \xe2\x96\xb4</u>");
+    /* Lift no_show_all across the show — with it set, show_all on the box
+     * itself returns early and nothing would appear (gotcha 15).           */
+    gtk_widget_set_no_show_all(ed->adv_box, FALSE);
+    gtk_widget_show_all(ed->adv_box);
+    gtk_widget_set_no_show_all(ed->adv_box, TRUE);
+    gint min, nat;
+    gtk_widget_get_preferred_height(ed->adv_box, &min, &nat);
+    ed->adv_height = nat + 8;        /* + the vbox's inter-child spacing    */
+}
 
+/* ---------------------------------------------------------------------------
+ * editor_advanced_set() — the disclosure applier for a window that is
+ * ALREADY ON SCREEN: reveal or fold the block and resize the window by its
+ * height, so the collapse gives back exactly the pixels the expand took.
+ *
+ * The open path does NOT come through here when the block starts expanded
+ * — see editor_open_common.  Growing a window that has already been
+ * presented is a visible two-step, and that is precisely the stutter the
+ * open path must not have.
+ * ------------------------------------------------------------------------- */
+static void
+editor_advanced_set(TaskEditor *ed, gboolean shown)
+{
     gint w, h;                       /* live client size                    */
     gtk_window_get_size(GTK_WINDOW(ed->window), &w, &h);
     if (shown) {
-        /* Lift no_show_all across the show — with it set, show_all on the
-         * box itself returns early and nothing would appear (gotcha 15).    */
-        gtk_widget_set_no_show_all(ed->adv_box, FALSE);
-        gtk_widget_show_all(ed->adv_box);
-        gtk_widget_set_no_show_all(ed->adv_box, TRUE);
-        gint min, nat;
-        gtk_widget_get_preferred_height(ed->adv_box, &min, &nat);
-        ed->adv_height = nat + 8;    /* + the vbox's inter-child spacing    */
+        editor_advanced_reveal(ed);
         gtk_window_resize(GTK_WINDOW(ed->window), w, h + ed->adv_height);
     } else {
+        ed->adv_shown = FALSE;
+        gtk_label_set_markup(GTK_LABEL(ed->adv_label),
+                             "<u>Advanced \xe2\x96\xbe</u>");
         gtk_widget_hide(ed->adv_box);
         if (ed->adv_height > 0)
             gtk_window_resize(GTK_WINDOW(ed->window), w,
@@ -964,21 +1021,21 @@ editor_advanced_set(BtEditor *ed, gboolean shown)
     }
 }
 
-/* on_editor_advanced() — the Advanced link: flip the disclosure.            */
+/* on_editor_advanced() — the Advanced link: flip the disclosure.           */
 static void
 on_editor_advanced(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtEditor *ed = data;
+    TaskEditor *ed = data;
     editor_advanced_set(ed, !ed->adv_shown);
 }
 
 /* editor_has_advanced_content() — does this task already carry subtasks or
  * attachments?  Read off the loaded stores, so it needs editor_load to
  * have run.  Existing tasks with either open expanded (saving the user a
- * click); new and empty ones open folded.                                   */
+ * click); new and empty ones open folded.                                  */
 static gboolean
-editor_has_advanced_content(BtEditor *ed)
+editor_has_advanced_content(TaskEditor *ed)
 {
     return (ed->sub_store != NULL &&
             gtk_tree_model_iter_n_children(
@@ -998,20 +1055,20 @@ editor_has_advanced_content(BtEditor *ed)
  * it, meaning "throw the row away again".
  * ------------------------------------------------------------------------- */
 static void
-editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
+editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
 {
     GtkWindow *existing = g_hash_table_lookup(app->editors, &task_id);
     if (existing != NULL) {
         gtk_window_present(existing);
         return;
     }
-    BtTask *t = bt_db_task_get(app->db, task_id);
+    Task *t = task_db_task_get(app->db, task_id);
     if (t == NULL || t->deleted) {
-        bt_task_free(t);
+        task_free(t);
         return;
     }
 
-    BtEditor *ed = g_new0(BtEditor, 1);
+    TaskEditor *ed = g_new0(TaskEditor, 1);
     ed->app       = app;
     ed->task_id   = task_id;
     ed->parent_id = t->parent_id;
@@ -1021,7 +1078,7 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
      * block folded away (no_show_all, see below) is the 8-line notes box
      * plus the fixed rows — so the notes area opens at the size it was
      * asked for instead of swallowing the slack of a fixed window height.
-     * editor_advanced_set adds the block's own height when it opens.        */
+     * editor_advanced_set adds the block's own height when it opens.       */
     gtk_window_set_default_size(GTK_WINDOW(ed->window), 490, -1);
     gtk_window_set_position(GTK_WINDOW(ed->window), GTK_WIN_POS_CENTER);
 
@@ -1029,7 +1086,7 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 12);
     gtk_container_add(GTK_CONTAINER(ed->window), vbox);
 
-    /* Title.                                                                */
+    /* Title.                                                               */
     ed->title_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(ed->title_entry),
                                    "Task title");
@@ -1039,7 +1096,7 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
      * new task's title and being done with it, and the notes box (a
      * GtkTextView) still takes Enter as a newline.  It is deliberately
      * NOT hooked to Cancel in the New Task variant — Enter must never
-     * discard what was just typed.                                          */
+     * discard what was just typed.                                         */
     g_signal_connect(ed->title_entry, "activate",
                      G_CALLBACK(on_editor_save), ed);
     gtk_box_pack_start(GTK_BOX(vbox), ed->title_entry, FALSE, FALSE, 0);
@@ -1054,15 +1111,15 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     gtk_box_pack_start(GTK_BOX(row), gtk_label_new("Status:"),
                        FALSE, FALSE, 0);
-    /* One row per BtTaskStatus, appended IN ENUM ORDER — the active
+    /* One row per TaskStatus, appended IN ENUM ORDER — the active
      * index is read back as the status value (editor_status_get).          */
     ed->status_combo = gtk_combo_box_text_new();
-    for (gint s = 0; s < BT_STATUS_N_VALUES; s++)
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++)
         gtk_combo_box_text_append_text(
             GTK_COMBO_BOX_TEXT(ed->status_combo),
-            bt_status_label((BtTaskStatus)s));
+            task_status_label((TaskStatus)s));
     gtk_combo_box_set_active(GTK_COMBO_BOX(ed->status_combo),
-                             (gint)BT_STATUS_NEW);
+                             (gint)TASK_STATUS_NEW);
     g_signal_connect(ed->status_combo, "changed",
                      G_CALLBACK(on_toggle_changed), ed);
     gtk_box_pack_start(GTK_BOX(row), ed->status_combo, FALSE, FALSE, 0);
@@ -1095,7 +1152,7 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), flags, FALSE, FALSE, 0);
 
-    /* Notes.                                                                */
+    /* Notes.                                                               */
     GtkWidget *notes_label = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(notes_label), "<b>Notes</b>");
     gtk_widget_set_halign(notes_label, GTK_ALIGN_START);
@@ -1153,7 +1210,7 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
     ed->adv_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_widget_set_no_show_all(ed->adv_box, TRUE);
 
-    /* Subtasks — only for top-level tasks (no nested subtasks).             */
+    /* Subtasks — only for top-level tasks (no nested subtasks).            */
     if (ed->parent_id == 0) {
         ed->sub_store = gtk_list_store_new(SUB_N_COLS, G_TYPE_INT64,
                                            G_TYPE_BOOLEAN, G_TYPE_STRING);
@@ -1193,9 +1250,9 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
         GtkWidget *move_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
         GtkWidget *up_btn   = gtk_button_new_with_label("\xe2\x96\xb2");
         GtkWidget *down_btn = gtk_button_new_with_label("\xe2\x96\xbc");
-        g_object_set_data(G_OBJECT(up_btn),   "bt-direction",
+        g_object_set_data(G_OBJECT(up_btn),   "task-direction",
                           GINT_TO_POINTER(-1));
-        g_object_set_data(G_OBJECT(down_btn),  "bt-direction",
+        g_object_set_data(G_OBJECT(down_btn),  "task-direction",
                           GINT_TO_POINTER(1));
         g_signal_connect(up_btn,   "clicked", G_CALLBACK(on_sub_move), ed);
         g_signal_connect(down_btn, "clicked", G_CALLBACK(on_sub_move), ed);
@@ -1207,7 +1264,7 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
         gtk_box_pack_start(GTK_BOX(ed->adv_box), sub_section,
                            FALSE, FALSE, 0);
     } else {
-        BtTask *parent = bt_db_task_get(app->db, ed->parent_id);
+        Task *parent = task_db_task_get(app->db, ed->parent_id);
         gchar *txt = g_strdup_printf(
             "This is a subtask of \xe2\x80\x9c%s\xe2\x80\x9d "
             "\xe2\x80\x94 subtasks cannot have their own subtasks.",
@@ -1217,10 +1274,10 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
         gtk_widget_set_halign(note, GTK_ALIGN_START);
         gtk_box_pack_start(GTK_BOX(vbox), note, FALSE, FALSE, 0);
         g_free(txt);
-        bt_task_free(parent);
+        task_free(parent);
     }
 
-    /* Attachments.                                                          */
+    /* Attachments.                                                         */
     ed->att_store = gtk_list_store_new(ATT_N_COLS, G_TYPE_INT64,
                                        G_TYPE_STRING, G_TYPE_STRING);
     ed->att_view = gtk_tree_view_new_with_model(
@@ -1253,7 +1310,7 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
 
     /* "From Google" — read-only metadata pulled by the sync (completed
      * time, Docs/Chat assignment, Google-attached links, the deep link
-     * into Google Tasks).  Shown only when the sync actually filled it.     */
+     * into Google Tasks).  Shown only when the sync actually filled it.    */
     ed->google_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     GtkWidget *heading = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(heading), "<b>From Google</b>");
@@ -1262,7 +1319,7 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
     ed->google_info = gtk_label_new("");
     gtk_label_set_line_wrap(GTK_LABEL(ed->google_info), TRUE);
     gtk_widget_set_halign(ed->google_info, GTK_ALIGN_START);
-    bt_app_widget_add_css(ed->google_info, "label { font-size: 85%; }");
+    task_app_widget_add_css(ed->google_info, "label { font-size: 85%; }");
     gtk_box_pack_start(GTK_BOX(ed->google_box), ed->google_info,
                        FALSE, FALSE, 0);
     ed->glinks_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -1275,15 +1332,15 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
      * right (every editor) and Cancel to ITS right in the New Task variant
      * — vbox's 12 px border puts them flush with the notes box's right
      * edge.  The row is packed last so it stays at the foot of the window
-     * in both fold states.                                                  */
+     * in both fold states.                                                 */
     GtkWidget *foot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *adv_btn = gtk_button_new();
     gtk_button_set_relief(GTK_BUTTON(adv_btn), GTK_RELIEF_NONE);
     ed->adv_label = gtk_label_new(NULL);
     gtk_container_add(GTK_CONTAINER(adv_btn), ed->adv_label);
     /* Link-blue + underlined (the markup comes from
-     * editor_advanced_set, which also owns the arrow direction).            */
-    bt_app_widget_add_css(adv_btn,
+     * editor_advanced_set, which also owns the arrow direction).           */
+    task_app_widget_add_css(adv_btn,
         "button { color: #1c71d8; padding: 2px 4px; }");
     gtk_widget_set_tooltip_text(adv_btn,
         "Show or hide the Subtasks and Attachments sections");
@@ -1291,7 +1348,7 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
                      G_CALLBACK(on_editor_advanced), ed);
     gtk_box_pack_start(GTK_BOX(foot), adv_btn, FALSE, FALSE, 0);
     /* pack_end puts the FIRST-packed child rightmost, so Cancel goes in
-     * before Save to end up on Save's right.                                */
+     * before Save to end up on Save's right.                               */
     if (is_new)
         gtk_box_pack_end(GTK_BOX(foot),
             small_button("Cancel", G_CALLBACK(on_editor_cancel), ed),
@@ -1304,56 +1361,72 @@ editor_open_common(BtApp *app, gint64 task_id, gboolean is_new)
     g_signal_connect(ed->window, "destroy",
                      G_CALLBACK(on_editor_destroy), ed);
 
-    /* Register + load.                                                      */
+    /* Register + load.                                                     */
     gint64 *key = g_new(gint64, 1);
     *key = task_id;
     g_hash_table_insert(app->editors, key, ed->window);
-    g_object_set_data(G_OBJECT(ed->window), "bt-editor", ed);
-    bt_task_free(t);
+    g_object_set_data(G_OBJECT(ed->window), "task-editor", ed);
+    task_free(t);
     /* The Notes load can destroy the window (item gone / CLI
-     * failure) — `ed` is freed then, so bail before touching it.            */
+     * failure) — `ed` is freed then, so bail before touching it.           */
     if (!editor_load(ed))
         return;
+    /* Fold state, decided once the stores are loaded (editor_load, just
+     * above) and applied BEFORE the window is ever shown: a task that
+     * already has subtasks or attachments opens expanded so they are on
+     * screen without a click; a new (or empty) task opens folded, which is
+     * the state adv_box is built in and so needs nothing done to it.
+     *
+     * Revealing FIRST is what makes the window appear at its final size in
+     * ONE step.  It used to show_all and then grow, which asks the window
+     * manager to present a folded window and resize it a moment later —
+     * two frames, and the second one only lands once the main loop gets
+     * back to it.  Off the Kanban board, where the click also restyles
+     * cards, that gap was long enough to watch the window scale and then
+     * unfold (reported 2026-08-26); from the list it usually beat the
+     * first frame, which is why it looked like a board-only problem.  It
+     * was neither view's fault — the sequence was wrong for both.
+     *
+     * The block's height still measures true here: a GtkBox counts only
+     * VISIBLE children, and adv_box is visible by the time it is measured
+     * (gotcha 15).  Realization is not required for a size request.        */
+    if (!is_new && editor_has_advanced_content(ed))
+        editor_advanced_reveal(ed);
     gtk_widget_show_all(ed->window);
-    /* Fold state, decided once the stores are loaded: a task that already
-     * has subtasks or attachments opens expanded so they are on screen
-     * without a click; a new (or empty) task opens folded.  Done AFTER
-     * the show so the block's height measures true.                         */
-    editor_advanced_set(ed, !is_new && editor_has_advanced_content(ed));
 }
 
 /* ---------------------------------------------------------------------------
- * bt_editor_open() / bt_editor_open_new() — the public entry points
+ * task_editor_open() / task_editor_open_new() — the public entry points
  * (see header).
  * ------------------------------------------------------------------------- */
 void
-bt_editor_open(BtApp *app, gint64 task_id)
+task_editor_open(TaskApp *app, gint64 task_id)
 {
     editor_open_common(app, task_id, FALSE);
 }
 
 void
-bt_editor_open_new(BtApp *app, gint64 task_id)
+task_editor_open_new(TaskApp *app, gint64 task_id)
 {
     editor_open_common(app, task_id, TRUE);
 }
 
-/* editor_windows() — every open editor window (new list; g_list_free).      */
+/* editor_windows() — every open editor window (new list; g_list_free).     */
 static GList *
-editor_windows(BtApp *app)
+editor_windows(TaskApp *app)
 {
     return g_hash_table_get_values(app->editors);
 }
 
 /* ---------------------------------------------------------------------------
- * bt_editor_refresh_all() — reload every open editor (see header).
+ * task_editor_refresh_all() — reload every open editor (see header).
  * ------------------------------------------------------------------------- */
 void
-bt_editor_refresh_all(BtApp *app)
+task_editor_refresh_all(TaskApp *app)
 {
     GList *windows = editor_windows(app);
     for (GList *l = windows; l != NULL; l = l->next) {
-        BtEditor *ed = g_object_get_data(G_OBJECT(l->data), "bt-editor");
+        TaskEditor *ed = g_object_get_data(G_OBJECT(l->data), "task-editor");
         if (ed == NULL || ed->save_source != 0)
             continue;                /* mid-edit: their version wins        */
         editor_load(ed);
@@ -1361,9 +1434,9 @@ bt_editor_refresh_all(BtApp *app)
     g_list_free(windows);
 }
 
-/* bt_editor_close_all() — destroy every open editor (flushing saves).       */
+/* task_editor_close_all() — destroy every open editor (flushing saves).    */
 void
-bt_editor_close_all(BtApp *app)
+task_editor_close_all(TaskApp *app)
 {
     GList *windows = editor_windows(app);
     for (GList *l = windows; l != NULL; l = l->next)

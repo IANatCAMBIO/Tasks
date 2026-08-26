@@ -23,7 +23,7 @@
 #      script is safe to re-run.
 #
 # Notes / limitations:
-#   - Tasks must NOT be running (no CLI/socket like Blue Notes; the
+#   - Tasks must NOT be running (no CLI/socket like Notes; the
 #     script writes the database directly).
 #   - Apple exposes NO API for Reminders subtasks — they import as
 #     top-level tasks of their list.
@@ -126,13 +126,12 @@ con = sqlite3.connect(db_path)
 cur = con.cursor()
 try:
     cur.execute("SELECT COUNT(*) FROM lists")
-    # `status` (schema v7) replaced the old boolean `done` column, so
-    # probing for it also rejects a database the app has not opened since
-    # the upgrade — which is exactly when the INSERT below would fail.
+    # Probe the columns this script writes, so a database from a
+    # different build is rejected here rather than at the INSERT.
     cur.execute("SELECT completed_at, status FROM tasks LIMIT 0")
 except sqlite3.Error:
     sys.exit("error: %s is not a current Tasks database "
-             "(launch the app once to create/migrate it)" % db_path)
+             "(launch the app once to create it)" % db_path)
 
 
 def local_midnight(iso):

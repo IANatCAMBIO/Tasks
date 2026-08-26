@@ -7,13 +7,13 @@
  * the interactive OAuth exchange; never from the GTK main loop.
  * =========================================================================== */
 
-#ifndef BT_HTTP_H
-#define BT_HTTP_H
+#ifndef TASK_HTTP_H
+#define TASK_HTTP_H
 
 #include <glib.h>
 
 /* ---------------------------------------------------------------------------
- * bt_http_request() — perform one HTTPS request and return the body.
+ * task_http_request() — perform one HTTPS request and return the body.
  *   method       — "GET", "POST", "PATCH", "DELETE".
  *   url          — full request URL.
  *   bearer       — OAuth access token for "Authorization: Bearer …",
@@ -30,9 +30,9 @@
  * Returns the response body as a NUL-terminated buffer (g_free it; may
  * be empty), or NULL on transport failure.
  * ------------------------------------------------------------------------- */
-gchar *bt_http_request(const gchar *method, const gchar *url,
-                       const gchar *bearer, const gchar *content_type,
-                       const gchar *extra_header, const gchar *body,
-                       glong *status, gchar **err);
+gchar *task_http_request(const gchar *method, const gchar *url,
+                         const gchar *bearer, const gchar *content_type,
+                         const gchar *extra_header, const gchar *body,
+                         glong *status, gchar **err);
 
-#endif /* BT_HTTP_H */
+#endif /* TASK_HTTP_H */

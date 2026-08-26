@@ -1,22 +1,21 @@
 /* ===========================================================================
  * db.h — SQLite storage for Tasks
  *
- * Schema (PRAGMA user_version = 7; v2 added lists.emoji, v3 the five
- * Google-mirror task columns, v4 tasks.priority, v5 list_groups +
- * lists.group_id, v6 the three Notes-mirror task columns, v7 replaced
- * tasks.done with the tri-state tasks.status):
+ * Schema (PRAGMA user_version = 7 — see TASK_DB_SCHEMA_VERSION).  Every
+ * column is declared in task_db_open's CREATE block; there are no
+ * ALTER-based migrations, so a fresh file and an existing one have
+ * identical structure.
  *
  *   list_groups  id, name, position              (local-only; never synced)
- *   lists        id, name, emoji, position, gtasks_id, updated_at, deleted,
- *                group_id (FK → list_groups.id; NULL = ungrouped)
+ *   lists        id, name, emoji, position, group_id (FK → list_groups.id;
+ *                NULL = ungrouped), gtasks_id, updated_at, deleted
  *   tasks        id, list_id, parent_id (NULL = top-level; ONE level of
  *                nesting only — a subtask can never be a parent),
  *                title, notes, due (unix local midnight; 0 = none),
- *                status (BtTaskStatus — the SUCCESSOR of the old boolean
- *                `done` column, which v7 drops),
- *                pinned, priority (local-only; sorts first in every
- *                view), position, gtasks_id, updated_at, deleted,
- *                completed_at, etag, web_link, glinks, assigned,
+ *                status (TaskStatus), pinned, priority (local-only;
+ *                sorts first in every view), position, gtasks_id,
+ *                updated_at, deleted, completed_at, etag, web_link,
+ *                glinks, assigned,
  *                bn_uid (Notes action-item identity; 0 = ordinary
  *                task), bn_done, bn_due (the last state Notes held —
  *                the baseline the bulk push diffs against)
@@ -25,11 +24,7 @@
  *   bn_deleted   uid                           (mirror tasks deleted in
  *                                               Tasks; suppresses the
  *                                               re-create, see
- *                                               bt_db_task_delete)
- *   bn_pins      ref                           (LEGACY pre-mirror pins,
- *                                               drained by the first
- *                                               mirror pass)
- *   bn_priority  ref                           (LEGACY, as bn_pins)
+ *                                               task_db_task_delete)
  *
  * Deletion is a SOFT flag everywhere (`deleted` = tombstone): the Google
  * Tasks sync needs to see "this existed and was deleted locally" to
@@ -38,46 +33,38 @@
  * than sync_state.last_sync are the local dirty set.
  * =========================================================================== */
 
-#ifndef BT_DB_H
-#define BT_DB_H
+#ifndef TASK_DB_H
+#define TASK_DB_H
 
 #include <glib.h>
 #include <sqlite3.h>
 
 /* ---------------------------------------------------------------------------
  * The app's on-disk names.  They live here, in the lowest header everyone
- * already includes, because three subsystems need the SAME two strings:
+ * already includes, because three subsystems need the same two strings:
  * the database (this file), the ini (app.c) and the OAuth client-file
- * lookup (oauth.c).
- *
- * BT_APP_DIR is the per-user directory name under the data/config dirs.
- * The _LEGACY spellings are what a PRE-4.0 install wrote, when the app
- * was called Lists — they exist only so the adoption paths can find that
- * install's files and carry them onto the current names.  Nothing writes
- * them.  (The rename before that one, Hacienda → Lists, never reached
- * these: it changed only the ini group, see BT_INI_GROUP in app.c.)
+ * lookup (oauth.c).  TASK_APP_DIR is the per-user directory name under the
+ * data and config dirs.
  * ------------------------------------------------------------------------- */
-#define BT_DB_FILENAME        "tasks.db"
-#define BT_DB_FILENAME_LEGACY "lists.db"
-#define BT_APP_DIR            "tasks"
-#define BT_APP_DIR_LEGACY     "lists"
+#define TASK_DB_FILENAME "tasks.db"
+#define TASK_APP_DIR     "tasks"
 
 /* The schema version this build writes.  Kept here rather than spelled as
- * a literal in bt_db_open so the pre-migration backup and the version
+ * a literal in task_db_open so the pre-migration backup and the version
  * stamp cannot drift apart.                                               */
-#define BT_DB_SCHEMA_VERSION 7
+#define TASK_DB_SCHEMA_VERSION 7
 
 /* ---------------------------------------------------------------------------
- * BtDatabase — one open connection.  A connection must not cross threads:
- * the sync worker opens its own on the same path (bt_db_open).
+ * TaskDatabase — one open connection.  A connection must not cross threads:
+ * the sync worker opens its own on the same path (task_db_open).
  * ------------------------------------------------------------------------- */
 typedef struct {
     sqlite3 *sq;
     gchar   *path;                   /* absolute file path (owned)          */
-} BtDatabase;
+} TaskDatabase;
 
 /* ---------------------------------------------------------------------------
- * BtTaskStatus — a task's progress, and the ONLY completion state stored.
+ * TaskStatus — a task's progress, and the ONLY completion state stored.
  * The values are the on-disk encoding of tasks.status, so they must not
  * be renumbered; New is 0 so a freshly INSERTed row needs no explicit
  * value.
@@ -89,35 +76,35 @@ typedef struct {
  * outside Tasks — neither Google Tasks nor Notes has a third state.
  * ------------------------------------------------------------------------- */
 typedef enum {
-    BT_STATUS_NEW         = 0,
-    BT_STATUS_IN_PROGRESS = 1,
-    BT_STATUS_DONE        = 2
-} BtTaskStatus;
+    TASK_STATUS_NEW         = 0,
+    TASK_STATUS_IN_PROGRESS = 1,
+    TASK_STATUS_DONE        = 2
+} TaskStatus;
 
 /* Number of values, for the editor's dropdown and bounds checks.           */
-#define BT_STATUS_N_VALUES 3
+#define TASK_STATUS_N_VALUES 3
 
-/* bt_status_label() — the user-facing name ("New" / "In Progress" /
+/* task_status_label() — the user-facing name ("New" / "In Progress" /
  * "Done").  Returns a static string; an out-of-range value reads "New"
  * so a hand-edited database can never blank a cell.                        */
-const gchar *bt_status_label(BtTaskStatus status);
+const gchar *task_status_label(TaskStatus status);
 
 /* ---------------------------------------------------------------------------
- * bt_status_apply_done() — the SINGLE rule mapping a binary done flag
+ * task_status_apply_done() — the SINGLE rule mapping a binary done flag
  * onto the tri-state status, shared by every source that only knows
  * "done or not": the task list's checkbox column, the context menu, the
  * Google Tasks sync and the Notes mirror.
  *
- *   done = TRUE   → BT_STATUS_DONE.
- *   done = FALSE  → BT_STATUS_IN_PROGRESS when `cur` was DONE (unticking
+ *   done = TRUE   → TASK_STATUS_DONE.
+ *   done = FALSE  → TASK_STATUS_IN_PROGRESS when `cur` was DONE (unticking
  *                   an item means work resumed on it, not that it was
  *                   never started), otherwise `cur` UNCHANGED — so a New
  *                   task stays New, and a round trip through a
  *                   done-only system cannot silently promote it.
  * ------------------------------------------------------------------------- */
-BtTaskStatus bt_status_apply_done(BtTaskStatus cur, gboolean done);
+TaskStatus task_status_apply_done(TaskStatus cur, gboolean done);
 
-/* One task list.  Strings are owned by the struct.                          */
+/* One task list.  Strings are owned by the struct.                         */
 typedef struct {
     gint64    id;
     gchar    *name;
@@ -127,20 +114,20 @@ typedef struct {
     gint      position;
     gint64    group_id;              /* 0 = ungrouped                       */
     gboolean  deleted;
-} BtList;
+} TaskList;
 
 /* One list group (local-only; never synced to Google).  Strings owned.     */
 typedef struct {
     gint64  id;
     gchar  *name;
     gint    position;
-} BtGroup;
+} TaskGroup;
 
 /* One task or subtask.  Strings are owned by the struct.  The last five
  * fields mirror read-only (or Google-managed) Task resource data pulled
  * by the sync: completion time, the concurrency etag, the deep link
  * into Google's own UI, and the links[]/assignmentInfo substructures
- * kept as their raw JSON.                                                   */
+ * kept as their raw JSON.                                                  */
 typedef struct {
     gint64    id;
     gint64    list_id;
@@ -148,7 +135,7 @@ typedef struct {
     gchar    *title;
     gchar    *notes;
     gint64    due;                   /* unix local midnight; 0 = no date    */
-    BtTaskStatus status;             /* New / In Progress / Done — DONE is
+    TaskStatus status;             /* New / In Progress / Done — DONE is
                                       * what every "is it complete?" test
                                       * asks for                            */
     gboolean  pinned;
@@ -168,34 +155,34 @@ typedef struct {
     gchar    *web_link;              /* Google Tasks UI URL, or NULL        */
     gchar    *glinks;                /* links[] as raw JSON, or NULL        */
     gchar    *assigned;              /* assignmentInfo as raw JSON, / NULL  */
-} BtTask;
+} Task;
 
-/* One file attachment on a task.                                            */
+/* One file attachment on a task.                                           */
 typedef struct {
     gint64    id;
     gint64    task_id;
     gchar    *path;                  /* absolute file path (owned)          */
-} BtAttachment;
+} TaskAttachment;
 
-void bt_list_free(BtList *l);
-void bt_task_free(BtTask *t);
+void task_list_free(TaskList *l);
+void task_free(Task *t);
 
 /* ---------------------------------------------------------------------------
- * bt_db_open() — open (creating/migrating as needed) the database at
+ * task_db_open() — open (creating/migrating as needed) the database at
  * `path`.  Returns the handle, or NULL with `err` set.
  * ------------------------------------------------------------------------- */
-BtDatabase *bt_db_open(const gchar *path, GError **err);
+TaskDatabase *task_db_open(const gchar *path, GError **err);
 
-/* bt_db_close() — close the connection and free the handle.  NULL-safe.     */
-void bt_db_close(BtDatabase *db);
+/* task_db_close() — close the connection and free the handle.  NULL-safe.  */
+void task_db_close(TaskDatabase *db);
 
-/* bt_db_default_path() — "<user data dir>/tasks/tasks.db" (the names are
- * BT_APP_DIR / BT_DB_FILENAME), creating the directory.  Returns a new
- * string (g_free it).                                                       */
-gchar *bt_db_default_path(void);
+/* task_db_default_path() — "<user data dir>/tasks/tasks.db" (the names are
+ * TASK_APP_DIR / TASK_DB_FILENAME), creating the directory.  Returns a new
+ * string (g_free it).                                                      */
+gchar *task_db_default_path(void);
 
 /* ---------------------------------------------------------------------------
- * bt_db_verify_file() — is the database at `path` structurally sound?
+ * task_db_verify_file() — is the database at `path` structurally sound?
  *
  * Runs PRAGMA integrity_check (and foreign_key_check) on a SEPARATE
  * read-only connection, so it says nothing about whatever is open
@@ -207,10 +194,10 @@ gchar *bt_db_default_path(void);
  * READ.  Anything that copies the database must verify the copy this way
  * before it is trusted — never by opening it.
  * ------------------------------------------------------------------------- */
-gboolean bt_db_verify_file(const gchar *path, gchar **detail);
+gboolean task_db_verify_file(const gchar *path, gchar **detail);
 
 /* ---------------------------------------------------------------------------
- * bt_db_copy_file() — a CONSISTENT copy of the open database at `dest`,
+ * task_db_copy_file() — a CONSISTENT copy of the open database at `dest`,
  * made with VACUUM INTO rather than a byte copy: it runs inside a read
  * transaction, so it cannot capture a torn page, and it cannot be
  * confused by a sync daemon rewriting the source mid-read.
@@ -219,198 +206,187 @@ gboolean bt_db_verify_file(const gchar *path, gchar **detail);
  * caller removes it first if that is what it means to do.  Returns TRUE
  * on success; on failure *err (optional, g_free) gets sqlite's message.
  * ------------------------------------------------------------------------- */
-gboolean bt_db_copy_file(BtDatabase *db, const gchar *dest, gchar **err);
+gboolean task_db_copy_file(TaskDatabase *db, const gchar *dest, gchar **err);
 
 /* ---------------------------------------------------------------------------
- * bt_db_resolve_path() — the database file to open, adopting a pre-4.0
- * `lists.db` when that is what is actually on disk.
+ * task_db_resolve_path() — the database file to open.
  *
  *   dir — the configured db_dir, or NULL/"" for the default location.
  *
- * Returns a new string (g_free it): the path bt_db_open should be handed.
- * When the current-name file is absent and the legacy one is present the
- * legacy file is RENAMED onto the new name (across directories in the
- * default case, since the directory was renamed too) and the new path is
- * returned.  A rename that FAILS is not fatal — the legacy path is
- * returned instead, so the app opens the user's data where it lies rather
- * than silently creating an empty database beside it.
- *
- * Renaming only the .db is correct: this build never enables WAL, so
- * there are no -wal/-shm companions, and the rollback journal exists only
- * inside a transaction (i.e. never while the app is starting up).
+ * Returns a new string (g_free): the path task_db_open should be handed.
+ * The single answer to "which file", so no caller has to remember that
+ * the default location is not simply a directory join.
  * ------------------------------------------------------------------------- */
-gchar *bt_db_resolve_path(const gchar *dir);
+gchar *task_db_resolve_path(const gchar *dir);
 
 /* --------------------------------- lists --------------------------------- */
 
 /* All lists — alphabetical (case-insensitive) by DEFAULT; once the user
  * drag-reorders the sidebar (sync_state "lists_custom_order" set by
- * bt_db_lists_reorder) the stored positions rule, name-tiebroken.
- * include_deleted also returns tombstoned rows (sync).  Returns BtList*
- * elements; free the array with g_ptr_array_free after bt_list_free-ing
- * elements (or use bt_ptr_array_free_lists).                                */
-GPtrArray *bt_db_lists(BtDatabase *db, gboolean include_deleted);
+ * task_db_lists_reorder) the stored positions rule, name-tiebroken.
+ * include_deleted also returns tombstoned rows (sync).  Returns TaskList*
+ * elements; free the array with g_ptr_array_free after task_list_free-ing
+ * elements (or use task_ptr_array_free_lists).                             */
+GPtrArray *task_db_lists(TaskDatabase *db, gboolean include_deleted);
 
 /* Persist a sidebar drag-reorder: position = index of each id in `ids`
- * (one transaction) and switch bt_db_lists to custom-order mode.  The
+ * (one transaction) and switch task_db_lists to custom-order mode.  The
  * order is local-only — Google tasklists have no ordering — so rows are
- * NOT dirtied for sync.                                                     */
-void bt_db_lists_reorder(BtDatabase *db, const gint64 *ids, gsize n);
+ * NOT dirtied for sync.                                                    */
+void task_db_lists_reorder(TaskDatabase *db, const gint64 *ids, gsize n);
 
-BtList  *bt_db_list_get(BtDatabase *db, gint64 id);
+TaskList  *task_db_list_get(TaskDatabase *db, gint64 id);
 
 /* Seed the emoji of the list bound to `gtasks_id` — ONLY while its
  * emoji is empty, so a later user edit sticks.  Used by the sync to
  * mark Google's undeletable default list.  No updated_at bump (the
- * emoji is local-only; this must not dirty the row for sync).               */
-void bt_db_list_emoji_if_empty(BtDatabase *db, const gchar *gtasks_id,
-                               const gchar *emoji);
+ * emoji is local-only; this must not dirty the row for sync).              */
+void task_db_list_emoji_if_empty(TaskDatabase *db, const gchar *gtasks_id,
+                                 const gchar *emoji);
 
 /* Create a list.  `emoji` is the optional local-only display prefix
- * (NULL/"" for none) — it is never part of the synced name.                 */
-gint64   bt_db_list_create(BtDatabase *db, const gchar *name,
-                           const gchar *emoji);
+ * (NULL/"" for none) — it is never part of the synced name.                */
+gint64   task_db_list_create(TaskDatabase *db, const gchar *name,
+                             const gchar *emoji);
 
 /* Update a list's name + emoji (stamps updated_at; a changed name syncs
- * to Google, the emoji never does).                                         */
-void     bt_db_list_update(BtDatabase *db, gint64 id, const gchar *name,
-                           const gchar *emoji);
+ * to Google, the emoji never does).                                        */
+void     task_db_list_update(TaskDatabase *db, gint64 id, const gchar *name,
+                             const gchar *emoji);
 
 /* Tombstone the list AND every task in it (they must disappear from the
- * remote side too).                                                         */
-void     bt_db_list_delete(BtDatabase *db, gint64 id);
+ * remote side too).                                                        */
+void     task_db_list_delete(TaskDatabase *db, gint64 id);
 
 /* Undo a list tombstone: restore the list and its still-tombstoned
  * tasks (used when Google refuses the deletion — its default tasklist
- * cannot be deleted; remote remains the source of truth).                   */
-void     bt_db_list_restore(BtDatabase *db, gint64 id);
+ * cannot be deleted; remote remains the source of truth).                  */
+void     task_db_list_restore(TaskDatabase *db, gint64 id);
 
 /* --------------------------------- tasks --------------------------------- */
 
-BtTask    *bt_db_task_get(BtDatabase *db, gint64 id);
+Task    *task_db_task_get(TaskDatabase *db, gint64 id);
 
-/* Visible top-level tasks of one list, ordered by position.                 */
-GPtrArray *bt_db_tasks_toplevel(BtDatabase *db, gint64 list_id);
+/* Visible top-level tasks of one list, ordered by position.                */
+GPtrArray *task_db_tasks_toplevel(TaskDatabase *db, gint64 list_id);
 
-/* Visible subtasks of one task, ordered by position.                        */
-GPtrArray *bt_db_subtasks(BtDatabase *db, gint64 parent_id);
+/* Visible subtasks of one task, ordered by position.                       */
+GPtrArray *task_db_subtasks(TaskDatabase *db, gint64 parent_id);
 
 /* ALL visible subtasks (every list), ordered by parent then position —
- * one query for the task pane instead of one per top-level row.             */
-GPtrArray *bt_db_subtasks_all_visible(BtDatabase *db);
+ * one query for the task pane instead of one per top-level row.            */
+GPtrArray *task_db_subtasks_all_visible(TaskDatabase *db);
 
 /* Visible pinned tasks across all lists (any level), pinned order = list
- * then position.                                                            */
-GPtrArray *bt_db_tasks_pinned(BtDatabase *db);
+ * then position.                                                           */
+GPtrArray *task_db_tasks_pinned(TaskDatabase *db);
 
-/* TRUE when any non-tombstoned task is pinned; with `with_bn_pins`,
- * pinned Notes action items (bn_pins rows, which may be stale —
- * refs whose items vanished still count) do too.  Drives the sidebar's
- * Pinned Tasks row visibility.                                              */
-gboolean bt_db_has_pinned(BtDatabase *db, gboolean with_bn_pins);
+/* TRUE when any non-tombstoned task is pinned.  Drives the sidebar's
+ * Favorites row visibility.                                                */
+gboolean task_db_has_pinned(TaskDatabase *db);
 
 /* Visible top-level tasks across ALL lists (the "All Tasks" meta list),
- * ordered by list then position.                                            */
-GPtrArray *bt_db_tasks_all_visible(BtDatabase *db);
+ * ordered by list then position.                                           */
+GPtrArray *task_db_tasks_all_visible(TaskDatabase *db);
 
-/* Visible tasks (any level) with lo <= due < hi, soonest first.             */
-GPtrArray *bt_db_tasks_due_between(BtDatabase *db, gint64 lo, gint64 hi);
+/* Visible tasks (any level) with lo <= due < hi, soonest first.            */
+GPtrArray *task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi);
 
 /* Every task row of ONE list, including subtasks and tombstones, parents
  * before subtasks (sync — a new parent must own a gtasks_id before its
- * children push).                                                           */
-GPtrArray *bt_db_tasks_in_list_all(BtDatabase *db, gint64 list_id);
+ * children push).                                                          */
+GPtrArray *task_db_tasks_in_list_all(TaskDatabase *db, gint64 list_id);
 
 /* Create a task ('' title allowed).  parent_id = 0 for top-level; the
  * parent must itself be top-level (one nesting level — enforced here).
- * Returns the new id, or 0 on constraint failure.                           */
-gint64 bt_db_task_create(BtDatabase *db, gint64 list_id, gint64 parent_id,
-                         const gchar *title);
+ * Returns the new id, or 0 on constraint failure.                          */
+gint64 task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
+                           const gchar *title);
 
 /* Write the editable fields (title/notes/due/status/pinned/priority) from
- * `t` back to its row and stamp updated_at.                                 */
-void bt_db_task_update(BtDatabase *db, const BtTask *t);
+ * `t` back to its row and stamp updated_at.                                */
+void task_db_task_update(TaskDatabase *db, const Task *t);
 
 /* Field setters used by the list-view toggles.  `status` is the
  * successor of a SYNCED field, so EVERY change to it stamps updated_at
  * and dirties the row — including New ↔ In Progress, which neither
  * Google nor Notes can represent.  `pinned` and `priority` are
  * LOCAL-ONLY and never stamp (see the .c banners).                         */
-void bt_db_task_set_status(BtDatabase *db, gint64 id, BtTaskStatus status);
-void bt_db_task_set_pinned(BtDatabase *db, gint64 id, gboolean pinned);
-void bt_db_task_set_priority(BtDatabase *db, gint64 id, gboolean priority);
+void task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status);
+void task_db_task_set_pinned(TaskDatabase *db, gint64 id, gboolean pinned);
+void task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority);
 
-/* Tombstone the task and its subtasks.                                      */
-void bt_db_task_delete(BtDatabase *db, gint64 id);
+/* Tombstone the task and its subtasks.                                     */
+void task_db_task_delete(TaskDatabase *db, gint64 id);
 
 /* Swap the display position of subtask `id` with its neighbor in the
  * current sorted order (direction = -1 up, +1 down).  No-op at the
  * edges or for top-level tasks.  Position is LOCAL-ONLY for ordering —
- * updated_at is not stamped.                                                */
-void bt_db_subtask_move(BtDatabase *db, gint64 id, gint direction);
+ * updated_at is not stamped.                                               */
+void task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction);
 
 /* Move a top-level task (and its subtasks) to another list, appended at
- * the end; stamps updated_at.                                               */
-void bt_db_task_move_list(BtDatabase *db, gint64 id, gint64 dest_list);
+ * the end; stamps updated_at.                                              */
+void task_db_task_move_list(TaskDatabase *db, gint64 id, gint64 dest_list);
 
 /* Physically remove every DONE task of a list (and their subtasks) —
  * the local half of "Clear Completed" (the remote half is tasks.clear,
- * which hides them on Google's side, so no tombstones are needed).          */
-void bt_db_purge_done(BtDatabase *db, gint64 list_id);
+ * which hides them on Google's side, so no tombstones are needed).         */
+void task_db_purge_done(TaskDatabase *db, gint64 list_id);
 
 /* Insert a bare tombstone carrying a Google task id — the offline
  * fallback for cross-list moves: the moved row starts a NEW remote
- * task while this stub deletes the old remote copy on the next sync.        */
-void bt_db_insert_remote_tombstone(BtDatabase *db, gint64 list_id,
-                                   const gchar *gtasks_id);
+ * task while this stub deletes the old remote copy on the next sync.       */
+void task_db_insert_remote_tombstone(TaskDatabase *db, gint64 list_id,
+                                     const gchar *gtasks_id);
 
 /* ------------------------------ attachments ------------------------------ */
 
-GPtrArray *bt_db_attachments(BtDatabase *db, gint64 task_id);
-gint64     bt_db_attachment_add(BtDatabase *db, gint64 task_id,
-                                const gchar *path);
-void       bt_db_attachment_remove(BtDatabase *db, gint64 id);
+GPtrArray *task_db_attachments(TaskDatabase *db, gint64 task_id);
+gint64     task_db_attachment_add(TaskDatabase *db, gint64 task_id,
+                                  const gchar *path);
+void       task_db_attachment_remove(TaskDatabase *db, gint64 id);
 
 /* task_id → attachment count for every task, as one query.  Keys/values
  * are packed into the pointers (GINT_TO_POINTER); free with
- * g_hash_table_destroy.                                                     */
-GHashTable *bt_db_attachment_counts(BtDatabase *db);
+ * g_hash_table_destroy.                                                    */
+GHashTable *task_db_attachment_counts(TaskDatabase *db);
 
 /* -------------------------------- vitals --------------------------------- */
 
 /* Live totals for the About dialog: non-tombstoned task and list counts.
- * Either out-pointer may be NULL; a failed query leaves 0.                  */
-void bt_db_totals(BtDatabase *db, gint *n_tasks, gint *n_lists);
+ * Either out-pointer may be NULL; a failed query leaves 0.                 */
+void task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists);
 
 /* --------------------------- Notes mirror ------------------------------ */
 
 /* Every visible task bound to a Notes action item, across all lists,
- * high-priority first (the "Action Items" meta view).  Returns BtTask*
- * elements; free with bt_ptr_array_free_tasks.                              */
-GPtrArray *bt_db_tasks_bn_mirror(BtDatabase *db);
+ * high-priority first (the "Action Items" meta view).  Returns Task*
+ * elements; free with task_ptr_array_free_tasks.                           */
+GPtrArray *task_db_tasks_bn_mirror(TaskDatabase *db);
 
 /* The visible mirror task carrying `uid`, or NULL.  Free with
- * bt_task_free.                                                             */
-BtTask *bt_db_task_by_bn_uid(BtDatabase *db, gint64 uid);
+ * task_free.                                                             */
+Task *task_db_task_by_bn_uid(TaskDatabase *db, gint64 uid);
 
 /* Bind a task to Notes item `uid` and record the push baseline
  * (bn_done/bn_due = what Notes currently holds).  LOCAL bookkeeping:
  * deliberately no updated_at bump, so binding never dirties the row for
- * the Google sync.                                                          */
-void bt_db_task_set_bn(BtDatabase *db, gint64 id, gint64 uid,
-                       gboolean done, gint64 due);
+ * the Google sync.                                                         */
+void task_db_task_set_bn(TaskDatabase *db, gint64 id, gint64 uid,
+                         gboolean done, gint64 due);
 
 /* Overwrite the Notes-owned fields (title/done/due) from a listing and
  * re-baseline in one statement.  DOES stamp updated_at — the change
  * originated outside Tasks and must propagate to Google.  `done` is
  * Notes' binary flag and reaches tasks.status through
- * bt_status_apply_done's rule, expressed as a CASE over the OLD row, so
+ * task_status_apply_done's rule, expressed as a CASE over the OLD row, so
  * a still-unfinished item keeps whichever of New/In Progress it had.
  * bn_done/bn_due are passed separately from done/due because a FAILED
  * push keeps the user's local value on the task while leaving the
  * baseline at what Notes still holds, so the delta is retried next
  * pass.                                                                */
-void bt_db_task_apply_notes(BtDatabase *db, gint64 id, const gchar *title,
+void task_db_task_apply_notes(TaskDatabase *db, gint64 id, const gchar *title,
                               gboolean done, gint64 due, gboolean bn_done,
                               gint64 bn_due);
 
@@ -418,87 +394,62 @@ void bt_db_task_apply_notes(BtDatabase *db, gint64 id, const gchar *title,
  * from the CLI, so the item survives there; without this set the next
  * mirror pass would re-create the task.  Keys are GSIZE_TO_POINTER'd
  * uids (a uid is 64-bit, so packing it into a gint could collide);
- * free with g_hash_table_destroy.                                           */
-GHashTable *bt_db_bn_deleted(BtDatabase *db);
+ * free with g_hash_table_destroy.                                          */
+GHashTable *task_db_bn_deleted(TaskDatabase *db);
 
 /* Drop one suppression — called when the item finally leaves Notes.       */
-void bt_db_bn_deleted_forget(BtDatabase *db, gint64 uid);
-
-/* ---------------- LEGACY Notes pins and priorities --------------------- */
-
-/* Pre-mirror local state for Notes action items, keyed by the old
- * "NOTEID:ORD" address.  Mirror tasks carry `pinned`/`priority` on the
- * task row instead; these tables survive only so the first mirror pass
- * can drain them onto the tasks it creates (bt_bnsync).                     */
-gboolean    bt_db_bn_pin_get(BtDatabase *db, const gchar *ref);
-void        bt_db_bn_pin_set(BtDatabase *db, const gchar *ref,
-                             gboolean pinned);
-
-/* All pinned refs as a set (string keys, owned by the table); free with
- * g_hash_table_destroy.                                                     */
-GHashTable *bt_db_bn_pins(BtDatabase *db);
-
-/* High-priority state for Notes action items — the same local
- * design as pins (bn_priority table, "NOTEID:ORD" keys): Notes
- * has no priority concept, so the flag only affects where the items
- * appear in Tasks' views.                                                   */
-gboolean    bt_db_bn_priority_get(BtDatabase *db, const gchar *ref);
-void        bt_db_bn_priority_set(BtDatabase *db, const gchar *ref,
-                                  gboolean priority);
-
-/* All high-priority refs as a set; free with g_hash_table_destroy.          */
-GHashTable *bt_db_bn_priorities(BtDatabase *db);
+void task_db_bn_deleted_forget(TaskDatabase *db, gint64 uid);
 
 /* Drop every gtasks_id/etag of one list's tasks — used when the bound
  * remote list vanished and the list is re-created remotely: its tasks
- * must push as NEW remote tasks (non-destructive sync).                     */
-void        bt_db_tasks_clear_gtasks_ids(BtDatabase *db, gint64 list_id);
+ * must push as NEW remote tasks (non-destructive sync).                    */
+void        task_db_tasks_clear_gtasks_ids(TaskDatabase *db, gint64 list_id);
 
 /* ------------------------------- sync state ------------------------------ */
 
-/* Get/set one sync_state row.  Getter returns a new string or NULL.         */
-gchar *bt_db_state_get(BtDatabase *db, const gchar *key);
-void   bt_db_state_set(BtDatabase *db, const gchar *key, const gchar *value);
+/* Get/set one sync_state row.  Getter returns a new string or NULL.        */
+gchar *task_db_state_get(TaskDatabase *db, const gchar *key);
+void   task_db_state_set(TaskDatabase *db, const gchar *key, const gchar *value);
 
 /* Record the Google-side id of a row WITHOUT stamping updated_at (used
- * right after a successful push — the row is not "newly dirty").            */
-void bt_db_list_set_gtasks_id(BtDatabase *db, gint64 id, const gchar *gid);
-void bt_db_task_set_gtasks_id(BtDatabase *db, gint64 id, const gchar *gid);
+ * right after a successful push — the row is not "newly dirty").           */
+void task_db_list_set_gtasks_id(TaskDatabase *db, gint64 id, const gchar *gid);
+void task_db_task_set_gtasks_id(TaskDatabase *db, gint64 id, const gchar *gid);
 
 /* Overwrite a row from remote data WITHOUT the usual now() stamp — the
  * caller passes the remote updated time so the row is clean afterwards.    */
-void bt_db_list_apply_remote(BtDatabase *db, gint64 id, const gchar *name,
-                             gint64 updated_at);
-void bt_db_task_apply_remote(BtDatabase *db, const BtTask *t);
+void task_db_list_apply_remote(TaskDatabase *db, gint64 id, const gchar *name,
+                               gint64 updated_at);
+void task_db_task_apply_remote(TaskDatabase *db, const Task *t);
 
-/* Physically remove tombstoned/remotely-deleted rows.                       */
-void bt_db_list_purge(BtDatabase *db, gint64 id);   /* + its tasks          */
-void bt_db_task_purge(BtDatabase *db, gint64 id);   /* + its subtasks       */
+/* Physically remove tombstoned/remotely-deleted rows.                      */
+void task_db_list_purge(TaskDatabase *db, gint64 id);   /* + its tasks      */
+void task_db_task_purge(TaskDatabase *db, gint64 id);   /* + its subtasks   */
 
-/* Free helper for the GPtrArrays above.                                     */
-void bt_ptr_array_free_lists(GPtrArray *a);
-void bt_ptr_array_free_tasks(GPtrArray *a);
-void bt_ptr_array_free_attachments(GPtrArray *a);
+/* Free helper for the GPtrArrays above.                                    */
+void task_ptr_array_free_lists(GPtrArray *a);
+void task_ptr_array_free_tasks(GPtrArray *a);
+void task_ptr_array_free_attachments(GPtrArray *a);
 
 /* --------------------------------- groups -------------------------------- */
 
-void      bt_group_free(BtGroup *g);
-void      bt_ptr_array_free_groups(GPtrArray *a);
+void      task_group_free(TaskGroup *g);
+void      task_ptr_array_free_groups(GPtrArray *a);
 
-/* All groups, ordered by position then name.                                */
-GPtrArray *bt_db_groups(BtDatabase *db);
+/* All groups, ordered by position then name.                               */
+GPtrArray *task_db_groups(TaskDatabase *db);
 
-/* Create a group.  Returns the new id, or 0 on failure.                     */
-gint64    bt_db_group_create(BtDatabase *db, const gchar *name);
+/* Create a group.  Returns the new id, or 0 on failure.                    */
+gint64    task_db_group_create(TaskDatabase *db, const gchar *name);
 
-/* Delete a group: un-groups all its lists (sets group_id = NULL).           */
-void      bt_db_group_delete(BtDatabase *db, gint64 id);
+/* Delete a group: un-groups all its lists (sets group_id = NULL).          */
+void      task_db_group_delete(TaskDatabase *db, gint64 id);
 
-/* Rename a group.                                                           */
-void      bt_db_group_rename(BtDatabase *db, gint64 id, const gchar *name);
+/* Rename a group.                                                          */
+void      task_db_group_rename(TaskDatabase *db, gint64 id, const gchar *name);
 
 /* Move a list into a group (group_id 0 = ungrouped → sets NULL).           */
-void      bt_db_list_set_group(BtDatabase *db, gint64 list_id,
-                               gint64 group_id);
+void      task_db_list_set_group(TaskDatabase *db, gint64 list_id,
+                                 gint64 group_id);
 
-#endif /* BT_DB_H */
+#endif /* TASK_DB_H */

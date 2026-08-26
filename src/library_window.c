@@ -17,20 +17,20 @@
 
 /* Odd-row stripe tint of the task list (the Notes list palette).          */
 #define ROW_TINT      "#e8f2fb"
-/* Background applied to the row currently held during a manual drag.        */
+/* Background applied to the row currently held during a manual drag.       */
 #define DRAG_ROW_TINT "#fde68a"
 
 /* Blank strip above the sidebar tree, to line its first row's text up with
- * the task list's column-header text (see bt_library_window_new).           */
+ * the task list's column-header text (see task_library_window_new).        */
 #define SB_TOP_PAD 3
 
 /* How far the sidebar backdrop sits below the toolbar/window background it
  * is shaded from — a CSS shade() factor, < 1 darkens.  0.96 turns Adwaita's
  * rgb(246,245,244) into rgb(238,236,234).  A string, not a number: it is
- * pasted into two CSS declarations in bt_library_window_new.                */
+ * pasted into two CSS declarations in task_library_window_new.             */
 #define SB_BG_SHADE "0.96"
 
-/* Sidebar row kinds (SB_KIND column).                                       */
+/* Sidebar row kinds (SB_KIND column).                                      */
 enum {
     SB_KIND_PINNED = 0,              /* "Pinned Tasks" virtual list         */
     SB_KIND_ALL,                     /* "All Tasks" virtual list            */
@@ -43,7 +43,7 @@ enum {
     SB_KIND_GROUP                    /* a list-group sub-header             */
 };
 
-/* Sidebar store columns.                                                    */
+/* Sidebar store columns.                                                   */
 enum {
     SB_KIND = 0,                     /* gint: one of SB_KIND_*              */
     SB_ID,                           /* gint64: list id (SB_KIND_LIST)      */
@@ -52,11 +52,11 @@ enum {
     SB_N_COLS
 };
 
-/* Task pane store columns.                                                  */
+/* Task pane store columns.                                                 */
 enum {
     TL_ID = 0,                       /* gint64: task id (0 only for the
                                       * forecast's placeholder rows)        */
-    TL_DONE,                         /* gboolean: status == BT_STATUS_DONE,
+    TL_DONE,                         /* gboolean: status == TASK_STATUS_DONE,
                                       * the checkbox column's view of the
                                       * status — never stored separately   */
     TL_DESC,                         /* gchar*: the tall markup cell        */
@@ -65,18 +65,18 @@ enum {
     TL_TITLE,                        /* gchar*: raw task title (sort key)   */
     TL_COMPLETED,                    /* gchar*: formatted completion date   */
     TL_COMPLETED_RAW,                /* gint64: completed_at (sort key)     */
-    TL_STATUS,                       /* gint: BtTaskStatus (sort key)       */
+    TL_STATUS,                       /* gint: TaskStatus (sort key)       */
     TL_STATUS_TEXT,                  /* gchar*: its label ("In Progress")   */
     TL_N_COLS
 };
 
 /* ---------------------------------------------------------------------------
- * BtLibrary — the window's state.
+ * TaskLibrary — the window's state.
  *   sel_kind/sel_id — current sidebar selection (survives refreshes).
  *   populating      — guards the sidebar changed handler during rebuilds.
  * ------------------------------------------------------------------------- */
 typedef struct {
-    BtApp        *app;
+    TaskApp        *app;
     GtkWidget    *window;
     GtkTreeStore *sb_store;
     GtkWidget    *sb_view;
@@ -90,19 +90,24 @@ typedef struct {
     GtkListStore *day_stores[7];     /* one store per day view              */
     GtkWidget    *day_views[7];      /* the per-day tree views              */
     /* Kanban board — the THIRD task-pane variant, one lane per
-     * BtTaskStatus.  Lane INDEX IS the status value, which is what lets a
+     * TaskStatus.  Lane INDEX IS the status value, which is what lets a
      * drop read its target status straight off the lane it landed on.      */
     GtkWidget    *kanban_box;        /* the board's outer scroller          */
-    GtkWidget    *kanban_labels[BT_STATUS_N_VALUES];  /* lane headings      */
-    GtkWidget    *kanban_lanes[BT_STATUS_N_VALUES];   /* card containers    */
-    gint64        kanban_sel;        /* selected card's task id; 0 = none —
-                                      * the board's answer to the tree
-                                      * view's selection, so Delete Task
-                                      * has something to act on             */
+    GtkWidget    *kanban_labels[TASK_STATUS_N_VALUES];  /* lane headings    */
+    GtkWidget    *kanban_lanes[TASK_STATUS_N_VALUES];   /* card containers  */
+    GHashTable   *kanban_sel;        /* SET of selected task ids (keys are
+                                      * GSIZE_TO_POINTER'd) — the board's
+                                      * answer to the tree view's
+                                      * multi-selection, so Delete Task and
+                                      * the context menu have something to
+                                      * act on.  Created with the window;
+                                      * never NULL.                         */
+    gint64        kanban_anchor;     /* last plainly-clicked card: the fixed
+                                      * end of a shift-click range          */
     gboolean      kanban;            /* the kanban_view config flag, cached
                                       * like manual_sort; kanban_apply is
                                       * the single writer                   */
-    GtkWidget    *kanban_drops[BT_STATUS_N_VALUES];  /* lane hit boxes     */
+    GtkWidget    *kanban_drops[TASK_STATUS_N_VALUES];  /* lane hit boxes    */
     GdkCursor    *card_grab;         /* "grab" — hovering a card            */
     GdkCursor    *card_grabbing;     /* "grabbing" — dragging one.  Both
                                       * made ONCE and kept, like
@@ -113,6 +118,8 @@ typedef struct {
      * the Kanban banner).  `card_armed` is the window between the press
      * and the motion threshold, where it is still only a click.           */
     GtkWidget    *card_drag_src;     /* card under the pointer, or NULL     */
+    GtkWidget    *card_drag_handle;  /* its ⠿ grip: the grab window and the
+                                      * only place a drag can start from    */
     gint64        card_drag_id;      /* its task                            */
     gboolean      card_armed;        /* pressed, not yet a drag             */
     gboolean      card_dragging;     /* past the threshold, grab held       */
@@ -138,11 +145,16 @@ typedef struct {
     GtkWidget    *sync_item;         /* the toolbar's Sync button        */
     GtkWidget    *hide_done_item;    /* completed-visibility toggle button  */
     GtkWidget    *manual_sort_item;  /* manual-sort mode toggle button      */
-    GtkWidget    *view_show_done_item;  /* View menu: Show Completed check  */
-    GtkWidget    *view_kanban_item;     /* View menu: Kanban View check     */
-    GtkWidget    *view_manual_sort_item;/* View menu: Manual Sort check     */
-    GtkWidget    *view_compact_item;    /* View menu: Compact Layout check  */
-    GtkWidget    *view_sidebar_item;    /* View menu: Show Sidebar check    */
+    GtkWidget    *pane_item;         /* list <-> Kanban pane toggle button  */
+    /* Every toggling View item is an ACTION item, not a check item: its
+     * LABEL is the action a click performs (see the *_LABEL_TO_* macros),
+     * so none of them carries the current state to read back — every
+     * handler flips the config or the cache instead.                      */
+    GtkWidget    *view_show_done_item;  /* Show / Hide Completed            */
+    GtkWidget    *view_kanban_item;     /* Kanban View / List View          */
+    GtkWidget    *view_manual_sort_item;/* Manual / Automatic Sorting       */
+    GtkWidget    *view_compact_item;    /* Compact / Full Controls          */
+    GtkWidget    *view_sidebar_item;    /* Show / Hide Sidebar              */
     gint          sel_kind;
     gint64        sel_id;
     gboolean      populating;
@@ -168,30 +180,30 @@ typedef struct {
                                           * once (owned; the motion path
                                           * would otherwise allocate one
                                           * per event)                     */
-    gint                 pending_fades;       /* active fade-out animations  */
-    guint                status_fade_source;  /* delay before fade starts    */
-    guint                status_fade_step_source; /* per-step fade timer     */
-    gint                 status_fade_step;    /* current step                */
+    gint                 pending_fades;       /* active fade-out animations */
+    guint                status_fade_source;  /* delay before fade starts   */
+    guint                status_fade_step_source; /* per-step fade timer    */
+    gint                 status_fade_step;    /* current step               */
     gchar               *status_fade_text;   /* plain text being faded      */
-} BtLibrary;
+} TaskLibrary;
 
 /* list_label() — a list's display label: the optional emoji prefixes
- * the name, set off by two spaces.  New string (g_free).                    */
+ * the name, set off by two spaces.  New string (g_free).                   */
 static gchar *
-list_label(const BtList *l)
+list_label(const TaskList *l)
 {
     return *l->emoji != '\0'
         ? g_strdup_printf("%s  %s", l->emoji, l->name)
         : g_strdup(l->name);
 }
 
-/* lib_of() — the BtLibrary behind app->library_window.                      */
-static BtLibrary *
-lib_of(BtApp *app)
+/* lib_of() — the TaskLibrary behind app->library_window.                   */
+static TaskLibrary *
+lib_of(TaskApp *app)
 {
     if (app->library_window == NULL)
         return NULL;
-    return g_object_get_data(G_OBJECT(app->library_window), "bt-library");
+    return g_object_get_data(G_OBJECT(app->library_window), "task-library");
 }
 
 /* ===========================================================================
@@ -199,7 +211,7 @@ lib_of(BtApp *app)
  * =========================================================================== */
 
 /* ThemedCssFunc — build a widget's CSS from the resolved background color.
- * New string (the caller g_frees it).                                       */
+ * New string (the caller g_frees it).                                      */
 typedef gchar *(*ThemedCssFunc)(const GdkRGBA *bg);
 
 /* ---------------------------------------------------------------------------
@@ -214,7 +226,7 @@ typedef gchar *(*ThemedCssFunc)(const GdkRGBA *bg);
  * keeps its default look.
  *
  * The provider is created once and RELOADED in place, kept on the widget as
- * object data: bt_app_widget_add_css would stack a fresh provider on every
+ * object data: task_app_widget_add_css would stack a fresh provider on every
  * theme change.  The last color written is stored alongside it, which is
  * also what stops the recursion — our own reload re-emits "style-updated",
  * and the second pass resolves the same color and returns without writing.
@@ -224,13 +236,13 @@ typedef gchar *(*ThemedCssFunc)(const GdkRGBA *bg);
 static void themed_bg_css_apply(GtkWidget *w, ThemedCssFunc build);
 
 /* on_themed_style_updated() — the theme moved: recompute from the builder
- * stashed on the widget.                                                    */
+ * stashed on the widget.                                                   */
 static void
 on_themed_style_updated(GtkWidget *w, gpointer data)
 {
     (void)data;
     themed_bg_css_apply(w, (ThemedCssFunc)g_object_get_data(
-                               G_OBJECT(w), "bt-themed-build"));
+                               G_OBJECT(w), "task-themed-build"));
 }
 
 static void
@@ -243,24 +255,24 @@ themed_bg_css_apply(GtkWidget *w, ThemedCssFunc build)
                                         "theme_bg_color", &bg))
         return;
 
-    GdkRGBA *last = g_object_get_data(G_OBJECT(w), "bt-themed-rgba");
+    GdkRGBA *last = g_object_get_data(G_OBJECT(w), "task-themed-rgba");
     if (last != NULL && gdk_rgba_equal(last, &bg))
         return;                      /* unchanged — and ends the recursion  */
 
     GtkCssProvider *provider =
-        g_object_get_data(G_OBJECT(w), "bt-themed-css");
+        g_object_get_data(G_OBJECT(w), "task-themed-css");
     if (provider == NULL) {
         provider = gtk_css_provider_new();
         gtk_style_context_add_provider(gtk_widget_get_style_context(w),
             GTK_STYLE_PROVIDER(provider),
             GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-        g_object_set_data_full(G_OBJECT(w), "bt-themed-css", provider,
+        g_object_set_data_full(G_OBJECT(w), "task-themed-css", provider,
                                g_object_unref);
-        g_object_set_data(G_OBJECT(w), "bt-themed-build", (gpointer)build);
+        g_object_set_data(G_OBJECT(w), "task-themed-build", (gpointer)build);
         g_signal_connect(w, "style-updated",
                          G_CALLBACK(on_themed_style_updated), NULL);
     }
-    g_object_set_data_full(G_OBJECT(w), "bt-themed-rgba",
+    g_object_set_data_full(G_OBJECT(w), "task-themed-rgba",
                            gdk_rgba_copy(&bg),
                            (GDestroyNotify)gdk_rgba_free);
     gchar *css = build(&bg);
@@ -268,7 +280,7 @@ themed_bg_css_apply(GtkWidget *w, ThemedCssFunc build)
     g_free(css);
 }
 
-/* rgb_of() — a GdkRGBA as a CSS "rgb(r,g,b)" literal (new string).          */
+/* rgb_of() — a GdkRGBA as a CSS "rgb(r,g,b)" literal (new string).         */
 static gchar *
 rgb_of(const GdkRGBA *c)
 {
@@ -281,7 +293,7 @@ rgb_of(const GdkRGBA *c)
 /* header_flatten_css() — the column-header CSS: the flat background plus
  * shades of it for :hover / :active, so a sortable header still gives
  * feedback instead of jumping back to the theme's button color.  Quartz
- * only, like its one caller — otherwise it is an unused static.             */
+ * only, like its one caller — otherwise it is an unused static.            */
 #ifdef GDK_WINDOWING_QUARTZ
 static gchar *
 header_flatten_css(const GdkRGBA *bg)
@@ -346,7 +358,7 @@ line_is_blank(const gchar *start, const gchar *end)
     return TRUE;
 }
 
-/* append_line() — add a `\n`-separated markup line.                         */
+/* append_line() — add a `\n`-separated markup line.                        */
 static void
 append_line(GString *s, const gchar *markup)
 {
@@ -402,7 +414,7 @@ markup_escape_db(const gchar *text)
  *                setting, read once per refresh by the caller).
  * ------------------------------------------------------------------------- */
 static gchar *
-task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
+task_desc_markup(const Task *t, const gchar *list_name, gint att_count,
                  GPtrArray *subs, gboolean bold)
 {
     GString *s = g_string_new(NULL);
@@ -410,7 +422,7 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
         *t->title != '\0' ? t->title : "Untitled Task");
     const gchar *open  = bold ? "<b>" : "";
     const gchar *close = bold ? "</b>" : "";
-    gchar *line = t->status == BT_STATUS_DONE
+    gchar *line = t->status == TASK_STATUS_DONE
         ? g_strdup_printf("%s<s>%s</s>%s", open, title, close)
         : g_strdup_printf("%s%s%s", open, title, close);
     if (t->bn_uid != 0) {            /* mirrored Notes action item        */
@@ -418,12 +430,12 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
         g_free(line);
         line = p;
     }
-    if (t->pinned) {                  /* favorite task wears a star           */
+    if (t->pinned) {                  /* favorite task wears a star         */
         gchar *p = g_strdup_printf("\xe2\xad\x90\xef\xb8\x8f  %s", line);
         g_free(line);
         line = p;
     }
-    if (t->priority) {               /* high priority wears a siren          */
+    if (t->priority) {               /* high priority wears a siren         */
         gchar *p = g_strdup_printf("\xf0\x9f\x9a\xa8  %s", line);
         g_free(line);
         line = p;
@@ -440,7 +452,7 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
     /* Dimmed lines use Pango ALPHA, never a fixed gray: a hardcoded
      * foreground stays gray on the selection's blue background and is
      * unreadable — alpha dims whatever color the theme picks, so the
-     * text follows the row's selected/unselected state.                     */
+     * text follows the row's selected/unselected state.                    */
     if (list_name != NULL) {
         gchar *esc = markup_escape_db(list_name);
         gchar *l = g_strdup_printf(
@@ -478,14 +490,14 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
          * pango_parse_markup rejects it and the row renders completely
          * blank, title and all (not just the preview).  g_utf8_find_prev_char
          * from the cut point gives the last character that STARTS before it;
-         * keep it only when it also ends at or before the cut.               */
+         * keep it only when it also ends at or before the cut.             */
         if (shown < len) {
             const gchar *cut  = nline + shown;
             const gchar *prev = g_utf8_find_prev_char(nline, cut);
-            if (prev == NULL)            /* no boundary found: drop it all   */
+            if (prev == NULL)            /* no boundary found: drop it all  */
                 shown = 0;
             else if (g_utf8_next_char(prev) > cut)
-                shown = (gsize)(prev - nline);   /* char is cut: exclude it  */
+                shown = (gsize)(prev - nline);   /* char is cut: exclude it */
         }
         gchar *preview = g_strndup(nline, shown);
         /* Trim both ends: leading indentation reads as a stray gap in a
@@ -497,7 +509,7 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
          * that were not valid UTF-8 to begin with): emit no line at all
          * rather than an empty one — an empty preview reads as nothing
          * while still making this row a line taller than its neighbours,
-         * which is the bug the content-gating above exists to prevent.      */
+         * which is the bug the content-gating above exists to prevent.     */
         if (*preview != '\0') {
             gchar *esc = markup_escape_db(preview);
             gchar *l = g_strdup_printf(
@@ -522,10 +534,10 @@ task_desc_markup(const BtTask *t, const gchar *list_name, gint att_count,
 
     guint nsubs = subs != NULL ? subs->len : 0;
     for (guint i = 0; i < MIN(nsubs, 4u); i++) {
-        BtTask *sub = g_ptr_array_index(subs, i);
+        Task *sub = g_ptr_array_index(subs, i);
         gchar *esc = markup_escape_db(
             *sub->title != '\0' ? sub->title : "Untitled");
-        gchar *l = sub->status == BT_STATUS_DONE
+        gchar *l = sub->status == TASK_STATUS_DONE
             ? g_strdup_printf("<small>\xe2\x98\x91 <span "
                               "alpha=\"55%%\"><s>%s</s></span>"
                               "</small>", esc)
@@ -570,7 +582,7 @@ scroll_keep_apply(gpointer data)
 }
 
 /* scroll_keep_queue_win() — the same, given the scrolled window itself
- * (the Weekly Forecast's one outer scroller wraps a box, not a view).       */
+ * (the Weekly Forecast's one outer scroller wraps a box, not a view).      */
 static void
 scroll_keep_queue_win(GtkWidget *scroll)
 {
@@ -594,23 +606,20 @@ scroll_keep_queue(GtkWidget *view)
  * refresh_sidebar() — rebuild the sidebar and restore the selection.
  * ------------------------------------------------------------------------- */
 
-static void     task_view_apply_manual_order(BtLibrary *lw);
-static void     task_manual_sort_apply(BtLibrary *lw);
+static void     task_view_apply_manual_order(TaskLibrary *lw);
+static void     task_manual_sort_apply(TaskLibrary *lw);
 static gchar   *list_order_key(gint64 list_id);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
-static void     on_menu_toggle_done_visible(GtkWidget *, gpointer);
-static void     on_menu_toggle_manual_sort(GtkWidget *, gpointer);
-static void     on_menu_toggle_sidebar(GtkWidget *, gpointer);
-static void     on_menu_toggle_kanban(GtkWidget *, gpointer);
-static void     full_refresh(BtLibrary *lw);
+static void     on_toggle_kanban(GtkWidget *, gpointer);
+static void     full_refresh(TaskLibrary *lw);
 
 /* sidebar_show_pinned() — whether the Pinned Tasks meta row should
  * exist: any pinned task.  Mirrored Notes items are ordinary tasks
  * carrying the ordinary `pinned` flag, so no separate check remains.       */
 static gboolean
-sidebar_show_pinned(BtLibrary *lw)
+sidebar_show_pinned(TaskLibrary *lw)
 {
-    return bt_db_has_pinned(lw->app->db, FALSE);
+    return task_db_has_pinned(lw->app->db);
 }
 
 /* sidebar_show_actions() — whether the "Action Items" meta row should
@@ -621,12 +630,12 @@ sidebar_show_pinned(BtLibrary *lw)
 static gboolean
 sidebar_show_actions(void)
 {
-    return bt_app_config_get_bool("notes_sync", FALSE) &&
-           bt_app_config_get_bool("notes_meta_row", TRUE);
+    return task_app_config_get_bool("notes_sync", FALSE) &&
+           task_app_config_get_bool("notes_meta_row", TRUE);
 }
 
 static void
-refresh_sidebar(BtLibrary *lw)
+refresh_sidebar(TaskLibrary *lw)
 {
     lw->populating = TRUE;
     scroll_keep_queue(lw->sb_view);
@@ -634,7 +643,7 @@ refresh_sidebar(BtLibrary *lw)
     /* Snapshot the Lists section's expansion BEFORE the clear — every
      * model rebuild collapses it otherwise (Notes gotcha #14).
      * The first population expands it; after that the user's choice
-     * is preserved.                                                         */
+     * is preserved.                                                        */
     GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
     gboolean lists_expanded = TRUE;
     GtkTreeIter iter;
@@ -691,7 +700,7 @@ refresh_sidebar(BtLibrary *lw)
         if (metas[i].kind == SB_KIND_BN_ACTIONS && !sidebar_show_actions())
             continue;                /* integration or row off in Settings  */
         if (metas[i].kind == SB_KIND_FORECAST &&
-            !bt_app_config_get_bool("weekly_forecast", TRUE))
+            !task_app_config_get_bool("weekly_forecast", TRUE))
             continue;                /* disabled in Settings                */
         gtk_tree_store_append(lw->sb_store, &iter, NULL);
         gtk_tree_store_set(lw->sb_store, &iter,
@@ -710,17 +719,17 @@ refresh_sidebar(BtLibrary *lw)
                        SB_WEIGHT, PANGO_WEIGHT_BOLD,
                        -1);
 
-    GPtrArray *groups = bt_db_groups(lw->app->db);
-    GPtrArray *lists  = bt_db_lists(lw->app->db, FALSE);
+    GPtrArray *groups = task_db_groups(lw->app->db);
+    GPtrArray *lists  = task_db_lists(lw->app->db, FALSE);
     GtkTreeIter selected;            /* the row to reselect                 */
     gboolean have_selected = FALSE;
     GtkTreeIter first_list;          /* fallback selection                  */
     gboolean have_first = FALSE;
     gboolean sel_in_group = FALSE;   /* selected list is inside a group     */
 
-    /* First pass: groups and their lists.                                   */
+    /* First pass: groups and their lists.                                  */
     for (guint gi = 0; gi < groups->len; gi++) {
-        BtGroup *grp = g_ptr_array_index(groups, gi);
+        TaskGroup *grp = g_ptr_array_index(groups, gi);
         gchar *glabel = g_strdup(grp->name);
         GtkTreeIter grp_iter;
         gtk_tree_store_append(lw->sb_store, &grp_iter, &header);
@@ -734,7 +743,7 @@ refresh_sidebar(BtLibrary *lw)
 
         gboolean grp_has_selected = FALSE;
         for (guint li = 0; li < lists->len; li++) {
-            BtList *l = g_ptr_array_index(lists, li);
+            TaskList *l = g_ptr_array_index(lists, li);
             if (l->group_id != grp->id) continue;
             gchar *label = list_label(l);
             gtk_tree_store_append(lw->sb_store, &iter, &grp_iter);
@@ -759,7 +768,7 @@ refresh_sidebar(BtLibrary *lw)
         }
 
         /* Expand the group: default TRUE on first population, then use the
-         * snapshot; force open when the selected list lives inside.         */
+         * snapshot; force open when the selected list lives inside.        */
         gpointer snap = g_hash_table_lookup(lw->group_expanded,
                                             GINT_TO_POINTER(grp->id));
         gboolean was_expanded = (snap == NULL) ? TRUE
@@ -771,9 +780,9 @@ refresh_sidebar(BtLibrary *lw)
         }
     }
 
-    /* Second pass: ungrouped lists directly under the header.               */
+    /* Second pass: ungrouped lists directly under the header.              */
     for (guint li = 0; li < lists->len; li++) {
-        BtList *l = g_ptr_array_index(lists, li);
+        TaskList *l = g_ptr_array_index(lists, li);
         if (l->group_id != 0) continue;
         gchar *label = list_label(l);
         gtk_tree_store_append(lw->sb_store, &iter, &header);
@@ -790,8 +799,8 @@ refresh_sidebar(BtLibrary *lw)
             have_selected = TRUE;
         }
     }
-    bt_ptr_array_free_groups(groups);
-    bt_ptr_array_free_lists(lists);
+    task_ptr_array_free_groups(groups);
+    task_ptr_array_free_lists(lists);
 
     /* Reselect: same list/group, or same meta row, or the first list.      */
     GtkTreeSelection *sel =
@@ -824,7 +833,7 @@ refresh_sidebar(BtLibrary *lw)
     }
 
     /* Restore the Lists section expansion and force it open when the
-     * selection lives inside (a selection must be visible).                 */
+     * selection lives inside (a selection must be visible).                */
     if (lists_expanded ||
         (have_selected && (lw->sel_kind == SB_KIND_LIST ||
                            lw->sel_kind == SB_KIND_GROUP))) {
@@ -859,15 +868,15 @@ typedef struct {
 } TaskRowCtx;
 
 static void
-task_row_ctx_init(BtLibrary *lw, TaskRowCtx *ctx, gboolean virtual_view)
+task_row_ctx_init(TaskLibrary *lw, TaskRowCtx *ctx, gboolean virtual_view)
 {
-    ctx->att_counts = bt_db_attachment_counts(lw->app->db);
-    ctx->all_subs = bt_db_subtasks_all_visible(lw->app->db);
+    ctx->att_counts = task_db_attachment_counts(lw->app->db);
+    ctx->all_subs = task_db_subtasks_all_visible(lw->app->db);
     ctx->subs_by_parent =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
                               (GDestroyNotify)g_ptr_array_unref);
     for (guint i = 0; i < ctx->all_subs->len; i++) {
-        BtTask *s = g_ptr_array_index(ctx->all_subs, i);
+        Task *s = g_ptr_array_index(ctx->all_subs, i);
         GPtrArray *bucket = g_hash_table_lookup(ctx->subs_by_parent,
             GINT_TO_POINTER(s->parent_id));
         if (bucket == NULL) {
@@ -882,17 +891,17 @@ task_row_ctx_init(BtLibrary *lw, TaskRowCtx *ctx, gboolean virtual_view)
         ctx->list_names = g_hash_table_new_full(g_direct_hash,
                                                 g_direct_equal,
                                                 NULL, g_free);
-        GPtrArray *lists = bt_db_lists(lw->app->db, FALSE);
+        GPtrArray *lists = task_db_lists(lw->app->db, FALSE);
         for (guint i = 0; i < lists->len; i++) {
-            BtList *l = g_ptr_array_index(lists, i);
+            TaskList *l = g_ptr_array_index(lists, i);
             g_hash_table_insert(ctx->list_names,
                                 GINT_TO_POINTER(l->id),
                                 g_strdup(l->name));
         }
-        bt_ptr_array_free_lists(lists);
+        task_ptr_array_free_lists(lists);
     }
-    ctx->bold = bt_app_config_get_bool("bold_task_titles", FALSE);
-    ctx->show_done = bt_app_config_get_bool("show_completed", TRUE);
+    ctx->bold = task_app_config_get_bool("bold_task_titles", FALSE);
+    ctx->show_done = task_app_config_get_bool("show_completed", TRUE);
 }
 
 static void
@@ -900,22 +909,22 @@ task_row_ctx_clear(TaskRowCtx *ctx)
 {
     g_hash_table_destroy(ctx->att_counts);
     g_hash_table_destroy(ctx->subs_by_parent);
-    bt_ptr_array_free_tasks(ctx->all_subs);
+    task_ptr_array_free_tasks(ctx->all_subs);
     if (ctx->list_names != NULL)
         g_hash_table_destroy(ctx->list_names);
 }
 
 /* append_task_rows() — append `tasks` to `store` through the shared-
  * lookup context, honoring the completed-visibility toggle.  Returns
- * the number of rows actually appended.                                     */
+ * the number of rows actually appended.                                    */
 static guint
 append_task_rows(GtkListStore *store, GPtrArray *tasks,
                  const TaskRowCtx *ctx)
 {
     guint appended = 0;              /* rows actually in the pane           */
     for (guint i = 0; i < tasks->len; i++) {
-        BtTask *t = g_ptr_array_index(tasks, i);
-        gboolean done = t->status == BT_STATUS_DONE;
+        Task *t = g_ptr_array_index(tasks, i);
+        gboolean done = t->status == TASK_STATUS_DONE;
         if (!ctx->show_done && done)
             continue;                /* toolbar completed-visibility toggle */
         GPtrArray *subs = t->parent_id == 0
@@ -931,8 +940,8 @@ append_task_rows(GtkListStore *store, GPtrArray *tasks,
                                 GINT_TO_POINTER(t->id)));
         gchar *desc      = task_desc_markup(t, list_name, att_count, subs,
                                             ctx->bold);
-        gchar *due       = bt_due_format(t->due);
-        gchar *completed = bt_due_format(t->completed_at);
+        gchar *due       = task_due_format(t->due);
+        gchar *completed = task_due_format(t->completed_at);
         GtkTreeIter iter;
         gtk_list_store_append(store, &iter);
         gtk_list_store_set(store, &iter,
@@ -945,7 +954,7 @@ append_task_rows(GtkListStore *store, GPtrArray *tasks,
                            TL_COMPLETED,     completed,
                            TL_COMPLETED_RAW, t->completed_at,
                            TL_STATUS,        (gint)t->status,
-                           TL_STATUS_TEXT,   bt_status_label(t->status),
+                           TL_STATUS_TEXT,   task_status_label(t->status),
                            -1);
         g_free(desc);
         g_free(due);
@@ -961,7 +970,7 @@ append_task_rows(GtkListStore *store, GPtrArray *tasks,
  * Built from the Weekly Forecast's parts (a heading label over a framed
  * body, everything at natural height inside ONE outer scroller so the
  * whole board scrolls together), with the sections turned through 90°:
- * three side-by-side lanes, one per BtTaskStatus, holding CARDS rather
+ * three side-by-side lanes, one per TaskStatus, holding CARDS rather
  * than list rows.  Lane index IS the status value, so a drop reads its
  * target status straight off the lane it landed on.
  *
@@ -994,10 +1003,36 @@ append_task_rows(GtkListStore *store, GPtrArray *tasks,
  * the lane underneath.                                                    */
 #define CARD_GHOST_ALPHA 0.65
 
+/* Every toggling View-menu item names the thing a click DOES, not the state
+ * in force — the same idiom as the completed-visibility toolbar button,
+ * whose icon shows the action it offers.  One item, one click, no guessing
+ * what "unchecked" would have meant.  Each pair is TO_<destination>.       */
+#define SORT_LABEL_TO_MANUAL  "Manual Sorting"
+#define SORT_LABEL_TO_AUTO    "Automatic Sorting"
+#define DONE_LABEL_TO_HIDE    "Hide Completed"
+#define DONE_LABEL_TO_SHOW    "Show Completed"
+#define SIDEBAR_LABEL_TO_HIDE "Hide Sidebar"
+#define SIDEBAR_LABEL_TO_SHOW "Show Sidebar"
+/* "List View", singular: "Lists" in this app is the sidebar's data type
+ * (the user's task lists), so "Lists View" would read as "show me the
+ * lists" rather than "put the tasks back in a list".                      */
+#define PANE_LABEL_TO_KANBAN  "Kanban View"
+#define PANE_LABEL_TO_LIST    "List View"
+/* Compact Layout names the CONTROLS, not the layout: what the setting
+ * actually does is swap the toolbar for the floating New/Delete pair, and
+ * "Full Layout" would promise something about the window it does not
+ * change (the sidebar follows its own item in both modes).                */
+#define CTRL_LABEL_TO_COMPACT "Compact Controls"
+#define CTRL_LABEL_TO_FULL    "Full Controls"
+
 /* Thickness of the insertion marker, in logical px.  Thin on purpose: it
  * occupies a slot in the lane, so anything chunky would shove the cards
  * around as it moves between slots.                                       */
 #define CARD_MARK_H 3
+
+/* Breathing room either side of the ⠿ grip glyph.  Narrow on purpose: the
+ * grip is a grab target, not a column.                                    */
+#define CARD_GRIP_PAD 5
 
 /* Inner insets, applied as WIDGET MARGINS on the child — neither CSS
  * padding nor border_width works on a visible-window GtkEventBox, see the
@@ -1048,34 +1083,40 @@ kanban_css_install(void)
      * the card grows by them and the background and border still paint at
      * the widget's own edge.                                              */
     gtk_css_provider_load_from_data(p,
-        ".bt-lane {"
+        ".task-lane {"
         "  background-color: alpha(@theme_fg_color, 0.05);"
         "}"
-        ".bt-card {"
+        ".task-card {"
         "  background-color: @theme_base_color;"
         "  border: 1px solid alpha(@theme_fg_color, 0.22);"
         "}"
-        ".bt-card:hover {"
+        ".task-card:hover {"
         "  border-color: alpha(@theme_fg_color, 0.45);"
         "}"
         /* The landing indicator, in two parts: the lane tint says which
-         * COLUMN, the marker bar says which SLOT within it.  .bt-lane-target
-         * is listed AFTER .bt-lane so it wins at equal specificity (both
+         * COLUMN, the marker bar says which SLOT within it.  .task-lane-target
+         * is listed AFTER .task-lane so it wins at equal specificity (both
          * classes sit on the same widget).                               */
-        ".bt-lane-target {"
+        ".task-lane-target {"
         "  background-color: alpha(@theme_selected_bg_color, 0.22);"
         "}"
-        ".bt-card-mark {"
+        ".task-card-mark {"
         "  background-color: @theme_selected_bg_color;"
+        "}"
+        /* The ⠿ grip strip down the card's left edge.  Only this area
+         * starts a drag, and only it wears the hand cursor — the rest of
+         * the card clicks and selects like an ordinary row.               */
+        ".task-card-handle:hover {"
+        "  background-color: alpha(@theme_fg_color, 0.10);"
         "}"
         /* The original card stays in place while its ghost is carried
          * around, dimmed so it reads as "this is the one in flight".     */
-        ".bt-card-dragging {"
+        ".task-card-dragging {"
         "  opacity: 0.40;"
         "}"
         /* The board's stand-in for a tree selection: what Delete Task and
          * the status bar are talking about.                                */
-        ".bt-card-selected {"
+        ".task-card-selected {"
         "  border-color: @theme_selected_bg_color;"
         "  background-color: alpha(@theme_selected_bg_color, 0.16);"
         "}", -1, NULL);
@@ -1122,79 +1163,294 @@ card_set_cursor(GtkWidget *w, GdkCursor *cursor)
         gdk_window_set_cursor(win, cursor);
 }
 
-/* on_card_realize() — a card just got its GdkWindow: give it the open
- * hand.  Set on the WINDOW rather than tracked with enter/leave handlers,
- * so hovering costs nothing per motion event and the cursor is simply a
- * property of the card's own area.                                        */
+/* on_handle_realize() — the ⠿ grip just got its GdkWindow: give it the
+ * open hand.  Set on the WINDOW rather than tracked with enter/leave
+ * handlers, so hovering costs nothing per motion event and the cursor is
+ * simply a property of the grip's own area — which is precisely why the
+ * grip is a separate widget: the rest of the card keeps the default
+ * arrow because it never gets a cursor of its own.                        */
 static void
-on_card_realize(GtkWidget *card, gpointer data)
+on_handle_realize(GtkWidget *handle, gpointer data)
 {
-    BtLibrary *lw = data;
-    card_set_cursor(card, card_cursor(card, &lw->card_grab, "grab"));
+    TaskLibrary *lw = data;
+    card_set_cursor(handle, card_cursor(handle, &lw->card_grab, "grab"));
 }
 
 /* Defined below with the rest of the drag engine; on_card_press needs the
  * first to cancel the press its own click armed, and card_drag_stop needs
  * the second to clear the landing indicator on the way out.               */
-static void card_drag_stop(BtLibrary *lw);
-static void card_lane_highlight(BtLibrary *lw, gint lane);
-static void card_mark_clear(BtLibrary *lw);
+static void card_drag_stop(TaskLibrary *lw);
+static void card_lane_highlight(TaskLibrary *lw, gint lane);
+static void card_mark_clear(TaskLibrary *lw);
+static GArray *lane_card_ids(TaskLibrary *lw, gint s);
+static void on_handle_realize(GtkWidget *handle, gpointer data);
+static gboolean on_handle_press(GtkWidget *handle, GdkEventButton *ev,
+                                gpointer data);
+static gboolean task_context_menu_popup(TaskLibrary *lw, GtkWidget *anchor,
+                                        GdkEventButton *event);
 
 /* card_task_id() — the task a card stands for (0 if somehow unset).        */
 static gint64
 card_task_id(GtkWidget *card)
 {
     return (gint64)GPOINTER_TO_SIZE(
-        g_object_get_data(G_OBJECT(card), "bt-task-id"));
+        g_object_get_data(G_OBJECT(card), "task-task-id"));
 }
 
-/* on_card_press() — click selects and ARMS a drag; double-click opens the
- * editor.  Returns FALSE on the first click of a double so GTK still
- * delivers the second.
+/* ---------------------------------------------------------------------------
+ * on_handle_press() — a press on the ⠿ grip ARMS a drag.
  *
  * Arming rather than dragging immediately is what keeps a click a click:
  * the press only becomes a drag once on_card_motion sees the pointer pass
- * the platform's threshold.                                               */
+ * the platform's threshold.
+ *
+ * Returns FALSE so the press keeps propagating to the CARD, which selects
+ * — clicking the grip should select the card like clicking anywhere else
+ * on it, and a double-click on the grip should still open the editor.
+ *
+ * The hot spot is translated into the CARD's coordinates: the ghost is a
+ * picture of the whole card, so it has to hang off the pointer where the
+ * card was gripped, not where the grip was.
+ * ------------------------------------------------------------------------- */
+static gboolean
+on_handle_press(GtkWidget *handle, GdkEventButton *ev, gpointer data)
+{
+    TaskLibrary *lw = data;
+    if (ev->type != GDK_BUTTON_PRESS || ev->button != 1)
+        return FALSE;
+    GtkWidget *card = g_object_get_data(G_OBJECT(handle), "task-card");
+    gint64 id = card != NULL ? card_task_id(card) : 0;
+    if (id == 0)
+        return FALSE;
+
+    gint cx = 0, cy = 0;
+    gtk_widget_translate_coordinates(handle, card, (gint)ev->x, (gint)ev->y,
+                                     &cx, &cy);
+    lw->card_armed       = TRUE;
+    lw->card_drag_src    = card;
+    lw->card_drag_handle = handle;
+    lw->card_drag_id     = id;
+    lw->card_press_rx    = ev->x_root;
+    lw->card_press_ry    = ev->y_root;
+    lw->card_hot_x       = cx;
+    lw->card_hot_y       = cy;
+    return FALSE;                    /* let the card select as well        */
+}
+
+
+/* ---------------------------------------------------------------------------
+ * The board's selection: a SET of task ids, mirroring the task view's
+ * GTK_SELECTION_MULTIPLE.
+ *
+ * Order is never stored.  Every consumer that needs a sequence takes it
+ * from the board's DISPLAY order (card_sel_ids), so a multi-selection acts
+ * top-to-bottom, lane by lane, the way it looks on screen.
+ * ------------------------------------------------------------------------- */
+
+/* card_sel_has() — is `id` selected?                                       */
+static gboolean
+card_sel_has(TaskLibrary *lw, gint64 id)
+{
+    return lw->kanban_sel != NULL &&
+           g_hash_table_contains(lw->kanban_sel,
+                                 GSIZE_TO_POINTER((gsize)id));
+}
+
+static void
+card_sel_add(TaskLibrary *lw, gint64 id)
+{
+    if (id != 0)
+        g_hash_table_add(lw->kanban_sel, GSIZE_TO_POINTER((gsize)id));
+}
+
+static void
+card_sel_remove(TaskLibrary *lw, gint64 id)
+{
+    g_hash_table_remove(lw->kanban_sel, GSIZE_TO_POINTER((gsize)id));
+}
+
+static guint
+card_sel_count(TaskLibrary *lw)
+{
+    return lw->kanban_sel != NULL ? g_hash_table_size(lw->kanban_sel) : 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * card_restyle() — paint the selection onto the cards.
+ *
+ * Runs IN PLACE rather than through a refresh: a refresh here would
+ * destroy the very widget a drag is about to start from, and the click
+ * would never become one.
+ * ------------------------------------------------------------------------- */
+static void
+card_restyle(TaskLibrary *lw)
+{
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
+        if (lw->kanban_lanes[s] == NULL)
+            continue;
+        GList *kids =
+            gtk_container_get_children(GTK_CONTAINER(lw->kanban_lanes[s]));
+        for (GList *k = kids; k != NULL; k = k->next) {
+            GtkWidget *card = GTK_WIDGET(k->data);
+            gint64 id = card_task_id(card);
+            if (id == 0)
+                continue;            /* the marker / empty placeholder      */
+            GtkStyleContext *sc = gtk_widget_get_style_context(card);
+            if (card_sel_has(lw, id))
+                gtk_style_context_add_class(sc, "task-card-selected");
+            else
+                gtk_style_context_remove_class(sc, "task-card-selected");
+        }
+        g_list_free(kids);
+    }
+}
+
+/* card_select() — collapse the selection to just `id`.                     */
+static void
+card_select(TaskLibrary *lw, gint64 id)
+{
+    g_hash_table_remove_all(lw->kanban_sel);
+    card_sel_add(lw, id);
+    lw->kanban_anchor = id;
+    card_restyle(lw);
+}
+
+/* ---------------------------------------------------------------------------
+ * card_sel_ids() — the selected ids in BOARD DISPLAY ORDER (lane by lane,
+ * top to bottom), skipping any whose card is no longer on screen.
+ *
+ * Display order rather than hash order so a bulk action reads the way the
+ * board looks — and so a multi-card drag keeps the cards' relative order
+ * when it re-inserts them.  Free with g_array_unref.
+ * ------------------------------------------------------------------------- */
+static GArray *
+card_sel_ids(TaskLibrary *lw)
+{
+    GArray *out = g_array_new(FALSE, FALSE, sizeof(gint64));
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
+        GArray *lane = lane_card_ids(lw, s);
+        for (guint i = 0; i < lane->len; i++) {
+            gint64 id = g_array_index(lane, gint64, i);
+            if (card_sel_has(lw, id))
+                g_array_append_val(out, id);
+        }
+        g_array_unref(lane);
+    }
+    return out;
+}
+
+/* ---------------------------------------------------------------------------
+ * card_sel_range() — select from the shift anchor to `id`.
+ *
+ * WITHIN ONE LANE only.  A run down a column is the obvious meaning of
+ * shift-click on a board; "everything between" two cards in DIFFERENT
+ * columns is not, and would quietly select a screenful.  So a cross-lane
+ * shift-click behaves like a modify-click and just adds the card, which is
+ * the least surprising thing that is still useful.
+ * ------------------------------------------------------------------------- */
+static void
+card_sel_range(TaskLibrary *lw, gint64 id)
+{
+    gint64 anchor = lw->kanban_anchor;
+    if (anchor == 0 || anchor == id) {
+        card_sel_add(lw, id);
+        card_restyle(lw);
+        return;
+    }
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
+        GArray *lane = lane_card_ids(lw, s);
+        gint ai = -1, bi = -1;
+        for (guint i = 0; i < lane->len; i++) {
+            gint64 v = g_array_index(lane, gint64, i);
+            if (v == anchor) ai = (gint)i;
+            if (v == id)     bi = (gint)i;
+        }
+        if (ai >= 0 && bi >= 0) {    /* both in THIS lane: take the run    */
+            gint lo = MIN(ai, bi), hi = MAX(ai, bi);
+            for (gint i = lo; i <= hi; i++)
+                card_sel_add(lw, g_array_index(lane, gint64, (guint)i));
+            g_array_unref(lane);
+            card_restyle(lw);
+            return;
+        }
+        g_array_unref(lane);
+    }
+    card_sel_add(lw, id);            /* different lanes: just add it        */
+    card_restyle(lw);
+}
+
+/* on_card_press() — click SELECTS; double-click opens the editor;
+ * right-click raises the shared context menu.  It does NOT arm a drag:
+ * that belongs to the ⠿ grip alone (on_handle_press), so the card body
+ * behaves like an ordinary clickable row.  Returns FALSE on the first
+ * click of a double so GTK still delivers the second.                     */
 static gboolean
 on_card_press(GtkWidget *card, GdkEventButton *ev, gpointer data)
 {
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     gint64 id = card_task_id(card);
     if (id == 0)
         return FALSE;
     if (ev->type == GDK_2BUTTON_PRESS && ev->button == 1) {
         card_drag_stop(lw);          /* the first press armed one          */
-        bt_editor_open(lw->app, id);
+        task_editor_open(lw->app, id);
         return TRUE;
     }
-    if (ev->type == GDK_BUTTON_PRESS && ev->button == 1) {
-        lw->card_armed    = TRUE;
-        lw->card_drag_src = card;
-        lw->card_drag_id  = id;
-        lw->card_press_rx = ev->x_root;
-        lw->card_press_ry = ev->y_root;
-        lw->card_hot_x    = (gint)ev->x;
-        lw->card_hot_y    = (gint)ev->y;
+    /* ---- selection -----------------------------------------------------
+     * The two modifiers come from GTK, not hardcoded: MODIFY_SELECTION is
+     * Ctrl on X11 and Cmd on quartz, and asking the widget is the only way
+     * to be right on both.
+     *
+     * A RIGHT-click inside an existing selection LEAVES IT ALONE, so a
+     * bulk action can be reached from any of the selected cards — the same
+     * rule the task view follows.  Outside it, it collapses first.        */
+    GdkModifierType mod_mask = gtk_widget_get_modifier_mask(card,
+        GDK_MODIFIER_INTENT_MODIFY_SELECTION);
+    GdkModifierType ext_mask = gtk_widget_get_modifier_mask(card,
+        GDK_MODIFIER_INTENT_EXTEND_SELECTION);
+    gboolean modify = (ev->state & mod_mask) != 0;
+    gboolean extend = (ev->state & ext_mask) != 0;
+
+    if (ev->type == GDK_BUTTON_PRESS && ev->button == 3) {
+        if (!card_sel_has(lw, id))
+            card_select(lw, id);
+        /* The SAME menu the list view's rows show, from the same function
+         * against the same selection — so a multi-selection gets the
+         * multi variant ("Delete 3 Tasks") for free.  Anchored to
+         * kanban_box, never the card: an attached menu dies with its
+         * widget, and every action here refreshes the board and destroys
+         * the card underneath it.                                        */
+        return task_context_menu_popup(lw, lw->kanban_box, ev);
     }
+
     if (ev->type == GDK_BUTTON_PRESS) {
-        /* Restyle in place rather than rebuilding the board: a refresh
-         * here would destroy the widget GTK is about to start a drag
-         * from, and the click would never become one.                     */
-        lw->kanban_sel = id;
-        for (gint s = 0; s < BT_STATUS_N_VALUES; s++) {
-            GList *kids =
-                gtk_container_get_children(GTK_CONTAINER(lw->kanban_lanes[s]));
-            for (GList *k = kids; k != NULL; k = k->next) {
-                GtkStyleContext *sc =
-                    gtk_widget_get_style_context(GTK_WIDGET(k->data));
-                if (card_task_id(GTK_WIDGET(k->data)) == id)
-                    gtk_style_context_add_class(sc, "bt-card-selected");
-                else
-                    gtk_style_context_remove_class(sc, "bt-card-selected");
-            }
-            g_list_free(kids);
+        if (extend) {
+            card_sel_range(lw, id);
+        } else if (modify) {
+            if (card_sel_has(lw, id))
+                card_sel_remove(lw, id);
+            else
+                card_sel_add(lw, id);
+            lw->kanban_anchor = id;
+            card_restyle(lw);
+        } else {
+            /* A plain click INSIDE the selection keeps it: that is what
+             * lets a multi-card drag start from any of its cards.  The
+             * collapse happens on release instead (on_card_release), only
+             * when no drag took place.
+             *
+             * The ANCHOR moves either way.  It has to: it means "the last
+             * card plainly clicked", and a shift-click straight after this
+             * one must measure its run from HERE.  Tying it to the
+             * collapse instead left it pointing at a card the user last
+             * touched several clicks ago, and the run came out wrong.    */
+            if (!card_sel_has(lw, id))
+                card_select(lw, id);
+            else
+                lw->kanban_anchor = id;
         }
     }
+
     return FALSE;
 }
 
@@ -1211,9 +1467,9 @@ on_card_press(GtkWidget *card, GdkEventButton *ev, gpointer data)
  * widgets, and every lane box is realized, so each has a window origin to
  * measure from.                                                            */
 static gint
-card_lane_at_root(BtLibrary *lw, gint rx, gint ry)
+card_lane_at_root(TaskLibrary *lw, gint rx, gint ry)
 {
-    for (gint s = 0; s < BT_STATUS_N_VALUES; s++) {
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
         GtkWidget *box = lw->kanban_drops[s];
         if (box == NULL || !gtk_widget_get_mapped(box))
             continue;
@@ -1246,11 +1502,11 @@ static gboolean
 on_ghost_draw(GtkWidget *ghost, cairo_t *cr, gpointer data)
 {
     (void)data;
-    cairo_surface_t *surf = g_object_get_data(G_OBJECT(ghost), "bt-surface");
+    cairo_surface_t *surf = g_object_get_data(G_OBJECT(ghost), "task-surface");
     if (surf == NULL)
         return FALSE;
     gboolean composited = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(ghost), "bt-composited"));
+        g_object_get_data(G_OBJECT(ghost), "task-composited"));
     if (composited) {
         cairo_save(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
@@ -1260,6 +1516,31 @@ on_ghost_draw(GtkWidget *ghost, cairo_t *cr, gpointer data)
     }
     cairo_set_source_surface(cr, surf, 0, 0);
     cairo_paint_with_alpha(cr, composited ? CARD_GHOST_ALPHA : 1.0);
+
+    /* More than one card in flight?  Say so ON the ghost.  A snapshot of
+     * the gripped card alone would claim a single-card move, and the drop
+     * is about to touch several.                                          */
+    gint n = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(ghost), "task-n"));
+    if (n > 1) {
+        gchar *txt = g_strdup_printf("%d", n);
+        cairo_select_font_face(cr, "sans", CAIRO_FONT_SLANT_NORMAL,
+                               CAIRO_FONT_WEIGHT_BOLD);
+        cairo_set_font_size(cr, 13.0);
+        cairo_text_extents_t ext;
+        cairo_text_extents(cr, txt, &ext);
+        gdouble pad = 5.0;
+        gdouble w = ext.width + pad * 2, h = 18.0;
+        gint aw = gtk_widget_get_allocated_width(ghost);
+        gdouble bx = aw - w - 4.0, by = 4.0;
+        cairo_set_source_rgba(cr, 0.18, 0.36, 0.75, 0.95);
+        cairo_rectangle(cr, bx, by, w, h);
+        cairo_fill(cr);
+        cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 1.0);
+        cairo_move_to(cr, bx + pad - ext.x_bearing,
+                      by + (h - ext.height) / 2 - ext.y_bearing);
+        cairo_show_text(cr, txt);
+        g_free(txt);
+    }
     return TRUE;
 }
 
@@ -1276,7 +1557,7 @@ on_ghost_draw(GtkWidget *ghost, cairo_t *cr, gpointer data)
  * means the window has no background of its own to leak round the edges.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
-card_ghost_new(GtkWidget *card)
+card_ghost_new(GtkWidget *card, gint n_moving)
 {
     GtkAllocation a;
     gtk_widget_get_allocation(card, &a);
@@ -1303,10 +1584,12 @@ card_ghost_new(GtkWidget *card)
     if (composited)
         gtk_widget_set_visual(ghost, rgba);
 
-    g_object_set_data_full(G_OBJECT(ghost), "bt-surface", surf,
+    g_object_set_data_full(G_OBJECT(ghost), "task-surface", surf,
                            (GDestroyNotify)cairo_surface_destroy);
-    g_object_set_data(G_OBJECT(ghost), "bt-composited",
+    g_object_set_data(G_OBJECT(ghost), "task-composited",
                       GINT_TO_POINTER(composited));
+    g_object_set_data(G_OBJECT(ghost), "task-n",
+                      GINT_TO_POINTER(n_moving));
     g_signal_connect(ghost, "draw", G_CALLBACK(on_ghost_draw), NULL);
     gtk_widget_set_size_request(ghost, a.width, a.height);
     gtk_widget_show(ghost);
@@ -1316,7 +1599,7 @@ card_ghost_new(GtkWidget *card)
 /* card_drag_stop() — end a drag (or a merely armed press) and put
  * everything back.  Safe to call when nothing is in flight.               */
 static void
-card_drag_stop(BtLibrary *lw)
+card_drag_stop(TaskLibrary *lw)
 {
     if (lw->card_dragging) {
         GdkDisplay *dpy = gtk_widget_get_display(lw->window);
@@ -1325,14 +1608,17 @@ card_drag_stop(BtLibrary *lw)
          * pointer may still be over it); the toplevel goes back to its
          * default so every other widget inherits normally again.          */
         card_set_cursor(lw->window, NULL);
-        if (lw->card_drag_src != NULL) {
-            card_set_cursor(lw->card_drag_src,
-                            card_cursor(lw->card_drag_src,
+        /* The grip keeps the OPEN hand (the pointer may still be over it);
+         * the card loses its dimming.  Two different widgets, so two
+         * different restorations.                                         */
+        if (lw->card_drag_handle != NULL)
+            card_set_cursor(lw->card_drag_handle,
+                            card_cursor(lw->card_drag_handle,
                                         &lw->card_grab, "grab"));
+        if (lw->card_drag_src != NULL)
             gtk_style_context_remove_class(
                 gtk_widget_get_style_context(lw->card_drag_src),
-                "bt-card-dragging");
-        }
+                "task-card-dragging");
         card_lane_highlight(lw, -1);
         card_mark_clear(lw);
     }
@@ -1341,10 +1627,11 @@ card_drag_stop(BtLibrary *lw)
         lw->card_key_handler = 0;
     }
     g_clear_pointer(&lw->card_ghost, gtk_widget_destroy);
-    lw->card_dragging  = FALSE;
-    lw->card_armed     = FALSE;
-    lw->card_drag_src  = NULL;
-    lw->card_drag_id   = 0;
+    lw->card_dragging    = FALSE;
+    lw->card_armed       = FALSE;
+    lw->card_drag_src    = NULL;
+    lw->card_drag_handle = NULL;
+    lw->card_drag_id     = 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1366,7 +1653,7 @@ card_drag_stop(BtLibrary *lw)
 /* kanban_order_key() — the current view's card-order key, or NULL for a
  * view that has no board (the forecast).  New string (g_free).            */
 static gchar *
-kanban_order_key(BtLibrary *lw)
+kanban_order_key(TaskLibrary *lw)
 {
     switch (lw->sel_kind) {
     case SB_KIND_LIST:
@@ -1389,12 +1676,12 @@ kanban_order_key(BtLibrary *lw)
  * same way: an id that no longer exists simply matches nothing.
  * ------------------------------------------------------------------------- */
 static void
-kanban_order_apply(BtLibrary *lw, GPtrArray *tasks)
+kanban_order_apply(TaskLibrary *lw, GPtrArray *tasks)
 {
     gchar *key = kanban_order_key(lw);
     if (key == NULL)
         return;
-    gchar *saved = bt_app_config_get(key);
+    gchar *saved = task_app_config_get(key);
     g_free(key);
     if (saved == NULL || *saved == '\0' || tasks->len < 2) {
         g_free(saved);
@@ -1410,7 +1697,7 @@ kanban_order_apply(BtLibrary *lw, GPtrArray *tasks)
         if (id == 0)
             continue;
         for (guint j = 0; j < tasks->len; j++) {
-            BtTask *t = g_ptr_array_index(tasks, j);
+            Task *t = g_ptr_array_index(tasks, j);
             if (!placed[j] && t->id == id) {
                 g_ptr_array_add(out, t);
                 placed[j] = TRUE;
@@ -1435,7 +1722,7 @@ kanban_order_apply(BtLibrary *lw, GPtrArray *tasks)
  * order, skipping the marker and the empty-lane placeholder (neither
  * carries a task id).  Free with g_array_unref.                           */
 static GArray *
-lane_card_ids(BtLibrary *lw, gint s)
+lane_card_ids(TaskLibrary *lw, gint s)
 {
     GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
     if (lw->kanban_lanes[s] == NULL)
@@ -1461,7 +1748,7 @@ lane_card_ids(BtLibrary *lw, gint s)
  * marker carries no task id and is skipped.
  * ------------------------------------------------------------------------- */
 static gint
-card_slot_at(BtLibrary *lw, gint s, gint ry)
+card_slot_at(TaskLibrary *lw, gint s, gint ry)
 {
     gint slot = 0;
     if (lw->kanban_lanes[s] == NULL)
@@ -1490,7 +1777,7 @@ card_slot_at(BtLibrary *lw, gint s, gint ry)
 
 /* card_mark_clear() — take the insertion marker off screen.                */
 static void
-card_mark_clear(BtLibrary *lw)
+card_mark_clear(TaskLibrary *lw)
 {
     g_clear_pointer(&lw->card_mark, gtk_widget_destroy);
     lw->card_mark_lane = -1;
@@ -1507,18 +1794,18 @@ card_mark_clear(BtLibrary *lw)
  * would drop the last reference and destroy the thing we meant to move.
  * ------------------------------------------------------------------------- */
 static void
-card_mark_place(BtLibrary *lw, gint lane, gint slot)
+card_mark_place(TaskLibrary *lw, gint lane, gint slot)
 {
     if (lane == lw->card_mark_lane && slot == lw->card_mark_slot)
         return;
     card_mark_clear(lw);
-    if (lane < 0 || lane >= BT_STATUS_N_VALUES ||
+    if (lane < 0 || lane >= TASK_STATUS_N_VALUES ||
         lw->kanban_lanes[lane] == NULL)
         return;
 
     GtkWidget *mark = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_style_context_add_class(gtk_widget_get_style_context(mark),
-                                "bt-card-mark");
+                                "task-card-mark");
     gtk_widget_set_size_request(mark, -1, CARD_MARK_H);
     gtk_box_pack_start(GTK_BOX(lw->kanban_lanes[lane]), mark,
                        FALSE, FALSE, 0);
@@ -1550,17 +1837,17 @@ card_mark_place(BtLibrary *lw, gint lane, gint slot)
  * that one.  `lane` of -1 clears every highlight (pointer outside the
  * board, or the drag ending).                                             */
 static void
-card_lane_highlight(BtLibrary *lw, gint lane)
+card_lane_highlight(TaskLibrary *lw, gint lane)
 {
-    for (gint s = 0; s < BT_STATUS_N_VALUES; s++) {
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
         GtkWidget *box = lw->kanban_drops[s];
         if (box == NULL)
             continue;
         GtkStyleContext *sc = gtk_widget_get_style_context(box);
         if (s == lane)
-            gtk_style_context_add_class(sc, "bt-lane-target");
+            gtk_style_context_add_class(sc, "task-lane-target");
         else
-            gtk_style_context_remove_class(sc, "bt-lane-target");
+            gtk_style_context_remove_class(sc, "task-lane-target");
     }
 }
 
@@ -1568,7 +1855,7 @@ card_lane_highlight(BtLibrary *lw, gint lane)
  * stays gripped where it was picked up, and light up the lane it would
  * land in so the drop is never a guess.                                   */
 static void
-card_drag_move(BtLibrary *lw, gint rx, gint ry)
+card_drag_move(TaskLibrary *lw, gint rx, gint ry)
 {
     if (lw->card_ghost != NULL)
         gtk_window_move(GTK_WINDOW(lw->card_ghost),
@@ -1585,7 +1872,7 @@ static gboolean
 on_card_drag_key(GtkWidget *w, GdkEventKey *ev, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     if (ev->keyval != GDK_KEY_Escape)
         return FALSE;
     card_drag_stop(lw);
@@ -1593,7 +1880,9 @@ on_card_drag_key(GtkWidget *w, GdkEventKey *ev, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
- * card_drop_apply() — the drop: put the dragged task in `lane` at `slot`.
+ * card_drop_apply() — the drop: put the dragged task(s) in `lane` at
+ * `slot`, keeping their relative order.  `moving` is the whole dragged
+ * selection, so one card and twenty take the same path.
  *
  * Two independent halves, either of which may be a no-op:
  *
@@ -1601,40 +1890,68 @@ on_card_drag_key(GtkWidget *w, GdkEventKey *ev, gpointer data)
  *     updated_at and syncs;
  *   the ORDER, always — local-only, config, never touches the row.
  *
- * A drag that lands the card exactly where it already was does NEITHER,
- * which is what keeps "pick up and put back" from buying a sync round
- * trip.  Returns TRUE when anything changed (so the caller refreshes).
+ * A drag that lands the cards exactly where they already were does
+ * NEITHER, which is what keeps "pick up and put back" from buying a sync
+ * round trip.  Returns TRUE when anything changed (so the caller
+ * refreshes).
  * ------------------------------------------------------------------------- */
 static gboolean
-card_drop_apply(BtLibrary *lw, gint64 id, gint lane, gint slot)
+card_drop_apply(TaskLibrary *lw, GArray *moving, gint lane, gint slot)
 {
-    if (id == 0 || lane < 0 || lane >= BT_STATUS_N_VALUES)
+    if (moving == NULL || moving->len == 0 ||
+        lane < 0 || lane >= TASK_STATUS_N_VALUES)
         return FALSE;
-    BtTaskStatus want = (BtTaskStatus)lane;
-    BtTask *t = bt_db_task_get(lw->app->db, id);
-    if (t == NULL || t->deleted) {
-        bt_task_free(t);
+    TaskStatus want = (TaskStatus)lane;
+
+    /* Which of the dragged tasks actually need a status write?  A
+     * multi-card drag routinely mixes lanes, and only the ones arriving
+     * from elsewhere are a real change.                                   */
+    GArray *to_move = g_array_new(FALSE, FALSE, sizeof(gint64));
+    gchar  *one_title = NULL;        /* for the single-task status message */
+    guint   n_status  = 0;
+    for (guint i = 0; i < moving->len; i++) {
+        gint64 id = g_array_index(moving, gint64, i);
+        Task *t = task_db_task_get(lw->app->db, id);
+        if (t == NULL || t->deleted) {
+            task_free(t);
+            continue;
+        }
+        g_array_append_val(to_move, id);
+        if (t->status != want) {
+            n_status++;
+            if (one_title == NULL)
+                one_title = g_strdup(t->title);
+        }
+        task_free(t);
+    }
+    if (to_move->len == 0) {
+        g_array_unref(to_move);
+        g_free(one_title);
         return FALSE;
     }
-    gboolean status_change = (t->status != want);
-    gchar   *title         = g_strdup(t->title);
-    bt_task_free(t);
 
     /* Build the view's new card order: every lane's ids in display order,
-     * with the dragged id lifted out of wherever it was and dropped into
-     * `lane` at `slot`.  Removing first is what makes `slot` — measured
-     * against the cards on screen, dragged card included — land right.    */
+     * with ALL the dragged ids lifted out of wherever they were and
+     * dropped into `lane` at `slot`, keeping their relative order.
+     * Removing first is what makes `slot` — measured against the cards on
+     * screen, dragged cards included — land right.                        */
     GString *order = g_string_new(NULL);
-    for (gint s = 0; s < BT_STATUS_N_VALUES; s++) {
-        GArray *ids = lane_card_ids(lw, s);
-        for (guint i = 0; i < ids->len; i++)
-            if (g_array_index(ids, gint64, i) == id) {
-                g_array_remove_index(ids, i);
-                break;
-            }
-        if (s == lane) {
+    for (gint sl = 0; sl < TASK_STATUS_N_VALUES; sl++) {
+        GArray *ids = lane_card_ids(lw, sl);
+        for (guint m = 0; m < to_move->len; m++) {
+            gint64 id = g_array_index(to_move, gint64, m);
+            for (guint i = 0; i < ids->len; i++)
+                if (g_array_index(ids, gint64, i) == id) {
+                    g_array_remove_index(ids, i);
+                    break;
+                }
+        }
+        if (sl == lane) {
             gint at = CLAMP(slot, 0, (gint)ids->len);
-            g_array_insert_val(ids, at, id);
+            for (guint m = 0; m < to_move->len; m++) {
+                gint64 id = g_array_index(to_move, gint64, m);
+                g_array_insert_val(ids, at + (gint)m, id);
+            }
         }
         for (guint i = 0; i < ids->len; i++) {
             if (order->len > 0)
@@ -1646,29 +1963,42 @@ card_drop_apply(BtLibrary *lw, gint64 id, gint lane, gint slot)
     }
 
     gchar *key   = kanban_order_key(lw);
-    gchar *saved = key != NULL ? bt_app_config_get(key) : NULL;
+    gchar *saved = key != NULL ? task_app_config_get(key) : NULL;
     gboolean order_change = (g_strcmp0(saved, order->str) != 0);
     g_free(saved);
     if (order_change && key != NULL)
-        bt_app_config_set(key, order->str);
+        task_app_config_set(key, order->str);
     g_free(key);
     g_string_free(order, TRUE);
 
-    if (!status_change && !order_change)
+    if (n_status == 0 && !order_change) {
+        g_array_unref(to_move);
+        g_free(one_title);
         return FALSE;                /* put back exactly where it was      */
+    }
 
-    if (status_change)
-        bt_db_task_set_status(lw->app->db, id, want);
-    lw->kanban_sel = id;             /* keep the moved card selected        */
-    /* Only announce a STATUS move: a reorder is its own feedback (the card
-     * is visibly somewhere else) and would otherwise spam the status bar
-     * with "— New" for every nudge within a lane.                          */
-    if (status_change)
-        bt_app_status(lw->app, "\xe2\x80\x9c%s\xe2\x80\x9d \xe2\x80\x94 %s",
-                      title != NULL && *title != '\0' ? title
-                                                      : "Untitled Task",
-                      bt_status_label(want));
-    g_free(title);
+    for (guint i = 0; i < to_move->len; i++)
+        task_db_task_set_status(lw->app->db,
+                                g_array_index(to_move, gint64, i), want);
+
+    /* Keep the moved cards selected across the rebuild.                   */
+    g_hash_table_remove_all(lw->kanban_sel);
+    for (guint i = 0; i < to_move->len; i++)
+        card_sel_add(lw, g_array_index(to_move, gint64, i));
+    lw->kanban_anchor = g_array_index(to_move, gint64, 0);
+
+    /* Only announce a STATUS move: a reorder is its own feedback (the
+     * cards are visibly somewhere else) and would otherwise spam the
+     * status bar for every nudge within a lane.                           */
+    if (n_status == 1 && one_title != NULL)
+        task_app_status(lw->app, "\xe2\x80\x9c%s\xe2\x80\x9d \xe2\x80\x94 %s",
+                        *one_title != '\0' ? one_title : "Untitled Task",
+                        task_status_label(want));
+    else if (n_status > 1)
+        task_app_status(lw->app, "%u tasks \xe2\x80\x94 %s", n_status,
+                        task_status_label(want));
+    g_free(one_title);
+    g_array_unref(to_move);
     return TRUE;
 }
 
@@ -1682,33 +2012,43 @@ card_drop_apply(BtLibrary *lw, gint64 id, gint lane, gint slot)
 static gboolean
 card_refresh_idle(gpointer data)
 {
-    BtLibrary *lw = lib_of(data);
+    TaskLibrary *lw = lib_of(data);
     if (lw != NULL)
         full_refresh(lw);
     return G_SOURCE_REMOVE;
 }
 
 /* on_card_motion() — start the drag once the pointer has travelled far
- * enough, then track it.                                                   */
+ * enough, then track it.  Connected to the ⠿ GRIP, so `w` is the grip and
+ * the grab lands on its window — which is what makes the grip the only
+ * place a drag can begin.                                                  */
 static gboolean
-on_card_motion(GtkWidget *card, GdkEventMotion *ev, gpointer data)
+on_card_motion(GtkWidget *w, GdkEventMotion *ev, gpointer data)
 {
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     if (!lw->card_armed && !lw->card_dragging)
         return FALSE;
 
     if (!lw->card_dragging) {
-        if (!gtk_drag_check_threshold(card,
+        if (!gtk_drag_check_threshold(w,
                 (gint)lw->card_press_rx, (gint)lw->card_press_ry,
                 (gint)ev->x_root, (gint)ev->y_root))
             return FALSE;            /* still just a click                  */
 
-        lw->card_ghost = card_ghost_new(card);
-        GdkDisplay *dpy  = gtk_widget_get_display(card);
+        /* The ghost is a picture of the whole CARD; the grab goes on the
+         * GRIP, which is the window the press came from and therefore the
+         * one motion and release will be delivered to.                    */
+        GtkWidget *card = lw->card_drag_src;
+        /* How many cards this drag will move: the whole selection when
+         * the gripped card is in it, else just the one.                    */
+        gint n_moving = card_sel_has(lw, lw->card_drag_id)
+                        ? (gint)card_sel_count(lw) : 1;
+        lw->card_ghost = card_ghost_new(card, n_moving);
+        GdkDisplay *dpy  = gtk_widget_get_display(w);
         GdkSeat    *seat = gdk_display_get_default_seat(dpy);
         GdkCursor  *grabbing =
-            card_cursor(card, &lw->card_grabbing, "grabbing");
-        if (gdk_seat_grab(seat, gtk_widget_get_window(card),
+            card_cursor(w, &lw->card_grabbing, "grabbing");
+        if (gdk_seat_grab(seat, gtk_widget_get_window(w),
                           GDK_SEAT_CAPABILITY_ALL_POINTING, FALSE,
                           grabbing, (GdkEvent *)ev, NULL,
                           NULL) != GDK_GRAB_SUCCESS) {
@@ -1718,16 +2058,16 @@ on_card_motion(GtkWidget *card, GdkEventMotion *ev, gpointer data)
         /* Belt AND braces on the closed hand.  The grab's cursor argument
          * is the portable lever and is what X11 honors; some backends
          * apply the CURSOR OF THE WINDOW the pointer is over instead, so
-         * the same cursor goes on the card and on the toplevel as well.
+         * the same cursor goes on the grip and on the toplevel as well.
          * Setting all three costs nothing and leaves no backend showing
          * an arrow mid-drag.  card_drag_stop puts them all back.          */
-        card_set_cursor(card, grabbing);
+        card_set_cursor(w, grabbing);
         card_set_cursor(lw->window, grabbing);
         /* Dim the original in place — the ghost is the one moving.  It is
          * NOT hidden: its GdkWindow is the grab window, and unmapping
          * that would break the grab and end the drag on the spot.        */
         gtk_style_context_add_class(gtk_widget_get_style_context(card),
-                                    "bt-card-dragging");
+                                    "task-card-dragging");
         lw->card_mark_lane = -1;     /* force the first placement          */
         lw->card_mark_slot = -1;
         lw->card_dragging  = TRUE;
@@ -1741,16 +2081,26 @@ on_card_motion(GtkWidget *card, GdkEventMotion *ev, gpointer data)
 
 /* on_card_release() — drop: whichever lane the pointer is over wins.      */
 static gboolean
-on_card_release(GtkWidget *card, GdkEventButton *ev, gpointer data)
+on_card_release(GtkWidget *w, GdkEventButton *ev, gpointer data)
 {
-    (void)card;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     if (!lw->card_dragging) {
-        lw->card_armed = FALSE;      /* a plain click; selection already
-                                      * happened on the press              */
+        /* A plain click that never became a drag.  The PRESS deliberately
+         * left an existing multi-selection alone (so a drag could start
+         * from any of its cards); now that we know it was only a click,
+         * collapse to the clicked card — unless a modifier was held, which
+         * means the press already did the right thing.                    */
+        if (lw->card_armed && lw->card_drag_id != 0 && ev->button == 1) {
+            GdkModifierType mod = gtk_widget_get_modifier_mask(w,
+                GDK_MODIFIER_INTENT_MODIFY_SELECTION);
+            GdkModifierType ext = gtk_widget_get_modifier_mask(w,
+                GDK_MODIFIER_INTENT_EXTEND_SELECTION);
+            if ((ev->state & (mod | ext)) == 0 && card_sel_count(lw) > 1)
+                card_select(lw, lw->card_drag_id);
+        }
+        lw->card_armed = FALSE;
         return FALSE;
     }
-    gint64 id   = lw->card_drag_id;
     gint   lane = card_lane_at_root(lw, (gint)ev->x_root, (gint)ev->y_root);
     /* Read the slot from the MARKER, not by re-measuring: the marker is
      * what the user was looking at, and re-measuring now would answer
@@ -1759,9 +2109,19 @@ on_card_release(GtkWidget *card, GdkEventButton *ev, gpointer data)
                   ? lw->card_mark_slot
                   : (lane >= 0 ? card_slot_at(lw, lane, (gint)ev->y_root)
                                : -1);
+    /* WHAT moves: the whole selection when the gripped card is part of it,
+     * otherwise just that card.  Snapshot it BEFORE card_drag_stop, which
+     * clears the drag state.                                              */
+    GArray *moving = card_sel_ids(lw);
+    if (moving->len == 0 ||
+        !card_sel_has(lw, lw->card_drag_id)) {
+        g_array_set_size(moving, 0);
+        g_array_append_val(moving, lw->card_drag_id);
+    }
     card_drag_stop(lw);              /* ungrab BEFORE touching the model   */
-    if (card_drop_apply(lw, id, lane, slot))
+    if (card_drop_apply(lw, moving, lane, slot))
         g_idle_add(card_refresh_idle, lw->app);
+    g_array_unref(moving);
     return TRUE;
 }
 
@@ -1781,18 +2141,38 @@ on_card_grab_broken(GtkWidget *w, GdkEventGrabBroken *ev, gpointer data)
  * views), wrapped in an event box that can be clicked and dragged.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
-kanban_card_new(BtLibrary *lw, const BtTask *t, const gchar *markup,
+kanban_card_new(TaskLibrary *lw, const Task *t, const gchar *markup,
                 gboolean selected)
 {
     GtkWidget *card = gtk_event_box_new();
     gtk_event_box_set_visible_window(GTK_EVENT_BOX(card), TRUE);
     gtk_style_context_add_class(gtk_widget_get_style_context(card),
-                                "bt-card");
+                                "task-card");
     if (selected)
         gtk_style_context_add_class(gtk_widget_get_style_context(card),
-                                    "bt-card-selected");
-    g_object_set_data(G_OBJECT(card), "bt-task-id",
+                                    "task-card-selected");
+    g_object_set_data(G_OBJECT(card), "task-task-id",
                       GSIZE_TO_POINTER((gsize)t->id));
+
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_container_add(GTK_CONTAINER(card), row);
+
+    /* The ⠿ GRIP.  Its own event box, because a different cursor needs a
+     * different GdkWindow — and because it is the only place a drag may
+     * start from, exactly like the list view's handle column.  The glyph
+     * is dimmed with Pango ALPHA, never a fixed gray: a gray stays gray
+     * on the selection tint and goes unreadable.                          */
+    GtkWidget *handle = gtk_event_box_new();
+    gtk_event_box_set_visible_window(GTK_EVENT_BOX(handle), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(handle),
+                                "task-card-handle");
+    GtkWidget *grip = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(grip),
+                         "<span alpha=\"55%\">\xe2\xa0\xbf</span>");
+    gtk_widget_set_margin_start(grip, CARD_GRIP_PAD);
+    gtk_widget_set_margin_end(grip, CARD_GRIP_PAD);
+    gtk_container_add(GTK_CONTAINER(handle), grip);
+    gtk_box_pack_start(GTK_BOX(row), handle, FALSE, FALSE, 0);
 
     GtkWidget *label = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(label), markup);
@@ -1802,28 +2182,44 @@ kanban_card_new(BtLibrary *lw, const BtTask *t, const gchar *markup,
     /* A lane is a third of the pane; without this a long unbroken title
      * would set the card's natural width and push the board wider than
      * the (horizontally unscrollable) viewport.                           */
-    gtk_label_set_max_width_chars(GTK_LABEL(label), 24);
+    gtk_label_set_max_width_chars(GTK_LABEL(label), 22);
     pad_widget(label, CARD_PAD);     /* text off the card's border        */
-    gtk_container_add(GTK_CONTAINER(card), label);
+    gtk_box_pack_start(GTK_BOX(row), label, TRUE, TRUE, 0);
 
+    /* The CARD takes clicks: select, double-click to open, right-click for
+     * the context menu.  It gets NO cursor, so the pointer stays the
+     * ordinary arrow over the text.                                       */
     gtk_widget_add_events(card, GDK_BUTTON_PRESS_MASK |
-                                GDK_BUTTON_RELEASE_MASK |
-                                GDK_BUTTON1_MOTION_MASK);
+                                GDK_BUTTON_RELEASE_MASK);
     g_signal_connect(card, "button-press-event",
                      G_CALLBACK(on_card_press), lw);
-    g_signal_connect(card, "motion-notify-event",
-                     G_CALLBACK(on_card_motion), lw);
+    /* Release on the card too, not just the grip: press the grip, drift a
+     * couple of pixels onto the text, let go — without a grab that release
+     * lands HERE, and the armed flag would otherwise be left set.          */
     g_signal_connect(card, "button-release-event",
                      G_CALLBACK(on_card_release), lw);
-    g_signal_connect(card, "grab-broken-event",
+
+    /* The GRIP takes the drag.  Press arms, motion past the threshold
+     * starts it, release drops.  Its press handler returns FALSE so the
+     * card still sees it and selects — clicking the grip selects too.
+     * "realize" rather than a one-off call: there is no GdkWindow to put a
+     * cursor on until then, which happens after refresh_kanban's show_all
+     * (and not at all while the board is hidden).  The CLOSED hand comes
+     * from the pointer grab in on_card_motion.                            */
+    gtk_widget_add_events(handle, GDK_BUTTON_PRESS_MASK |
+                                  GDK_BUTTON_RELEASE_MASK |
+                                  GDK_BUTTON1_MOTION_MASK);
+    g_object_set_data(G_OBJECT(handle), "task-card", card);
+    g_signal_connect(handle, "button-press-event",
+                     G_CALLBACK(on_handle_press), lw);
+    g_signal_connect(handle, "motion-notify-event",
+                     G_CALLBACK(on_card_motion), lw);
+    g_signal_connect(handle, "button-release-event",
+                     G_CALLBACK(on_card_release), lw);
+    g_signal_connect(handle, "grab-broken-event",
                      G_CALLBACK(on_card_grab_broken), lw);
-    /* Open hand on hover.  "realize" rather than a one-off call here: the
-     * card has no GdkWindow to put a cursor on until it is realized, which
-     * happens after refresh_kanban's show_all (and not at all while the
-     * board is hidden).  The CLOSED hand comes from the pointer grab in
-     * on_card_motion, which owns the cursor for the drag's duration.       */
-    g_signal_connect(card, "realize",
-                     G_CALLBACK(on_card_realize), lw);
+    g_signal_connect(handle, "realize",
+                     G_CALLBACK(on_handle_realize), lw);
     return card;
 }
 
@@ -1836,7 +2232,7 @@ kanban_card_new(BtLibrary *lw, const BtTask *t, const gchar *markup,
  * stores: cards are widgets, so "clear" means destroying the children.
  * ------------------------------------------------------------------------- */
 static guint
-refresh_kanban(BtLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
+refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
 {
     scroll_keep_queue_win(lw->kanban_box);
 
@@ -1852,18 +2248,19 @@ refresh_kanban(BtLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
     lw->card_mark_lane = -1;
     lw->card_mark_slot = -1;
 
-    for (gint s = 0; s < BT_STATUS_N_VALUES; s++)
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++)
         lane_clear(lw->kanban_lanes[s]);
 
-    /* A card for a task that has since vanished must not keep the board's
-     * selection alive — Delete Task would act on a tombstone.              */
-    gboolean sel_alive = FALSE;
-    guint    per_lane[BT_STATUS_N_VALUES] = { 0 };
+    /* Selections for tasks that have since vanished must not survive the
+     * rebuild — Delete Task would act on a tombstone.  Collect the ones
+     * that DID come back and keep only those.                             */
+    GHashTable *alive = g_hash_table_new(NULL, NULL);
+    guint    per_lane[TASK_STATUS_N_VALUES] = { 0 };
     guint    shown = 0;
 
     for (guint i = 0; i < tasks->len; i++) {
-        BtTask *t = g_ptr_array_index(tasks, i);
-        gboolean done = t->status == BT_STATUS_DONE;
+        Task *t = g_ptr_array_index(tasks, i);
+        gboolean done = t->status == TASK_STATUS_DONE;
         /* The completed-visibility toggle applies here exactly as it does
          * to every other view: with completed hidden the Done lane simply
          * empties.  It stays on screen as a drop target, so ticking a task
@@ -1872,8 +2269,8 @@ refresh_kanban(BtLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
         if (!ctx->show_done && done)
             continue;
         gint lane = (gint)t->status;
-        if (lane < 0 || lane >= BT_STATUS_N_VALUES)
-            lane = BT_STATUS_NEW;    /* a status off disk, clamped          */
+        if (lane < 0 || lane >= TASK_STATUS_N_VALUES)
+            lane = TASK_STATUS_NEW;    /* a status off disk, clamped        */
 
         GPtrArray *subs = t->parent_id == 0
             ? g_hash_table_lookup(ctx->subs_by_parent,
@@ -1886,9 +2283,9 @@ refresh_kanban(BtLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
         gint att = GPOINTER_TO_INT(
             g_hash_table_lookup(ctx->att_counts, GINT_TO_POINTER(t->id)));
         gchar *markup = task_desc_markup(t, list_name, att, subs, ctx->bold);
-        gboolean selected = (t->id == lw->kanban_sel);
+        gboolean selected = card_sel_has(lw, t->id);
         if (selected)
-            sel_alive = TRUE;
+            g_hash_table_add(alive, GSIZE_TO_POINTER((gsize)t->id));
         gtk_box_pack_start(GTK_BOX(lw->kanban_lanes[lane]),
                            kanban_card_new(lw, t, markup, selected),
                            FALSE, FALSE, 0);
@@ -1896,13 +2293,21 @@ refresh_kanban(BtLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
         per_lane[lane]++;
         shown++;
     }
-    if (!sel_alive)
-        lw->kanban_sel = 0;
+    /* Replace the selection with the survivors.                          */
+    g_hash_table_remove_all(lw->kanban_sel);
+    GHashTableIter it;
+    gpointer key;
+    g_hash_table_iter_init(&it, alive);
+    while (g_hash_table_iter_next(&it, &key, NULL))
+        g_hash_table_add(lw->kanban_sel, key);
+    g_hash_table_destroy(alive);
+    if (card_sel_count(lw) == 0)
+        lw->kanban_anchor = 0;
 
-    for (gint s = 0; s < BT_STATUS_N_VALUES; s++) {
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
         gchar *hdr = g_strdup_printf(
             "<b>%s</b>\n<small><span alpha=\"60%%\">%u task%s</span>"
-            "</small>", bt_status_label((BtTaskStatus)s), per_lane[s],
+            "</small>", task_status_label((TaskStatus)s), per_lane[s],
             per_lane[s] == 1 ? "" : "s");
         gtk_label_set_markup(GTK_LABEL(lw->kanban_labels[s]), hdr);
         g_free(hdr);
@@ -1937,7 +2342,7 @@ refresh_kanban(BtLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
  * a windowless widget has no surface of its own to fill.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
-kanban_lane_new(BtLibrary *lw, BtTaskStatus status)
+kanban_lane_new(TaskLibrary *lw, TaskStatus status)
 {
     GtkWidget *col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
 
@@ -1952,7 +2357,7 @@ kanban_lane_new(BtLibrary *lw, BtTaskStatus status)
     GtkWidget *drop = gtk_event_box_new();
     gtk_event_box_set_visible_window(GTK_EVENT_BOX(drop), TRUE);
     gtk_style_context_add_class(gtk_widget_get_style_context(drop),
-                                "bt-lane");
+                                "task-lane");
     /* Remembered for the drop hit-test: card_lane_at_root measures the
      * pointer's ROOT position against each of these boxes.  No GTK drag
      * destination — the board owns its own drag (see the banner).         */
@@ -1983,15 +2388,15 @@ kanban_lane_new(BtLibrary *lw, BtTaskStatus status)
  * refresh_tasks.
  * ------------------------------------------------------------------------- */
 static void
-refresh_forecast(BtLibrary *lw)
+refresh_forecast(TaskLibrary *lw)
 {
     /* Days elapsed since this week's Sunday: GDateTime weekdays run
-     * 1 (Monday) through 7 (Sunday), so it is the weekday mod 7.            */
+     * 1 (Monday) through 7 (Sunday), so it is the weekday mod 7.           */
     GDateTime *now = g_date_time_new_now_local();
     gint since_sunday = g_date_time_get_day_of_week(now) % 7;
 
     /* One outer scroller wraps the whole week — restore its position
-     * after the rebuild (clearing the stores collapses the page).           */
+     * after the rebuild (clearing the stores collapses the page).          */
     scroll_keep_queue_win(lw->forecast_box);
 
     TaskRowCtx ctx;                  /* shared lookups (see above)          */
@@ -2003,7 +2408,7 @@ refresh_forecast(BtLibrary *lw)
         gchar *name = g_date_time_format(day, "%A");
         gchar *date = g_date_time_format(day, "%b %-e");
         /* Today wears a small blue dot (the sidebar selection blue)
-         * beside its name, plus the "— Today" tag on the date line.         */
+         * beside its name, plus the "— Today" tag on the date line.        */
         gchar *hdr = g_strdup_printf(
             "%s<b>%s</b>\n<small><span alpha=\"60%%\">%s%s"
             "</span></small>",
@@ -2019,13 +2424,13 @@ refresh_forecast(BtLibrary *lw)
 
         gtk_list_store_clear(lw->day_stores[d]);
         gint64 lo, hi;               /* the day's local midnight bounds     */
-        bt_day_bounds(offset, &lo, &hi);
-        GPtrArray *tasks = bt_db_tasks_due_between(lw->app->db, lo, hi);
+        task_day_bounds(offset, &lo, &hi);
+        GPtrArray *tasks = task_db_tasks_due_between(lw->app->db, lo, hi);
         guint n = append_task_rows(lw->day_stores[d], tasks, &ctx);
-        bt_ptr_array_free_tasks(tasks);
+        task_ptr_array_free_tasks(tasks);
         if (n == 0) {
             /* An empty day still shows a one-row list: an inert dimmed
-             * placeholder (id 0 — checkbox hidden, activation ignored).     */
+             * placeholder (id 0 — checkbox hidden, activation ignored).    */
             GtkTreeIter iter;
             gtk_list_store_append(lw->day_stores[d], &iter);
             gtk_list_store_set(lw->day_stores[d], &iter,
@@ -2059,13 +2464,72 @@ refresh_forecast(BtLibrary *lw)
  * leaving the forecast puts the board back.
  * ------------------------------------------------------------------------- */
 static void
-task_pane_mode_apply(BtLibrary *lw)
+task_pane_mode_apply(TaskLibrary *lw)
 {
     gboolean forecast = lw->sel_kind == SB_KIND_FORECAST;
     gboolean kanban   = !forecast && lw->kanban;
     gtk_widget_set_visible(lw->task_scroll,  !forecast && !kanban);
     gtk_widget_set_visible(lw->forecast_box,  forecast);
     gtk_widget_set_visible(lw->kanban_box,    kanban);
+
+    /* The sort toggle is INERT while Kanban View is on: the board is
+     * always drag-sorted (its own per-lane order, kanban_order_*), and the
+     * list view it governs is not reachable at all in that mode.  So grey
+     * it out rather than leaving a control that silently does nothing.
+     *
+     * Keyed on lw->kanban, NOT on `kanban` above: with the board on and
+     * the Weekly Forecast selected the list view is still unreachable, and
+     * flickering the item's sensitivity as the sidebar selection moves
+     * would be worse than a steady "unavailable while Kanban is on".
+     *
+     * The TOOLBAR twin greys with it — one control in two places, and
+     * leaving the button live would let a click change a setting the menu
+     * has just declared unavailable.                                       */
+    /* The pane controls name the pane a click switches TO, and this is the
+     * single place that answers "which pane is on screen" — so both the
+     * menu label and the toolbar button's icon are set here rather than in
+     * the handler, and a kanban flag changed by any other route still
+     * reaches them.  Keyed on lw->kanban like the greying below: the
+     * forecast outranks the board without turning it off, so the controls
+     * must still offer the way back to the list.
+     *
+     * The ICON names the action too, the same rule the completed-visibility
+     * button follows — and BOTH faces come from menu.png, the bulleted
+     * list: upright it offers the list, turned a quarter turn clockwise
+     * its bullets sit on top of three vertical bars, which is a board.
+     * One image, so the two faces cannot drift apart, and the turn is a
+     * whole quarter on the pixbuf so nothing is resampled.  (menu.png is
+     * also why the sort button wears neither of its old pictures — two
+     * buttons wearing the same image read as one control.)              */
+    if (lw->view_kanban_item != NULL)
+        gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_kanban_item),
+            lw->kanban ? PANE_LABEL_TO_LIST : PANE_LABEL_TO_KANBAN);
+    if (lw->pane_item != NULL) {
+        GtkWidget *icon = task_app_icon_image_rotated(lw->app, "menu", 24,
+            lw->kanban ? GDK_PIXBUF_ROTATE_NONE
+                       : GDK_PIXBUF_ROTATE_CLOCKWISE);
+        if (icon != NULL) {
+            gtk_widget_show(icon);
+            gtk_tool_button_set_icon_widget(
+                GTK_TOOL_BUTTON(lw->pane_item), icon);
+        }
+        gtk_tool_button_set_label(GTK_TOOL_BUTTON(lw->pane_item),
+            lw->kanban ? "List" : "Kanban");
+        gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->pane_item),
+            lw->kanban ? "Show the tasks as a list"
+                       : "Show the tasks as a Kanban board");
+    }
+
+    gboolean sortable = !lw->kanban;
+    if (lw->view_manual_sort_item != NULL) {
+        gtk_widget_set_sensitive(lw->view_manual_sort_item, sortable);
+        gtk_widget_set_tooltip_text(lw->view_manual_sort_item,
+            sortable ? NULL
+                     : "The Kanban board is always drag-sorted \xe2\x80\x94 "
+                       "turn Kanban View off to change list sorting");
+    }
+    if (lw->manual_sort_item != NULL)
+        gtk_widget_set_sensitive(GTK_WIDGET(lw->manual_sort_item), sortable);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2077,14 +2541,14 @@ task_pane_mode_apply(BtLibrary *lw)
  * differs.
  * ------------------------------------------------------------------------- */
 static void
-refresh_tasks(BtLibrary *lw)
+refresh_tasks(TaskLibrary *lw)
 {
     gboolean forecast = lw->sel_kind == SB_KIND_FORECAST;
     gboolean kanban   = !forecast && lw->kanban;
     task_pane_mode_apply(lw);
     if (forecast) {
         /* Drop the hidden regular pane's rows: a stale selection there
-         * would still feed the toolbar's Delete Task.                       */
+         * would still feed the toolbar's Delete Task.                      */
         gtk_list_store_clear(lw->task_store);
         refresh_forecast(lw);
         return;
@@ -2097,17 +2561,17 @@ refresh_tasks(BtLibrary *lw)
      * On the board that job belongs to lw->kanban_sel.                     */
     gtk_list_store_clear(lw->task_store);
 
-    /* Collect the tasks of the current view.                                */
-    GPtrArray *tasks;                /* BtTask* rows to show                */
+    /* Collect the tasks of the current view.                               */
+    GPtrArray *tasks;                /* Task* rows to show                */
     gboolean virtual_view = TRUE;    /* show the "in <list>" line           */
     const gchar *view_name = "";
     switch (lw->sel_kind) {
     case SB_KIND_PINNED:
-        tasks = bt_db_tasks_pinned(lw->app->db);
+        tasks = task_db_tasks_pinned(lw->app->db);
         view_name = "Favorites";
         break;
     case SB_KIND_ALL:
-        tasks = bt_db_tasks_all_visible(lw->app->db);
+        tasks = task_db_tasks_all_visible(lw->app->db);
         view_name = "All Tasks";
         break;
     case SB_KIND_BN_ACTIONS:
@@ -2115,21 +2579,21 @@ refresh_tasks(BtLibrary *lw)
          * each one lives — not a list of its own.  virtual_view stays
          * TRUE so every row keeps its "in <list>" line, the only thing
          * that says where the task actually sits.                          */
-        tasks = bt_db_tasks_bn_mirror(lw->app->db);
+        tasks = task_db_tasks_bn_mirror(lw->app->db);
         view_name = "Action Items";
         break;
     case SB_KIND_TODAY: {
         gint64 lo, hi;
-        bt_day_bounds(0, &lo, &hi);
-        if (bt_app_config_get_bool("due_today_show_overdue", FALSE))
+        task_day_bounds(0, &lo, &hi);
+        if (task_app_config_get_bool("due_today_show_overdue", FALSE))
             lo = 1;          /* include all past-due tasks (due > 0)        */
-        tasks = bt_db_tasks_due_between(lw->app->db, lo, hi);
+        tasks = task_db_tasks_due_between(lw->app->db, lo, hi);
         view_name = "Due Today";
         break;
     }
     case SB_KIND_LIST:
     default:
-        tasks = bt_db_tasks_toplevel(lw->app->db, lw->sel_id);
+        tasks = task_db_tasks_toplevel(lw->app->db, lw->sel_id);
         virtual_view = FALSE;
         break;
     }
@@ -2148,9 +2612,9 @@ refresh_tasks(BtLibrary *lw)
     if (lw->manual_sort && !kanban)
         task_view_apply_manual_order(lw);
 
-    /* Status bar left: where we are + how many rows.                        */
-    BtList *sel_list = virtual_view ? NULL
-                       : bt_db_list_get(lw->app->db, lw->sel_id);
+    /* Status bar left: where we are + how many rows.                       */
+    TaskList *sel_list = virtual_view ? NULL
+                       : task_db_list_get(lw->app->db, lw->sel_id);
     const gchar *where = virtual_view    ? view_name
                        : sel_list != NULL ? sel_list->name : "?";
     gchar *loc = lw->sel_kind == SB_KIND_BN_ACTIONS
@@ -2160,34 +2624,35 @@ refresh_tasks(BtLibrary *lw)
                           where, shown, shown == 1 ? "" : "s");
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
     g_free(loc);
-    bt_list_free(sel_list);
+    task_list_free(sel_list);
 
-    bt_ptr_array_free_tasks(tasks);
+    task_ptr_array_free_tasks(tasks);
 }
 
 /* full_refresh() — sidebar + task pane + open editors, plus the Sync
  * button's visibility (hidden while the Google master switch is off —
- * Settings fires a full notify when it flips).                              */
+ * Settings fires a full notify when it flips).                             */
 static void
-full_refresh(BtLibrary *lw)
+full_refresh(TaskLibrary *lw)
 {
     refresh_sidebar(lw);
     refresh_tasks(lw);
     gtk_widget_set_visible(lw->sync_item,
-        bt_app_config_get_bool("google_sync_enabled", TRUE) &&
-        bt_app_config_get_bool("sync_toolbar_button", TRUE));
-    bt_editor_refresh_all(lw->app);
+        task_app_config_get_bool("google_sync_enabled", TRUE) &&
+        task_app_config_get_bool("sync_toolbar_button", TRUE));
+    task_editor_refresh_all(lw->app);
 }
 
 /* hide_done_icon_refresh() — point the completed-visibility toggle's
  * icon + tooltip at the ACTION it offers: hidden.png while completed
  * tasks are visible (click to hide them), visible.png while they are
- * hidden (click to bring them back).                                        */
+ * hidden (click to bring them back).  The View menu's twin gets the
+ * matching LABEL, "Hide Completed" / "Show Completed".                     */
 static void
-hide_done_icon_refresh(BtLibrary *lw)
+hide_done_icon_refresh(TaskLibrary *lw)
 {
-    gboolean show = bt_app_config_get_bool("show_completed", TRUE);
-    GtkWidget *icon = bt_app_icon_image_sized(lw->app,
+    gboolean show = task_app_config_get_bool("show_completed", TRUE);
+    GtkWidget *icon = task_app_icon_image_sized(lw->app,
         show ? "hidden" : "visible", 24);
     if (icon != NULL) {
         gtk_widget_show(icon);
@@ -2196,76 +2661,80 @@ hide_done_icon_refresh(BtLibrary *lw)
     }
     gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->hide_done_item),
         show ? "Hide completed tasks" : "Show completed tasks");
-    if (lw->view_show_done_item) {
-        g_signal_handlers_block_by_func(lw->view_show_done_item,
-                                        on_menu_toggle_done_visible, lw);
-        gtk_check_menu_item_set_active(
-            GTK_CHECK_MENU_ITEM(lw->view_show_done_item), show);
-        g_signal_handlers_unblock_by_func(lw->view_show_done_item,
-                                          on_menu_toggle_done_visible, lw);
-    }
+    /* The menu twin says the same thing in words.  No handler blocking:
+     * setting a label cannot emit "activate", where set_active on a check
+     * item would have (same reason as manual_sort_icon_refresh).          */
+    if (lw->view_show_done_item != NULL)
+        gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_show_done_item),
+                                show ? DONE_LABEL_TO_HIDE
+                                     : DONE_LABEL_TO_SHOW);
 }
 
 /* on_toggle_done_visible() — the toolbar toggle behind it: flip the
- * persisted show_completed flag and rebuild the task pane.                  */
+ * persisted show_completed flag and rebuild the task pane.                 */
 static void
 on_toggle_done_visible(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
-    gboolean show = !bt_app_config_get_bool("show_completed", TRUE);
-    bt_app_config_set("show_completed", show ? "1" : "0");
+    TaskLibrary *lw = data;
+    gboolean show = !task_app_config_get_bool("show_completed", TRUE);
+    task_app_config_set("show_completed", show ? "1" : "0");
     hide_done_icon_refresh(lw);
     refresh_tasks(lw);
 }
 
 /* manual_sort_icon_refresh() — swap the sort-mode button's icon and tooltip
- * to reflect the current state: menu.png in manual mode (action = switch to
- * column sort), slide.png in column-sort mode (action = switch to manual).  */
+ * to the ACTION a click performs, the rule every toggle on this toolbar
+ * follows: automatic.png (a gear selector) while MANUAL sorting is in
+ * force, because the click on offer is "sort automatically"; manual.png
+ * (a gearstick) while AUTOMATIC sorting is in force (the column headers
+ * doing it), because the click on offer is "let me drag them".  So the picture is always the mode you are
+ * switching TO, matching the tooltip beside it and the View menu's label.
+ * NOT menu.png either way — that is the pane button's "show me the list"
+ * picture, and one image on two buttons reads as one control.             */
 static void
-manual_sort_icon_refresh(BtLibrary *lw)
+manual_sort_icon_refresh(TaskLibrary *lw)
 {
     gboolean manual = lw->manual_sort;   /* every caller applies first      */
-    GtkWidget *icon = bt_app_icon_image_sized(lw->app,
-        manual ? "menu" : "slide", 24);
+    GtkWidget *icon = task_app_icon_image_sized(lw->app,
+        manual ? "automatic" : "manual", 24);
     if (icon) {
         gtk_widget_show(icon);
         gtk_tool_button_set_icon_widget(
             GTK_TOOL_BUTTON(lw->manual_sort_item), icon);
     }
     gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->manual_sort_item),
-        manual ? "Switch to column sorting"
+        manual ? "Switch to automatic sorting"
                : "Switch to manual drag sorting");
-    if (lw->view_manual_sort_item) {
-        g_signal_handlers_block_by_func(lw->view_manual_sort_item,
-                                        on_menu_toggle_manual_sort, lw);
-        gtk_check_menu_item_set_active(
-            GTK_CHECK_MENU_ITEM(lw->view_manual_sort_item), manual);
-        g_signal_handlers_unblock_by_func(lw->view_manual_sort_item,
-                                          on_menu_toggle_manual_sort, lw);
-    }
+    /* The menu item is a plain action item whose LABEL is the destination
+     * mode, so it needs no handler blocking: setting a label cannot emit
+     * "activate", where set_active on a check item would have.            */
+    if (lw->view_manual_sort_item != NULL)
+        gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_manual_sort_item),
+                                manual ? SORT_LABEL_TO_AUTO
+                                       : SORT_LABEL_TO_MANUAL);
 }
 
 /* on_toggle_manual_sort() — toolbar button that flips task_list_manual_sort
- * and refreshes the pane.                                                   */
+ * and refreshes the pane.                                                  */
 static void
 on_toggle_manual_sort(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     gboolean manual = !lw->manual_sort;
-    bt_app_config_set("task_list_manual_sort", manual ? "1" : "0");
+    task_app_config_set("task_list_manual_sort", manual ? "1" : "0");
     task_manual_sort_apply(lw);
     manual_sort_icon_refresh(lw);
     refresh_tasks(lw);
 }
 
 /* notify_changed_hook() / notify_tasks_hook() / notify_status_hook() —
- * the BtApp hooks.                                                          */
+ * the TaskApp hooks.                                                       */
 static void
-notify_changed_hook(BtApp *app)
+notify_changed_hook(TaskApp *app)
 {
-    BtLibrary *lw = lib_of(app);
+    TaskLibrary *lw = lib_of(app);
     if (lw != NULL)
         full_refresh(lw);
 }
@@ -2273,11 +2742,11 @@ notify_changed_hook(BtApp *app)
 /* The light variant: task pane only (editor saves — see editor_notify).
  * One exception: an editor's pin flip can be the first/last pin, which
  * adds/removes the sidebar's Pinned Tasks row — rebuild the sidebar
- * only on that 0 <-> nonzero transition (it never runs the BN CLI).         */
+ * only on that 0 <-> nonzero transition (it never runs the BN CLI).        */
 static void
-notify_tasks_hook(BtApp *app)
+notify_tasks_hook(TaskApp *app)
 {
-    BtLibrary *lw = lib_of(app);
+    TaskLibrary *lw = lib_of(app);
     if (lw == NULL)
         return;
     if (sidebar_show_pinned(lw) != lw->pinned_row_shown)
@@ -2293,7 +2762,7 @@ notify_tasks_hook(BtApp *app)
 #define STATUS_FADE_HOLD     3000 /* ms before fade starts */
 
 static void
-status_fade_cancel(BtLibrary *lw)
+status_fade_cancel(TaskLibrary *lw)
 {
     if (lw->status_fade_source != 0) {
         g_source_remove(lw->status_fade_source);
@@ -2310,7 +2779,7 @@ status_fade_cancel(BtLibrary *lw)
 static gboolean
 status_fade_step_cb(gpointer data)
 {
-    BtLibrary *lw = lib_of((BtApp *)data);
+    TaskLibrary *lw = lib_of((TaskApp *)data);
     if (lw == NULL || lw->status_fade_text == NULL) {
         if (lw != NULL)
             lw->status_fade_step_source = 0;
@@ -2336,7 +2805,7 @@ status_fade_step_cb(gpointer data)
 static gboolean
 status_fade_start_cb(gpointer data)
 {
-    BtLibrary *lw = lib_of((BtApp *)data);
+    TaskLibrary *lw = lib_of((TaskApp *)data);
     if (lw == NULL)
         return G_SOURCE_REMOVE;
     lw->status_fade_source = 0;
@@ -2349,9 +2818,9 @@ status_fade_start_cb(gpointer data)
 }
 
 static void
-notify_status_hook(BtApp *app, const gchar *message)
+notify_status_hook(TaskApp *app, const gchar *message)
 {
-    BtLibrary *lw = lib_of(app);
+    TaskLibrary *lw = lib_of(app);
     if (lw == NULL)
         return;
     status_fade_cancel(lw);
@@ -2364,7 +2833,7 @@ notify_status_hook(BtApp *app, const gchar *message)
  * Sidebar behavior.
  * =========================================================================== */
 
-/* sb_row_selectable() — the "Lists" header row cannot be selected.          */
+/* sb_row_selectable() — the "Lists" header row cannot be selected.         */
 static gboolean
 sb_row_selectable(GtkTreeSelection *sel, GtkTreeModel *model,
                   GtkTreePath *path, gboolean selected, gpointer data)
@@ -2380,12 +2849,12 @@ sb_row_selectable(GtkTreeSelection *sel, GtkTreeModel *model,
 
 /* on_sidebar_changed() — selection drives the task pane.  With MULTIPLE
  * selection the cursor row (last pressed) drives sel_kind/sel_id; group
- * rows are tracked but don't switch the task pane.                          */
+ * rows are tracked but don't switch the task pane.                         */
 static void
 on_sidebar_changed(GtkTreeSelection *sel, gpointer data)
 {
     (void)sel;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     if (lw->populating)
         return;
     GtkTreePath *cursor = NULL;
@@ -2404,9 +2873,9 @@ on_sidebar_changed(GtkTreeSelection *sel, gpointer data)
         refresh_tasks(lw);
 }
 
-/* selected_list_id() — the currently selected REAL list, or 0.              */
+/* selected_list_id() — the currently selected REAL list, or 0.             */
 static gint64
-selected_list_id(BtLibrary *lw)
+selected_list_id(TaskLibrary *lw)
 {
     return lw->sel_kind == SB_KIND_LIST ? lw->sel_id : 0;
 }
@@ -2416,23 +2885,21 @@ selected_list_id(BtLibrary *lw)
  * Task pane behavior.
  * =========================================================================== */
 
-/* selected_task_ids() — ids of every selected task row (the view is
+/* selected_task_ids() — ids of every selected task (both panes are
  * multi-select: Ctrl/Cmd-click and Shift-click extend).  Free with
- * g_array_unref.  Notes rows (id 0) are excluded.
+ * g_array_unref.  Rows with id 0 are excluded.
  *
  * On the Kanban board the tree view is hidden and its store deliberately
- * empty, so the board's own single-card selection answers instead — that
- * is what keeps Delete Task (toolbar, floating pair and File menu alike)
- * working there without any of those call sites knowing which pane is up. */
+ * empty, so the BOARD's selection answers instead, in display order —
+ * which is what keeps Delete Task (toolbar, floating pair, File menu) and
+ * the context menu working there without any call site knowing which pane
+ * is up, and what makes a bulk action apply to a multi-card selection.   */
 static GArray *
-selected_task_ids(BtLibrary *lw)
+selected_task_ids(TaskLibrary *lw)
 {
+    if (lw->kanban && lw->sel_kind != SB_KIND_FORECAST)
+        return card_sel_ids(lw);
     GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
-    if (lw->kanban && lw->sel_kind != SB_KIND_FORECAST) {
-        if (lw->kanban_sel != 0)
-            g_array_append_val(ids, lw->kanban_sel);
-        return ids;
-    }
     GtkTreeSelection *sel =
         gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->task_view));
     GtkTreeModel *model = NULL;
@@ -2457,7 +2924,7 @@ on_task_activated(GtkTreeView *view, GtkTreePath *path,
                   GtkTreeViewColumn *col, gpointer data)
 {
     (void)col;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     GtkTreeModel *model = gtk_tree_view_get_model(view);
     GtkTreeIter iter;
     if (!gtk_tree_model_get_iter(model, &iter, path))
@@ -2465,9 +2932,9 @@ on_task_activated(GtkTreeView *view, GtkTreePath *path,
     gint64 id;
     gtk_tree_model_get(model, &iter, TL_ID, &id, -1);
     if (id == 0)                     /* the forecast's "No tasks due"
-                                      * placeholder rows                     */
+                                      * placeholder rows                    */
         return;
-    bt_editor_open(lw->app, id);
+    task_editor_open(lw->app, id);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2482,10 +2949,10 @@ on_task_activated(GtkTreeView *view, GtkTreePath *path,
 #define FADE_INTERVAL 50   /* ms — 20 × 50 ms = 1 s                         */
 
 typedef struct {
-    BtApp              *app;
+    TaskApp              *app;
     GtkListStore       *store;
     GtkTreeRowReference *row_ref;
-    gchar              *orig_desc;  /* TL_DESC value at fade-start           */
+    gchar              *orig_desc;  /* TL_DESC value at fade-start          */
     gint                step;
 } FadeCtx;
 
@@ -2498,9 +2965,9 @@ fade_ctx_free(FadeCtx *ctx)
 }
 
 /* fade_done() — shared terminal path: decrement lw->pending_fades and
- * call full_refresh only when the last active fade finishes.                */
+ * call full_refresh only when the last active fade finishes.               */
 static void
-fade_done(BtLibrary *lw)
+fade_done(TaskLibrary *lw)
 {
     if (--lw->pending_fades <= 0) {
         lw->pending_fades = 0;
@@ -2512,11 +2979,11 @@ static gboolean
 fade_step_cb(gpointer data)
 {
     FadeCtx   *ctx = data;
-    BtLibrary *lw  = lib_of(ctx->app);
+    TaskLibrary *lw  = lib_of(ctx->app);
     ctx->step++;
 
     /* Window closed, or a new window opened at a different address — this
-     * timer is stale.  Check store membership to detect the latter case.    */
+     * timer is stale.  Check store membership to detect the latter case.   */
     if (lw == NULL) {
         fade_ctx_free(ctx);
         return G_SOURCE_REMOVE;
@@ -2530,7 +2997,7 @@ fade_step_cb(gpointer data)
     }
 
     GtkTreePath *path = gtk_tree_row_reference_get_path(ctx->row_ref);
-    if (path == NULL) {              /* row already gone (external refresh)  */
+    if (path == NULL) {              /* row already gone (external refresh) */
         fade_done(lw);
         fade_ctx_free(ctx);
         return G_SOURCE_REMOVE;
@@ -2544,10 +3011,10 @@ fade_step_cb(gpointer data)
         return G_SOURCE_REMOVE;
     }
 
-    if (ctx->step >= FADE_STEPS) {   /* fade complete — remove this row      */
+    if (ctx->step >= FADE_STEPS) {   /* fade complete — remove this row     */
         gtk_list_store_remove(ctx->store, &iter);
         gtk_tree_path_free(path);
-        fade_done(lw);               /* full_refresh fires on the last one   */
+        fade_done(lw);               /* full_refresh fires on the last one  */
         fade_ctx_free(ctx);
         return G_SOURCE_REMOVE;
     }
@@ -2567,9 +3034,9 @@ fade_step_cb(gpointer data)
 /* start_fade() — kick off a fade-out for iter in store.  Reads orig_desc
  * from the store, marks the row done (checkbox AND status cell, which
  * the row wears until the refresh removes it), posts a status message,
- * and fires the repeating timer.                                            */
+ * and fires the repeating timer.                                           */
 static void
-start_fade(BtLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
+start_fade(TaskLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
            const gchar *title)
 {
     gchar *orig_desc = NULL;
@@ -2577,18 +3044,18 @@ start_fade(BtLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
 
     gtk_list_store_set(store, iter,
                        TL_DONE,        TRUE,
-                       TL_STATUS,      (gint)BT_STATUS_DONE,
-                       TL_STATUS_TEXT, bt_status_label(BT_STATUS_DONE),
+                       TL_STATUS,      (gint)TASK_STATUS_DONE,
+                       TL_STATUS_TEXT, task_status_label(TASK_STATUS_DONE),
                        -1);
 
     /* The RAW title: the status bar is a plain-text label (set_text, no
      * markup), so escaping here put a literal "&amp;" on screen for any
      * task with an ampersand in its name.  The fade animation is the only
      * thing that needs markup, and it escapes what it reads back off the
-     * label itself.                                                         */
-    bt_app_status(lw->app,
-                  "\xe2\x80\x9c%s\xe2\x80\x9d \xe2\x80\x94 Completed",
-                  title != NULL && *title != '\0' ? title : "Untitled Task");
+     * label itself.                                                        */
+    task_app_status(lw->app,
+                    "\xe2\x80\x9c%s\xe2\x80\x9d \xe2\x80\x94 Completed",
+                    title != NULL && *title != '\0' ? title : "Untitled Task");
 
     GtkTreePath *path =
         gtk_tree_model_get_path(GTK_TREE_MODEL(store), iter);
@@ -2596,7 +3063,7 @@ start_fade(BtLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
     ctx->app       = lw->app;
     ctx->store     = store;
     ctx->row_ref   = gtk_tree_row_reference_new(GTK_TREE_MODEL(store), path);
-    ctx->orig_desc = orig_desc;          /* ownership transferred            */
+    ctx->orig_desc = orig_desc;          /* ownership transferred           */
     ctx->step      = 0;
     gtk_tree_path_free(path);
 
@@ -2608,7 +3075,7 @@ start_fade(BtLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
  * on_task_done_toggled() — the ✓ column.  The checkbox is a VIEW of the
  * status, not a field of its own: it shows ticked exactly when the status
  * is Done, and clicking it writes a status back through
- * bt_status_apply_done's rule — ticking means Done, unticking means In
+ * task_status_apply_done's rule — ticking means Done, unticking means In
  * Progress (a task that was ticked has plainly been worked on, so
  * dropping it back to New would lose that).  New is reachable only from
  * the editor's dropdown.
@@ -2618,7 +3085,7 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
                      gpointer data)
 {
     (void)cell;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     GtkTreeIter iter;
     GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
     if (!gtk_tree_model_get_iter_from_string(model, &iter, path_str))
@@ -2633,12 +3100,12 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
      * lands in the database now and rides to Notes with the next
      * mirror pass (bnsync.h) — that is what makes the write-back bulk
      * rather than one CLI spawn per click.                                 */
-    bt_db_task_set_status(lw->app->db, id,
-                          done ? BT_STATUS_IN_PROGRESS : BT_STATUS_DONE);
+    task_db_task_set_status(lw->app->db, id,
+                            done ? TASK_STATUS_IN_PROGRESS : TASK_STATUS_DONE);
 
     /* When hiding completed tasks and a task is just being ticked done,
      * animate a 1 s fade-out before the full_refresh removes the row.      */
-    gboolean hiding = !bt_app_config_get_bool("show_completed", TRUE);
+    gboolean hiding = !task_app_config_get_bool("show_completed", TRUE);
     if (!done && hiding) {
         start_fade(lw, lw->task_store, &iter, title);
         g_free(title);
@@ -2651,13 +3118,13 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
 /* on_forecast_done_toggled() — the done checkbox of a Weekly Forecast
  * day view.  Each day view has its own store (the handler above is
  * bound to the main task store), stashed on the renderer as
- * "bt-model".  Day views hold real tasks only — no Notes rows.            */
+ * "task-model".  Day views hold real tasks only — no Notes rows.           */
 static void
 on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
                          gpointer data)
 {
-    BtLibrary *lw = data;
-    GtkTreeModel *model = g_object_get_data(G_OBJECT(cell), "bt-model");
+    TaskLibrary *lw = data;
+    GtkTreeModel *model = g_object_get_data(G_OBJECT(cell), "task-model");
     GtkTreeIter iter;
     if (model == NULL ||
         !gtk_tree_model_get_iter_from_string(model, &iter, path_str))
@@ -2671,10 +3138,10 @@ on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
         g_free(title);
         return;
     }
-    bt_db_task_set_status(lw->app->db, id,
-                          done ? BT_STATUS_IN_PROGRESS : BT_STATUS_DONE);
+    task_db_task_set_status(lw->app->db, id,
+                            done ? TASK_STATUS_IN_PROGRESS : TASK_STATUS_DONE);
 
-    gboolean hiding = !bt_app_config_get_bool("show_completed", TRUE);
+    gboolean hiding = !task_app_config_get_bool("show_completed", TRUE);
     if (!done && hiding) {
         start_fade(lw, GTK_LIST_STORE(model), &iter, title);
         g_free(title);
@@ -2686,14 +3153,14 @@ on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
 
 /* task_row_bg_func() — cell data function giving list rows alternating
  * white / light-blue backgrounds regardless of theme (the Notes
- * notes-list stripes).  data is BtLibrary * for the task pane columns so
+ * notes-list stripes).  data is TaskLibrary * for the task pane columns so
  * the dragged row can be highlighted; NULL is safe (forecast day views).   */
 static void
 task_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                  GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
 {
     (void)col;
-    BtLibrary *lw = data;            /* may be NULL for forecast day views  */
+    TaskLibrary *lw = data;            /* may be NULL for forecast day views */
     GtkTreePath *path = gtk_tree_model_get_path(model, iter);
     gboolean even =                  /* row parity drives the tint          */
         (gtk_tree_path_get_indices(path)[0] % 2) == 0;
@@ -2717,7 +3184,7 @@ task_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
 /* forecast_toggle_bg_func() — the day views' checkbox data func: the
  * row stripe, plus hiding the checkbox on the "No tasks due"
  * placeholder rows (id 0 — day stores never hold Notes rows, so
- * the id alone identifies them).                                            */
+ * the id alone identifies them).                                           */
 static void
 forecast_toggle_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                         GtkTreeModel *model, GtkTreeIter *iter,
@@ -2732,7 +3199,7 @@ forecast_toggle_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
 /* due_color_func() — tint the Due cell by urgency at draw time (rolls
  * over at midnight).  Undated rows must reset foreground-set — the
  * renderer is shared.  Also applies the row stripe: a column gets ONE
- * cell data func per renderer, so this one does both jobs.                  */
+ * cell data func per renderer, so this one does both jobs.                 */
 static void
 due_color_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
@@ -2740,14 +3207,14 @@ due_color_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
     task_row_bg_func(col, cell, model, iter, data);
     gint64 due;
     gtk_tree_model_get(model, iter, TL_DUE_RAW, &due, -1);
-    const gchar *color = bt_due_color(due);
+    const gchar *color = task_due_color(due);
     if (color == NULL)
         g_object_set(cell, "foreground-set", FALSE, NULL);
     else
         g_object_set(cell, "foreground", color, NULL);
 }
 
-/* sort_by_due() — soonest first; undated rows always last.                  */
+/* sort_by_due() — soonest first; undated rows always last.                 */
 static gint
 sort_by_due(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
             gpointer data)
@@ -2761,7 +3228,7 @@ sort_by_due(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
     return (da > db) - (da < db);
 }
 
-/* sort_by_completed() — oldest-completed first; incomplete rows last.       */
+/* sort_by_completed() — oldest-completed first; incomplete rows last.      */
 static gint
 sort_by_completed(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
                   gpointer data)
@@ -2779,32 +3246,30 @@ sort_by_completed(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
  * Toolbar actions.
  * =========================================================================== */
 
-/* sidebar_menu_sync() — push the lists pane's live visibility into the
- * View menu's Show Sidebar check.  The handler is blocked around the
- * set_active so the toolbar → menu sync path cannot recurse (same
- * protocol as hide_done_icon_refresh).                                      */
+/* sidebar_menu_sync() — point the View menu's sidebar item at the ACTION
+ * it offers, from the pane's LIVE visibility: "Hide Sidebar" while the
+ * lists pane is up, "Show Sidebar" while it is not.  No handler blocking
+ * is needed — an action item's label carries no state to feed back, and
+ * set_label cannot emit "activate" (same protocol as
+ * hide_done_icon_refresh and manual_sort_icon_refresh).                    */
 static void
-sidebar_menu_sync(BtLibrary *lw)
+sidebar_menu_sync(TaskLibrary *lw)
 {
     if (lw->view_sidebar_item == NULL)
         return;
-    g_signal_handlers_block_by_func(lw->view_sidebar_item,
-                                    on_menu_toggle_sidebar, lw);
-    gtk_check_menu_item_set_active(
-        GTK_CHECK_MENU_ITEM(lw->view_sidebar_item),
-        gtk_widget_get_visible(lw->sidebar_box));
-    g_signal_handlers_unblock_by_func(lw->view_sidebar_item,
-                                      on_menu_toggle_sidebar, lw);
+    gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_sidebar_item),
+        gtk_widget_get_visible(lw->sidebar_box) ? SIDEBAR_LABEL_TO_HIDE
+                                               : SIDEBAR_LABEL_TO_SHOW);
 }
 
 /* sidebar_set_visible() — show or hide the lists pane, persist the
  * choice in `sidebar_visible` and keep the View menu check in step.
- * Both the toolbar button and the menu item route through here.             */
+ * Both the toolbar button and the menu item route through here.            */
 static void
-sidebar_set_visible(BtLibrary *lw, gboolean show)
+sidebar_set_visible(TaskLibrary *lw, gboolean show)
 {
     gtk_widget_set_visible(lw->sidebar_box, show);
-    bt_app_config_set("sidebar_visible", show ? "1" : "0");
+    task_app_config_set("sidebar_visible", show ? "1" : "0");
     sidebar_menu_sync(lw);
 }
 
@@ -2822,18 +3287,27 @@ sidebar_set_visible(BtLibrary *lw, gboolean show)
  *
  * gtk_widget_show() — never show_all() — on the toolbar: its children
  * carry their own visibility (a hidden Sync button must stay hidden).
+ *
+ * This is also the single place that labels the View item, for the same
+ * reason task_pane_mode_apply labels the pane item: the label names what
+ * a click DOES, and putting it here means a flag changed by any other
+ * route still reaches the menu.
  * ------------------------------------------------------------------------- */
 static void
-compact_layout_apply(BtLibrary *lw)
+compact_layout_apply(TaskLibrary *lw)
 {
-    gboolean compact = bt_app_config_get_bool("compact_layout", FALSE);
+    gboolean compact = task_app_config_get_bool("compact_layout", FALSE);
 
     gtk_widget_set_visible(lw->toolbar,      !compact);
     gtk_widget_set_visible(lw->toolbar_rule, !compact);
     gtk_widget_set_visible(lw->float_bar,     compact);
     gtk_widget_set_visible(lw->sidebar_box,
-        bt_app_config_get_bool("sidebar_visible", FALSE));
+        task_app_config_get_bool("sidebar_visible", FALSE));
     sidebar_menu_sync(lw);
+
+    if (lw->view_compact_item != NULL)
+        gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_compact_item),
+            compact ? CTRL_LABEL_TO_FULL : CTRL_LABEL_TO_COMPACT);
 }
 
 /* on_toggle_sidebar() — toolbar show/hide button for the lists pane:
@@ -2843,12 +3317,12 @@ static void
 on_toggle_sidebar(GtkWidget *widget, gpointer data)
 {
     (void)widget;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     sidebar_set_visible(lw, !gtk_widget_get_visible(lw->sidebar_box));
 }
 
 /* on_emoji_chooser_closed() — picker dismissed: shrink the dialog back
- * to its natural size (see on_emoji_box_pressed).                           */
+ * to its natural size (see on_emoji_box_pressed).                          */
 static void
 on_emoji_chooser_closed(GtkPopover *chooser, gpointer dlg)
 {
@@ -2857,22 +3331,22 @@ on_emoji_chooser_closed(GtkPopover *chooser, gpointer dlg)
 }
 
 /* emoji_open_idle() — open the chooser AFTER the dialog's grow-resize
- * has landed, so the popover measures against the enlarged window.          */
+ * has landed, so the popover measures against the enlarged window.         */
 static gboolean
 emoji_open_idle(gpointer entry)
 {
     g_signal_emit_by_name(entry, "insert-emoji");
 
     /* GtkEntry keeps its chooser as "gtk-emoji-chooser" object data;
-     * hook its close (once) to give the dialog its size back.               */
+     * hook its close (once) to give the dialog its size back.              */
     GtkWidget *chooser =
         g_object_get_data(G_OBJECT(entry), "gtk-emoji-chooser");
-    GtkWidget *dlg = g_object_get_data(G_OBJECT(entry), "bt-dialog");
+    GtkWidget *dlg = g_object_get_data(G_OBJECT(entry), "task-dialog");
     if (chooser != NULL && dlg != NULL &&
-        g_object_get_data(G_OBJECT(chooser), "bt-close-hooked") == NULL) {
+        g_object_get_data(G_OBJECT(chooser), "task-close-hooked") == NULL) {
         g_signal_connect(chooser, "closed",
                          G_CALLBACK(on_emoji_chooser_closed), dlg);
-        g_object_set_data(G_OBJECT(chooser), "bt-close-hooked",
+        g_object_set_data(G_OBJECT(chooser), "task-close-hooked",
                           GINT_TO_POINTER(1));
     }
     return G_SOURCE_REMOVE;
@@ -2882,14 +3356,14 @@ emoji_open_idle(gpointer entry)
  * chooser on the entry (clearing any previous pick, so choosing always
  * replaces).  GTK3 popovers render INSIDE their toplevel and clip at
  * its edges, so the dialog is grown first to give the chooser room; it
- * shrinks back to natural size when the chooser closes.                     */
+ * shrinks back to natural size when the chooser closes.                    */
 static gboolean
 on_emoji_box_pressed(GtkWidget *entry, GdkEventButton *event,
                      gpointer data)
 {
     (void)event; (void)data;
     gtk_entry_set_text(GTK_ENTRY(entry), "");
-    GtkWidget *dlg = g_object_get_data(G_OBJECT(entry), "bt-dialog");
+    GtkWidget *dlg = g_object_get_data(G_OBJECT(entry), "task-dialog");
     if (dlg != NULL) {
         gint w, h;                   /* current dialog frame                */
         gtk_window_get_size(GTK_WINDOW(dlg), &w, &h);
@@ -2907,7 +3381,7 @@ on_emoji_box_pressed(GtkWidget *entry, GdkEventButton *event,
  * returns.
  * ------------------------------------------------------------------------- */
 static gboolean
-run_list_dialog(BtLibrary *lw, const gchar *title,
+run_list_dialog(TaskLibrary *lw, const gchar *title,
                 gchar **name, gchar **emoji)
 {
     GtkWidget *dlg = gtk_dialog_new_with_buttons(title,
@@ -2927,7 +3401,7 @@ run_list_dialog(BtLibrary *lw, const gchar *title,
     gtk_entry_set_max_length(GTK_ENTRY(emoji_entry), 4);
     gtk_entry_set_alignment(GTK_ENTRY(emoji_entry), 0.5f);
     gtk_widget_set_halign(emoji_entry, GTK_ALIGN_START);
-    bt_app_widget_add_css(emoji_entry, "entry { font-size: 18px; }");
+    task_app_widget_add_css(emoji_entry, "entry { font-size: 18px; }");
     gtk_widget_set_tooltip_text(emoji_entry,
         "Optional emoji \xe2\x80\x94 click to pick");
     if (*emoji != NULL)
@@ -2948,8 +3422,8 @@ run_list_dialog(BtLibrary *lw, const gchar *title,
     gtk_box_pack_start(GTK_BOX(name_row), name_entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(box), name_row, FALSE, FALSE, 0);
 
-    /* The click handler grows the dialog so the chooser popover fits.       */
-    g_object_set_data(G_OBJECT(emoji_entry), "bt-dialog", dlg);
+    /* The click handler grows the dialog so the chooser popover fits.      */
+    g_object_set_data(G_OBJECT(emoji_entry), "task-dialog", dlg);
 
     gtk_box_pack_start(
         GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
@@ -2985,31 +3459,31 @@ run_list_dialog(BtLibrary *lw, const gchar *title,
 static void
 on_sb_ctx_move_to_group(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw   = data;
-    GArray    *ids  = g_object_get_data(G_OBJECT(item), "bt-ids");
+    TaskLibrary *lw   = data;
+    GArray    *ids  = g_object_get_data(G_OBJECT(item), "task-ids");
     gint64 group_id = (gint64)(gintptr)
-        g_object_get_data(G_OBJECT(item), "bt-group-id");
+        g_object_get_data(G_OBJECT(item), "task-group-id");
     for (guint i = 0; i < ids->len; i++)
-        bt_db_list_set_group(lw->app->db,
-                             g_array_index(ids, gint64, i), group_id);
+        task_db_list_set_group(lw->app->db,
+                               g_array_index(ids, gint64, i), group_id);
     full_refresh(lw);
 }
 
 static void
 on_sb_ctx_remove_from_group(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw = data;
-    GArray   *ids = g_object_get_data(G_OBJECT(item), "bt-ids");
+    TaskLibrary *lw = data;
+    GArray   *ids = g_object_get_data(G_OBJECT(item), "task-ids");
     for (guint i = 0; i < ids->len; i++)
-        bt_db_list_set_group(lw->app->db,
-                             g_array_index(ids, gint64, i), 0);
+        task_db_list_set_group(lw->app->db,
+                               g_array_index(ids, gint64, i), 0);
     full_refresh(lw);
 }
 
 /* run_group_name_dialog() — modal entry for a group name; fills *out and
- * returns TRUE on accept with non-empty text, FALSE otherwise.              */
+ * returns TRUE on accept with non-empty text, FALSE otherwise.             */
 static gboolean
-run_group_name_dialog(BtLibrary *lw, const gchar *title, const gchar *button,
+run_group_name_dialog(TaskLibrary *lw, const gchar *title, const gchar *button,
                       const gchar *initial, gchar **out)
 {
     GtkWidget *dlg = gtk_dialog_new_with_buttons(
@@ -3042,20 +3516,20 @@ run_group_name_dialog(BtLibrary *lw, const gchar *title, const gchar *button,
 static void
 on_sb_ctx_rename_group(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw   = data;
+    TaskLibrary *lw   = data;
     gint64 group_id = (gint64)(gintptr)
-        g_object_get_data(G_OBJECT(item), "bt-group-id");
-    GPtrArray *groups  = bt_db_groups(lw->app->db);
+        g_object_get_data(G_OBJECT(item), "task-group-id");
+    GPtrArray *groups  = task_db_groups(lw->app->db);
     gchar     *current = NULL;
     for (guint i = 0; i < groups->len; i++) {
-        BtGroup *g = g_ptr_array_index(groups, i);
+        TaskGroup *g = g_ptr_array_index(groups, i);
         if (g->id == group_id) { current = g_strdup(g->name); break; }
     }
-    bt_ptr_array_free_groups(groups);
+    task_ptr_array_free_groups(groups);
     gchar *name = NULL;
     if (run_group_name_dialog(lw, "Rename Group", "Rename",
                               current ? current : "", &name)) {
-        bt_db_group_rename(lw->app->db, group_id, name);
+        task_db_group_rename(lw->app->db, group_id, name);
         full_refresh(lw);
         g_free(name);
     }
@@ -3065,9 +3539,9 @@ on_sb_ctx_rename_group(GtkWidget *item, gpointer data)
 static void
 on_sb_ctx_delete_group(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw   = data;
+    TaskLibrary *lw   = data;
     gint64 group_id = (gint64)(gintptr)
-        g_object_get_data(G_OBJECT(item), "bt-group-id");
+        g_object_get_data(G_OBJECT(item), "task-group-id");
     GtkWidget *dlg = gtk_message_dialog_new(
         GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
         GTK_MESSAGE_QUESTION, GTK_BUTTONS_OK_CANCEL,
@@ -3079,7 +3553,7 @@ on_sb_ctx_delete_group(GtkWidget *item, gpointer data)
             lw->sel_kind = SB_KIND_LIST;
             lw->sel_id   = 0;
         }
-        bt_db_group_delete(lw->app->db, group_id);
+        task_db_group_delete(lw->app->db, group_id);
         full_refresh(lw);
     }
 }
@@ -3093,12 +3567,12 @@ static void on_delete_list(GtkWidget *, gpointer);
  * and New Group; adds Edit/Delete for SB_KIND_LIST, Rename/Remove for
  * SB_KIND_GROUP, and group-assignment items when groups exist.  Right-clicking
  * inside an existing multi-selection keeps it; outside collapses to the
- * clicked row first.                                                         */
+ * clicked row first.                                                       */
 static gboolean
 on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
 {
     if (event->button != 3) return FALSE;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
 
     GtkTreePath *path = NULL;
     gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
@@ -3160,15 +3634,15 @@ on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
             gtk_tree_model_get(model, &ri, SB_KIND, &k, SB_ID, &lid, -1);
             if (k != SB_KIND_LIST) continue;
             g_array_append_val(ids, lid);
-            BtList *l = bt_db_list_get(lw->app->db, lid);
+            TaskList *l = task_db_list_get(lw->app->db, lid);
             if (l) {
                 if (l->group_id != 0) any_grouped = TRUE;
-                bt_list_free(l);
+                task_list_free(l);
             }
         }
         g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
 
-        GPtrArray *groups = bt_db_groups(lw->app->db);
+        GPtrArray *groups = task_db_groups(lw->app->db);
         if (groups->len > 0 || any_grouped) {
             gtk_menu_shell_append(GTK_MENU_SHELL(menu),
                                   gtk_separator_menu_item_new());
@@ -3176,12 +3650,12 @@ on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
                 GtkWidget *move = gtk_menu_item_new_with_label("Move to Group");
                 GtkWidget *sub  = gtk_menu_new();
                 for (guint i = 0; i < groups->len; i++) {
-                    BtGroup *g = g_ptr_array_index(groups, i);
+                    TaskGroup *g = g_ptr_array_index(groups, i);
                     GtkWidget *gi = gtk_menu_item_new_with_label(g->name);
-                    g_object_set_data_full(G_OBJECT(gi), "bt-ids",
+                    g_object_set_data_full(G_OBJECT(gi), "task-ids",
                                            g_array_ref(ids),
                                            (GDestroyNotify)g_array_unref);
-                    g_object_set_data(G_OBJECT(gi), "bt-group-id",
+                    g_object_set_data(G_OBJECT(gi), "task-group-id",
                                       (gpointer)(gintptr)g->id);
                     g_signal_connect(gi, "activate",
                                      G_CALLBACK(on_sb_ctx_move_to_group), lw);
@@ -3193,7 +3667,7 @@ on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
             if (any_grouped) {
                 GtkWidget *rem =
                     gtk_menu_item_new_with_label("Remove from Group");
-                g_object_set_data_full(G_OBJECT(rem), "bt-ids",
+                g_object_set_data_full(G_OBJECT(rem), "task-ids",
                                        g_array_ref(ids),
                                        (GDestroyNotify)g_array_unref);
                 g_signal_connect(rem, "activate",
@@ -3201,7 +3675,7 @@ on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
                 gtk_menu_shell_append(GTK_MENU_SHELL(menu), rem);
             }
         }
-        bt_ptr_array_free_groups(groups);
+        task_ptr_array_free_groups(groups);
         g_array_unref(ids);
 
     } else if (kind == SB_KIND_GROUP) {
@@ -3209,14 +3683,14 @@ on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
                               gtk_separator_menu_item_new());
 
         GtkWidget *rename = gtk_menu_item_new_with_label("Rename Group");
-        g_object_set_data(G_OBJECT(rename), "bt-group-id",
+        g_object_set_data(G_OBJECT(rename), "task-group-id",
                           (gpointer)(gintptr)id);
         g_signal_connect(rename, "activate",
                          G_CALLBACK(on_sb_ctx_rename_group), lw);
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), rename);
 
         GtkWidget *del = gtk_menu_item_new_with_label("Remove Group");
-        g_object_set_data(G_OBJECT(del), "bt-group-id",
+        g_object_set_data(G_OBJECT(del), "task-group-id",
                           (gpointer)(gintptr)id);
         g_signal_connect(del, "activate",
                          G_CALLBACK(on_sb_ctx_delete_group), lw);
@@ -3228,75 +3702,75 @@ on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
     return TRUE;
 }
 
-/* on_new_group() — prompt for a name and create a new list group.           */
+/* on_new_group() — prompt for a name and create a new list group.          */
 static void
 on_new_group(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     gchar *name = NULL;
     if (run_group_name_dialog(lw, "New Group", "Create", NULL, &name)) {
-        gint64 gid = bt_db_group_create(lw->app->db, name);
+        gint64 gid = task_db_group_create(lw->app->db, name);
         if (gid == 0)
-            bt_app_status(lw->app, "Failed to create group");
+            task_app_status(lw->app, "Failed to create group");
         else
             full_refresh(lw);
         g_free(name);
     }
 }
 
-/* on_new_list() — prompt (name + optional emoji), create, select.           */
+/* on_new_list() — prompt (name + optional emoji), create, select.          */
 static void
 on_new_list(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     gchar *name = NULL;              /* dialog in/out values                */
     gchar *emoji = NULL;
     if (run_list_dialog(lw, "New List", &name, &emoji)) {
-        gint64 id = bt_db_list_create(lw->app->db, name, emoji);
+        gint64 id = task_db_list_create(lw->app->db, name, emoji);
         if (id == 0) {               /* write failed (logged by the db)     */
-            bt_app_status(lw->app, "Could not create the list \xe2\x80\x94 "
-                          "database write failed");
+            task_app_status(lw->app, "Could not create the list \xe2\x80\x94 "
+                            "database write failed");
         } else {
             lw->sel_kind = SB_KIND_LIST;
             lw->sel_id = id;
             full_refresh(lw);
-            bt_app_status(lw->app,
-                          "Created list \xe2\x80\x9c%s\xe2\x80\x9d", name);
+            task_app_status(lw->app,
+                            "Created list \xe2\x80\x9c%s\xe2\x80\x9d", name);
         }
     }
     g_free(name);
     g_free(emoji);
 }
 
-/* on_edit_list() — change the selected list's name and/or emoji.            */
+/* on_edit_list() — change the selected list's name and/or emoji.           */
 static void
 on_edit_list(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        bt_app_status(lw->app, "Action Items is a view, not a list \xe2\x80\x94 "
-                      "edit the list each item lives in");
+        task_app_status(lw->app, "Action Items is a view, not a list \xe2\x80\x94 "
+                        "edit the list each item lives in");
         return;
     }
     gint64 id = selected_list_id(lw);
     if (id == 0) {
-        bt_app_status(lw->app, "Select a list to edit");
+        task_app_status(lw->app, "Select a list to edit");
         return;
     }
-    BtList *l = bt_db_list_get(lw->app->db, id);
+    TaskList *l = task_db_list_get(lw->app->db, id);
     if (l == NULL)
         return;
     gchar *name  = g_strdup(l->name);
     gchar *emoji = g_strdup(l->emoji);
-    bt_list_free(l);
+    task_list_free(l);
     if (run_list_dialog(lw, "Edit List", &name, &emoji)) {
-        bt_db_list_update(lw->app->db, id, name, emoji);
+        task_db_list_update(lw->app->db, id, name, emoji);
         full_refresh(lw);
-        bt_app_status(lw->app,
-                      "Updated list \xe2\x80\x9c%s\xe2\x80\x9d", name);
+        task_app_status(lw->app,
+                        "Updated list \xe2\x80\x9c%s\xe2\x80\x9d", name);
     }
     g_free(name);
     g_free(emoji);
@@ -3311,7 +3785,7 @@ on_sidebar_activated(GtkTreeView *view, GtkTreePath *path,
                      GtkTreeViewColumn *col, gpointer data)
 {
     (void)col;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     GtkTreeModel *model = gtk_tree_view_get_model(view);
     GtkTreeIter iter;
     if (!gtk_tree_model_get_iter(model, &iter, path))
@@ -3323,12 +3797,12 @@ on_sidebar_activated(GtkTreeView *view, GtkTreePath *path,
 }
 
 /* on_delete_list() — confirm + tombstone the selected real list; when a
- * group is selected, delegate to on_sb_ctx_delete_group.                    */
+ * group is selected, delegate to on_sb_ctx_delete_group.                   */
 static void
 on_delete_list(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     if (lw->sel_kind == SB_KIND_GROUP) {
         gint64 gid = lw->sel_id;
         GtkWidget *dlg = gtk_message_dialog_new(
@@ -3340,116 +3814,116 @@ on_delete_list(GtkWidget *w, gpointer data)
         if (resp == GTK_RESPONSE_OK) {
             lw->sel_kind = SB_KIND_LIST;
             lw->sel_id   = 0;
-            bt_db_group_delete(lw->app->db, gid);
+            task_db_group_delete(lw->app->db, gid);
             full_refresh(lw);
         }
         return;
     }
     if (lw->sel_kind == SB_KIND_BN_ACTIONS) {
-        bt_app_status(lw->app, "Action Items is a view, not a list \xe2\x80\x94 "
-                      "hide it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
+        task_app_status(lw->app, "Action Items is a view, not a list \xe2\x80\x94 "
+                        "hide it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
         return;
     }
     gint64 id = selected_list_id(lw);
     if (id == 0) {
-        bt_app_status(lw->app, "Select a list to delete");
+        task_app_status(lw->app, "Select a list to delete");
         return;
     }
-    BtList *l = bt_db_list_get(lw->app->db, id);
+    TaskList *l = task_db_list_get(lw->app->db, id);
     if (l == NULL)
         return;
     /* Google's default tasklist cannot be deleted (the API refuses with
      * 400 from any client) — block it here, like the Notes list.          */
-    gchar *default_gid = bt_db_state_get(lw->app->db, "default_list_gid");
+    gchar *default_gid = task_db_state_get(lw->app->db, "default_list_gid");
     if (l->gtasks_id != NULL && default_gid != NULL &&
         strcmp(l->gtasks_id, default_gid) == 0) {
-        bt_app_status(lw->app, "\xe2\x80\x9c%s\xe2\x80\x9d is Google's "
-                      "default list and cannot be deleted", l->name);
+        task_app_status(lw->app, "\xe2\x80\x9c%s\xe2\x80\x9d is Google's "
+                        "default list and cannot be deleted", l->name);
         g_free(default_gid);
-        bt_list_free(l);
+        task_list_free(l);
         return;
     }
     g_free(default_gid);
-    gboolean yes = bt_app_confirm(GTK_WINDOW(lw->window), "Delete List",
+    gboolean yes = task_app_confirm(GTK_WINDOW(lw->window), "Delete List",
         "Delete the list \xe2\x80\x9c%s\xe2\x80\x9d and all of its "
         "tasks?", l->name);
     if (yes) {
-        bt_db_list_delete(lw->app->db, id);
+        task_db_list_delete(lw->app->db, id);
         /* Drop the list's order keys with it — nothing else ever would, so
          * the ini otherwise grows a dead manual_order_list_<id> AND
          * kanban_order_list_<id> entry for every list ever deleted.  Both
          * families are per-list, so both need this.                        */
         gchar *order_key = list_order_key(id);
-        bt_app_config_set(order_key, NULL);   /* NULL removes the key       */
+        task_app_config_set(order_key, NULL);   /* NULL removes the key     */
         g_free(order_key);
         gchar *kb_key = g_strdup_printf(
             "kanban_order_list_%" G_GINT64_FORMAT, id);
-        bt_app_config_set(kb_key, NULL);
+        task_app_config_set(kb_key, NULL);
         g_free(kb_key);
         lw->sel_kind = SB_KIND_LIST;
         lw->sel_id = 0;              /* falls back to the first list        */
         full_refresh(lw);
-        bt_app_status(lw->app,
-                      "Deleted list \xe2\x80\x9c%s\xe2\x80\x9d", l->name);
+        task_app_status(lw->app,
+                        "Deleted list \xe2\x80\x9c%s\xe2\x80\x9d", l->name);
     }
-    bt_list_free(l);
+    task_list_free(l);
 }
 
 /* on_new_task() — create an empty task in the selected list and open its
- * editor.  The virtual views cannot hold new tasks.                         */
+ * editor.  The virtual views cannot hold new tasks.                        */
 static void
 on_new_task(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     gint64 list_id = selected_list_id(lw);
     if (list_id == 0) {
-        bt_app_status(lw->app,
-                      "Select a list first \xe2\x80\x94 tasks cannot be "
+        task_app_status(lw->app,
+                        "Select a list first \xe2\x80\x94 tasks cannot be "
                       "created in the virtual views");
         return;
     }
-    gint64 id = bt_db_task_create(lw->app->db, list_id, 0, "New Task");
+    gint64 id = task_db_task_create(lw->app->db, list_id, 0, "New Task");
     if (id == 0) {                   /* write failed (logged by the db)     */
-        bt_app_status(lw->app, "Could not create the task \xe2\x80\x94 "
-                      "database write failed");
+        task_app_status(lw->app, "Could not create the task \xe2\x80\x94 "
+                        "database write failed");
         return;
     }
     full_refresh(lw);
-    bt_editor_open_new(lw->app, id);  /* the Save / Cancel variant          */
+    task_editor_open_new(lw->app, id);  /* the Save / Cancel variant        */
 }
 
-/* on_delete_task() — confirm + tombstone the selected task.                 */
+/* on_delete_task() — confirm + tombstone the selected task.                */
 static void
 on_delete_task(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     /* Mirrored Notes items delete like any other task: the row is
      * tombstoned and its uid parked in bn_deleted, so the next mirror
      * pass does not helpfully re-create what was just deleted.             */
     GArray *ids = selected_task_ids(lw);
     if (ids->len == 0) {
-        bt_app_status(lw->app, "Select a task to delete");
+        task_app_status(lw->app, "Select a task to delete");
         g_array_unref(ids);
         return;
     }
 
     gboolean yes;                    /* confirmed?                          */
     if (ids->len == 1) {
-        BtTask *t = bt_db_task_get(lw->app->db,
+        Task *t = task_db_task_get(lw->app->db,
                                    g_array_index(ids, gint64, 0));
         if (t == NULL) {
             g_array_unref(ids);
             return;
         }
-        yes = bt_app_confirm(GTK_WINDOW(lw->window), "Delete Task",
+        yes = task_app_confirm(GTK_WINDOW(lw->window), "Delete Task",
             "Delete \xe2\x80\x9c%s\xe2\x80\x9d%s?",
             *t->title != '\0' ? t->title : "Untitled Task",
             t->parent_id == 0 ? " and its subtasks" : "");
-        bt_task_free(t);
+        task_free(t);
     } else {
-        yes = bt_app_confirm(GTK_WINDOW(lw->window), "Delete Tasks",
+        yes = task_app_confirm(GTK_WINDOW(lw->window), "Delete Tasks",
             "Delete the %u selected tasks (and their subtasks)?",
             ids->len);
     }
@@ -3460,11 +3934,11 @@ on_delete_task(GtkWidget *w, gpointer data)
                 g_hash_table_lookup(lw->app->editors, &id);
             if (editor != NULL)
                 gtk_widget_destroy(GTK_WIDGET(editor));
-            bt_db_task_delete(lw->app->db, id);
+            task_db_task_delete(lw->app->db, id);
         }
         full_refresh(lw);
-        bt_app_status(lw->app, "Deleted %u task%s", ids->len,
-                      ids->len == 1 ? "" : "s");
+        task_app_status(lw->app, "Deleted %u task%s", ids->len,
+                        ids->len == 1 ? "" : "s");
     }
     g_array_unref(ids);
 }
@@ -3477,39 +3951,39 @@ static GtkWidget *menu_item(GtkWidget *menu, const gchar *label,
                             GCallback cb, gpointer data);
 static GArray    *item_ids(GtkWidget *item);
 
-/* on_ctx_info() — open the task editor (same as double-clicking the row).   */
+/* on_ctx_info() — open the task editor (same as double-clicking the row).  */
 static void
 on_ctx_info(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     GArray *ids = item_ids(item);
     if (ids == NULL || ids->len == 0)
         return;
-    bt_editor_open(lw->app, g_array_index(ids, gint64, 0));
+    task_editor_open(lw->app, g_array_index(ids, gint64, 0));
 }
 
-/* on_ctx_open_google() — open the row's webViewLink in the browser.         */
+/* on_ctx_open_google() — open the row's webViewLink in the browser.        */
 static void
 on_ctx_open_google(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw = data;
-    const gchar *url = g_object_get_data(G_OBJECT(item), "bt-url");
+    TaskLibrary *lw = data;
+    const gchar *url = g_object_get_data(G_OBJECT(item), "task-url");
     if (url == NULL)
         return;
     GError *gerr = NULL;
     if (!gtk_show_uri_on_window(GTK_WINDOW(lw->window), url,
                                 GDK_CURRENT_TIME, &gerr)) {
-        bt_app_status(lw->app, "Cannot open browser: %s",
-                      gerr != NULL ? gerr->message : "?");
+        task_app_status(lw->app, "Cannot open browser: %s",
+                        gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
     }
 }
 
-/* item_ids() — the gint64 id array stashed on a context-menu item.          */
+/* item_ids() — the gint64 id array stashed on a context-menu item.         */
 static GArray *
 item_ids(GtkWidget *item)
 {
-    return g_object_get_data(G_OBJECT(item), "bt-ids");
+    return g_object_get_data(G_OBJECT(item), "task-ids");
 }
 
 /* on_ctx_set_done() — Mark Complete / Mark Incomplete on the selection.
@@ -3520,200 +3994,158 @@ item_ids(GtkWidget *item)
 static void
 on_ctx_set_done(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     GArray *ids = item_ids(item);
     gboolean done = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "bt-done"));
-    BtTaskStatus status = done ? BT_STATUS_DONE : BT_STATUS_IN_PROGRESS;
+        g_object_get_data(G_OBJECT(item), "task-done"));
+    TaskStatus status = done ? TASK_STATUS_DONE : TASK_STATUS_IN_PROGRESS;
     for (guint i = 0; i < ids->len; i++)
-        bt_db_task_set_status(lw->app->db,
-                              g_array_index(ids, gint64, i), status);
+        task_db_task_set_status(lw->app->db,
+                                g_array_index(ids, gint64, i), status);
     full_refresh(lw);
-    bt_app_status(lw->app, "Marked %u task%s %s", ids->len,
-                  ids->len == 1 ? "" : "s",
-                  done ? "complete" : "incomplete");
+    task_app_status(lw->app, "Marked %u task%s %s", ids->len,
+                    ids->len == 1 ? "" : "s",
+                    done ? "complete" : "incomplete");
 }
 
 /* ctx_done_item() — one Mark (All) Complete / Incomplete context-menu
  * item: the selection rides on the item as its own g_array_ref, the
- * complete/incomplete flag as "bt-done".                                    */
+ * complete/incomplete flag as "task-done".                                 */
 static void
-ctx_done_item(BtLibrary *lw, GtkWidget *menu, GArray *ids,
+ctx_done_item(TaskLibrary *lw, GtkWidget *menu, GArray *ids,
               gboolean single, gboolean done)
 {
     GtkWidget *item = gtk_menu_item_new_with_label(
         done ? (single ? "Mark Complete"   : "Mark All Complete")
              : (single ? "Mark Incomplete" : "Mark All Incomplete"));
-    g_object_set_data_full(G_OBJECT(item), "bt-ids", g_array_ref(ids),
+    g_object_set_data_full(G_OBJECT(item), "task-ids", g_array_ref(ids),
                            (GDestroyNotify)g_array_unref);
-    g_object_set_data(G_OBJECT(item), "bt-done", GINT_TO_POINTER(done));
+    g_object_set_data(G_OBJECT(item), "task-done", GINT_TO_POINTER(done));
     g_signal_connect(item, "activate", G_CALLBACK(on_ctx_set_done), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 }
 
 /* on_ctx_set_pinned() — Pin / Unpin on the selection (local-only; the
- * sidebar's Pinned Tasks row follows via full_refresh).                     */
+ * sidebar's Pinned Tasks row follows via full_refresh).                    */
 static void
 on_ctx_set_pinned(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     GArray *ids = item_ids(item);
     gboolean pinned = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "bt-flag"));
+        g_object_get_data(G_OBJECT(item), "task-flag"));
     for (guint i = 0; i < ids->len; i++)
-        bt_db_task_set_pinned(lw->app->db,
-                              g_array_index(ids, gint64, i), pinned);
+        task_db_task_set_pinned(lw->app->db,
+                                g_array_index(ids, gint64, i), pinned);
     full_refresh(lw);
-    bt_app_status(lw->app, "%s %u task%s",
-                  pinned ? "Added to Favorites" : "Removed from Favorites",
-                  ids->len, ids->len == 1 ? "" : "s");
+    task_app_status(lw->app, "%s %u task%s",
+                    pinned ? "Added to Favorites" : "Removed from Favorites",
+                    ids->len, ids->len == 1 ? "" : "s");
 }
 
 /* on_ctx_set_priority() — Set / Clear High Priority on the selection
- * (local-only; the views re-sort via full_refresh).                         */
+ * (local-only; the views re-sort via full_refresh).                        */
 static void
 on_ctx_set_priority(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     GArray *ids = item_ids(item);
     gboolean priority = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "bt-flag"));
+        g_object_get_data(G_OBJECT(item), "task-flag"));
     for (guint i = 0; i < ids->len; i++)
-        bt_db_task_set_priority(lw->app->db,
-                                g_array_index(ids, gint64, i), priority);
+        task_db_task_set_priority(lw->app->db,
+                                  g_array_index(ids, gint64, i), priority);
     full_refresh(lw);
-    bt_app_status(lw->app, "%s high priority on %u task%s",
-                  priority ? "Set" : "Cleared",
-                  ids->len, ids->len == 1 ? "" : "s");
+    task_app_status(lw->app, "%s high priority on %u task%s",
+                    priority ? "Set" : "Cleared",
+                    ids->len, ids->len == 1 ? "" : "s");
 }
 
 /* ctx_flag_item() — one bulk context-menu item: the selection rides on
- * the item as its own g_array_ref ("bt-ids"), the boolean to apply as
- * "bt-flag".                                                                */
+ * the item as its own g_array_ref ("task-ids"), the boolean to apply as
+ * "task-flag".                                                             */
 static void
-ctx_flag_item(BtLibrary *lw, GtkWidget *menu, GArray *ids,
+ctx_flag_item(TaskLibrary *lw, GtkWidget *menu, GArray *ids,
               const gchar *label, gboolean flag, GCallback cb)
 {
     GtkWidget *item = gtk_menu_item_new_with_label(label);
-    g_object_set_data_full(G_OBJECT(item), "bt-ids", g_array_ref(ids),
+    g_object_set_data_full(G_OBJECT(item), "task-ids", g_array_ref(ids),
                            (GDestroyNotify)g_array_unref);
-    g_object_set_data(G_OBJECT(item), "bt-flag", GINT_TO_POINTER(flag));
+    g_object_set_data(G_OBJECT(item), "task-flag", GINT_TO_POINTER(flag));
     g_signal_connect(item, "activate", cb, lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 }
 
 /* on_ctx_move() — a destination picked in the Move to List menu: move
  * every selected TOP-LEVEL task not already there (subtasks travel with
- * their parents; a selected subtask on its own cannot move).                */
+ * their parents; a selected subtask on its own cannot move).               */
 static void
 on_ctx_move(GtkWidget *item, gpointer data)
 {
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     GArray *ids = item_ids(item);
     gint64 dest_id = *(gint64 *)g_object_get_data(G_OBJECT(item),
-                                                  "bt-dest-id");
+                                                  "task-dest-id");
     guint moved = 0;                 /* how many actually went              */
     for (guint i = 0; i < ids->len; i++) {
         gint64 id = g_array_index(ids, gint64, i);
-        BtTask *t = bt_db_task_get(lw->app->db, id);
+        Task *t = task_db_task_get(lw->app->db, id);
         if (t != NULL && t->parent_id == 0 && t->list_id != dest_id) {
-            bt_gtasks_move_task(lw->app, id, dest_id);
+            task_gtasks_move_task(lw->app, id, dest_id);
             moved++;
         }
-        bt_task_free(t);
+        task_free(t);
     }
     if (moved > 0) {
         full_refresh(lw);
-        bt_app_status(lw->app, "Moved %u task%s", moved,
-                      moved == 1 ? "" : "s");
+        task_app_status(lw->app, "Moved %u task%s", moved,
+                        moved == 1 ? "" : "s");
     } else {
-        bt_app_status(lw->app, "Nothing to move (subtasks move with "
-                      "their parent task)");
+        task_app_status(lw->app, "Nothing to move (subtasks move with "
+                        "their parent task)");
     }
 }
 
 /* ---------------------------------------------------------------------------
- * on_task_button_press() — right-click on a task row: keep an existing
- * multi-selection when clicked inside it (else select just that row)
- * and show the context menu, whose actions apply to the whole
- * selection.
+ * task_context_menu_popup() — build and pop the task context menu for the
+ * CURRENT selection, whatever produced it.
+ *
+ * Shared by the list view's rows and the Kanban board's cards, so the two
+ * can never drift apart.  It reads the selection through
+ * selected_task_ids, which already answers with the board's single card
+ * selection while the board is up — so nothing here needs to know which
+ * pane the click came from.
+ *
+ *   anchor — a LONG-LIVED widget to attach the menu to.  Not the clicked
+ *            card: an attached menu dies with its widget, and a card is
+ *            destroyed by the next refresh, which any of these actions
+ *            triggers.
+ *
+ * Returns TRUE when a menu was shown (the click is consumed).
  * ------------------------------------------------------------------------- */
 static gboolean
-on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
+task_context_menu_popup(TaskLibrary *lw, GtkWidget *anchor,
+                        GdkEventButton *event)
 {
-    BtLibrary *lw = data;
-
-    /* Left-click in the drag handle column starts a manual reorder. */
-    if (event->button == 1 && lw->manual_sort) {
-        GtkTreePath      *path = NULL;
-        GtkTreeViewColumn *col = NULL;
-        if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view),
-            (gint)event->x, (gint)event->y, &path, &col, NULL, NULL)) {
-            GtkTreeViewColumn *cdrag =
-                g_object_get_data(G_OBJECT(lw->task_view), "bt-cdrag");
-            if (col == cdrag) {
-                GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
-                GtkTreeIter it;
-                gint64 id = 0;
-                if (gtk_tree_model_get_iter(model, &it, path))
-                    gtk_tree_model_get(model, &it, TL_ID, &id, -1);
-                if (id != 0) {
-                    lw->drag_active = TRUE;
-                    if (lw->drag_row_ref != NULL)
-                        gtk_tree_row_reference_free(lw->drag_row_ref);
-                    lw->drag_row_ref =
-                        gtk_tree_row_reference_new(model, path);
-                    gtk_widget_queue_draw(view); /* paint amber highlight    */
-                    gtk_tree_path_free(path);
-                    return TRUE;       /* consume — don't change selection   */
-                }
-            }
-            gtk_tree_path_free(path);
-        }
-    }
-
-    /* Right-click in the header area: event->window is the header GdkWindow,
-     * not the bin_window, regardless of column clickability.  Detect this
-     * by window identity and route to the column/sort menu.                 */
-    if (event->button == 3 &&
-        event->window != gtk_tree_view_get_bin_window(GTK_TREE_VIEW(view)))
-        return on_column_header_press(view, event, lw);
-
-    if (event->button != 3)
-        return FALSE;
-
-    GtkTreePath *path = NULL;
-    if (!gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view),
-                                       (gint)event->x, (gint)event->y,
-                                       &path, NULL, NULL, NULL))
-        return FALSE;
-    GtkTreeSelection *sel =
-        gtk_tree_view_get_selection(GTK_TREE_VIEW(view));
-    if (!gtk_tree_selection_path_is_selected(sel, path)) {
-        gtk_tree_selection_unselect_all(sel);
-        gtk_tree_selection_select_path(sel, path);
-    }
-    gtk_tree_path_free(path);
-
     GArray *ids = selected_task_ids(lw);
     if (ids->len == 0) {
         g_array_unref(ids);
         return FALSE;
     }
     gboolean single = ids->len == 1;
-    BtTask *t = single
-        ? bt_db_task_get(lw->app->db, g_array_index(ids, gint64, 0))
+    Task *t = single
+        ? task_db_task_get(lw->app->db, g_array_index(ids, gint64, 0))
         : NULL;
 
     GtkWidget *menu = gtk_menu_new();
-    gtk_menu_attach_to_widget(GTK_MENU(menu), view, NULL);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), anchor, NULL);
     g_signal_connect(menu, "selection-done",
                      G_CALLBACK(gtk_widget_destroy), NULL);
 
-    /* Info… — single row only; opens the editor (same as double-click).     */
+    /* Info… — single row only; opens the editor (same as double-click).    */
     if (single) {
         GtkWidget *info_item = gtk_menu_item_new_with_label("Info\xe2\x80\xa6");
-        g_object_set_data_full(G_OBJECT(info_item), "bt-ids",
+        g_object_set_data_full(G_OBJECT(info_item), "task-ids",
                                g_array_ref(ids),
                                (GDestroyNotify)g_array_unref);
         g_signal_connect(info_item, "activate",
@@ -3724,10 +4156,10 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     }
 
     /* Mark Complete / Mark Incomplete — single row: only the applicable
-     * direction; multi: both (selection may be mixed).                      */
+     * direction; multi: both (selection may be mixed).                     */
     if (single && t != NULL)
         ctx_done_item(lw, menu, ids, TRUE,
-                      t->status != BT_STATUS_DONE);
+                      t->status != TASK_STATUS_DONE);
     else {
         ctx_done_item(lw, menu, ids, FALSE, TRUE);
         ctx_done_item(lw, menu, ids, FALSE, FALSE);
@@ -3738,7 +4170,7 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
 
     /* Pin / Unpin and High Priority: a single row gets just the action
      * that applies to it; a multi-selection (possibly mixed states)
-     * gets both directions.                                                 */
+     * gets both directions.                                                */
     if (single && t != NULL) {
         ctx_flag_item(lw, menu, ids,
                       t->pinned ? "Remove from Favorites" : "Add to Favorites",
@@ -3761,11 +4193,11 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     gtk_menu_shell_append(GTK_MENU_SHELL(menu),
                           gtk_separator_menu_item_new());
 
-    /* Open in Google Tasks — single, synced task only.                      */
+    /* Open in Google Tasks — single, synced task only.                     */
     GtkWidget *open_item =
         gtk_menu_item_new_with_label("Open in Google Tasks");
     if (single && t != NULL && t->web_link != NULL) {
-        g_object_set_data_full(G_OBJECT(open_item), "bt-url",
+        g_object_set_data_full(G_OBJECT(open_item), "task-url",
                                g_strdup(t->web_link), g_free);
         g_signal_connect(open_item, "activate",
                          G_CALLBACK(on_ctx_open_google), lw);
@@ -3774,15 +4206,15 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     }
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), open_item);
 
-    /* Move to List — applies to the selection's top-level tasks.            */
+    /* Move to List — applies to the selection's top-level tasks.           */
     GtkWidget *move_item = gtk_menu_item_new_with_label("Move to List");
     GtkWidget *submenu = gtk_menu_new();
-    GPtrArray *lists = bt_db_lists(lw->app->db, FALSE);
+    GPtrArray *lists = task_db_lists(lw->app->db, FALSE);
     guint added = 0;                 /* destinations offered                */
     for (guint i = 0; i < lists->len; i++) {
-        BtList *l = g_ptr_array_index(lists, i);
+        TaskList *l = g_ptr_array_index(lists, i);
         /* For a single selection its own list is pointless; keep every
-         * destination for multi (rows may span lists in virtual views).     */
+         * destination for multi (rows may span lists in virtual views).    */
         if (single && t != NULL && l->id == t->list_id)
             continue;
         gchar *label = list_label(l);
@@ -3790,9 +4222,9 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
         g_free(label);
         gint64 *did = g_new(gint64, 1);
         *did = l->id;
-        g_object_set_data_full(G_OBJECT(dest), "bt-dest-id", did,
+        g_object_set_data_full(G_OBJECT(dest), "task-dest-id", did,
                                g_free);
-        g_object_set_data_full(G_OBJECT(dest), "bt-ids",
+        g_object_set_data_full(G_OBJECT(dest), "task-ids",
                                g_array_ref(ids),
                                (GDestroyNotify)g_array_unref);
         g_signal_connect(dest, "activate",
@@ -3800,7 +4232,7 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
         gtk_menu_shell_append(GTK_MENU_SHELL(submenu), dest);
         added++;
     }
-    bt_ptr_array_free_lists(lists);
+    task_ptr_array_free_lists(lists);
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(move_item), submenu);
     gtk_widget_set_sensitive(move_item, added > 0 &&
         !(single && t != NULL && t->parent_id != 0));
@@ -3814,39 +4246,105 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     menu_item(menu, del_label, G_CALLBACK(on_delete_task), lw);
     g_free(del_label);
 
-    bt_task_free(t);
+    task_free(t);
     g_array_unref(ids);
     gtk_widget_show_all(menu);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
     return TRUE;
 }
 
+/* ---------------------------------------------------------------------------
+ * on_task_button_press() — right-click on a task row: keep an existing
+ * multi-selection when clicked inside it (else select just that row)
+ * and show the context menu, whose actions apply to the whole
+ * selection.
+ * ------------------------------------------------------------------------- */
+static gboolean
+on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
+{
+    TaskLibrary *lw = data;
+
+    /* Left-click in the drag handle column starts a manual reorder. */
+    if (event->button == 1 && lw->manual_sort) {
+        GtkTreePath      *path = NULL;
+        GtkTreeViewColumn *col = NULL;
+        if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view),
+            (gint)event->x, (gint)event->y, &path, &col, NULL, NULL)) {
+            GtkTreeViewColumn *cdrag =
+                g_object_get_data(G_OBJECT(lw->task_view), "task-cdrag");
+            if (col == cdrag) {
+                GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
+                GtkTreeIter it;
+                gint64 id = 0;
+                if (gtk_tree_model_get_iter(model, &it, path))
+                    gtk_tree_model_get(model, &it, TL_ID, &id, -1);
+                if (id != 0) {
+                    lw->drag_active = TRUE;
+                    if (lw->drag_row_ref != NULL)
+                        gtk_tree_row_reference_free(lw->drag_row_ref);
+                    lw->drag_row_ref =
+                        gtk_tree_row_reference_new(model, path);
+                    gtk_widget_queue_draw(view); /* paint amber highlight   */
+                    gtk_tree_path_free(path);
+                    return TRUE;       /* consume — don't change selection  */
+                }
+            }
+            gtk_tree_path_free(path);
+        }
+    }
+
+    /* Right-click in the header area: event->window is the header GdkWindow,
+     * not the bin_window, regardless of column clickability.  Detect this
+     * by window identity and route to the column/sort menu.                */
+    if (event->button == 3 &&
+        event->window != gtk_tree_view_get_bin_window(GTK_TREE_VIEW(view)))
+        return on_column_header_press(view, event, lw);
+
+    if (event->button != 3)
+        return FALSE;
+
+    GtkTreePath *path = NULL;
+    if (!gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view),
+                                       (gint)event->x, (gint)event->y,
+                                       &path, NULL, NULL, NULL))
+        return FALSE;
+    GtkTreeSelection *sel =
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(view));
+    if (!gtk_tree_selection_path_is_selected(sel, path)) {
+        gtk_tree_selection_unselect_all(sel);
+        gtk_tree_selection_select_path(sel, path);
+    }
+    gtk_tree_path_free(path);
+
+    return task_context_menu_popup(lw, view, event);
+}
+
 /* sync_done() — re-enable the Sync button after a run.  The library is
  * re-resolved through the app context: the completion idle can fire
- * AFTER the window was closed and its BtLibrary freed, so a captured lw
- * pointer would dangle (the settings window guards the same way).           */
+ * AFTER the window was closed and its TaskLibrary freed, so a captured lw
+ * pointer would dangle (the settings window guards the same way).          */
 static void
-sync_done(BtApp *app, gboolean ok, const gchar *message, gpointer data)
+sync_done(TaskApp *app, gboolean ok, const gchar *message, gpointer data)
 {
     (void)ok; (void)message; (void)data;
-    BtLibrary *lw = lib_of(app);
+    TaskLibrary *lw = lib_of(app);
     if (lw != NULL)
         gtk_widget_set_sensitive(lw->sync_item, TRUE);
 }
 
 /* sync_after_signin() — the Sync button's browser flow finished: run the
- * actual sync, or report why not.  Same lifetime rule as sync_done.         */
+ * actual sync, or report why not.  Same lifetime rule as sync_done.        */
 static void
 sync_after_signin(gboolean ok, const gchar *error, gpointer data)
 {
-    BtApp *app = data;
-    BtLibrary *lw = lib_of(app);
+    TaskApp *app = data;
+    TaskLibrary *lw = lib_of(app);
     if (lw == NULL)
         return;                      /* window closed mid-flow              */
     if (!ok)
         gtk_widget_set_sensitive(lw->sync_item, TRUE);
-    bt_sync_signin_done(app, GTK_WINDOW(lw->window), app->db->path,
-                        ok, error, sync_done);
+    task_sync_signin_done(app, GTK_WINDOW(lw->window), app->db->path,
+                          ok, error, sync_done);
 }
 
 /* on_sync() — the toolbar Sync button.  Sign-in is per session: when the
@@ -3861,29 +4359,29 @@ static void
 on_sync(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
-    if (bt_app_config_get_bool("notes_sync", FALSE))
-        bt_bnsync_start(lw->app, lw->app->db->path, NULL, NULL);
-    if (!bt_app_config_get_bool("google_sync_enabled", TRUE)) {
-        bt_app_status(lw->app, "Google Tasks sync is disabled \xe2\x80\x94 "
-                      "enable it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
+    TaskLibrary *lw = data;
+    if (task_app_config_get_bool("notes_sync", FALSE))
+        task_bnsync_start(lw->app, lw->app->db->path, NULL, NULL);
+    if (!task_app_config_get_bool("google_sync_enabled", TRUE)) {
+        task_app_status(lw->app, "Google Tasks sync is disabled \xe2\x80\x94 "
+                        "enable it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
         return;
     }
-    if (!bt_oauth_have_client()) {
-        bt_app_status(lw->app, "Google sync is not configured \xe2\x80\x94 "
-                      "see File \xe2\x86\x92 Settings\xe2\x80\xa6");
-        bt_settings_window_open(lw->app, GTK_WINDOW(lw->window),
-                                lw->app->db->path);
+    if (!task_oauth_have_client()) {
+        task_app_status(lw->app, "Google sync is not configured \xe2\x80\x94 "
+                        "see File \xe2\x86\x92 Settings\xe2\x80\xa6");
+        task_settings_window_open(lw->app, GTK_WINDOW(lw->window),
+                                  lw->app->db->path);
         return;
     }
     gtk_widget_set_sensitive(lw->sync_item, FALSE);
-    if (bt_oauth_authenticated()) {
-        bt_sync_start(lw->app, lw->app->db->path, sync_done, NULL);
+    if (task_oauth_authenticated()) {
+        task_sync_start(lw->app, lw->app->db->path, sync_done, NULL);
     } else {
-        bt_app_status(lw->app,
-                      "Opening browser for Google sign-in\xe2\x80\xa6");
-        bt_oauth_begin(GTK_WINDOW(lw->window), sync_after_signin,
-                       lw->app);
+        task_app_status(lw->app,
+                        "Opening browser for Google sign-in\xe2\x80\xa6");
+        task_oauth_begin(GTK_WINDOW(lw->window), sync_after_signin,
+                         lw->app);
     }
 }
 
@@ -3891,41 +4389,41 @@ on_sync(GtkWidget *w, gpointer data)
  * Menu actions.
  * =========================================================================== */
 
-/* on_menu_settings() — File → Settings…                                     */
+/* on_menu_settings() — File → Settings…                                    */
 static void
 on_menu_settings(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
-    bt_settings_window_open(lw->app, GTK_WINDOW(lw->window), lw->app->db->path);
+    TaskLibrary *lw = data;
+    task_settings_window_open(lw->app, GTK_WINDOW(lw->window), lw->app->db->path);
 }
 
 /* on_menu_clear_completed() — File → Clear Completed Tasks: archive the
- * selected list's done tasks (Google's tasks.clear when synced).            */
+ * selected list's done tasks (Google's tasks.clear when synced).           */
 static void
 on_menu_clear_completed(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     gint64 id = selected_list_id(lw);
     if (id == 0) {
-        bt_app_status(lw->app,
-                      "Select a list to clear its completed tasks");
+        task_app_status(lw->app,
+                        "Select a list to clear its completed tasks");
         return;
     }
-    BtList *l = bt_db_list_get(lw->app->db, id);
+    TaskList *l = task_db_list_get(lw->app->db, id);
     if (l == NULL)
         return;
-    if (bt_app_confirm(GTK_WINDOW(lw->window), "Clear Completed",
-                       "Remove all completed tasks from \xe2\x80\x9c%s"
+    if (task_app_confirm(GTK_WINDOW(lw->window), "Clear Completed",
+                         "Remove all completed tasks from \xe2\x80\x9c%s"
                        "\xe2\x80\x9d?", l->name))
-        bt_gtasks_clear_completed(lw->app, id);
-    bt_list_free(l);
+        task_gtasks_clear_completed(lw->app, id);
+    task_list_free(l);
 }
 
 /* find_gtk_image() — first GtkImage in a widget subtree (depth-first).
  * Used to reach GtkAboutDialog's internal logo image, which the public
- * API only feeds with a plain (blurry-on-Retina) GdkPixbuf.                 */
+ * API only feeds with a plain (blurry-on-Retina) GdkPixbuf.                */
 static GtkWidget *
 find_gtk_image(GtkWidget *widget)
 {
@@ -3949,8 +4447,8 @@ static void
 on_open_db(GtkWidget *widget, gpointer user_data)
 {
     (void)widget;
-    BtLibrary *lw  = user_data;
-    BtApp     *app = lw->app;
+    TaskLibrary *lw  = user_data;
+    TaskApp     *app = lw->app;
 
     GtkWidget *chooser = gtk_file_chooser_dialog_new(
         "Open Database", GTK_WINDOW(lw->window),
@@ -3998,20 +4496,20 @@ on_open_db(GtkWidget *widget, gpointer user_data)
     }
     gboolean set_default = (resp == 2);
 
-    bt_editor_close_all(app);
+    task_editor_close_all(app);
     gchar *old_path = g_strdup(app->db->path);
-    bt_db_close(app->db);
+    task_db_close(app->db);
     GError *gerr = NULL;
-    app->db = bt_db_open(file_path, &gerr);
+    app->db = task_db_open(file_path, &gerr);
 
     if (app->db == NULL) {
-        bt_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
-                      "Tasks - Database Error",
-                      "Could not open:\n%s\n\n%s",
-                      file_path,
-                      gerr != NULL ? gerr->message : "Unknown error");
+        task_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
+                        "Tasks - Database Error",
+                        "Could not open:\n%s\n\n%s",
+                        file_path,
+                        gerr != NULL ? gerr->message : "Unknown error");
         g_clear_error(&gerr);
-        app->db = bt_db_open(old_path, &gerr); /* revert                   */
+        app->db = task_db_open(old_path, &gerr); /* revert                  */
         if (app->db == NULL)
             g_critical("on_open_db: cannot revert to %s: %s", old_path,
                        gerr != NULL ? gerr->message : "?");
@@ -4025,7 +4523,7 @@ on_open_db(GtkWidget *widget, gpointer user_data)
         gchar *dir = g_path_get_dirname(file_path);
         g_free(app->db_dir);
         app->db_dir = g_strdup(dir);
-        bt_app_config_set("db_dir", dir);
+        task_app_config_set("db_dir", dir);
         g_free(dir);
     }
 
@@ -4034,44 +4532,31 @@ on_open_db(GtkWidget *widget, gpointer user_data)
 
     /* Both timers carry the db path they were armed with, so a switch
      * must re-arm BOTH or the mirror keeps writing to the old file.       */
-    bt_sync_auto_start(app, app->db->path);
-    bt_bnsync_auto_start(app, app->db->path);
-    bt_app_notify_changed(app);
-    bt_app_status(app, "Opened %s", app->db->path);
+    task_sync_auto_start(app, app->db->path);
+    task_bnsync_auto_start(app, app->db->path);
+    task_app_notify_changed(app);
+    task_app_status(app, "Opened %s", app->db->path);
 }
 
-/* on_menu_toggle_done_visible() — View → Show Completed: read the new check
- * state (class handler has already toggled it), sync config + toolbar.
- * Connected via "toggled" so the handler runs after priv->active is settled;
- * hide_done_icon_refresh blocks this handler when it calls set_active so the
- * toolbar → menu sync path does not recurse.                                 */
-static void
-on_menu_toggle_done_visible(GtkWidget *w, gpointer data)
-{
-    BtLibrary *lw = data;
-    gboolean show = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(w));
-    bt_app_config_set("show_completed", show ? "1" : "0");
-    hide_done_icon_refresh(lw);
-    refresh_tasks(lw);
-}
-
-/* on_menu_toggle_manual_sort() — View → Manual Sort: mirror of the above
- * for the task_list_manual_sort config key.  Same block/unblock protocol
- * with manual_sort_icon_refresh.                                             */
-static void
-on_menu_toggle_manual_sort(GtkWidget *w, gpointer data)
-{
-    BtLibrary *lw = data;
-    gboolean manual = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(w));
-    bt_app_config_set("task_list_manual_sort", manual ? "1" : "0");
-    task_manual_sort_apply(lw);
-    manual_sort_icon_refresh(lw);
-    refresh_tasks(lw);
-}
+/* The View menu's Completed, Sorting and Sidebar items are wired straight
+ * to their TOOLBAR twins (on_toggle_done_visible, on_toggle_manual_sort,
+ * on_toggle_sidebar).  Each of those already flips the persisted state and
+ * calls the one refresh that re-labels both controls, so a separate menu
+ * handler would only be the same three lines under another name — and two
+ * copies of "what does this toggle do" is how the two controls drift.
+ * There is no state to read off the widget either way: the label says
+ * where a click GOES, so every handler flips the config or the cache.     */
 
 /* ---------------------------------------------------------------------------
- * on_menu_toggle_kanban() — View → Kanban View: persist the flag, refresh
- * the cached copy, and rebuild the pane in the other presentation.
+ * on_toggle_kanban() — the pane toggle, shared by View → Kanban View /
+ * List View and its TOOLBAR twin: persist the flag, refresh the cached
+ * copy, and rebuild the pane in the other presentation.  refresh_tasks
+ * runs task_pane_mode_apply, which is what re-labels and re-icons both
+ * controls.
+ *
+ * FLIPS the cached flag rather than reading the widget: the label names
+ * the pane a click switches TO, so the item no longer carries the current
+ * state (same shape as the sort item).
  *
  * The board's selection is dropped on the way out AND on the way in: the
  * two panes track selection separately (a tree selection vs. a card id),
@@ -4079,37 +4564,32 @@ on_menu_toggle_manual_sort(GtkWidget *w, gpointer data)
  * user can no longer see highlighted.
  * ------------------------------------------------------------------------- */
 static void
-on_menu_toggle_kanban(GtkWidget *w, gpointer data)
+on_toggle_kanban(GtkWidget *w, gpointer data)
 {
-    BtLibrary *lw = data;
-    lw->kanban = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(w));
-    bt_app_config_set("kanban_view", lw->kanban ? "1" : "0");
-    lw->kanban_sel = 0;
+    (void)w;
+    TaskLibrary *lw = data;
+    lw->kanban = !lw->kanban;
+    task_app_config_set("kanban_view", lw->kanban ? "1" : "0");
     gtk_tree_selection_unselect_all(
         gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->task_view)));
+    g_hash_table_remove_all(lw->kanban_sel);
+    lw->kanban_anchor = 0;
     refresh_tasks(lw);
 }
 
-/* on_menu_toggle_compact() — View → Compact Layout: persist the flag and
- * re-apply the layout (toolbar + sidebar out, floating buttons in).          */
+/* on_menu_toggle_compact() — View → Compact Controls / Full Controls:
+ * FLIP the persisted flag and re-apply the layout (toolbar out, floating
+ * New/Delete pair in).  Flips rather than reading the widget: the label
+ * names the controls a click switches TO, so the item carries no state.
+ * compact_layout_apply re-labels it.                                       */
 static void
 on_menu_toggle_compact(GtkWidget *w, gpointer data)
 {
-    BtLibrary *lw = data;
-    gboolean compact = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(w));
-    bt_app_config_set("compact_layout", compact ? "1" : "0");
+    (void)w;
+    TaskLibrary *lw = data;
+    task_app_config_set("compact_layout",
+        task_app_config_get_bool("compact_layout", FALSE) ? "0" : "1");
     compact_layout_apply(lw);
-}
-
-/* on_menu_toggle_sidebar() — View → Show Sidebar: the menu twin of the
- * toolbar Sidebar button (sidebar_set_visible persists and re-syncs the
- * check, which is a no-op here since the item is already in that state).     */
-static void
-on_menu_toggle_sidebar(GtkWidget *w, gpointer data)
-{
-    BtLibrary *lw = data;
-    sidebar_set_visible(lw,
-        gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(w)));
 }
 
 /* on_menu_about() — File → About and the toolbar About button: the
@@ -4119,10 +4599,10 @@ static void
 on_menu_about(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
 
     /* 128x128-logical logo from document.png, decoded at the display's
-     * scale factor so it stays sharp on Retina.                             */
+     * scale factor so it stays sharp on Retina.                            */
     gint sf = gtk_widget_get_scale_factor(lw->window);
     gchar *icon_path = g_build_filename(lw->app->icons_dir,
                                         "document.png", NULL);
@@ -4138,7 +4618,7 @@ on_menu_about(GtkWidget *w, gpointer data)
                                  GTK_WINDOW(lw->window));
     gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog),
                                       "Tasks");
-    gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), BT_VERSION);
+    gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), TASK_VERSION);
     if (logo != NULL) {
         /* set_logo() first (it makes the internal image visible and
          * sized), then swap that image's content for a cairo surface
@@ -4166,7 +4646,7 @@ on_menu_about(GtkWidget *w, gpointer data)
 
     /* Database vitals: task/list counts, location, on-disk size.           */
     gint n_tasks, n_lists;           /* totals across the database          */
-    bt_db_totals(lw->app->db, &n_tasks, &n_lists);
+    task_db_totals(lw->app->db, &n_tasks, &n_lists);
     GStatBuf st;                     /* for the database file size          */
     const gchar *db_path = lw->app->db->path;
     gchar *size_str = (g_stat(db_path, &st) == 0)
@@ -4176,8 +4656,7 @@ on_menu_about(GtkWidget *w, gpointer data)
     /* __DATE__/__TIME__ expand when this file is compiled — the closest
      * portable thing to a "last compiled" stamp.                           */
     gchar *comments = g_strdup_printf(
-        "Task lists with subtasks, due dates and Google Tasks sync.\n"
-        "Companion app to Notes.\n\n"
+        "Gettin' shit done since 2026!\n\n"
         "Compiled " __DATE__ " " __TIME__ "\n\n"
         "Database: %s\n"
         "%d tasks in %d lists \xe2\x80\x94 %s on disk",
@@ -4202,15 +4681,15 @@ on_menu_about(GtkWidget *w, gpointer data)
  * GtkToolItem wrapping a GtkButton whose single child gets swapped — a
  * GtkToolButton would reserve empty label space under the icon in
  * icons-above-text mode.  The logo and label widgets live as object data
- * ("bt-logo"/"bt-label", owning refs) so they survive being unparented.
+ * ("task-logo"/"task-label", owning refs) so they survive being unparented.
  *   item  — the About tool item.
- *   style — the toolbar style being applied.                                */
+ *   style — the toolbar style being applied.                               */
 static void
 about_button_fit_style(GtkToolItem *item, GtkToolbarStyle style)
 {
     GtkWidget *btn   = gtk_bin_get_child(GTK_BIN(item));
-    GtkWidget *logo  = g_object_get_data(G_OBJECT(item), "bt-logo");
-    GtkWidget *label = g_object_get_data(G_OBJECT(item), "bt-label");
+    GtkWidget *logo  = g_object_get_data(G_OBJECT(item), "task-logo");
+    GtkWidget *label = g_object_get_data(G_OBJECT(item), "task-label");
 
     GtkWidget *want =                /* the child this style calls for      */
         (style == GTK_TOOLBAR_TEXT) ? label : logo;
@@ -4224,7 +4703,7 @@ about_button_fit_style(GtkToolItem *item, GtkToolbarStyle style)
 }
 
 /* on_toolbar_style_changed() — keep the About button's label rule
- * applied when the toolbar style changes.                                   */
+ * applied when the toolbar style changes.                                  */
 static void
 on_toolbar_style_changed(GtkToolbar *toolbar, GtkToolbarStyle style,
                          gpointer user_data)
@@ -4233,16 +4712,16 @@ on_toolbar_style_changed(GtkToolbar *toolbar, GtkToolbarStyle style,
     about_button_fit_style(GTK_TOOL_ITEM(user_data), style);
 }
 
-/* on_menu_quit() — File → Quit.                                             */
+/* on_menu_quit() — File → Quit.                                            */
 static void
 on_menu_quit(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     gtk_widget_destroy(lw->window);
 }
 
-/* menu_item() — build one wired menu item.                                  */
+/* menu_item() — build one wired menu item.                                 */
 static GtkWidget *
 menu_item(GtkWidget *menu, const gchar *label, GCallback cb, gpointer data)
 {
@@ -4253,20 +4732,20 @@ menu_item(GtkWidget *menu, const gchar *label, GCallback cb, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_library_apply_native_menubar() — move the library menu into (or out
+ * task_library_apply_native_menubar() — move the library menu into (or out
  * of) the native macOS menu bar (see header).  Mirrors Notes: the
  * SAME menu shell drives the macOS bar — the in-window widget just has
  * to be hidden; leaving native mode hands macOS an empty bar so the app
  * menu stays functional.
  * ------------------------------------------------------------------------- */
 void
-bt_library_apply_native_menubar(BtApp *app, gboolean native)
+task_library_apply_native_menubar(TaskApp *app, gboolean native)
 {
 #ifdef HAVE_GTKOSX
     if (app->library_window == NULL)
         return;
     GtkWidget *menubar =             /* the in-window GtkMenuBar            */
-        g_object_get_data(G_OBJECT(app->library_window), "bt-menubar");
+        g_object_get_data(G_OBJECT(app->library_window), "task-menubar");
     if (menubar == NULL)
         return;
 
@@ -4290,15 +4769,15 @@ bt_library_apply_native_menubar(BtApp *app, gboolean native)
  * =========================================================================== */
 
 /* tool_button() — a style-aware toolbar button (local icon + label)
- * wired to `cb` and appended to `bar`.                                      */
+ * wired to `cb` and appended to `bar`.                                     */
 static GtkToolItem *
-tool_button(BtLibrary *lw, GtkToolbar *bar, const gchar *icon,
+tool_button(TaskLibrary *lw, GtkToolbar *bar, const gchar *icon,
             const gchar *fallback_markup, const gchar *label,
             const gchar *tooltip, GCallback cb)
 {
-    GtkToolItem *item = bt_app_tool_item_new(lw->app, icon,
-                                             fallback_markup, label,
-                                             tooltip);
+    GtkToolItem *item = task_app_tool_item_new(lw->app, icon,
+                                               fallback_markup, label,
+                                               tooltip);
     g_signal_connect(item, "clicked", cb, lw);
     gtk_toolbar_insert(bar, item, -1);
     return item;
@@ -4306,14 +4785,14 @@ tool_button(BtLibrary *lw, GtkToolbar *bar, const gchar *icon,
 
 /* compact_bar_button() — one floating-bar button: the 24 px local icon
  * (Pango-markup glyph when the PNG is missing, matching the toolbar's
- * fallback rule) wired to `cb`, appended to `box`.                          */
+ * fallback rule) wired to `cb`, appended to `box`.                         */
 static void
-compact_bar_button(BtLibrary *lw, GtkWidget *box, const gchar *icon,
+compact_bar_button(TaskLibrary *lw, GtkWidget *box, const gchar *icon,
                    const gchar *fallback_markup, const gchar *tooltip,
                    GCallback cb)
 {
     GtkWidget *btn   = gtk_button_new();
-    GtkWidget *image = bt_app_icon_image_sized(lw->app, icon, 24);
+    GtkWidget *image = task_app_icon_image_sized(lw->app, icon, 24);
     if (image == NULL) {
         image = gtk_label_new(NULL);
         gtk_label_set_markup(GTK_LABEL(image), fallback_markup);
@@ -4327,13 +4806,13 @@ compact_bar_button(BtLibrary *lw, GtkWidget *box, const gchar *icon,
 
 /* float_bar_css() — the floating pill's plate: the window background, with
  * a border shaded off the same color so it reads as a raised object in
- * either a light or a dark theme.                                           */
+ * either a light or a dark theme.                                          */
 static gchar *
 float_bar_css(const GdkRGBA *bg)
 {
     /* Light themes want a DARKER border than the plate, dark themes a
      * lighter one — pick the direction from the plate's own luminance so
-     * the edge stays visible either way.                                    */
+     * the edge stays visible either way.                                   */
     gdouble lum = 0.299 * bg->red + 0.587 * bg->green + 0.114 * bg->blue;
     gchar *c   = rgb_of(bg);
     gchar *css = g_strdup_printf(
@@ -4357,18 +4836,18 @@ float_bar_css(const GdkRGBA *bg)
  * Returned as an overlay child (halign/valign END + 20 px margins do the
  * pinning); also stored as lw->float_bar, which compact_layout_apply
  * shows and hides.  The bar is NOT registered with
- * bt_app_register_toolbar — it is icons-only by design and must not grow
+ * task_app_register_toolbar — it is icons-only by design and must not grow
  * labels when the toolbar style changes.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
-compact_bar_new(BtLibrary *lw)
+compact_bar_new(TaskLibrary *lw)
 {
     GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
     /* A rounded, bordered plate so the buttons read as one floating
      * object over the task rows rather than two loose glyphs.  Both colors
      * come from the theme's @theme_bg_color (the border a shade of it), the
      * same resolution the column headers use — hardcoding the light-theme
-     * grays put a white slab over a dark theme's task rows.                 */
+     * grays put a white slab over a dark theme's task rows.                */
     themed_bg_css_apply(bar, float_bar_css);
     compact_bar_button(lw, bar, "add2", "+", "Create a task in the "
                        "selected list", G_CALLBACK(on_new_task));
@@ -4394,7 +4873,7 @@ compact_bar_new(BtLibrary *lw)
  * Fills lw->day_labels / day_stores / day_views [d].
  * ------------------------------------------------------------------------- */
 static GtkWidget *
-forecast_day_section(BtLibrary *lw, gint d)
+forecast_day_section(TaskLibrary *lw, gint d)
 {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
 
@@ -4420,7 +4899,7 @@ forecast_day_section(BtLibrary *lw, gint d)
                                     FALSE);
     /* No selection: seven views would each keep their own, leaving up
      * to seven "selected" rows on screen.  Double-click activation
-     * (and the checkbox) work without one.                                   */
+     * (and the checkbox) work without one.                                 */
     gtk_tree_selection_set_mode(
         gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->day_views[d])),
         GTK_SELECTION_NONE);
@@ -4428,7 +4907,7 @@ forecast_day_section(BtLibrary *lw, gint d)
                      G_CALLBACK(on_task_activated), lw);
 
     GtkCellRenderer *done_cell = gtk_cell_renderer_toggle_new();
-    g_object_set_data(G_OBJECT(done_cell), "bt-model",
+    g_object_set_data(G_OBJECT(done_cell), "task-model",
                       lw->day_stores[d]);
     g_signal_connect(done_cell, "toggled",
                      G_CALLBACK(on_forecast_done_toggled), lw);
@@ -4454,7 +4933,7 @@ forecast_day_section(BtLibrary *lw, gint d)
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->day_views[d]), cdesc);
 
     /* A frame so each day reads as its own list even where the white
-     * rows meet the 6 px gaps.                                               */
+     * rows meet the 6 px gaps.                                             */
     GtkWidget *frame = gtk_frame_new(NULL);
     gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_IN);
     gtk_container_add(GTK_CONTAINER(frame), lw->day_views[d]);
@@ -4464,12 +4943,12 @@ forecast_day_section(BtLibrary *lw, gint d)
 
 /* on_paned_position() — track the divider for persistence.  Fires on
  * every step of a drag, so it only caches; on_library_destroy does the
- * single config write.                                                      */
+ * single config write.                                                     */
 static void
 on_paned_position(GObject *paned, GParamSpec *pspec, gpointer data)
 {
     (void)pspec;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     gint pos = gtk_paned_get_position(GTK_PANED(paned));
     /* Ignore the collapse the Sidebar toggle causes: hiding the pane
      * drives the position to 0, and storing that would reopen the next
@@ -4478,29 +4957,29 @@ on_paned_position(GObject *paned, GParamSpec *pspec, gpointer data)
         lw->sb_width = pos;
 }
 
-/* on_library_configure() — track the live client size for persistence.      */
+/* on_library_configure() — track the live client size for persistence.     */
 static gboolean
 on_library_configure(GtkWidget *w, GdkEventConfigure *event, gpointer data)
 {
     (void)w; (void)event;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     gtk_window_get_size(GTK_WINDOW(lw->window), &lw->win_w, &lw->win_h);
     return FALSE;                    /* propagate                           */
 }
 
-/* on_library_destroy() — tear down: editors first (flushing saves).         */
+/* on_library_destroy() — tear down: editors first (flushing saves).        */
 static void
 on_library_destroy(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtLibrary *lw = data;
-    /* The closing size becomes the next launch's window size.               */
+    TaskLibrary *lw = data;
+    /* The closing size becomes the next launch's window size.              */
     if (lw->win_w > 0 && lw->win_h > 0) {
         gchar *v = g_strdup_printf("%d", lw->win_w);
-        bt_app_config_set("win_w", v);
+        task_app_config_set("win_w", v);
         g_free(v);
         v = g_strdup_printf("%d", lw->win_h);
-        bt_app_config_set("win_h", v);
+        task_app_config_set("win_h", v);
         g_free(v);
     }
     /* Likewise the divider: a sidebar narrowed by hand has to come back
@@ -4509,14 +4988,14 @@ on_library_destroy(GtkWidget *w, gpointer data)
      * the handle moves and each write rewrites the ini.                    */
     if (lw->sb_width > 0) {
         gchar *v = g_strdup_printf("%d", lw->sb_width);
-        bt_app_config_set("sidebar_width", v);
+        task_app_config_set("sidebar_width", v);
         g_free(v);
     }
     /* Hooks come down BEFORE the editors: a closing editor's final save
-     * would otherwise fire notify_changed → bt_editor_refresh_all, which
+     * would otherwise fire notify_changed → task_editor_refresh_all, which
      * can destroy sibling editors mid-teardown (a failing Notes CLI
      * closes its editors on reload) and leave close_all's snapshot list
-     * holding freed windows.                                                */
+     * holding freed windows.                                               */
     lw->app->notify_changed = NULL;
     lw->app->notify_tasks   = NULL;
     lw->app->notify_status  = NULL;
@@ -4526,7 +5005,7 @@ on_library_destroy(GtkWidget *w, gpointer data)
      * Both must come down before the library does, or the grab outlives
      * the widget it was taken on and the pointer is dead app-wide.        */
     card_drag_stop(lw);
-    bt_editor_close_all(lw->app);
+    task_editor_close_all(lw->app);
     if (lw->drag_row_ref  != NULL)
         gtk_tree_row_reference_free(lw->drag_row_ref);
     if (lw->drag_lock_ref != NULL)
@@ -4536,6 +5015,8 @@ on_library_destroy(GtkWidget *w, gpointer data)
     g_clear_object(&lw->card_grabbing);
     if (lw->group_expanded != NULL)
         g_hash_table_destroy(lw->group_expanded);
+    if (lw->kanban_sel != NULL)
+        g_hash_table_destroy(lw->kanban_sel);
     g_free(lw);
 }
 
@@ -4545,7 +5026,7 @@ on_library_destroy(GtkWidget *w, gpointer data)
 
 /* list_order_key() — a real list's manual-order config key.  Its own
  * function so on_delete_list can name the key it has to remove without
- * repeating the format string.  New string (g_free).                        */
+ * repeating the format string.  New string (g_free).                       */
 static gchar *
 list_order_key(gint64 list_id)
 {
@@ -4553,9 +5034,9 @@ list_order_key(gint64 list_id)
 }
 
 /* view_order_key() — the config key for the current view's manual sort
- * order, or NULL if the view doesn't support it.  New string (g_free).       */
+ * order, or NULL if the view doesn't support it.  New string (g_free).     */
 static gchar *
-view_order_key(BtLibrary *lw)
+view_order_key(TaskLibrary *lw)
 {
     switch (lw->sel_kind) {
     case SB_KIND_LIST:
@@ -4577,9 +5058,9 @@ view_order_key(BtLibrary *lw)
  * order to config as a comma-separated list of task ids.  Every row is a
  * real task now (mirrored Notes items included), so the old
  * "NOTEID:ORD" token form is gone; a saved order still holding those
- * tokens simply finds no match and those entries drop out.                  */
+ * tokens simply finds no match and those entries drop out.                 */
 static void
-task_view_save_manual_order(BtLibrary *lw)
+task_view_save_manual_order(TaskLibrary *lw)
 {
     gchar *key = view_order_key(lw);
     if (key == NULL) return;
@@ -4596,20 +5077,20 @@ task_view_save_manual_order(BtLibrary *lw)
             }
         } while (gtk_tree_model_iter_next(model, &iter));
     }
-    bt_app_config_set(key, s->str);
+    task_app_config_set(key, s->str);
     g_string_free(s, TRUE);
     g_free(key);
 }
 
 /* task_view_apply_manual_order() — after refresh_tasks populates the store,
  * reorder rows to match the saved manual order for the current view.  Tasks
- * absent from the saved list appear at the tail; id=0 rows follow them.       */
+ * absent from the saved list appear at the tail; id=0 rows follow them.    */
 static void
-task_view_apply_manual_order(BtLibrary *lw)
+task_view_apply_manual_order(TaskLibrary *lw)
 {
     gchar *key = view_order_key(lw);
     if (key == NULL) return;
-    gchar *saved = bt_app_config_get(key);
+    gchar *saved = task_app_config_get(key);
     g_free(key);
     if (saved == NULL || *saved == '\0') { g_free(saved); return; }
     GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
@@ -4628,7 +5109,7 @@ task_view_apply_manual_order(BtLibrary *lw)
     /* Build new_order: saved entries first (in saved sequence), remainder
      * (new rows not yet in saved list) appended at tail.  A pre-mirror
      * order may still hold "NOTEID:ORD" tokens; they parse to 0, match
-     * nothing, and are skipped.                                             */
+     * nothing, and are skipped.                                            */
     gint     *new_order = g_new(gint, n);
     gboolean *placed    = g_new0(gboolean, n);
     gint      fill      = 0;
@@ -4661,7 +5142,7 @@ task_view_apply_manual_order(BtLibrary *lw)
  * are set once on the renderer at construction instead of on every draw.
  * Kept as its own function (rather than pointing the column straight at
  * task_row_bg_func) because the column is where a per-row "this row cannot
- * move" state would land if one is ever added.                              */
+ * move" state would land if one is ever added.                             */
 static void
 drag_handle_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                  GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
@@ -4680,7 +5161,7 @@ drag_handle_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
  * only reachable from a realized widget).
  * ------------------------------------------------------------------------- */
 static void
-task_drag_set_cursor(GtkWidget *widget, BtLibrary *lw, gdouble x, gdouble y)
+task_drag_set_cursor(GtkWidget *widget, TaskLibrary *lw, gdouble x, gdouble y)
 {
     GdkWindow  *win = gtk_widget_get_window(widget);
     if (win == NULL) return;
@@ -4690,7 +5171,7 @@ task_drag_set_cursor(GtkWidget *widget, BtLibrary *lw, gdouble x, gdouble y)
         gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
             (gint)x, (gint)y, NULL, &over, NULL, NULL);
         GtkTreeViewColumn *cdrag =
-            g_object_get_data(G_OBJECT(lw->task_view), "bt-cdrag");
+            g_object_get_data(G_OBJECT(lw->task_view), "task-cdrag");
         want_resize = (over != NULL && over == cdrag);
     }
     if (want_resize && lw->drag_cursor == NULL)
@@ -4698,12 +5179,12 @@ task_drag_set_cursor(GtkWidget *widget, BtLibrary *lw, gdouble x, gdouble y)
             gtk_widget_get_display(widget), "ns-resize");
     /* NULL restores the window default — and is also what a display that
      * cannot supply "ns-resize" leaves us with, which is the right
-     * fallback rather than a guessed stock cursor.                          */
+     * fallback rather than a guessed stock cursor.                         */
     gdk_window_set_cursor(win, want_resize ? lw->drag_cursor : NULL);
 }
 
 /* on_task_leave_notify() — restore the default cursor when the pointer
- * leaves the task view (e.g. moving to another widget).                       */
+ * leaves the task view (e.g. moving to another widget).                    */
 static gboolean
 on_task_leave_notify(GtkWidget *widget, GdkEventCrossing *ev, gpointer data)
 {
@@ -4716,11 +5197,11 @@ on_task_leave_notify(GtkWidget *widget, GdkEventCrossing *ev, gpointer data)
 /* on_task_drag_motion() — when the pointer enters a different row, swap
  * that row with the dragged row so the dragged item ends up under the
  * cursor.  Uses get_path_at_pos (no hysteresis) so the swap fires the
- * moment the pointer crosses a row boundary.                                  */
+ * moment the pointer crosses a row boundary.                               */
 static gboolean
 on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
 {
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     task_drag_set_cursor(widget, lw, ev->x, ev->y);
     if (!lw->drag_active || lw->drag_row_ref == NULL)
         return FALSE;
@@ -4737,7 +5218,7 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
 
     if (gtk_tree_path_compare(at_path, drag_path) == 0) {
         /* Cursor is back on the dragged row — clear the anti-flicker lock
-         * so the next row the cursor enters will swap normally.              */
+         * so the next row the cursor enters will swap normally.            */
         if (lw->drag_lock_ref != NULL) {
             gtk_tree_row_reference_free(lw->drag_lock_ref);
             lw->drag_lock_ref = NULL;
@@ -4745,7 +5226,7 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
     } else {
         /* Check whether this is the row we just swapped with.  Row refs
          * auto-update through moves, so lock_path tracks the locked row
-         * even after surrounding rows have shifted.                          */
+         * even after surrounding rows have shifted.                        */
         GtkTreePath *lock_path = lw->drag_lock_ref
             ? gtk_tree_row_reference_get_path(lw->drag_lock_ref) : NULL;
         gboolean locked = lock_path &&
@@ -4767,7 +5248,7 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
                     gint drag_idx = gtk_tree_path_get_indices(drag_path)[0];
                     gint at_idx   = gtk_tree_path_get_indices(at_path)[0];
                     /* Lock the target BEFORE the move; the row ref will
-                     * auto-update to track it at its new position.           */
+                     * auto-update to track it at its new position.         */
                     if (lw->drag_lock_ref != NULL)
                         gtk_tree_row_reference_free(lw->drag_lock_ref);
                     lw->drag_lock_ref =
@@ -4789,12 +5270,12 @@ on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
 }
 
 /* on_task_drag_release() — button released: end the drag and persist the
- * new row order.                                                              */
+ * new row order.                                                           */
 static gboolean
 on_task_drag_release(GtkWidget *widget, GdkEventButton *ev, gpointer data)
 {
     (void)widget; (void)ev;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     if (!lw->drag_active) return FALSE;
     lw->drag_active = FALSE;
     if (lw->drag_row_ref != NULL) {
@@ -4806,7 +5287,7 @@ on_task_drag_release(GtkWidget *widget, GdkEventButton *ev, gpointer data)
         lw->drag_lock_ref = NULL;
     }
     task_view_save_manual_order(lw);
-    gtk_widget_queue_draw(widget);   /* clear the amber highlight            */
+    gtk_widget_queue_draw(widget);   /* clear the amber highlight           */
     GdkWindow *win = gtk_widget_get_window(widget);
     if (win) gdk_window_set_cursor(win, NULL);
     return FALSE;
@@ -4818,25 +5299,25 @@ on_task_drag_release(GtkWidget *widget, GdkEventButton *ev, gpointer data)
  * ALSO the single writer of lw->manual_sort, the cached copy the
  * per-motion and per-refresh paths read instead of the ini — every writer
  * of the config key calls this straight afterwards, so the cache cannot
- * drift.                                                                    */
+ * drift.                                                                   */
 static void
-task_manual_sort_apply(BtLibrary *lw)
+task_manual_sort_apply(TaskLibrary *lw)
 {
     gboolean manual =
-        bt_app_config_get_bool("task_list_manual_sort", FALSE);
+        task_app_config_get_bool("task_list_manual_sort", FALSE);
     lw->manual_sort = manual;
     GtkTreeViewColumn *cdrag =
-        g_object_get_data(G_OBJECT(lw->task_view), "bt-cdrag");
+        g_object_get_data(G_OBJECT(lw->task_view), "task-cdrag");
     GtkTreeViewColumn *cdone =
-        g_object_get_data(G_OBJECT(lw->task_view), "bt-cdone");
+        g_object_get_data(G_OBJECT(lw->task_view), "task-cdone");
     GtkTreeViewColumn *cdesc =
-        g_object_get_data(G_OBJECT(lw->task_view), "bt-cdesc");
+        g_object_get_data(G_OBJECT(lw->task_view), "task-cdesc");
     GtkTreeViewColumn *cstatus =
-        g_object_get_data(G_OBJECT(lw->task_view), "bt-cstatus");
+        g_object_get_data(G_OBJECT(lw->task_view), "task-cstatus");
     GtkTreeViewColumn *cdue  =
-        g_object_get_data(G_OBJECT(lw->task_view), "bt-cdue");
+        g_object_get_data(G_OBJECT(lw->task_view), "task-cdue");
     GtkTreeViewColumn *ccompleted =
-        g_object_get_data(G_OBJECT(lw->task_view), "bt-ccompleted");
+        g_object_get_data(G_OBJECT(lw->task_view), "task-ccompleted");
     if (cdrag)      gtk_tree_view_column_set_visible(cdrag, manual);
     if (cdone)      gtk_tree_view_column_set_clickable(cdone,      !manual);
     if (cdesc)      gtk_tree_view_column_set_clickable(cdesc,      !manual);
@@ -4851,77 +5332,77 @@ task_manual_sort_apply(BtLibrary *lw)
 }
 
 /* on_column_toggled() — a column visibility check item was clicked: update
- * the column visibility and persist in config.                              */
+ * the column visibility and persist in config.                             */
 static void
 on_column_toggled(GtkCheckMenuItem *item, gpointer data)
 {
     (void)data;
-    GtkTreeViewColumn *col = g_object_get_data(G_OBJECT(item), "bt-col");
-    BtLibrary         *lw  = g_object_get_data(G_OBJECT(item), "bt-lw");
+    GtkTreeViewColumn *col = g_object_get_data(G_OBJECT(item), "task-col");
+    TaskLibrary         *lw  = g_object_get_data(G_OBJECT(item), "task-lw");
     if (!col || !lw) return;
-    const gchar *key = g_object_get_data(G_OBJECT(col), "bt-colkey");
+    const gchar *key = g_object_get_data(G_OBJECT(col), "task-colkey");
     gboolean vis = gtk_check_menu_item_get_active(item);
     gtk_tree_view_column_set_visible(col, vis);
     if (key) {
         gchar *cfg = g_strdup_printf("col_%s_visible", key);
-        bt_app_config_set(cfg, vis ? "1" : "0");
+        task_app_config_set(cfg, vis ? "1" : "0");
         g_free(cfg);
     }
 }
 
-/* task_columns_apply() — restore persisted column visibility.               */
+/* task_columns_apply() — restore persisted column visibility.              */
 static void
-task_columns_apply(BtLibrary *lw)
+task_columns_apply(TaskLibrary *lw)
 {
     GtkTreeViewColumn *cdone =
-        g_object_get_data(G_OBJECT(lw->task_view), "bt-cdone");
+        g_object_get_data(G_OBJECT(lw->task_view), "task-cdone");
     GtkTreeViewColumn *cstatus =
-        g_object_get_data(G_OBJECT(lw->task_view), "bt-cstatus");
+        g_object_get_data(G_OBJECT(lw->task_view), "task-cstatus");
     GtkTreeViewColumn *cdue  =
-        g_object_get_data(G_OBJECT(lw->task_view), "bt-cdue");
+        g_object_get_data(G_OBJECT(lw->task_view), "task-cdue");
     GtkTreeViewColumn *ccompleted =
-        g_object_get_data(G_OBJECT(lw->task_view), "bt-ccompleted");
+        g_object_get_data(G_OBJECT(lw->task_view), "task-ccompleted");
     if (cdone)
         gtk_tree_view_column_set_visible(cdone,
-            bt_app_config_get_bool("col_done_visible", TRUE));
+            task_app_config_get_bool("col_done_visible", TRUE));
     /* Status defaults to HIDDEN: the ✓ column already says what most
      * rows need, and the header right-click menu is where anyone who
      * wants the third state on screen turns it on.                        */
     if (cstatus)
         gtk_tree_view_column_set_visible(cstatus,
-            bt_app_config_get_bool("col_status_visible", FALSE));
+            task_app_config_get_bool("col_status_visible", FALSE));
     if (cdue)
         gtk_tree_view_column_set_visible(cdue,
-            bt_app_config_get_bool("col_due_visible", TRUE));
+            task_app_config_get_bool("col_due_visible", TRUE));
     if (ccompleted)
         gtk_tree_view_column_set_visible(ccompleted,
-            bt_app_config_get_bool("col_completed_visible", TRUE));
+            task_app_config_get_bool("col_completed_visible", TRUE));
 }
 
 /* on_column_header_press() — right-click on any column header pops a menu
  * of check items for the hidable columns (Done, Status, Due Date and
- * Completion Date; Task always shows and has no entry).                     */
+ * Completion Date; Task always shows and has no entry).                    */
 static gboolean
 on_column_header_press(GtkWidget *btn, GdkEventButton *ev, gpointer data)
 {
     (void)btn;
     if (ev->button != 3) return FALSE;
-    BtLibrary *lw = data;
+    TaskLibrary *lw = data;
     GtkWidget *menu = gtk_menu_new();
 
     GList *cols = gtk_tree_view_get_columns(GTK_TREE_VIEW(lw->task_view));
     for (GList *l = cols; l; l = l->next) {
         GtkTreeViewColumn *col   = l->data;
         const gchar       *key   =
-            g_object_get_data(G_OBJECT(col), "bt-colkey");
+            g_object_get_data(G_OBJECT(col), "task-colkey");
         const gchar       *label =
-            g_object_get_data(G_OBJECT(col), "bt-collabel");
+            g_object_get_data(G_OBJECT(col), "task-collabel");
         if (!key) continue;
         GtkWidget *item = gtk_check_menu_item_new_with_label(label);
         gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item),
             gtk_tree_view_column_get_visible(col));
-        g_object_set_data(G_OBJECT(item), "bt-col", col);
-        g_object_set_data(G_OBJECT(item), "bt-lw",  lw);
+        g_object_set_data(G_OBJECT(item), "task-col", col);
+        g_object_set_data(G_OBJECT(item), "task-lw",  lw);
         g_signal_connect(item, "toggled",
                          G_CALLBACK(on_column_toggled), NULL);
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
@@ -4935,29 +5416,30 @@ on_column_header_press(GtkWidget *btn, GdkEventButton *ev, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_library_window_new() — build the library window (see header).
+ * task_library_window_new() — build the library window (see header).
  * ------------------------------------------------------------------------- */
 GtkWidget *
-bt_library_window_new(BtApp *app)
+task_library_window_new(TaskApp *app)
 {
-    BtLibrary *lw = g_new0(BtLibrary, 1);
+    TaskLibrary *lw = g_new0(TaskLibrary, 1);
     lw->app = app;
     /* Seeded here, not left to task_manual_sort_apply at the end of this
      * function: the toolbar icon, tooltip and View-menu check are all built
-     * before that call and read the cache.                                  */
+     * before that call and read the cache.                                 */
     lw->manual_sort =
-        bt_app_config_get_bool("task_list_manual_sort", FALSE);
+        task_app_config_get_bool("task_list_manual_sort", FALSE);
     /* Same reason: the View-menu check is built from this cache, and
      * refresh_tasks reads it before the menu handler ever runs.            */
-    lw->kanban = bt_app_config_get_bool("kanban_view", FALSE);
+    lw->kanban = task_app_config_get_bool("kanban_view", FALSE);
     lw->sel_kind = SB_KIND_LIST;     /* refresh falls back to first list    */
     lw->group_expanded = g_hash_table_new(g_direct_hash, g_direct_equal);
+    lw->kanban_sel     = g_hash_table_new(NULL, NULL);   /* id set          */
 
     lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(lw->window), "Tasks");
-    /* The last session's closing size (win_w/win_h), else the default.      */
-    gchar *ww = bt_app_config_get("win_w");
-    gchar *wh = bt_app_config_get("win_h");
+    /* The last session's closing size (win_w/win_h), else the default.     */
+    gchar *ww = task_app_config_get("win_w");
+    gchar *wh = task_app_config_get("win_h");
     gint w = ww != NULL ? atoi(ww) : 0;
     gint hgt = wh != NULL ? atoi(wh) : 0;
     gtk_window_set_default_size(GTK_WINDOW(lw->window),
@@ -5002,69 +5484,69 @@ bt_library_window_new(BtApp *app)
     GtkWidget *view_menu = gtk_menu_new();
     GtkWidget *view_item = gtk_menu_item_new_with_label("View");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(view_item), view_menu);
-    lw->view_show_done_item =
-        gtk_check_menu_item_new_with_label("Show Completed");
-    gtk_check_menu_item_set_active(
-        GTK_CHECK_MENU_ITEM(lw->view_show_done_item),
-        bt_app_config_get_bool("show_completed", TRUE));
-    g_signal_connect(lw->view_show_done_item, "toggled",
-                     G_CALLBACK(on_menu_toggle_done_visible), lw);
+    /* Built with the label the persisted state calls for;
+     * hide_done_icon_refresh keeps it in step with the toolbar twin from
+     * then on.  Wired straight to that twin's handler.                    */
+    lw->view_show_done_item = gtk_menu_item_new_with_label(
+        task_app_config_get_bool("show_completed", TRUE)
+            ? DONE_LABEL_TO_HIDE : DONE_LABEL_TO_SHOW);
+    g_signal_connect(lw->view_show_done_item, "activate",
+                     G_CALLBACK(on_toggle_done_visible), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           lw->view_show_done_item);
-    lw->view_manual_sort_item =
-        gtk_check_menu_item_new_with_label("Manual Sort");
-    gtk_check_menu_item_set_active(
-        GTK_CHECK_MENU_ITEM(lw->view_manual_sort_item), lw->manual_sort);
-    g_signal_connect(lw->view_manual_sort_item, "toggled",
-                     G_CALLBACK(on_menu_toggle_manual_sort), lw);
+    /* The sort toggle, as an ACTION item: its label is the mode a click
+     * switches TO — "Manual Sorting" while sorting is automatic (the
+     * column headers doing it), "Automatic Sorting" while dragging is.
+     * Built with the right label already, and
+     * manual_sort_icon_refresh keeps it in step with the toolbar twin.     */
+    lw->view_manual_sort_item = gtk_menu_item_new_with_label(
+        lw->manual_sort ? SORT_LABEL_TO_AUTO : SORT_LABEL_TO_MANUAL);
+    g_signal_connect(lw->view_manual_sort_item, "activate",
+                     G_CALLBACK(on_toggle_manual_sort), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           lw->view_manual_sort_item);
-    /* Kanban View sits with the other two task-pane modes, above the
-     * separator that divides them from the window-chrome toggles.          */
-    lw->view_kanban_item =
-        gtk_check_menu_item_new_with_label("Kanban View");
-    gtk_check_menu_item_set_active(
-        GTK_CHECK_MENU_ITEM(lw->view_kanban_item), lw->kanban);
-    g_signal_connect(lw->view_kanban_item, "toggled",
-                     G_CALLBACK(on_menu_toggle_kanban), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
-                          lw->view_kanban_item);
+
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           gtk_separator_menu_item_new());
-    /* Show Sidebar mirrors the toolbar's Sidebar button (both write
-     * `sidebar_visible`); Compact Layout swaps the toolbar for the
-     * floating New/Delete pair, leaving the sidebar to Show Sidebar in
-     * either mode.  Both are applied after the construction-time
+
+    /* Below the divider: what the WINDOW looks like.  Show/Hide Sidebar
+     * mirrors the toolbar's Sidebar button (both write `sidebar_visible`);
+     * Compact / Full Controls swaps the toolbar for the floating
+     * New/Delete pair, leaving the sidebar to that item in either mode;
+     * Kanban View / List View swaps the task pane for the board.  All are applied after the construction-time
      * show_all, at the end of this function.                               */
-    lw->view_sidebar_item =
-        gtk_check_menu_item_new_with_label("Show Sidebar");
-    gtk_check_menu_item_set_active(
-        GTK_CHECK_MENU_ITEM(lw->view_sidebar_item),
-        bt_app_config_get_bool("sidebar_visible", FALSE));
-    g_signal_connect(lw->view_sidebar_item, "toggled",
-                     G_CALLBACK(on_menu_toggle_sidebar), lw);
+    lw->view_sidebar_item = gtk_menu_item_new_with_label(
+        task_app_config_get_bool("sidebar_visible", FALSE)
+            ? SIDEBAR_LABEL_TO_HIDE : SIDEBAR_LABEL_TO_SHOW);
+    g_signal_connect(lw->view_sidebar_item, "activate",
+                     G_CALLBACK(on_toggle_sidebar), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           lw->view_sidebar_item);
-    lw->view_compact_item =
-        gtk_check_menu_item_new_with_label("Compact Layout");
-    gtk_check_menu_item_set_active(
-        GTK_CHECK_MENU_ITEM(lw->view_compact_item),
-        bt_app_config_get_bool("compact_layout", FALSE));
-    g_signal_connect(lw->view_compact_item, "toggled",
+    lw->view_compact_item = gtk_menu_item_new_with_label(
+        task_app_config_get_bool("compact_layout", FALSE)
+            ? CTRL_LABEL_TO_FULL : CTRL_LABEL_TO_COMPACT);
+    g_signal_connect(lw->view_compact_item, "activate",
                      G_CALLBACK(on_menu_toggle_compact), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           lw->view_compact_item);
+    lw->view_kanban_item = gtk_menu_item_new_with_label(
+        lw->kanban ? PANE_LABEL_TO_LIST : PANE_LABEL_TO_KANBAN);
+    g_signal_connect(lw->view_kanban_item, "activate",
+                     G_CALLBACK(on_toggle_kanban), lw);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
+                          lw->view_kanban_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), view_item);
 
     /* Remembered so the menu can be moved into the native macOS menu
-     * bar (see bt_library_apply_native_menubar).                            */
-    g_object_set_data(G_OBJECT(lw->window), "bt-menubar", menubar);
+     * bar (see task_library_apply_native_menubar).                         */
+    g_object_set_data(G_OBJECT(lw->window), "task-menubar", menubar);
     gtk_box_pack_start(GTK_BOX(vbox), menubar, FALSE, FALSE, 0);
 
     /* --- Toolbar ---------------------------------------------------------- */
     /* Icon names are icons/-relative paths; the curated set lives in
-     * icons/ (case-exact for Linux).  Layout: sidebar toggle,
-     * a drawn divider, then the task buttons and Sync.                      */
+     * icons/ (case-exact for Linux).  Layout: sidebar toggle, a drawn
+     * divider, Sync + the completed, sort and pane toggles, a divider,
+     * then the task pair — and the About button pushed to the far right.   */
     GtkWidget *toolbar = gtk_toolbar_new();
     lw->toolbar = toolbar;           /* Compact Layout hides it whole       */
     /* Small-toolbar metrics — the Notes bar height.                       */
@@ -5084,9 +5566,19 @@ bt_library_window_new(BtApp *app)
         "Hide completed tasks", G_CALLBACK(on_toggle_done_visible)));
     hide_done_icon_refresh(lw);      /* the persisted state's icon          */
     lw->manual_sort_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
-        "menu", "\xe2\x89\x8b", "Sort Mode",
+        "manual", "\xe2\x89\x8b", "Sort Mode",
         "Switch to manual drag sorting", G_CALLBACK(on_toggle_manual_sort)));
     manual_sort_icon_refresh(lw);    /* the persisted state's tooltip       */
+    /* The pane toggle sits with the sort toggle, not with the task
+     * buttons: both of them change how the tasks are PRESENTED rather than
+     * acting on a task, and the sort toggle is the control it is most
+     * often used with (the board is always drag-sorted, which is why that
+     * one greys out while this one is on).  task_pane_mode_apply gives it
+     * its icon, label and tooltip — it is called after the
+     * construction-time show_all.                                        */
+    lw->pane_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
+        "menu", "\xe2\x96\xa6", "Kanban",
+        "Show the tasks as a Kanban board", G_CALLBACK(on_toggle_kanban)));
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
 
@@ -5106,22 +5598,22 @@ bt_library_window_new(BtApp *app)
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), spacer, -1);
 
     /* The About button at the far right.  Built by hand because the
-     * child must stay centered (see about_button_fit_style).                */
+     * child must stay centered (see about_button_fit_style).               */
     GtkToolItem *about_item = gtk_tool_item_new();
     GtkWidget *about_btn = gtk_button_new();
     gtk_button_set_relief(GTK_BUTTON(about_btn), GTK_RELIEF_NONE);
     gtk_container_add(GTK_CONTAINER(about_item), about_btn);
     {
         GtkWidget *logo =            /* the icon-mode child                 */
-            bt_app_icon_image_sized(app, "document", 24);
+            task_app_icon_image_sized(app, "document", 24);
         if (logo == NULL)
             logo = gtk_label_new("\xf0\x9f\x8f\xa0");    /* 🏠 fallback     */
         GtkWidget *label = gtk_label_new("About");   /* text-mode child     */
 
         /* Keep owning refs so removal from the button never frees them.    */
-        g_object_set_data_full(G_OBJECT(about_item), "bt-logo",
+        g_object_set_data_full(G_OBJECT(about_item), "task-logo",
                                g_object_ref_sink(logo), g_object_unref);
-        g_object_set_data_full(G_OBJECT(about_item), "bt-label",
+        g_object_set_data_full(G_OBJECT(about_item), "task-label",
                                g_object_ref_sink(label), g_object_unref);
     }
     gtk_tool_item_set_tooltip_text(about_item, "About Tasks");
@@ -5130,12 +5622,12 @@ bt_library_window_new(BtApp *app)
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), about_item, -1);
 
     /* Logo only, except in text-only mode — applied now and re-applied
-     * on every style switch (register_toolbar sets the style below).        */
+     * on every style switch (register_toolbar sets the style below).       */
     about_button_fit_style(about_item, app->toolbar_style);
     g_signal_connect(toolbar, "style-changed",
                      G_CALLBACK(on_toolbar_style_changed), about_item);
 
-    bt_app_register_toolbar(app, toolbar);
+    task_app_register_toolbar(app, toolbar);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
     /* Thin rule between the toolbar and the panes (Notes look).           */
     lw->toolbar_rule = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
@@ -5145,18 +5637,18 @@ bt_library_window_new(BtApp *app)
     /* The panes sit in a GtkOverlay so Compact Layout's floating button
      * pair can hover over the bottom-right corner of the task area.  The
      * overlay wraps the panes rather than the whole window box so the
-     * float never covers the status bar's event messages.                   */
+     * float never covers the status bar's event messages.                  */
     GtkWidget *overlay = gtk_overlay_new();
     gtk_box_pack_start(GTK_BOX(vbox), overlay, TRUE, TRUE, 0);
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     /* A 6 px divider: wide-handle switches GtkPaned off its hairline
      * style, and the exact width comes from CSS on the handle's own
      * `separator` node (the horizontal paned's separator is vertical, so
-     * min-WIDTH is the lever).                                              */
+     * min-WIDTH is the lever).                                             */
     gtk_paned_set_wide_handle(GTK_PANED(paned), TRUE);
-    bt_app_widget_add_css(paned,
+    task_app_widget_add_css(paned,
         "paned > separator { min-width: 6px; }");
-    gchar *sbw = bt_app_config_get("sidebar_width");
+    gchar *sbw = task_app_config_get("sidebar_width");
     lw->sb_width = sbw != NULL ? atoi(sbw) : 220;
     g_free(sbw);
     if (lw->sb_width <= 0)
@@ -5167,7 +5659,7 @@ bt_library_window_new(BtApp *app)
     gtk_container_add(GTK_CONTAINER(overlay), paned);
     gtk_overlay_add_overlay(GTK_OVERLAY(overlay), compact_bar_new(lw));
 
-    /* Sidebar.                                                              */
+    /* Sidebar.                                                             */
     lw->sb_store = gtk_tree_store_new(SB_N_COLS, G_TYPE_INT,
                                       G_TYPE_INT64, G_TYPE_STRING,
                                       G_TYPE_INT);
@@ -5206,8 +5698,8 @@ bt_library_window_new(BtApp *app)
      * renders, and shade(…, 0.96) = rgb(238,236,234)); beware that an
      * UNDEFINED colour name is NOT a parse error here — it silently renders
      * transparent.  Then muted grey text and a blue selection bar with
-     * white text.                                                           */
-    bt_app_widget_add_css(lw->sb_view,
+     * white text.                                                          */
+    task_app_widget_add_css(lw->sb_view,
         "treeview.view {"
         "  background-color: shade(@theme_bg_color, " SB_BG_SHADE ");"
         "  color: rgb(65,65,65);"
@@ -5249,7 +5741,7 @@ bt_library_window_new(BtApp *app)
     GtkWidget *sidebar_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *sidebar_pad = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_size_request(sidebar_pad, -1, SB_TOP_PAD);
-    bt_app_widget_add_css(sidebar_pad,
+    task_app_widget_add_css(sidebar_pad,
         "box { background-color: shade(@theme_bg_color, "
         SB_BG_SHADE "); }");
     gtk_box_pack_start(GTK_BOX(sidebar_box), sidebar_pad, FALSE, FALSE, 0);
@@ -5261,7 +5753,7 @@ bt_library_window_new(BtApp *app)
     gtk_paned_pack1(GTK_PANED(paned), sidebar_box, FALSE, TRUE);
     lw->sidebar_box = sidebar_box;   /* for the toolbar show/hide toggle    */
 
-    /* Task pane.                                                            */
+    /* Task pane.                                                           */
     lw->task_store = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
                                         G_TYPE_BOOLEAN, G_TYPE_STRING,
                                         G_TYPE_STRING, G_TYPE_INT64,
@@ -5274,7 +5766,7 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_set_enable_search(GTK_TREE_VIEW(lw->task_view), FALSE);
     /* Multi-select: Ctrl-click (Cmd on macOS — GTK maps the platform's
      * modify-selection modifier) and Shift-click extend; the context
-     * menu's actions apply to the whole selection.                          */
+     * menu's actions apply to the whole selection.                         */
     gtk_tree_selection_set_mode(
         gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->task_view)),
         GTK_SELECTION_MULTIPLE);
@@ -5289,7 +5781,7 @@ bt_library_window_new(BtApp *app)
      * there was two property notifications per visible row per redraw.
      * Dimming is Pango `alpha` on the markup, never a fixed gray — a gray
      * is unreadable on the blue selection, while alpha rides whatever
-     * foreground the row already has.                                       */
+     * foreground the row already has.                                      */
     GtkCellRenderer   *drag_cell = gtk_cell_renderer_text_new();
     g_object_set(drag_cell, "ypad", 8, "xpad", 4,
                  "markup",                       /* ⠿ handle glyph          */
@@ -5319,7 +5811,7 @@ bt_library_window_new(BtApp *app)
                                             task_row_bg_func, lw, NULL);
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdone);
 
-    /* Task description column — the tall multi-line markup cell.            */
+    /* Task description column — the tall multi-line markup cell.           */
     GtkCellRenderer *desc_cell = gtk_cell_renderer_text_new();
     g_object_set(desc_cell,
                  "ypad", 8,
@@ -5347,7 +5839,7 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_column_set_sort_column_id(cstatus, TL_STATUS);
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cstatus);
 
-    /* Due Date column, urgency-tinted, sortable (undated last).             */
+    /* Due Date column, urgency-tinted, sortable (undated last).            */
     GtkCellRenderer *due_cell = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *cdue =
         gtk_tree_view_column_new_with_attributes("Due Date", due_cell,
@@ -5361,7 +5853,7 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_column_set_sort_column_id(cdue, TL_DUE_RAW);
     gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdue);
 
-    /* Completed column — sortable (incomplete rows last).                   */
+    /* Completed column — sortable (incomplete rows last).                  */
     GtkCellRenderer *completed_cell = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *ccompleted =
         gtk_tree_view_column_new_with_attributes("Completed", completed_cell,
@@ -5381,23 +5873,23 @@ bt_library_window_new(BtApp *app)
     gtk_tree_view_column_set_sort_column_id(cdesc, TL_TITLE);
 
     /* Column hide/show via header right-click.  Done, Status, Due Date and
-     * Completed are hidable (Task always shows); bt-colkey/bt-collabel
+     * Completed are hidable (Task always shows); task-colkey/task-collabel
      * drive the menu.  Store column refs on the view for task_columns_apply
-     * and the realize-time header-button connection.                        */
-    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdrag",      cdrag);
-    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdone",      cdone);
-    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdesc",      cdesc);
-    g_object_set_data(G_OBJECT(lw->task_view), "bt-cstatus",    cstatus);
-    g_object_set_data(G_OBJECT(lw->task_view), "bt-cdue",       cdue);
-    g_object_set_data(G_OBJECT(lw->task_view), "bt-ccompleted", ccompleted);
-    g_object_set_data(G_OBJECT(cdone),      "bt-colkey",   (gpointer)"done");
-    g_object_set_data(G_OBJECT(cdone),      "bt-collabel", (gpointer)"Done");
-    g_object_set_data(G_OBJECT(cstatus),    "bt-colkey",   (gpointer)"status");
-    g_object_set_data(G_OBJECT(cstatus),    "bt-collabel", (gpointer)"Status");
-    g_object_set_data(G_OBJECT(cdue),       "bt-colkey",   (gpointer)"due");
-    g_object_set_data(G_OBJECT(cdue),       "bt-collabel", (gpointer)"Due Date");
-    g_object_set_data(G_OBJECT(ccompleted), "bt-colkey",   (gpointer)"completed");
-    g_object_set_data(G_OBJECT(ccompleted), "bt-collabel", (gpointer)"Completion Date");
+     * and the realize-time header-button connection.                       */
+    g_object_set_data(G_OBJECT(lw->task_view), "task-cdrag",      cdrag);
+    g_object_set_data(G_OBJECT(lw->task_view), "task-cdone",      cdone);
+    g_object_set_data(G_OBJECT(lw->task_view), "task-cdesc",      cdesc);
+    g_object_set_data(G_OBJECT(lw->task_view), "task-cstatus",    cstatus);
+    g_object_set_data(G_OBJECT(lw->task_view), "task-cdue",       cdue);
+    g_object_set_data(G_OBJECT(lw->task_view), "task-ccompleted", ccompleted);
+    g_object_set_data(G_OBJECT(cdone),      "task-colkey",   (gpointer)"done");
+    g_object_set_data(G_OBJECT(cdone),      "task-collabel", (gpointer)"Done");
+    g_object_set_data(G_OBJECT(cstatus),    "task-colkey",   (gpointer)"status");
+    g_object_set_data(G_OBJECT(cstatus),    "task-collabel", (gpointer)"Status");
+    g_object_set_data(G_OBJECT(cdue),       "task-colkey",   (gpointer)"due");
+    g_object_set_data(G_OBJECT(cdue),       "task-collabel", (gpointer)"Due Date");
+    g_object_set_data(G_OBJECT(ccompleted), "task-colkey",   (gpointer)"completed");
+    g_object_set_data(G_OBJECT(ccompleted), "task-collabel", (gpointer)"Completion Date");
     GtkTreeViewColumn *header_cols[] = { cdrag, cdone, cdesc, cstatus, cdue,
                                          ccompleted };
     for (gsize i = 0; i < G_N_ELEMENTS(header_cols); i++) {
@@ -5430,7 +5922,7 @@ bt_library_window_new(BtApp *app)
     /* The Weekly Forecast panel: seven full-width day sections stacked
      * vertically, 6 px apart so the lists never touch, scrolling
      * together in one outer scroller.  It shares the pane with the
-     * regular task list; refresh_tasks swaps their visibility.               */
+     * regular task list; refresh_tasks swaps their visibility.             */
     GtkWidget *week_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(week_box), 6);
     for (gint d = 0; d < 7; d++)
@@ -5451,9 +5943,9 @@ bt_library_window_new(BtApp *app)
     GtkWidget *board = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_box_set_homogeneous(GTK_BOX(board), TRUE);
     gtk_container_set_border_width(GTK_CONTAINER(board), 6);
-    for (gint s = 0; s < BT_STATUS_N_VALUES; s++)
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++)
         gtk_box_pack_start(GTK_BOX(board),
-                           kanban_lane_new(lw, (BtTaskStatus)s),
+                           kanban_lane_new(lw, (TaskStatus)s),
                            TRUE, TRUE, 0);
     lw->kanban_box = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lw->kanban_box),
@@ -5473,7 +5965,7 @@ bt_library_window_new(BtApp *app)
     /* --- Status bar -------------------------------------------------------- */
     /* Same geometry as the Notes status bar: 8 px side margins,
      * 3 px top/bottom (a border_width would add a pixel more on every
-     * edge and read visibly taller).                                        */
+     * edge and read visibly taller).                                       */
     GtkWidget *status = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_widget_set_margin_start(status, 8);
     gtk_widget_set_margin_end(status, 8);
@@ -5492,21 +5984,21 @@ bt_library_window_new(BtApp *app)
     /* Both labels 85% of the UI font (Notes size).  CSS font-size: 85%
      * can resolve to zero on Linux when the per-widget provider has no
      * explicit base size in scope; Pango scale attributes are always
-     * relative to the actual rendered font and work on every platform.      */
+     * relative to the actual rendered font and work on every platform.     */
     PangoAttrList *small_attrs = pango_attr_list_new();
     pango_attr_list_insert(small_attrs, pango_attr_scale_new(0.85));
     gtk_label_set_attributes(GTK_LABEL(lw->status_left),  small_attrs);
     gtk_label_set_attributes(GTK_LABEL(lw->status_right), small_attrs);
     pango_attr_list_unref(small_attrs);
     gtk_box_pack_end(GTK_BOX(vbox), status, FALSE, FALSE, 0);
-    /* Matching thin rule above the status bar.                              */
+    /* Matching thin rule above the status bar.                             */
     gtk_box_pack_end(GTK_BOX(vbox),
                      gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                      FALSE, FALSE, 0);
 
     /* --- Hooks + first population ------------------------------------------ */
     app->library_window = lw->window;
-    g_object_set_data(G_OBJECT(lw->window), "bt-library", lw);
+    g_object_set_data(G_OBJECT(lw->window), "task-library", lw);
     app->notify_changed = notify_changed_hook;
     app->notify_tasks   = notify_tasks_hook;
     app->notify_status  = notify_status_hook;
@@ -5519,14 +6011,14 @@ bt_library_window_new(BtApp *app)
     /* show_all made the whole chrome visible — apply the persisted
      * Compact Layout state, which also settles the lists pane (HIDDEN by
      * default; the Sidebar button and View → Show Sidebar bring it back)
-     * and hides the floating button pair outside compact mode.              */
+     * and hides the floating button pair outside compact mode.             */
     compact_layout_apply(lw);
     /* show_all made ALL THREE task-pane variants visible — put the
-     * regular-list / Weekly Forecast / Kanban choice back.                  */
+     * regular-list / Weekly Forecast / Kanban choice back.                 */
     task_pane_mode_apply(lw);
-    /* Hide Sync button when the master switch is off or user opted out.     */
-    if (!bt_app_config_get_bool("google_sync_enabled", TRUE) ||
-        !bt_app_config_get_bool("sync_toolbar_button", TRUE))
+    /* Hide Sync button when the master switch is off or user opted out.    */
+    if (!task_app_config_get_bool("google_sync_enabled", TRUE) ||
+        !task_app_config_get_bool("sync_toolbar_button", TRUE))
         gtk_widget_hide(lw->sync_item);
     return lw->window;
 }

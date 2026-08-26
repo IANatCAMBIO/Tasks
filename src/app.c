@@ -14,10 +14,10 @@
 #include <unistd.h>
 
 /* ---------------------------------------------------------------------------
- * bt_app_status() — post an event message to the library status bar.
+ * task_app_status() — post an event message to the library status bar.
  * ------------------------------------------------------------------------- */
 void
-bt_app_status(BtApp *app, const gchar *fmt, ...)
+task_app_status(TaskApp *app, const gchar *fmt, ...)
 {
     if (app == NULL || app->notify_status == NULL)
         return;
@@ -30,17 +30,17 @@ bt_app_status(BtApp *app, const gchar *fmt, ...)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_notify_changed() — fire the full-refresh hook if installed.
+ * task_app_notify_changed() — fire the full-refresh hook if installed.
  * ------------------------------------------------------------------------- */
 void
-bt_app_notify_changed(BtApp *app)
+task_app_notify_changed(TaskApp *app)
 {
     if (app != NULL && app->notify_changed != NULL)
         app->notify_changed(app);
 }
 
 /* dialog_run() — shared core of notice/confirm: run a modal message
- * dialog and return its response.                                           */
+ * dialog and return its response.                                          */
 static gint
 dialog_run(GtkWindow *parent, GtkMessageType type, GtkButtonsType buttons,
            const gchar *title, const gchar *msg)
@@ -56,11 +56,11 @@ dialog_run(GtkWindow *parent, GtkMessageType type, GtkButtonsType buttons,
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_notice() — modal OK message dialog.
+ * task_app_notice() — modal OK message dialog.
  * ------------------------------------------------------------------------- */
 void
-bt_app_notice(GtkWindow *parent, GtkMessageType type,
-              const gchar *title, const gchar *fmt, ...)
+task_app_notice(GtkWindow *parent, GtkMessageType type,
+                const gchar *title, const gchar *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -71,10 +71,10 @@ bt_app_notice(GtkWindow *parent, GtkMessageType type,
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_confirm() — modal Yes/No question; TRUE on Yes.
+ * task_app_confirm() — modal Yes/No question; TRUE on Yes.
  * ------------------------------------------------------------------------- */
 gboolean
-bt_app_confirm(GtkWindow *parent, const gchar *title, const gchar *fmt, ...)
+task_app_confirm(GtkWindow *parent, const gchar *title, const gchar *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -87,10 +87,10 @@ bt_app_confirm(GtkWindow *parent, const gchar *title, const gchar *fmt, ...)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_widget_add_css() — one-off CSS on a single widget (see app.h).
+ * task_app_widget_add_css() — one-off CSS on a single widget (see app.h).
  * ------------------------------------------------------------------------- */
 void
-bt_app_widget_add_css(GtkWidget *widget, const gchar *css_text)
+task_app_widget_add_css(GtkWidget *widget, const gchar *css_text)
 {
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_data(provider, css_text, -1, NULL);
@@ -102,32 +102,32 @@ bt_app_widget_add_css(GtkWidget *widget, const gchar *css_text)
 }
 
 /* The old copy_file() (a plain g_file_copy) was REMOVED on 2026-08-26.
- * Database copies go through bt_db_copy_file (VACUUM INTO) instead: a
+ * Database copies go through task_db_copy_file (VACUUM INTO) instead: a
  * byte copy of a live SQLite file can capture a torn page, and this
  * database routinely lives in a sync folder where the source can be
  * rewritten mid-read.  If you need to copy the database, use the db.h
- * helper and VERIFY the result with bt_db_verify_file.                    */
+ * helper and VERIFY the result with task_db_verify_file.                   */
 
 /* ---------------------------------------------------------------------------
- * bt_app_switch_database() — move tasks.db to a new directory (see app.h).
+ * task_app_switch_database() — move tasks.db to a new directory (see app.h).
  * ------------------------------------------------------------------------- */
 gboolean
-bt_app_switch_database(BtApp *app, const gchar *new_dir)
+task_app_switch_database(TaskApp *app, const gchar *new_dir)
 {
-    /* Resolve the target file path.                                          */
+    /* Resolve the target file path.                                        */
     gchar *target;
     if (new_dir != NULL) {
         g_mkdir_with_parents(new_dir, 0755);
-        target = g_build_filename(new_dir, BT_DB_FILENAME, NULL);
+        target = g_build_filename(new_dir, TASK_DB_FILENAME, NULL);
     } else {
-        target = bt_db_default_path();
+        target = task_db_default_path();
     }
     if (g_strcmp0(target, app->db->path) == 0) {
         g_free(target);
-        return TRUE;                   /* already there: nothing to do        */
+        return TRUE;                   /* already there: nothing to do      */
     }
 
-    /* If a database already exists at the target, ask before touching it.   */
+    /* If a database already exists at the target, ask before touching it.  */
     gboolean overwrite = FALSE;
     if (g_file_test(target, G_FILE_TEST_EXISTS)) {
         GtkWindow *parent = app->library_window != NULL
@@ -150,12 +150,12 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
         gtk_widget_destroy(dialog);
         if (response != 1 && response != 2) {
             g_free(target);
-            return FALSE;              /* cancelled: nothing touched          */
+            return FALSE;              /* cancelled: nothing touched        */
         }
         overwrite = (response == 2);
     }
 
-    bt_editor_close_all(app);
+    task_editor_close_all(app);
 
     gchar *old_path = g_strdup(app->db->path);
 
@@ -163,7 +163,7 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
      * COPY, THEN VERIFY, THEN — and only then — remove the original.
      *
      * This function used to discard copy_file's return value and treat
-     * "bt_db_open(target) succeeded" as proof the copy was good.  It is
+     * "task_db_open(target) succeeded" as proof the copy was good.  It is
      * not: SQLite opens a malformed file happily and errors only when a
      * damaged page is READ.  A short copy therefore passed both checks and
      * the original was deleted — which is how a 1965-task database was
@@ -185,11 +185,11 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
          * ever when the user explicitly chose to overwrite.                */
         if (g_file_test(target, G_FILE_TEST_EXISTS))
             g_unlink(target);
-        copy_ok = bt_db_copy_file(app->db, target, &copy_err);
+        copy_ok = task_db_copy_file(app->db, target, &copy_err);
         copied  = TRUE;
         if (copy_ok) {
             gchar *detail = NULL;
-            copy_ok = bt_db_verify_file(target, &detail);
+            copy_ok = task_db_verify_file(target, &detail);
             if (!copy_ok) {
                 g_free(copy_err);
                 copy_err = detail;   /* ownership moves                     */
@@ -199,7 +199,7 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
         }
     }
 
-    bt_db_close(app->db);
+    task_db_close(app->db);
     app->db = NULL;
 
     GError *gerr = NULL;
@@ -208,7 +208,7 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
      * silently continuing is what turned this into data loss before.       */
     gboolean ok = copy_ok;
     if (ok) {
-        app->db = bt_db_open(target, &gerr);
+        app->db = task_db_open(target, &gerr);
         ok = (app->db != NULL);
     }
 
@@ -217,10 +217,10 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
             g_warning("switch_database: the copy at %s did not verify (%s) "
                       "— keeping %s", target,
                       copy_err != NULL ? copy_err : "?", old_path);
-            bt_app_notice(app->library_window != NULL
+            task_app_notice(app->library_window != NULL
                               ? GTK_WINDOW(app->library_window) : NULL,
-                          GTK_MESSAGE_ERROR, NULL,
-                          "The database could not be copied to that "
+                            GTK_MESSAGE_ERROR, NULL,
+                            "The database could not be copied to that "
                           "location intact, so nothing was moved.\n\n"
                           "Your database is still where it was:\n%s\n\n"
                           "The failed copy was left at\n%s\n"
@@ -229,14 +229,14 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
         } else {
             g_warning("switch_database: cannot open %s: %s", target,
                       gerr != NULL ? gerr->message : "?");
-            bt_app_notice(app->library_window != NULL
+            task_app_notice(app->library_window != NULL
                               ? GTK_WINDOW(app->library_window) : NULL,
-                          GTK_MESSAGE_ERROR, NULL,
-                          "Could not open a database at that location.\n"
+                            GTK_MESSAGE_ERROR, NULL,
+                            "Could not open a database at that location.\n"
                           "The previous database is still in use.");
         }
         g_clear_error(&gerr);
-        app->db = bt_db_open(old_path, &gerr);
+        app->db = task_db_open(old_path, &gerr);
         if (app->db == NULL)
             g_critical("switch_database: cannot revert to %s: %s", old_path,
                        gerr != NULL ? gerr->message : "?");
@@ -252,7 +252,7 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
         }
         g_free(app->db_dir);
         app->db_dir = g_strdup(new_dir);
-        bt_app_config_set("db_dir", new_dir);  /* NULL clears the key        */
+        task_app_config_set("db_dir", new_dir);  /* NULL clears the key     */
 
         /* RE-ARM ALL THREE TIMERS on the new path.  Each one captured the
          * old path when it was installed, and that file has just been
@@ -260,9 +260,9 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
          * path that no longer exists and helpfully CREATE an empty
          * database there, then sync against it.  (CLAUDE.md long claimed
          * this happened; it did not until 2026-08-26.)                     */
-        bt_sync_auto_start(app, app->db->path);
-        bt_bnsync_auto_start(app, app->db->path);
-        bt_backup_auto_start(app, app->db->path);
+        task_sync_auto_start(app, app->db->path);
+        task_bnsync_auto_start(app, app->db->path);
+        task_backup_auto_start(app, app->db->path);
     }
     g_free(copy_err);
 
@@ -270,7 +270,7 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
     g_free(old_path);
 
     if (ok)
-        bt_app_notify_changed(app);
+        task_app_notify_changed(app);
     return ok;
 }
 
@@ -279,24 +279,25 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
- * bt_app_init_icons_dir() — icons/ next to the executable (see app.h).
+ * task_app_init_icons_dir() — icons/ next to the executable (see app.h).
  * ------------------------------------------------------------------------- */
 void
-bt_app_init_icons_dir(BtApp *app)
+task_app_init_icons_dir(TaskApp *app)
 {
-    app->icons_dir = g_build_filename(bt_app_exe_dir(), "icons", NULL);
+    app->icons_dir = g_build_filename(task_app_exe_dir(), "icons", NULL);
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_icon_image_sized() — HiDPI-sharp GtkImage for a local icon
- * (see app.h).  Rasterizes at the display's scale factor: `size` is the
- * LOGICAL size, the backing pixels are size × sf, and the cairo
- * surface's device scale maps between the two (raw pixbufs render
- * 1 buffer-pixel = 1 logical px and blur on Retina — Notes
- * gotcha #5).
+ * task_app_icon_image_rotated() — HiDPI-sharp GtkImage for a local icon,
+ * optionally turned by whole quarter turns (see app.h).  Rasterizes at the
+ * display's scale factor: `size` is the LOGICAL size, the backing pixels
+ * are size × sf, and the cairo surface's device scale maps between the two
+ * (raw pixbufs render 1 buffer-pixel = 1 logical px and blur on Retina —
+ * Notes gotcha #5).
  * ------------------------------------------------------------------------- */
 GtkWidget *
-bt_app_icon_image_sized(BtApp *app, const gchar *name, gint size)
+task_app_icon_image_rotated(TaskApp *app, const gchar *name, gint size,
+                            GdkPixbufRotation rotation)
 {
     static const gchar *EXTS[] = { "png", "svg" };
 
@@ -320,24 +321,53 @@ bt_app_icon_image_sized(BtApp *app, const gchar *name, gint size)
                                                    size * sf, NULL);
         g_free(path);
         if (pix != NULL) {
+            /* Rotate BEFORE the surface: gdk_pixbuf_rotate_simple works in
+             * whole quarter turns, so a square icon comes back the same
+             * size and stays pixel-exact — no resampling, no blur.  A
+             * 90-degree turn of a horizontal list icon is a columnar one,
+             * which is why the pane button needs only ONE image.        */
+            if (rotation != GDK_PIXBUF_ROTATE_NONE) {
+                GdkPixbuf *turned = gdk_pixbuf_rotate_simple(pix, rotation);
+                if (turned != NULL) {
+                    g_object_unref(pix);
+                    pix = turned;
+                }
+            }
             cairo_surface_t *surface =
                 gdk_cairo_surface_create_from_pixbuf(pix, sf, NULL);
             g_object_unref(pix);
             GtkWidget *image = gtk_image_new_from_surface(surface);
             cairo_surface_destroy(surface);
+            /* Which file this is.  A surface-backed GtkImage keeps no
+             * record of where it came from (and answers NULL to
+             * gtk_image_get_pixbuf), so a caller that SWAPS a button's
+             * icon by state — the completed, sort and pane toggles all do
+             * — has no way to ask what is on screen now.                 */
+            g_object_set_data_full(G_OBJECT(image), "task-icon-name",
+                                   g_strdup(name), g_free);
+            g_object_set_data(G_OBJECT(image), "task-icon-rotation",
+                              GINT_TO_POINTER((gint)rotation));
             return image;
         }
     }
     return NULL;
 }
 
+/* task_app_icon_image_sized() — the unrotated case (see app.h).            */
+GtkWidget *
+task_app_icon_image_sized(TaskApp *app, const gchar *name, gint size)
+{
+    return task_app_icon_image_rotated(app, name, size,
+                                       GDK_PIXBUF_ROTATE_NONE);
+}
+
 /* ---------------------------------------------------------------------------
- * bt_app_tool_item_new() — style-aware toolbar button (see app.h).
+ * task_app_tool_item_new() — style-aware toolbar button (see app.h).
  * ------------------------------------------------------------------------- */
 GtkToolItem *
-bt_app_tool_item_new(BtApp *app, const gchar *icon_name,
-                     const gchar *fallback_markup, const gchar *label,
-                     const gchar *tooltip)
+task_app_tool_item_new(TaskApp *app, const gchar *icon_name,
+                       const gchar *fallback_markup, const gchar *label,
+                       const gchar *tooltip)
 {
     GtkToolItem *item = gtk_tool_button_new(NULL, NULL);
     gtk_tool_button_set_label(GTK_TOOL_BUTTON(item), label);
@@ -345,7 +375,7 @@ bt_app_tool_item_new(BtApp *app, const gchar *icon_name,
     /* Icon: the local PNG if present, else the fallback markup rendered
      * as a label standing in for the icon.                                 */
     GtkWidget *icon = (icon_name != NULL)
-                      ? bt_app_icon_image_sized(app, icon_name, 24) : NULL;
+                      ? task_app_icon_image_sized(app, icon_name, 24) : NULL;
     if (icon == NULL) {
         icon = gtk_label_new(NULL);
         gtk_label_set_markup(GTK_LABEL(icon),
@@ -360,7 +390,7 @@ bt_app_tool_item_new(BtApp *app, const gchar *icon_name,
     return item;
 }
 
-/* style_name()/style_from_name() — the persisted spelling of a style.       */
+/* style_name()/style_from_name() — the persisted spelling of a style.      */
 static const gchar *
 style_name(GtkToolbarStyle style)
 {
@@ -376,47 +406,47 @@ style_from_name(const gchar *name)
     return GTK_TOOLBAR_ICONS;
 }
 
-/* bt_app_load_toolbar_style() — the persisted style (default icons).        */
+/* task_app_load_toolbar_style() — the persisted style (default icons).     */
 void
-bt_app_load_toolbar_style(BtApp *app)
+task_app_load_toolbar_style(TaskApp *app)
 {
-    gchar *v = bt_app_config_get("toolbar_style");
+    gchar *v = task_app_config_get("toolbar_style");
     app->toolbar_style = style_from_name(v);
     g_free(v);
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_set_toolbar_style() — apply + persist a style change (see app.h).
+ * task_app_set_toolbar_style() — apply + persist a style change (see app.h).
  * ------------------------------------------------------------------------- */
 void
-bt_app_set_toolbar_style(BtApp *app, GtkToolbarStyle style)
+task_app_set_toolbar_style(TaskApp *app, GtkToolbarStyle style)
 {
     app->toolbar_style = style;
-    bt_app_config_set("toolbar_style", style_name(style));
+    task_app_config_set("toolbar_style", style_name(style));
     if (app->toolbars != NULL)
         for (guint i = 0; i < app->toolbars->len; i++)
             gtk_toolbar_set_style(
                 GTK_TOOLBAR(g_ptr_array_index(app->toolbars, i)), style);
 }
 
-/* toolbar_destroyed() — drop a dying toolbar from the registry.             */
+/* toolbar_destroyed() — drop a dying toolbar from the registry.            */
 static void
 toolbar_destroyed(GtkWidget *toolbar, gpointer data)
 {
-    BtApp *app = data;
+    TaskApp *app = data;
     if (app->toolbars != NULL)
         g_ptr_array_remove(app->toolbars, toolbar);
 }
 
-/* style_menu_toggled() — a radio item in the right-click menu.              */
+/* style_menu_toggled() — a radio item in the right-click menu.             */
 static void
 style_menu_toggled(GtkCheckMenuItem *item, gpointer data)
 {
-    BtApp *app = data;
+    TaskApp *app = data;
     if (!gtk_check_menu_item_get_active(item))
         return;                      /* ignore the deactivating item        */
-    bt_app_set_toolbar_style(app, (GtkToolbarStyle)GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "bt-style")));
+    task_app_set_toolbar_style(app, (GtkToolbarStyle)GPOINTER_TO_INT(
+        g_object_get_data(G_OBJECT(item), "task-style")));
 }
 
 /* ---------------------------------------------------------------------------
@@ -429,7 +459,7 @@ toolbar_context_menu(GtkToolbar *toolbar, gint x, gint y, gint button,
                      gpointer data)
 {
     (void)x; (void)y; (void)button;
-    BtApp *app = data;
+    TaskApp *app = data;
     static const struct {
         const gchar    *label;
         GtkToolbarStyle style;
@@ -442,7 +472,7 @@ toolbar_context_menu(GtkToolbar *toolbar, gint x, gint y, gint button,
     gtk_menu_attach_to_widget(GTK_MENU(menu), GTK_WIDGET(toolbar), NULL);
     /* One menu is built per right-click; without this it would stay
      * attached (= alive) until the toolbar dies.  selection-done fires
-     * after the chosen item's activate, so destroying there is safe.        */
+     * after the chosen item's activate, so destroying there is safe.       */
     g_signal_connect(menu, "selection-done",
                      G_CALLBACK(gtk_widget_destroy), NULL);
     GSList *group = NULL;            /* the radio group                     */
@@ -450,7 +480,7 @@ toolbar_context_menu(GtkToolbar *toolbar, gint x, gint y, gint button,
         GtkWidget *item =
             gtk_radio_menu_item_new_with_label(group, CHOICES[i].label);
         group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(item));
-        g_object_set_data(G_OBJECT(item), "bt-style",
+        g_object_set_data(G_OBJECT(item), "task-style",
                           GINT_TO_POINTER(CHOICES[i].style));
         gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item),
                                        app->toolbar_style ==
@@ -465,10 +495,10 @@ toolbar_context_menu(GtkToolbar *toolbar, gint x, gint y, gint button,
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_register_toolbar() — track + style a toolbar (see app.h).
+ * task_app_register_toolbar() — track + style a toolbar (see app.h).
  * ------------------------------------------------------------------------- */
 void
-bt_app_register_toolbar(BtApp *app, GtkWidget *toolbar)
+task_app_register_toolbar(TaskApp *app, GtkWidget *toolbar)
 {
     gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), app->toolbar_style);
     if (app->toolbars != NULL)
@@ -483,28 +513,13 @@ bt_app_register_toolbar(BtApp *app, GtkWidget *toolbar)
  * Config — ini next to the binary, ~/.config fallback (see app.h).
  * =========================================================================== */
 
-#define BT_INI_GROUP "tasks"
-
-/* The two older ini groups.  The GROUP NAME is part of the file format, so
- * every rename of the app orphaned the whole file: an ini written by an
- * earlier build carries every setting under a name this build does not
- * read.  Left unmigrated, upgrading silently reverts the user to defaults
- * — and with gtasks_refresh_token and db_dir among the abandoned keys,
- * that means re-authorizing Google AND losing the pointer to a database
- * kept outside the default location.
- *
- * "hacienda" is pre-3.0; "lists" is 3.x, the name this app carried until
- * the 4.0 rename to Tasks.  They are folded in NEWEST FIRST (see
- * LEGACY_GROUPS) so that when a file somehow holds both, the newer value
- * is the one that survives.                                                */
-#define BT_INI_GROUP_V3       "lists"
-#define BT_INI_GROUP_HACIENDA "hacienda"
+#define TASK_INI_GROUP "tasks"
 
 static GKeyFile *config_kf   = NULL; /* the in-memory config                */
 static gchar    *config_path = NULL; /* written through on every change     */
 static gchar    *exe_dir_cached = NULL;  /* binary's directory (owned)      */
 
-/* exe_dir_from_argv0() — the directory holding the binary (new string).     */
+/* exe_dir_from_argv0() — the directory holding the binary (new string).    */
 static gchar *
 exe_dir_from_argv0(const gchar *argv0)
 {
@@ -517,351 +532,65 @@ exe_dir_from_argv0(const gchar *argv0)
     return g_get_current_dir();
 }
 
-/* bt_app_exe_dir() — see app.h.                                             */
+/* task_app_exe_dir() — see app.h.                                          */
 const gchar *
-bt_app_exe_dir(void)
+task_app_exe_dir(void)
 {
     return exe_dir_cached;
 }
 
-/* ---------------------------------------------------------------------------
- * Legacy-group migration — an older group folded into "tasks".
- *
- * The two legacy groups need DIFFERENT rules, which is what `allowlist`
- * below selects between:
- *
- *   "lists" (3.x) is the SAME build lineage under a different name: same
- *     key spellings, same baked-in OAuth client.  It is folded WHOLE, the
- *     refresh token included — a 3.x token is still valid against the
- *     client this build carries, so making the user sign in again would
- *     be gratuitous.
- *
- *   "hacienda" (pre-3.0) predates several key renames and one OAuth
- *     client, so it goes through the allowlist below and leaves three
- *     keys behind (see the note).
- *
- * The allowlist is deliberately not a blind group copy: the pre-3.0 group
- * also holds keys this build no longer has (`task_columns`,
- * `task_sort_manual`) which would just be dead weight.  Add a key here
- * when a pre-3.0 build could have written it AND the current build still
- * reads it.
- *
- * Three sync keys are knowingly LEFT BEHIND (pre-3.0 only):
- *
- *   google_client_id / google_client_secret — the current build still
- *     honors them, but no UI writes them, so one that exists is a
- *     hand-edit, and reviving a stale OAuth client breaks sync outright.
- *     Dropping it just falls back to the baked-in client, which works.
- *
- *   gtasks_refresh_token — tempting (it costs a browser round trip to
- *     replace) but WRONG.  A pre-3.0 token was issued to whatever OAuth
- *     client that build carried; against the current one Google answers
- *     the refresh with invalid_grant, and a failed refresh does NOT clear
- *     the token — so the app would report "signed in" while every sync
- *     failed.  Migrating nothing leaves a clean signed-out state and one
- *     sign-in click.  Verified against a real pre-rename ini: the token
- *     came back invalid_grant.
- *
- * In both cases silent breakage is the worse failure than a re-entry.
- * ------------------------------------------------------------------------- */
-static const gchar *const LEGACY_KEYS[] = {
-    /* sync */
-    "google_sync_enabled", "sync_interval_min", "sync_toolbar_button",
-    /* Notes integration — the names a pre-3.0 file actually used; the
-     * rename pass below folds them onto the current notes_* keys.          */
-    "blue_notes_sync", "blue_notes_cli", "blue_notes_embed_list",
-    /* database */
-    "db_dir", "db_integrity_check",
-    /* UI */
-    "toolbar_style", "bold_task_titles", "native_menubar",
-    "show_completed", "sidebar_visible", "compact_layout",
-    "weekly_forecast", "due_today_show_overdue", "task_list_manual_sort",
-    "col_done_visible", "col_due_visible", "win_w", "win_h",
-};
-
-/* legacy_key_wanted() — is `key` one the new group should inherit?  The
- * per-view manual order keys are matched by PREFIX: manual_order_list_<id>
- * carries a list id, so they cannot be enumerated.                          */
-static gboolean
-legacy_key_wanted(const gchar *key)
-{
-    if (g_str_has_prefix(key, "manual_order_"))
-        return TRUE;
-    for (gsize i = 0; i < G_N_ELEMENTS(LEGACY_KEYS); i++)
-        if (strcmp(key, LEGACY_KEYS[i]) == 0)
-            return TRUE;
-    return FALSE;
-}
-
-/* The legacy groups, NEWEST FIRST.  Order is the precedence rule: each
- * pass only fills keys the "tasks" group does not already have, so
- * folding 3.x before pre-3.0 means a 3.x value wins over an older one
- * for the same key.  `allowlist` selects the two rule sets described in
- * the banner above.                                                        */
-static const struct {
-    const gchar *group;
-    const gchar *label;              /* what to call it on the console      */
-    gboolean     allowlist;          /* FALSE = fold the group whole        */
-} LEGACY_GROUPS[] = {
-    { BT_INI_GROUP_V3,       "pre-4.0", FALSE },
-    { BT_INI_GROUP_HACIENDA, "pre-3.0", TRUE  },
-};
+/* The ini's names.                                                         */
+#define TASK_INI_FILE     "tasks.ini"
+#define TASK_INI_DEFAULTS "tasks.ini.defaults"
 
 /* ---------------------------------------------------------------------------
- * config_migrate_legacy_group() — fold one older group into "tasks", then
- * drop it.  No-op when the group is absent, which is every launch after
- * the first and every fresh install.
- *
- * Merged PER KEY, and the CURRENT group always wins: this runs against
- * files where the user has already been using the renamed build, so their
- * post-rename choices must not be reverted by an older value.  The legacy
- * group only fills gaps.
- *
- * The file is BACKED UP before the first rewrite (it holds an OAuth refresh
- * token, and this is the one operation that removes lines from it), and the
- * legacy group is removed so the migration cannot run twice — a second pass
- * would otherwise resurrect keys the user has since deliberately cleared.
- * ------------------------------------------------------------------------- */
-static void
-config_migrate_legacy_group(const gchar *group, const gchar *label,
-                            gboolean allowlist)
-{
-    if (config_kf == NULL || config_path == NULL ||
-        !g_key_file_has_group(config_kf, group))
-        return;
-
-    gsize   nkeys = 0;
-    gchar **keys  = g_key_file_get_keys(config_kf, group, &nkeys, NULL);
-    if (keys == NULL)
-        return;
-
-    /* Backup first — best effort: a failure here must not block the
-     * migration, but the user gets told where the copy went (or didn't).
-     * Named for the version being left behind, so two migrations on one
-     * file leave two distinguishable copies rather than one overwriting
-     * the other.                                                            */
-    gchar *backup = g_strdup_printf("%s.%s.bak", config_path, label);
-    if (!g_file_test(backup, G_FILE_TEST_EXISTS)) {
-        gchar *raw = NULL;
-        gsize  len = 0;
-        if (g_file_get_contents(config_path, &raw, &len, NULL))
-            g_file_set_contents(backup, raw, (gssize)len, NULL);
-        g_free(raw);
-    }
-
-    guint moved = 0, kept = 0, dropped = 0;
-    for (gsize i = 0; i < nkeys; i++) {
-        const gchar *key = keys[i];
-        if (allowlist && !legacy_key_wanted(key)) {
-            dropped++;               /* no longer part of the config        */
-            continue;
-        }
-        if (g_key_file_has_key(config_kf, BT_INI_GROUP, key, NULL)) {
-            kept++;                  /* the newer value stands              */
-            continue;
-        }
-        gchar *v = g_key_file_get_string(config_kf, group, key, NULL);
-        if (v != NULL && *v != '\0') {
-            g_key_file_set_string(config_kf, BT_INI_GROUP, key, v);
-            moved++;
-        }
-        g_free(v);
-    }
-    g_strfreev(keys);
-
-    g_key_file_remove_group(config_kf, group, NULL);
-    g_key_file_save_to_file(config_kf, config_path, NULL);
-
-    /* Worth a line on the console: it happens once, silently changes the
-     * running configuration, and names the backup if anything looks wrong.  */
-    g_message("Migrated %u setting%s from the %s [%s] config group "
-              "(%u already set here, %u no longer used); backup: %s",
-              moved, moved == 1 ? "" : "s", label, group,
-              kept, dropped, backup);
-    g_free(backup);
-}
-
-/* config_migrate_legacy_groups() — run every fold in LEGACY_GROUPS order. */
-static void
-config_migrate_legacy_groups(void)
-{
-    for (gsize i = 0; i < G_N_ELEMENTS(LEGACY_GROUPS); i++)
-        config_migrate_legacy_group(LEGACY_GROUPS[i].group,
-                                    LEGACY_GROUPS[i].label,
-                                    LEGACY_GROUPS[i].allowlist);
-}
-
-/* ---------------------------------------------------------------------------
- * Key-rename migration (the companion app's two renames).
- *
- * The companion app was Blue Notes, then Records, then Notes, and the
- * integration's config keys were named after whichever it was at the
- * time.  They now all read `notes_*`, and this folds the old spellings
- * onto the new ones IN PLACE so an existing ini keeps its values —
- * without it, renaming a key silently reverts that setting to its
- * default, which for `notes_cli` means an integration that was working
- * yesterday quietly stops finding the binary.
- *
- * Unlike the group migration this is a pure RENAME: the old key is
- * removed either way, so the pass cannot run twice and cannot resurrect
- * a key the user has since cleared.  The current name still wins when
- * both exist (the user may already have set the new one).
- * ------------------------------------------------------------------------- */
-static const struct { const gchar *old_key, *new_key; } RENAMED_KEYS[] = {
-    { "blue_notes_sync",           "notes_sync"               },
-    { "blue_notes_cli",            "notes_cli"                },
-    { "blue_notes_embed_list",     "notes_embed_list"         },
-    { "records_sync_interval_min", "notes_sync_interval_min"  },
-    { "records_meta_row",          "notes_meta_row"           },
-};
-
-static void
-config_migrate_renamed_keys(void)
-{
-    if (config_kf == NULL || config_path == NULL)
-        return;
-
-    guint moved = 0;                 /* values carried onto the new key     */
-    guint seen  = 0;                 /* old keys found, carried or not      */
-    for (gsize i = 0; i < G_N_ELEMENTS(RENAMED_KEYS); i++) {
-        const gchar *old_key = RENAMED_KEYS[i].old_key;
-        const gchar *new_key = RENAMED_KEYS[i].new_key;
-        if (!g_key_file_has_key(config_kf, BT_INI_GROUP, old_key, NULL))
-            continue;
-        seen++;
-        if (!g_key_file_has_key(config_kf, BT_INI_GROUP, new_key, NULL)) {
-            gchar *v = g_key_file_get_string(config_kf, BT_INI_GROUP,
-                                             old_key, NULL);
-            if (v != NULL && *v != '\0') {
-                g_key_file_set_string(config_kf, BT_INI_GROUP, new_key, v);
-                moved++;
-            }
-            g_free(v);
-        }
-        g_key_file_remove_key(config_kf, BT_INI_GROUP, old_key, NULL);
-    }
-    /* Save whenever an old key was REMOVED, not only when one was
-     * carried over: an old key left in the file would be re-examined on
-     * every launch, and the removal is the half that makes this a rename.  */
-    if (seen == 0)
-        return;
-
-    g_key_file_save_to_file(config_kf, config_path, NULL);
-    g_message("Migrated %u Notes-integration setting%s onto the notes_* "
-              "config keys (%u already set there)",
-              moved, moved == 1 ? "" : "s", seen - moved);
-}
-
-/* The ini's names, current and pre-4.0 (when the app was called Lists).   */
-#define BT_INI_FILE          "tasks.ini"
-#define BT_INI_FILE_LEGACY   "lists.ini"
-#define BT_INI_DEFAULTS      "tasks.ini.defaults"
-
-/* ---------------------------------------------------------------------------
- * config_adopt_legacy_file() — carry a pre-4.0 lists.ini onto tasks.ini.
- *
- * A COPY, not a rename: the original is left byte-identical and untouched,
- * so a rename that turns out badly is recoverable and the user keeps a
- * verbatim record of what the old build had.  (It holds an OAuth refresh
- * token, which is why .gitignore covers both names.)  Only ever runs when
- * the new file is ABSENT — once tasks.ini exists it is the truth, and
- * re-copying would silently revert every setting changed since.
- *
- * Nothing here understands the ini's contents; the [lists] → [tasks] group
- * fold happens afterwards, on the copy.
- * ------------------------------------------------------------------------- */
-static void
-config_adopt_legacy_file(const gchar *want, const gchar *legacy)
-{
-    if (g_file_test(want, G_FILE_TEST_EXISTS) ||
-        !g_file_test(legacy, G_FILE_TEST_IS_REGULAR))
-        return;
-    gchar *raw = NULL;
-    gsize  len = 0;
-    if (!g_file_get_contents(legacy, &raw, &len, NULL))
-        return;
-    if (g_file_set_contents(want, raw, (gssize)len, NULL))
-        g_message("Adopted the pre-4.0 config %s as %s (the original is "
-                  "left in place)", legacy, want);
-    else
-        g_warning("could not write %s from %s — settings will fall back "
-                  "to defaults", want, legacy);
-    g_free(raw);
-}
-
-/* ---------------------------------------------------------------------------
- * bt_app_config_init() — resolve + load the config file once.  Portable
+ * task_app_config_init() — resolve + load the config file once.  Portable
  * mode: tasks.ini next to the binary; when none exists there AND the
- * directory is unwritable, ~/.config/tasks/tasks.ini.  On first
- * run it is seeded from tasks.ini.defaults next to the binary.
- *
- * Before any of that, a pre-4.0 lists.ini in the SAME location is copied
- * onto the new name — that file holds the OAuth refresh token and db_dir,
- * so leaving it behind is what would turn this rename into a silent
- * "signed out, and where did my database go?" on first launch.
+ * directory is unwritable, ~/.config/tasks/tasks.ini.  On first run it is
+ * seeded from tasks.ini.defaults next to the binary.
  * ------------------------------------------------------------------------- */
 void
-bt_app_config_init(const gchar *argv0)
+task_app_config_init(const gchar *argv0)
 {
     if (config_kf != NULL)
         return;
 
     gchar *exe_dir = exe_dir_from_argv0(argv0);
     exe_dir_cached = g_strdup(exe_dir);
-    gchar *local        = g_build_filename(exe_dir, BT_INI_FILE, NULL);
-    gchar *local_legacy = g_build_filename(exe_dir, BT_INI_FILE_LEGACY,
-                                           NULL);
-    /* Portable mode also when only the OLD name is there: that install
-     * was portable, and its ini is about to become ours.                   */
+    gchar *local = g_build_filename(exe_dir, TASK_INI_FILE, NULL);
     if (g_file_test(local, G_FILE_TEST_EXISTS) ||
-        g_file_test(local_legacy, G_FILE_TEST_EXISTS) ||
         g_access(exe_dir, W_OK) == 0) {
         config_path = local;         /* portable mode                       */
-        config_adopt_legacy_file(config_path, local_legacy);
     } else {
         g_free(local);
         gchar *dir = g_build_filename(g_get_user_config_dir(),
-                                      BT_APP_DIR, NULL);
+                                      TASK_APP_DIR, NULL);
         g_mkdir_with_parents(dir, 0700);
-        config_path = g_build_filename(dir, BT_INI_FILE, NULL);
+        config_path = g_build_filename(dir, TASK_INI_FILE, NULL);
         g_free(dir);
-        /* The fallback location moved directory too, so the legacy path is
-         * built from scratch rather than by swapping a basename.           */
-        gchar *old = g_build_filename(g_get_user_config_dir(),
-                                      BT_APP_DIR_LEGACY,
-                                      BT_INI_FILE_LEGACY, NULL);
-        config_adopt_legacy_file(config_path, old);
-        g_free(old);
     }
-    g_free(local_legacy);
 
     config_kf = g_key_file_new();
     if (!g_key_file_load_from_file(config_kf, config_path,
                                    G_KEY_FILE_NONE, NULL)) {
-        /* First launch: seed from the committed defaults, if present.       */
-        gchar *defaults = g_build_filename(exe_dir, BT_INI_DEFAULTS, NULL);
+        /* First launch: seed from the committed defaults, if present.      */
+        gchar *defaults = g_build_filename(exe_dir, TASK_INI_DEFAULTS, NULL);
         g_key_file_load_from_file(config_kf, defaults,
                                   G_KEY_FILE_NONE, NULL);
         g_free(defaults);
     }
-    /* Before any caller reads a key: an ini from a pre-rename build keeps
-     * everything in a group this build ignores (see the banner above).      */
-    config_migrate_legacy_groups();
-    /* Then the per-key renames — it must run AFTER the group folds, which
-     * are what put an older file's blue_notes_* keys in this group.        */
-    config_migrate_renamed_keys();
     g_free(exe_dir);
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_config_get() — read one setting; NULL when unset/empty.
+ * task_app_config_get() — read one setting; NULL when unset/empty.
  * ------------------------------------------------------------------------- */
 gchar *
-bt_app_config_get(const gchar *key)
+task_app_config_get(const gchar *key)
 {
     if (config_kf == NULL)
         return NULL;
-    gchar *v = g_key_file_get_string(config_kf, BT_INI_GROUP, key, NULL);
+    gchar *v = g_key_file_get_string(config_kf, TASK_INI_GROUP, key, NULL);
     if (v != NULL && *v == '\0') {
         g_free(v);
         v = NULL;
@@ -870,12 +599,12 @@ bt_app_config_get(const gchar *key)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_config_get_bool() — read a 0/1 setting (see app.h).
+ * task_app_config_get_bool() — read a 0/1 setting (see app.h).
  * ------------------------------------------------------------------------- */
 gboolean
-bt_app_config_get_bool(const gchar *key, gboolean def)
+task_app_config_get_bool(const gchar *key, gboolean def)
 {
-    gchar *v = bt_app_config_get(key);
+    gchar *v = task_app_config_get(key);
     if (v == NULL)
         return def;
     gboolean b = strcmp(v, "0") != 0;
@@ -884,15 +613,15 @@ bt_app_config_get_bool(const gchar *key, gboolean def)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_app_config_set() — change one setting and write the ini through.
+ * task_app_config_set() — change one setting and write the ini through.
  * NULL removes the key.  Unchanged values skip the rewrite.
  * ------------------------------------------------------------------------- */
 void
-bt_app_config_set(const gchar *key, const gchar *value)
+task_app_config_set(const gchar *key, const gchar *value)
 {
     if (config_kf == NULL)
         return;
-    gchar *old = g_key_file_get_string(config_kf, BT_INI_GROUP, key, NULL);
+    gchar *old = g_key_file_get_string(config_kf, TASK_INI_GROUP, key, NULL);
     gboolean same = (old == NULL && value == NULL) ||
                     (old != NULL && value != NULL &&
                      strcmp(old, value) == 0);
@@ -900,9 +629,9 @@ bt_app_config_set(const gchar *key, const gchar *value)
     if (same)
         return;
     if (value != NULL)
-        g_key_file_set_string(config_kf, BT_INI_GROUP, key, value);
+        g_key_file_set_string(config_kf, TASK_INI_GROUP, key, value);
     else
-        g_key_file_remove_key(config_kf, BT_INI_GROUP, key, NULL);
+        g_key_file_remove_key(config_kf, TASK_INI_GROUP, key, NULL);
     g_key_file_save_to_file(config_kf, config_path, NULL);
 }
 
@@ -911,10 +640,10 @@ bt_app_config_set(const gchar *key, const gchar *value)
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
- * bt_day_bounds() — local midnight bounds of "today + offset_days".
+ * task_day_bounds() — local midnight bounds of "today + offset_days".
  * ------------------------------------------------------------------------- */
 void
-bt_day_bounds(gint offset_days, gint64 *lo, gint64 *hi)
+task_day_bounds(gint offset_days, gint64 *lo, gint64 *hi)
 {
     GDateTime *now = g_date_time_new_now_local();
     GDateTime *day = g_date_time_add_days(now, offset_days);
@@ -932,10 +661,10 @@ bt_day_bounds(gint offset_days, gint64 *lo, gint64 *hi)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_due_format() — human-readable due date ("" for none).
+ * task_due_format() — human-readable due date ("" for none).
  * ------------------------------------------------------------------------- */
 gchar *
-bt_due_format(gint64 due)
+task_due_format(gint64 due)
 {
     if (due == 0)
         return g_strdup("");
@@ -946,10 +675,10 @@ bt_due_format(gint64 due)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_due_format_iso() — canonical "YYYY-MM-DD" spelling ("" for none).
+ * task_due_format_iso() — canonical "YYYY-MM-DD" spelling ("" for none).
  * ------------------------------------------------------------------------- */
 gchar *
-bt_due_format_iso(gint64 due)
+task_due_format_iso(gint64 due)
 {
     if (due == 0)
         return g_strdup("");
@@ -960,11 +689,11 @@ bt_due_format_iso(gint64 due)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_due_color() — urgency tint (see app.h).  Compares calendar DAYS in
+ * task_due_color() — urgency tint (see app.h).  Compares calendar DAYS in
  * local time so the colors roll over at midnight.
  * ------------------------------------------------------------------------- */
 const gchar *
-bt_due_color(gint64 due)
+task_due_color(gint64 due)
 {
     if (due == 0)
         return NULL;
@@ -984,10 +713,10 @@ bt_due_color(gint64 due)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_due_from_ymd() — validated calendar fields → local midnight unix.
+ * task_due_from_ymd() — validated calendar fields → local midnight unix.
  * ------------------------------------------------------------------------- */
 gint64
-bt_due_from_ymd(gint y, gint m, gint d)
+task_due_from_ymd(gint y, gint m, gint d)
 {
     if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1970 || y > 9999)
         return 0;
@@ -1000,10 +729,10 @@ bt_due_from_ymd(gint y, gint m, gint d)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_due_parse() — "YYYY-MM-DD" or "M/D/YY[YY]" → local midnight unix.
+ * task_due_parse() — "YYYY-MM-DD" or "M/D/YY[YY]" → local midnight unix.
  * ------------------------------------------------------------------------- */
 gint64
-bt_due_parse(const gchar *text)
+task_due_parse(const gchar *text)
 {
     if (text == NULL)
         return 0;
@@ -1018,5 +747,5 @@ bt_due_parse(const gchar *text)
         ok = TRUE;
     }
     g_free(t);
-    return ok ? bt_due_from_ymd(y, m, d) : 0;
+    return ok ? task_due_from_ymd(y, m, d) : 0;
 }

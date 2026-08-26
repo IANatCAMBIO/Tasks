@@ -14,69 +14,67 @@
  *     UID <TAB> NOTEID:ORD <TAB> [x]|[ ] <TAB> YYYY-MM-DD|- <TAB> text
  *
  * UID is the item's STABLE identity: a bare positive integer, assigned
- * once by Notes, never reused, and unchanged when the item is
- * reworded or when other lines are inserted above it.  NOTEID:ORD is
- * the older POSITIONAL address — it renumbers whenever a note gains or
- * loses a '!' line, so it is never used as identity here; it survives
- * only to key the legacy bn_pins/bn_priority tables while the first
- * mirror pass drains them.
+ * once by Notes, never reused, and unchanged when the item is reworded or
+ * when other lines are inserted above it.  It is the ONLY identity used
+ * here.  The listing's second field is a POSITIONAL address that
+ * renumbers whenever a note gains or loses a '!' line; its presence is
+ * checked as a format guard and its value is deliberately discarded.
  *
  * The binary is resolved from the "notes_cli" ini key (set in
  * File → Settings…), falling back to `notes` on PATH.
  * =========================================================================== */
 
-#ifndef BT_BNOTES_H
-#define BT_BNOTES_H
+#ifndef TASK_BNOTES_H
+#define TASK_BNOTES_H
 
 #include <glib.h>
 
 /* One Notes action item.  Strings are owned.                              */
 typedef struct {
     gint64    uid;                   /* stable identity (> 0)               */
-    gchar    *ref;                   /* legacy "NOTEID:ORD" address         */
     gchar    *text;                  /* the item text                       */
     gint64    due;                   /* unix local midnight; 0 = none       */
     gboolean  done;
-} BtNoteAction;
+} TaskNoteAction;
 
 /* ---------------------------------------------------------------------------
- * bt_bnotes_actions() — run `notes action list --uid` and parse the
+ * task_bnotes_actions() — run `notes action list --uid` and parse the
  * rows (list order preserved: newest note first, like Notes prints
- * it).  Returns BtNoteAction* elements (free with
- * bt_bnotes_actions_free), or NULL with *err set (g_free) — CLI
+ * it).  Returns TaskNoteAction* elements (free with
+ * task_bnotes_actions_free), or NULL with *err set (g_free) — CLI
  * missing, spawn failure, non-zero exit.  A Notes too old to know
- * --uid also fails here; call bt_bnotes_supports_uid() on the failure
+ * --uid also fails here; call task_bnotes_supports_uid() on the failure
  * path to tell that case apart and report it usefully.
  *
  * BLOCKING for the CLI round trip, so callers keep it to the sync
  * worker thread or a user-triggered refresh.
  * ------------------------------------------------------------------------- */
-GPtrArray *bt_bnotes_actions(gchar **err);
+GPtrArray *task_bnotes_actions(gchar **err);
 
-void bt_bnotes_actions_free(GPtrArray *a);
+void task_bnotes_actions_free(GPtrArray *a);
 
 /* ---------------------------------------------------------------------------
- * bt_bnotes_supports_uid() — does the installed Notes understand
+ * task_bnotes_supports_uid() — does the installed Notes understand
  * stable uids?  Runs `action list --uid` and reports whether it was
  * accepted (an older build answers an unknown flag with usage and exit
  * 1).  Diagnostic only: the happy path never calls this, so a normal
  * sync pass costs ONE CLI round trip.
  * ------------------------------------------------------------------------- */
-gboolean bt_bnotes_supports_uid(void);
+gboolean task_bnotes_supports_uid(void);
 
 /* ---------------------------------------------------------------------------
- * bt_bnotes_action_set_done() — run `notes action done|undone UID`.
+ * task_bnotes_action_set_done() — run `notes action done|undone UID`.
  * The write lands in the Notes note itself (striking/un-striking
  * the '!' line), routed through its GUI when one is running.  TRUE on
  * success; FALSE with *err set (g_free).
  * ------------------------------------------------------------------------- */
-gboolean bt_bnotes_action_set_done(gint64 uid, gboolean done, gchar **err);
+gboolean task_bnotes_action_set_done(gint64 uid, gboolean done, gchar **err);
 
 /* ---------------------------------------------------------------------------
- * bt_bnotes_action_set_due() — run `notes action due UID DATE|-`
+ * task_bnotes_action_set_due() — run `notes action due UID DATE|-`
  * (due == 0 clears).  Rewrites the item's trailing "due <date>" suffix
  * in the note text.  TRUE on success; FALSE with *err set (g_free).
  * ------------------------------------------------------------------------- */
-gboolean bt_bnotes_action_set_due(gint64 uid, gint64 due, gchar **err);
+gboolean task_bnotes_action_set_due(gint64 uid, gint64 due, gchar **err);
 
-#endif /* BT_BNOTES_H */
+#endif /* TASK_BNOTES_H */

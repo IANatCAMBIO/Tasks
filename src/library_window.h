@@ -26,24 +26,24 @@
  * them; New Task needs a real list selected.
  * =========================================================================== */
 
-#ifndef BT_LIBRARY_WINDOW_H
-#define BT_LIBRARY_WINDOW_H
+#ifndef TASK_LIBRARY_WINDOW_H
+#define TASK_LIBRARY_WINDOW_H
 
 #include "app.h"
 
 /* ---------------------------------------------------------------------------
- * bt_library_window_new() — build and show the library window; installs
+ * task_library_window_new() — build and show the library window; installs
  * app->notify_changed / notify_tasks / notify_status and stores itself
  * in app->library_window.
  * ------------------------------------------------------------------------- */
-GtkWidget *bt_library_window_new(BtApp *app);
+GtkWidget *task_library_window_new(TaskApp *app);
 
 /* ---------------------------------------------------------------------------
- * bt_library_apply_native_menubar() — move the library menu into (or out
+ * task_library_apply_native_menubar() — move the library menu into (or out
  * of) the native macOS menu bar.  A no-op unless built with HAVE_GTKOSX
  * (gtk-mac-integration-gtk3).  Driven by the "native_menubar" setting:
  * applied at startup by main() and live from the Settings window.
  * ------------------------------------------------------------------------- */
-void bt_library_apply_native_menubar(BtApp *app, gboolean native);
+void task_library_apply_native_menubar(TaskApp *app, gboolean native);
 
-#endif /* BT_LIBRARY_WINDOW_H */
+#endif /* TASK_LIBRARY_WINDOW_H */

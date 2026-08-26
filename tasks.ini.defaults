@@ -1,20 +1,8 @@
 # Tasks — default settings, copied into the live tasks.ini on
 # first launch.  The live ini is rewritten by the app and is gitignored.
 #
-# The group name below is load-bearing, and the app has been renamed
-# twice: an ini written before the 4.0 rename keeps its settings under
-# [lists], and one written before 3.0 under [hacienda] — neither of which
-# this build reads.  Such a file is migrated once on launch, and the file
-# it was migrated FROM is left as a .pre-4.0.bak / .pre-3.0.bak copy.
-#
-# From [lists] everything carries over, refresh token included: same
-# build lineage, same OAuth client.  From [hacienda] the Google refresh
-# token and client keys are deliberately dropped (that token was issued
-# to a different OAuth client and Google refuses it), so a pre-3.0
-# upgrade needs one new sign-in.
-#
-# The pre-4.0 ini FILE was called lists.ini.  It is copied to tasks.ini
-# on first launch and the original is left untouched.
+# The group name below is part of the file format: the app reads only
+# [tasks].
 [tasks]
 # Google Tasks sync — the OAuth client comes from Google's downloaded
 # client_secret.apps.googleusercontent.com.json placed next to the app
@@ -57,13 +45,12 @@ notes_sync_interval_min=5
 # Show the sidebar's "Action Items" view — every mirrored item in one
 # place, whichever list each one lives in (1|0; Settings → Notes).
 notes_meta_row=1
-# These five keys were blue_notes_* / records_* in earlier builds, after
-# the companion app's own renames (Blue Notes → Records → Notes).  An
-# existing ini is migrated in place on first launch, values intact.
 # Sidebar visibility (1|0, default 0; the toolbar Sidebar toggle and
-# View → Show Sidebar).
+# View → Show Sidebar, which reads "Hide Sidebar" once it is up — every
+# View item is named for the action a click performs).
 sidebar_visible=0
-# Compact Layout (1|0, default 0; View → Compact Layout): hides the top
+# Compact controls (1|0, default 0; View → Compact Controls, which reads
+# "Full Controls" while it is on): hides the top
 # toolbar and floats New/Delete Task 20 px in from the bottom-right of
 # the task area instead.  It leaves the sidebar alone — that stays under
 # sidebar_visible above, in compact mode just the same.

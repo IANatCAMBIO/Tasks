@@ -1,26 +1,26 @@
 /* ===========================================================================
  * app.h — shared application context for Tasks
  *
- * A single BtApp instance is created in main() and passed to every window.
+ * A single TaskApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open task-editor windows, and hosts
  * the notification hooks the library window installs.  Companion app to
  * Notes — same design language: plain C + GTK3 + SQLite, no
  * HeaderBars, window titles "Tasks - <thing>".
  * =========================================================================== */
 
-#ifndef BT_APP_H
-#define BT_APP_H
+#ifndef TASK_APP_H
+#define TASK_APP_H
 
 #include <gtk/gtk.h>
 #include "db.h"
 
-/* Semantic version, baked in by the Makefile (-DBT_VERSION="x.y.z").        */
-#ifndef BT_VERSION
-#define BT_VERSION "dev"
+/* Semantic version, baked in by the Makefile (-DTASK_VERSION="x.y.z").     */
+#ifndef TASK_VERSION
+#define TASK_VERSION "dev"
 #endif
 
 /* ---------------------------------------------------------------------------
- * BtApp — global application state.
+ * TaskApp — global application state.
  *
  * Fields:
  *   gtk_app        — the GtkApplication driving the main loop.
@@ -43,7 +43,7 @@
  *                    May be NULL.
  *   notify_status  — hook installed by the library window: shows an event
  *                    message on its status bar.  Post through
- *                    bt_app_status(), which handles the hook being NULL.
+ *                    task_app_status(), which handles the hook being NULL.
  *   sync_running   — TRUE while the Google Tasks sync worker is running
  *                    (main-thread flag; blocks a second concurrent sync).
  *   sync_timer     — the periodic auto-sync GSource id, or 0.
@@ -65,96 +65,117 @@
  *                    or NULL for the default location.  Persisted in the
  *                    ini as "db_dir"; not stored in the database itself.
  * ------------------------------------------------------------------------- */
-typedef struct BtApp {
+typedef struct TaskApp {
     GtkApplication  *gtk_app;
-    BtDatabase      *db;
+    TaskDatabase      *db;
     GHashTable      *editors;
     GtkWidget       *library_window;
-    void           (*notify_changed)(struct BtApp *app);
-    void           (*notify_tasks)(struct BtApp *app);
-    void           (*notify_status)(struct BtApp *app, const gchar *message);
+    void           (*notify_changed)(struct TaskApp *app);
+    void           (*notify_tasks)(struct TaskApp *app);
+    void           (*notify_status)(struct TaskApp *app, const gchar *message);
     gboolean         sync_running;
     guint            sync_timer;
     gboolean         bn_sync_running;
     guint            bn_sync_timer;
     gboolean         backup_running;     /* rotating-backup worker in flight */
-    guint            backup_timer;       /* its periodic GSource, or 0       */
+    guint            backup_timer;       /* its periodic GSource, or 0      */
     GtkToolbarStyle  toolbar_style;
     GPtrArray       *toolbars;
     gchar           *icons_dir;
     gchar           *db_dir;
-    gboolean         db_integrity_check; /* run PRAGMA checks on startup      */
-} BtApp;
+    gboolean         db_integrity_check; /* run PRAGMA checks on startup    */
+} TaskApp;
 
 /* ---------------------------------------------------------------------------
- * bt_app_widget_add_css() — attach a one-off CSS snippet to a single
+ * task_app_widget_add_css() — attach a one-off CSS snippet to a single
  * widget's style context (application priority).  The provider is owned
  * by the style context after this call.
  * ------------------------------------------------------------------------- */
-void bt_app_widget_add_css(GtkWidget *widget, const gchar *css_text);
+void task_app_widget_add_css(GtkWidget *widget, const gchar *css_text);
 
 /* ---------------------------------------------------------------------------
- * bt_app_init_icons_dir() — locate the icons/ folder next to the
- * executable (via bt_app_exe_dir(); bt_app_config_init() must have run)
+ * task_app_init_icons_dir() — locate the icons/ folder next to the
+ * executable (via task_app_exe_dir(); task_app_config_init() must have run)
  * and remember it in app->icons_dir.
  * ------------------------------------------------------------------------- */
-void bt_app_init_icons_dir(BtApp *app);
+void task_app_init_icons_dir(TaskApp *app);
 
 /* ---------------------------------------------------------------------------
- * bt_app_icon_image_sized() — build a GtkImage for icon `name` from
+ * task_app_icon_image_sized() — build a GtkImage for icon `name` from
  * "<icons_dir>/<name>.png" (or .svg), rendered at an explicit logical
  * pixel size, HiDPI-sharp (backing pixels scale with the display).
  * Returns NULL when no loadable file exists — callers fall back to a
  * text label.
+ *
+ * The returned image carries `name` as the "task-icon-name" object data
+ * and its rotation as "task-icon-rotation" (a GdkPixbufRotation, owned by
+ * the image): it is surface-backed, so gtk_image_get_pixbuf answers NULL
+ * and there is otherwise no way to ask which picture a widget is
+ * currently showing.
  * ------------------------------------------------------------------------- */
-GtkWidget *bt_app_icon_image_sized(BtApp *app, const gchar *name,
-                                   gint size);
+GtkWidget *task_app_icon_image_sized(TaskApp *app, const gchar *name,
+                                     gint size);
 
 /* ---------------------------------------------------------------------------
- * bt_app_tool_item_new() — create a toolbar button that honors the
+ * task_app_icon_image_rotated() — as above, turned by whole quarter turns.
+ *
+ * `rotation` is a GdkPixbufRotation; GDK_PIXBUF_ROTATE_NONE is exactly
+ * task_app_icon_image_sized.  The turn happens on the PIXBUF before the
+ * surface is made, so a square icon comes back the same size, pixel-exact
+ * and unresampled.  Use it where one image serves two states that differ
+ * only in orientation — a horizontal list icon turned a quarter turn is a
+ * columnar board icon, which is how the pane toggle dresses both of its
+ * faces from menu.png alone.
+ * ------------------------------------------------------------------------- */
+GtkWidget *task_app_icon_image_rotated(TaskApp *app, const gchar *name,
+                                       gint size,
+                                       GdkPixbufRotation rotation);
+
+/* ---------------------------------------------------------------------------
+ * task_app_tool_item_new() — create a toolbar button that honors the
  * app-wide toolbar style: `icon_name` names a local icon file (see
- * bt_app_icon_image_sized), `fallback_markup` is Pango markup rendered
+ * task_app_icon_image_sized), `fallback_markup` is Pango markup rendered
  * as the "icon" when that file is missing (NULL falls back to the plain
  * label).  The label shows in text/both modes.
  * ------------------------------------------------------------------------- */
-GtkToolItem *bt_app_tool_item_new(BtApp *app, const gchar *icon_name,
-                                  const gchar *fallback_markup,
-                                  const gchar *label,
-                                  const gchar *tooltip);
+GtkToolItem *task_app_tool_item_new(TaskApp *app, const gchar *icon_name,
+                                    const gchar *fallback_markup,
+                                    const gchar *label,
+                                    const gchar *tooltip);
 
 /* ---------------------------------------------------------------------------
- * bt_app_register_toolbar() — apply the current style to `toolbar`, keep
+ * task_app_register_toolbar() — apply the current style to `toolbar`, keep
  * it updated when the style changes, and offer the icons/both/text radio
  * menu on right-click.  The toolbar unregisters itself when destroyed.
  * ------------------------------------------------------------------------- */
-void bt_app_register_toolbar(BtApp *app, GtkWidget *toolbar);
+void task_app_register_toolbar(TaskApp *app, GtkWidget *toolbar);
 
 /* ---------------------------------------------------------------------------
- * bt_app_set_toolbar_style() — change the style on every live toolbar
+ * task_app_set_toolbar_style() — change the style on every live toolbar
  * and persist the choice ("toolbar_style" = icons|both|text).
  * ------------------------------------------------------------------------- */
-void bt_app_set_toolbar_style(BtApp *app, GtkToolbarStyle style);
+void task_app_set_toolbar_style(TaskApp *app, GtkToolbarStyle style);
 
-/* bt_app_load_toolbar_style() — read the persisted style into the app
- * context (default: icons only).                                            */
-void bt_app_load_toolbar_style(BtApp *app);
+/* task_app_load_toolbar_style() — read the persisted style into the app
+ * context (default: icons only).                                           */
+void task_app_load_toolbar_style(TaskApp *app);
 
 /* ---------------------------------------------------------------------------
- * bt_app_status() — post a one-line event message to the library window's
+ * task_app_status() — post a one-line event message to the library window's
  * status bar (printf-style).  Safe to call from anywhere on the main
  * thread: a no-op until the library window has installed notify_status.
  * ------------------------------------------------------------------------- */
-void bt_app_status(BtApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
+void task_app_status(TaskApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 
 /* ---------------------------------------------------------------------------
- * bt_app_notify_changed() — fire the notify_changed hook (full refresh:
+ * task_app_notify_changed() — fire the notify_changed hook (full refresh:
  * sidebar + task pane + open editors).  Safe when the hook is NULL or
  * not yet installed.
  * ------------------------------------------------------------------------- */
-void bt_app_notify_changed(BtApp *app);
+void task_app_notify_changed(TaskApp *app);
 
 /* ---------------------------------------------------------------------------
- * bt_app_switch_database() — move tasks.db to `new_dir` (or back to
+ * task_app_switch_database() — move tasks.db to `new_dir` (or back to
  * the default location when `new_dir` is NULL): closes all editors, copies
  * the database to the new home (if target folder has no existing db),
  * reopens, removes the old file, updates app->db_dir + config, and fires
@@ -162,20 +183,20 @@ void bt_app_notify_changed(BtApp *app);
  * use it or overwrite it; either way the old file is removed on success.
  * Returns TRUE on success; on failure the previous database is still open.
  * ------------------------------------------------------------------------- */
-gboolean bt_app_switch_database(BtApp *app, const gchar *new_dir);
+gboolean task_app_switch_database(TaskApp *app, const gchar *new_dir);
 
 /* ---------------------------------------------------------------------------
- * bt_app_notice() — run a modal OK message dialog and destroy it.
+ * task_app_notice() — run a modal OK message dialog and destroy it.
  * ------------------------------------------------------------------------- */
-void bt_app_notice(GtkWindow *parent, GtkMessageType type,
-                   const gchar *title, const gchar *fmt, ...)
+void task_app_notice(GtkWindow *parent, GtkMessageType type,
+                     const gchar *title, const gchar *fmt, ...)
                    G_GNUC_PRINTF(4, 5);
 
 /* ---------------------------------------------------------------------------
- * bt_app_confirm() — run a modal Yes/No question dialog; TRUE on Yes.
+ * task_app_confirm() — run a modal Yes/No question dialog; TRUE on Yes.
  * ------------------------------------------------------------------------- */
-gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
-                        const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
+gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
+                          const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
 
 /* ---------------------------------------------------------------------------
  * Config — same model as Notes: tasks.ini next to the binary
@@ -203,45 +224,45 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
  *                own card order — a separate family on purpose, see
  *                kanban_order_key)
  * ------------------------------------------------------------------------- */
-void      bt_app_config_init(const gchar *argv0);
-gchar    *bt_app_config_get(const gchar *key);         /* NULL when unset   */
-void      bt_app_config_set(const gchar *key, const gchar *value);
+void      task_app_config_init(const gchar *argv0);
+gchar    *task_app_config_get(const gchar *key);         /* NULL when unset */
+void      task_app_config_set(const gchar *key, const gchar *value);
 
-/* bt_app_config_get_bool() — read a 0/1 setting; `def` when unset.  The
- * app only ever writes "0"/"1", so any other stored value reads as "1".     */
-gboolean  bt_app_config_get_bool(const gchar *key, gboolean def);
+/* task_app_config_get_bool() — read a 0/1 setting; `def` when unset.  The
+ * app only ever writes "0"/"1", so any other stored value reads as "1".    */
+gboolean  task_app_config_get_bool(const gchar *key, gboolean def);
 
-/* bt_app_exe_dir() — the directory holding the binary, resolved once by
- * bt_app_config_init().  Borrowed string; do not free.                      */
-const gchar *bt_app_exe_dir(void);
+/* task_app_exe_dir() — the directory holding the binary, resolved once by
+ * task_app_config_init().  Borrowed string; do not free.                   */
+const gchar *task_app_exe_dir(void);
 
 /* ---------------------------------------------------------------------------
  * Date helpers shared by the two windows and the sync engine.
  * ------------------------------------------------------------------------- */
 
-/* bt_day_bounds() — local midnight bounds of "today + offset_days":
- * lo = that day's local midnight, hi = the next day's.                      */
-void bt_day_bounds(gint offset_days, gint64 *lo, gint64 *hi);
+/* task_day_bounds() — local midnight bounds of "today + offset_days":
+ * lo = that day's local midnight, hi = the next day's.                     */
+void task_day_bounds(gint offset_days, gint64 *lo, gint64 *hi);
 
-/* bt_due_format() — "" for no date, else e.g. "Jul 13, 2026".  Returns a
- * new string (g_free it).                                                   */
-gchar *bt_due_format(gint64 due);
+/* task_due_format() — "" for no date, else e.g. "Jul 13, 2026".  Returns a
+ * new string (g_free it).                                                  */
+gchar *task_due_format(gint64 due);
 
-/* bt_due_format_iso() — "" for no date, else the canonical "YYYY-MM-DD"
- * spelling (local calendar day).  Returns a new string (g_free it).         */
-gchar *bt_due_format_iso(gint64 due);
+/* task_due_format_iso() — "" for no date, else the canonical "YYYY-MM-DD"
+ * spelling (local calendar day).  Returns a new string (g_free it).        */
+gchar *task_due_format_iso(gint64 due);
 
-/* bt_due_color() — urgency tint for a due timestamp: overdue red, today
+/* task_due_color() — urgency tint for a due timestamp: overdue red, today
  * gold, ahead green (the Notes action-item palette), or NULL for no
- * tint (due == 0).  Static string; do not free.                             */
-const gchar *bt_due_color(gint64 due);
+ * tint (due == 0).  Static string; do not free.                            */
+const gchar *task_due_color(gint64 due);
 
-/* bt_due_parse() — parse "YYYY-MM-DD" (also "M/D/YY[YY]") into a local-
- * midnight unix timestamp; 0 when the text is empty/unparseable.            */
-gint64 bt_due_parse(const gchar *text);
+/* task_due_parse() — parse "YYYY-MM-DD" (also "M/D/YY[YY]") into a local-
+ * midnight unix timestamp; 0 when the text is empty/unparseable.           */
+gint64 task_due_parse(const gchar *text);
 
-/* bt_due_from_ymd() — validated year/month/day → local-midnight unix
- * timestamp; 0 when the fields are out of range.                            */
-gint64 bt_due_from_ymd(gint y, gint m, gint d);
+/* task_due_from_ymd() — validated year/month/day → local-midnight unix
+ * timestamp; 0 when the fields are out of range.                           */
+gint64 task_due_from_ymd(gint y, gint m, gint d);
 
-#endif /* BT_APP_H */
+#endif /* TASK_APP_H */

@@ -30,7 +30,8 @@ the database schema and the sync engine see [Internals](Internals.md).
   *Move to Group* and *Remove from Group*; double-clicking a list opens
   that same Edit dialog. *File → New List…* does the same thing.
   The sidebar starts hidden; the toolbar's **Sidebar** button (or
-  *View → Show Sidebar*) toggles it and the choice persists.
+  *View → Show Sidebar*, which reads *Hide Sidebar* once it is up)
+  toggles it and the choice persists.
 - **List groups** — lists can be filed under named groups, which show
   as their own expandable rows under the **Lists** header. Right-click
   a group to *Rename Group* or *Remove Group* (removing the group keeps
@@ -70,8 +71,14 @@ the database schema and the sync engine see [Internals](Internals.md).
   the Notes section keep their own — and is local to Tasks.
 - **Toolbar** — the Sidebar toggle, then Sync, a visibility toggle that
   shows or hides completed tasks (it applies to every view, Notes
-  items included), the Manual Sort toggle, then New Task and Delete
-  Task. At the far right, the logo button opens the About dialog
+  items included), the Manual Sort toggle, and the **pane toggle** — the
+  twin of *View → Kanban View / List View*. Past a divider are New Task
+  and Delete Task. For the pane toggle the picture is always the view you
+  will get. On the list it shows the list icon turned on its side, three
+  columns standing up, and takes you to the Kanban board; on the board it
+  shows the same icon upright, a list again, and brings the list back. The
+  menu item and this button change together. At the far right, the logo
+  button opens the About dialog
   (program info plus live database statistics). Button style —
   icons, icons + text, or text — is set in Settings or by
   right-clicking an empty spot on the toolbar. The Sync button can be
@@ -79,7 +86,8 @@ the database schema and the sync engine see [Internals](Internals.md).
 - **Status bar** — the left side describes the current view and
   selection; the right side shows the latest event message (a sync
   result, a save failure), which fades out after a few seconds.
-- **Kanban View** (*View → Kanban View*) — shows whatever you have
+- **Kanban View** (*View → Kanban View*; the same item reads *List View*
+  while the board is up, and takes you back) — shows whatever you have
   selected as a board of three lanes, **New**, **In Progress** and
   **Done**, instead of a list. Each task becomes a card, and each lane
   is headed by its name and a count.
@@ -94,42 +102,81 @@ the database schema and the sync engine see [Internals](Internals.md).
     order is remembered per view, separately from the list view's
     *Manual Sort* order — rearranging a board never disturbs a list you
     have hand-sorted.
-  - The pointer turns into an open hand over a card and closes while you
-    drag it; the card you are carrying follows the pointer as a
-    see-through copy, and the original stays dimmed in place until you
-    drop. Press **Escape** mid-drag to abandon it, changing nothing.
+  - Each card has a small **⠿ grip** down its left edge, and that is where
+    drags start — just like the handle column in the list's Manual Sort.
+    The pointer turns into an open hand over the grip and closes while you
+    drag; everywhere else on the card the pointer stays a normal arrow, so
+    a click selects and a double-click opens. The card you are carrying
+    follows the pointer as a see-through copy, and the original stays
+    dimmed in place until you drop. Press **Escape** mid-drag to abandon
+    it, changing nothing.
   - **Double-click a card** to open its editor, the same as
     double-clicking a row. A single click selects the card, which is
     what **Delete Task** acts on while the board is up.
+  - **Select several cards** the way you would rows: **Cmd-click**
+    (Ctrl-click on Linux) adds a card to the selection or takes it back
+    out, and **Shift-click** selects everything between the last card you
+    clicked and this one, within that lane. Selected cards are
+    highlighted.
+  - **Right-click a card** for the same menu a task row gives you — Info,
+    mark complete or incomplete, favorite, high priority, Move to List,
+    Open in Google Tasks, Delete. With several cards selected it acts on
+    all of them and says so (*Delete 3 Tasks*), and right-clicking inside
+    a selection keeps that selection rather than collapsing it onto the
+    one card. **Open in Google Tasks** and **Info** stay single-card.
+  - **Dragging works on the whole selection too**: grip any one of the
+    selected cards and they all travel together, with a badge on the card
+    you are carrying showing how many. Drop them and they all take the
+    lane's status, landing at the slot you chose in the order they were
+    in.
   - The board follows your sidebar selection, so it works for a single
     list and for the rolled-up views (*All Tasks*, *Favorites*, *Due
     Today*, *Action Items*) alike. **Weekly Forecast** is the one
     exception — it keeps its seven-day panel, since a week of dated days
     is not something three status lanes can express. Leave the forecast
     and the board comes back.
-  - *Show Completed* still applies: with completed tasks hidden the Done
-    lane is empty. It stays on screen so you can still drag onto it —
+  - The completed-visibility setting still applies: with completed
+    tasks hidden the Done lane is empty. It stays on screen so you can still drag onto it —
     the card just disappears once it lands, the same as a row does in
     the list.
   - The *Manual Sort* toggle governs the LIST view only. The board is
     always drag-orderable, and keeps its own order — the two never
     overwrite each other.
   - The choice persists between launches.
-- **View menu** — *Show Completed* and *Manual Sort* mirror their
-  toolbar buttons, *Show Sidebar* mirrors the Sidebar toggle, and
-  *Compact Layout* strips the window down to the task list: the whole
-  toolbar and the sidebar go away, and a small floating bar with just
-  **New Task** and **Delete Task** sits 20 px in from the bottom-right
-  corner. Turning Compact Layout back off restores the toolbar and
-  puts the sidebar back the way you had it; *Show Sidebar* still works
-  while compact if you want the lists pane over the task list. The
-  choice persists between launches.
+- **View menu** — every item here is named for what clicking it will
+  *do*, not for the state you are in, so there is no checkbox to
+  interpret: the menu always reads as an offer.
+  Top to bottom, the first two are what the task list shows —
+  **Hide Completed** / **Show Completed**, and the sort toggle, which
+  reads **Manual Sorting** while sorting is automatic (by column header)
+  and **Automatic Sorting** while you are dragging rows by hand. Both
+  mirror
+  their toolbar buttons, and the label changes whichever control you
+  use. The sort toggle greys out while the Kanban board is on, since the
+  board is always drag-sorted and keeps its own order.
+  Below a divider are the three that change the window itself —
+  **Hide Sidebar** / **Show Sidebar**, **Compact Controls** / **Full
+  Controls**, and **Kanban View** / **List View**, which swaps the task
+  pane between the list and the board. The sidebar item mirrors the
+  Sidebar toggle, and **Compact Controls** strips the window down to the
+  task list: the whole toolbar goes away and a small floating bar with
+  just **New Task** and **Delete Task** sits 20 px in from the
+  bottom-right corner. **Full Controls** brings the toolbar back. The
+  sidebar is left alone either way — it follows the sidebar item in both
+  modes, so you can keep the lists pane over the task list while
+  compact. The choice persists between launches.
 - **Multi-select** (Cmd/Shift-click) for bulk actions via the
   right-click menu: mark complete or incomplete, favorite or
   unfavorite, set or clear **High Priority**, **Move to List**, Delete.
   With a single task selected the favorite and priority items show only
   the direction that applies. **Open in Google Tasks** opens a single
   selected task in the browser (for tasks that have synced).
+- **Ticking a subtask starts its parent** — completing any subtask moves
+  the parent task from *New* to *In Progress* on its own, since work has
+  plainly begun. A parent already *In Progress* stays there, and a parent
+  you have already marked *Done* is left alone: finishing one more subtask
+  is progress, not a reason to reopen it. Unticking a subtask does not
+  move the parent either — that is your call to make.
 - **Double-click a task** to open its editor window.
 - Menus: *File → New Task*, *New List…*, *Sync Now*, *Clear Completed
   Tasks*, *Open Database File…*, *Settings…*, *About*, and *Quit*. With
@@ -248,35 +295,6 @@ Three things worth knowing:
 Every backup is a complete, ordinary SQLite database. To restore one,
 quit the app, and either copy it over your `tasks.db` or point *Settings
 → Database* at a folder containing it renamed to `tasks.db`.
-
-### Upgrading from Lists (version 3.x)
-
-The app used to be called **Lists**, and its files were named after it.
-Version 4.0 carries them over on the first launch — you should not have
-to do anything, and you stay signed in to Google:
-
-- `lists.db` is **renamed** to `tasks.db`, wherever it lives (including
-  a custom folder you chose in Settings → Database).
-- `lists.ini` is **copied** to `tasks.ini`, and the settings inside it
-  are moved from the old `[lists]` section to `[tasks]`. Your Google
-  sign-in, your database location and every preference come with it.
-  The original `lists.ini` is deliberately left where it is, untouched,
-  as a fallback; a copy of the file as it stood just before the section
-  was rewritten is saved as `tasks.ini.pre-4.0.bak`. **Both hold your
-  Google refresh token**, so treat them like passwords — don't put them
-  somewhere shared.
-- Each of these happens only when the new file is not already there, so
-  it cannot run twice or overwrite work you have done since.
-
-If the database rename fails (a permissions problem, or a sync folder
-that has the file locked), the app says so on the console and opens
-your old `lists.db` where it is rather than starting empty. Nothing is
-lost — quit, fix the cause, and relaunch.
-
-An upgrade from before 3.0, when the app was **Hacienda**, still works
-too, with one difference: it needs a fresh Google sign-in, because that
-version's saved token belonged to a different Google client and Google
-will not honor it.
 
 ## Google Tasks sync
 

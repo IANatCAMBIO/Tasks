@@ -2,7 +2,7 @@
 # Tasks — Makefile
 #
 # Builds the Tasks application (a GTK3 + SQLite task-list app written
-# in plain C — the companion app to Blue Notes).  Requires GTK3, SQLite3
+# in plain C — the companion app to Notes).  Requires GTK3, SQLite3
 # and libcurl, discovered via pkg-config.
 #
 # On macOS with MacPorts:
@@ -18,7 +18,7 @@
 # =============================================================================
 
 # Semantic version — read from VERSION file (the single source of truth).
-# Baked into the binary as BT_VERSION (shown in the About dialog) and into
+# Baked into the binary as TASK_VERSION (shown in the About dialog) and into
 # the .app bundle's Info.plist.  To release: edit VERSION, then `make`.
 VERSION  := $(strip $(shell cat VERSION))
 
@@ -51,7 +51,7 @@ endif
 # Compiler flags: C11, broad warnings, debug symbols, plus the include
 # paths for the modules above.
 CFLAGS   := -std=c11 -Wall -Wextra -g \
-            -DBT_VERSION='"$(VERSION)"' \
+            -DTASK_VERSION='"$(VERSION)"' \
             $(shell $(PKGCONF) --cflags $(PKGS))
 ifeq ($(HAVE_GTKOSX),1)
 CFLAGS  += -DHAVE_GTKOSX
@@ -71,10 +71,10 @@ LDFLAGS  := $(shell $(PKGCONF) --libs $(PKGS)) -lm
 # pattern.
 -include client_credentials.mk
 ifneq ($(GOOGLE_CLIENT_ID),)
-CFLAGS  += -DBT_GOOGLE_CLIENT_ID='"$(GOOGLE_CLIENT_ID)"'
+CFLAGS  += -DTASK_GOOGLE_CLIENT_ID='"$(GOOGLE_CLIENT_ID)"'
 endif
 ifneq ($(GOOGLE_CLIENT_SECRET),)
-CFLAGS  += -DBT_GOOGLE_CLIENT_SECRET='"$(GOOGLE_CLIENT_SECRET)"'
+CFLAGS  += -DTASK_GOOGLE_CLIENT_SECRET='"$(GOOGLE_CLIENT_SECRET)"'
 endif
 
 # All C source files that make up the application.
@@ -109,7 +109,7 @@ $(BIN): $(OBJS)
 # Compile each .c file into a .o in build/.  Every object depends on all
 # headers for simplicity (the project is small enough that full rebuilds
 # on header change are cheap), and on the Makefile so a VERSION bump
-# recompiles the baked-in BT_VERSION.
+# recompiles the baked-in TASK_VERSION.
 build/%.o: src/%.c $(wildcard src/*.h) Makefile VERSION $(wildcard client_credentials.mk)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -118,7 +118,7 @@ build/%.o: src/%.c $(wildcard src/*.h) Makefile VERSION $(wildcard client_creden
 # compile_commands.json gives clangd the same include paths as the real
 # build (without it the IDE reports "gtk/gtk.h not found").  Regenerated
 # whenever the Makefile changes; machine-specific, so it stays gitignored.
-# JSONFLAGS escapes the double quotes in CFLAGS (e.g. -DBT_VERSION='"…"')
+# JSONFLAGS escapes the double quotes in CFLAGS (e.g. -DTASK_VERSION='"…"')
 # for embedding in a JSON string: make turns each " into \\\", the shell's
 # double-quoting collapses that to \", which is what JSON needs.
 JSONFLAGS := $(subst ",\\\",$(CFLAGS))
@@ -163,7 +163,7 @@ DIST     := dist
 # releases, so a Dock/Launchpad entry or an alias pointing at it keeps
 # working after a VERSION bump.  The version still ships INSIDE, in
 # CFBundleShortVersionString/CFBundleVersion below and in the binary's
-# baked-in BT_VERSION (the About dialog).
+# baked-in TASK_VERSION (the About dialog).
 APP_DIR  := $(DIST)/Tasks.app
 ICONSET  := $(DIST)/document.iconset
 

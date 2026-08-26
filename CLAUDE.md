@@ -20,132 +20,61 @@ backwards — don't.  What that means in practice:
   is for (`#ifndef GDK_WINDOWING_QUARTZ` around the column-header
   flattening is the model: it compiles OUT everywhere else, and an X11
   build on a Mac keeps the standard theme).
-- Several gotchas below are quartz-specific (12, 13, 19).  They are
-  recorded so nobody re-investigates them, NOT because the Mac drives
-  the design.  A fix justified only by "AppKit does X" is the wrong
-  shape — restate it in terms of what is portable.
+- Several gotchas below are quartz-specific.  They are recorded so nobody
+  re-investigates them, NOT because the Mac drives the design.  A fix
+  justified only by "AppKit does X" is the wrong shape — restate it in
+  terms of what is portable.
 - The GTK version, the widget set and the theming assumptions are all
   stock GTK3, so an XFCE desktop with Adwaita is the reference look.
 
-## THIS app's renames: Hacienda → Lists → Tasks
+## Naming
 
-Renamed to **Tasks** at version 4.0 (2026-08-25).  Everything a user
-sees says Tasks; the binary is `tasks`, the ini `tasks.ini` under the
-group `[tasks]`, the database `tasks.db` under `<data>/tasks/`, the
-bundle `dist/Tasks.app`, the GtkApplication id `org.example.tasks`.
+The app is **Tasks**.  It has never shipped, so there is no older
+spelling anywhere in the wild and NO migration or compatibility code for
+one — not for the config, not for the database, not for file names.  If
+you find something that reads like an upgrade path, it is dead code.
 
-**"Lists" is still a real word in this app** and most occurrences are
-NOT the old name — do not sweep them.  The sidebar has a collapsible
-**Lists** section holding the user's task lists; `BtList`, the `lists`
-and `list_groups` TABLES, `bt_db_lists*`, `SB_KIND_LIST`,
-`manual_order_list_<id>` and Google's own `/users/@me/lists` API paths
-all mean lists-the-data-type.  The surviving deliberate uses are the
-sidebar section label + its comments (library_window.c), the ASCII
-sidebar sketch in library_window.h, and the word as a VERB in
-settings_window.c ("Lists every mirrored action item…").
+**"Lists" is a real word in this app** and most occurrences are the DATA
+TYPE, not an old name — do not sweep them.  The sidebar has a collapsible
+**Lists** section holding the user's task lists; `TaskList`, the `lists` and
+`list_groups` TABLES, `task_db_lists*`, `SB_KIND_LIST`,
+`manual_order_list_<id>`, `kanban_order_list_<id>` and Google's own
+`/users/@me/lists` API paths all mean lists-the-data-type.
 
-**The `bt_`/`Bt` prefix stays.**  It is "Blue Tasks" — the same lineage
-as the companion app's `bn_` for Blue Notes — so the Tasks name makes
-it MORE apt, not less.  There is no `bt_` → anything rename pending.
+The repo DIRECTORY is still `~/salt_development/lists` and the git remote
+is still `IANatCAMBIO/Lists.git`.  Both are deliberate: GitHub redirects,
+so renaming the repo would only mean chasing every doc link.
 
-Three name-shaped things were deliberately NOT changed, and are not
-oversights: the repo DIRECTORY `~/salt_development/lists`, the git
-remote `IANatCAMBIO/Lists.git`, and the GitHub repo name.  Renaming the
-GitHub repo would leave every doc link needing a pass; GitHub redirects,
-so the links still work.  Fix the URLs only once the repo itself is
-renamed — exactly the state the companion app is in.
+Public symbols are prefixed `task_`, types `Task`, macros `TASK_`.  These
+were `bt_`/`Bt`/`BT_` — "Blue Tasks", the app's first name — renamed on
+2026-08-26.  Three names would have stuttered and were COLLAPSED rather
+than mechanically prefixed, so do not "restore" the pattern:
 
-### The upgrade path (this is the part that breaks silently)
+- `BtTask` → **`Task`** (the domain object needs no prefix)
+- `BtTaskStatus` → **`TaskStatus`**
+- `bt_task_free` → **`task_free`**
 
-The 3.0 rename taught the lesson the hard way: the ini GROUP NAME is
-part of the file format, so a rename orphans the whole file and the user
-silently reverts to defaults — losing `gtasks_refresh_token` (signed
-out) and `db_dir` (a database outside the default location becomes
-invisible, and the first-run dialog cheerfully offers to create an empty
-one beside it).  4.0 renames the FILES too, so there are three adoptions,
-each guarded by "only when the new name is absent" so it can never run
-twice or clobber newer work:
+`BT_TASKS_API` became the file-local `GTASKS_API` in gtasks.c, since a
+file-local macro does not need the app prefix.  Everything else is the
+plain substitution, `"task-*"` object-data keys and CSS classes included.
+Functions that name their subject still read `task_db_task_get` — the
+namespace, the module, then the subject; that is not a stutter to
+"fix".
 
-- **`lists.ini` → `tasks.ini`** — `config_adopt_legacy_file` (app.c), a
-  COPY not a rename: the original is left byte-identical, so a bad
-  outcome is recoverable.  Runs in `bt_app_config_init` BEFORE the load,
-  in whichever location applies (beside the binary, or the config-dir
-  fallback — which moved directory too, so its legacy path is built
-  from scratch rather than by swapping a basename).  Portable mode now
-  also triggers on finding only the OLD name there.
-- **`[lists]` → `[tasks]`** — `config_migrate_legacy_group`, now
-  parameterized and driven by `LEGACY_GROUPS`, NEWEST FIRST.  Order is
-  the precedence rule: each pass only fills keys `[tasks]` lacks, so
-  folding 3.x before pre-3.0 means the newer value wins.  `[lists]` is
-  folded WHOLE (`allowlist = FALSE`) — same build lineage, same baked-in
-  OAuth client, so the refresh token IS carried and the user stays
-  signed in.  `[hacienda]` keeps the allowlist and still drops the token
-  (different OAuth client; Google answers `invalid_grant`).  Backups are
-  named per version (`.pre-4.0.bak` / `.pre-3.0.bak`) so two migrations
-  on one file leave two distinguishable copies.
-- **`lists.db` → `tasks.db`** — `bt_db_resolve_path` (db.c), called from
-  main() in place of the old `g_build_filename`/`bt_db_default_path`
-  pair.  A real `g_rename`.  Custom `db_dir` = siblings; the DEFAULT
-  location changed directory as well (`<data>/lists/lists.db` →
-  `<data>/tasks/tasks.db`), which is why the legacy path is built
-  separately.  A FAILED rename returns the LEGACY path — returning the
-  new one would hand `bt_db_open` a nonexistent file, which it would
-  helpfully create, leaving the user staring at an empty app with their
-  real database still on disk.  Renaming only the `.db` is correct: this
-  build never enables WAL, so there are no `-wal`/`-shm` companions.
+The companion app is **Notes**.  Its source names here carry a `bn_`
+prefix — `src/bnotes.[ch]`, `src/bnsync.[ch]`, `task_bnotes_*`,
+`task_bnsync_*`, `bn_*`, `SB_KIND_BN_ACTIONS`, the `bn_deleted` table and
+`tasks.bn_uid` / `bn_done` / `bn_due`.  Internal only; nothing a user sees
+is derived from them.
 
-`config_migrate_renamed_keys` (the Notes key renames) still runs LAST,
-after both group folds — they are what put an older file's
-`blue_notes_*` keys into the group it reads.
-
-Verified end-to-end against a synthetic pre-4.0 install (a `[lists]` ini
-with a token + `db_dir` + a `blue_notes_cli` key, and a v6 `lists.db` in
-that `db_dir`): all three adoptions ran, the per-key rename still fired,
-the schema migrated v6 → v7, and the original `lists.ini` came out
-byte-identical to its `.bak`.
-
-**The companion app has been renamed twice: Blue Notes → Records →
-Notes** (2026-08-11).  Neither older name was ever publicly released —
-the only copy that runs anywhere is the user's own — so there is no
-compatibility surface to preserve, and every USER-FACING string, config
-key and program name says **Notes**.  What deliberately still carries an
-old name, and is NOT a typo to "fix":
-
-- the source names `src/bnotes.[ch]`, `src/bnsync.[ch]`, `bt_bnotes_*`,
-  `bt_bnsync_*`, `bn_*`, `SB_KIND_BN_ACTIONS`, and the `bn_deleted`
-  table plus the LEGACY `bn_pins` / `bn_priority` ones (renaming tables
-  would need a schema migration for no gain).  `tasks.bn_uid` /
-  `bn_done` / `bn_due` follow the same prefix.  These are internal only;
-  nothing a user sees is derived from them.
-
-The five integration config keys WERE renamed
-(`blue_notes_sync|cli|embed_list` → `notes_sync|cli|embed_list`,
-`records_sync_interval_min|meta_row` → `notes_sync_interval_min|
-meta_row`).  `config_migrate_renamed_keys` (app.c, run from
-`bt_app_config_init` right after `config_migrate_legacy_group` — that
-order matters, the group fold is what puts a pre-3.0 file's
-`blue_notes_*` keys into the group this pass reads) folds the old
-spellings onto the new ones IN PLACE, then REMOVES them so the pass
-cannot run twice or resurrect a key the user has since cleared.  The
-current name wins when both exist.  `LEGACY_KEYS` still lists the
-`blue_notes_*` spellings, because that allowlist describes what a
-pre-3.0 `[hacienda]` group actually contains.
-
-**Where Notes actually is** (the old paths survive as leftovers — verify
-before believing any of them): `~/salt_development/records` — the
-DIRECTORY was not renamed — whose git remote is still
-`orange_notes.git`, and whose GitHub repo is still named
-`IANatCAMBIO/Records`.  All the names redirect, so the docs' links keep
-pointing at `/Records` while their link TEXT says Notes; fix the URL
-only once the repo itself is renamed.  The live CLI binary is
-**`notes`** (`make` in that directory builds it; the app bundle is
-`dist/Notes.app`, the ini `notes.ini`, the socket
-`~/.cache/notes.sock`).  `bt_bnotes_cli_path` looks for `notes` and
-NOTHING else — deliberately no fallback to `records` / `blue_notes`,
-because a stale pre-rename binary left beside the current one answers
-`action list` with an EMPTY result and exit 0, which reads as "no
-action items" rather than as an error.  There is no
-`~/salt_development/orange_notes` directory any more.
+**Where Notes is**: `~/salt_development/records` (the directory was not
+renamed), git remote `orange_notes.git`, GitHub repo `IANatCAMBIO/Records`
+— all redirect.  The live CLI binary is **`notes`** (`make` there builds
+it; app bundle `dist/Notes.app`, ini `notes.ini`, socket
+`~/.cache/notes.sock`).  `task_bnotes_cli_path` looks for `notes` and
+nothing else, deliberately: a stale build left beside the current one
+answers `action list` with an EMPTY result and exit 0, which reads as "no
+action items" rather than as an error.
 
 ## Build & run
 
@@ -169,7 +98,7 @@ why `HAVE_GTKOSX` is detected above the flag definitions; the link must
 stay warning-free so a real warning is visible.
 
 Launch for testing: `pkill -f './tasks'; nohup ./tasks
->/tmp/bt_launch.log 2>&1 &` then `screencapture -x` for screenshots.
+>/tmp/task_launch.log 2>&1 &` then `screencapture -x` for screenshots.
 Do NOT drive the GUI with osascript accessibility clicks (rejected by
 the user).  A logic test harness lives in the session scratchpad
 (`test_bt.c`, links against `build/{json,db,app}.o`) — keep it passing.
@@ -179,9 +108,9 @@ the user).  A logic test harness lives in the session scratchpad
 | File | Purpose |
 |---|---|
 | `src/main.c` | GtkApplication entry; config → curl_global_init → db → oauth snapshot → window → auto-sync; icon-theme path for HiDPI expanders |
-| `src/app.[ch]` | Shared `BtApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
+| `src/app.[ch]` | Shared `TaskApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
 | `src/backup.[ch]` | OPTIONAL rotating db backups: own worker + connection, VACUUM INTO + verify, bounded rotation; off by default |
-| `src/db.[ch]` | SQLite schema (user_version 7) + CRUD; `BtTaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
+| `src/db.[ch]` | SQLite schema (user_version 7) + CRUD; `TaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, Kanban board, multi-select context menu, status bar |
 | `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); Status dropdown; read-only "From Google" section |
 | `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Notes integration, toolbar style, native menubar |
@@ -196,7 +125,7 @@ the user).  A logic test harness lives in the session scratchpad
 
 ## Conventions
 
-- `bt_` prefix for public symbols, `Bt` for types; every function gets a
+- `task_` prefix for public symbols, `Bt` for types; every function gets a
   banner comment.  **Headers carry the full public contract** (purpose,
   params, returns, ownership, failure behavior); `.c` banners say "see
   x.h" plus the how.  Non-obvious variables get column-aligned trailing
@@ -207,23 +136,11 @@ the user).  A logic test harness lives in the session scratchpad
   `tasks.ini.defaults`; loaded ONCE, written through on change,
   never re-read.  Everything except the OAuth client keys and the
   window geometry is editable in File → Settings….
-  The ini GROUP NAME is `[tasks]` and it is part of the file format, so
-  each rename orphaned the file: a 3.x ini keeps everything under
-  `[lists]` and a pre-3.0 one under `[hacienda]`, neither of which this
-  build reads, and the 3.0 rename silently reverted upgraders to
-  defaults for exactly that reason.  Both folds and the FILE-level
-  adoption are described in "THIS app's renames" at the top — the short
-  version being that `[lists]` carries EVERYTHING (token included, same
-  OAuth client) while `[hacienda]` goes through the `LEGACY_KEYS`
-  allowlist and deliberately drops `google_client_id`,
-  `google_client_secret` and **`gtasks_refresh_token`**: a pre-3.0 token
-  was issued to that build's OAuth client, Google answers the refresh
-  with `invalid_grant` (verified), and a failed refresh does NOT clear
-  the token, so migrating it would leave the app reporting "signed in"
-  while every sync failed.  Signed-out plus one sign-in click beats
-  silent breakage.  Every `.bak` holds the same refresh token as the
-  live file, so they are gitignored (`*.bak`), and so is the `lists.ini`
-  the 4.0 adoption deliberately leaves behind.
+  The ini GROUP NAME is `[tasks]` and it is part of the file format —
+  the app reads only that group.  There are no config migrations: this
+  build has never shipped, so no other spelling exists in the wild.
+  Every `<db>.pre-v<N>.bak` a future migration leaves holds the same
+  refresh token as the live file, so `*.bak` is gitignored.
 - **Error discipline**: every prepared WRITE goes through `step_done()`
   (logs sqlite's message on prepare/step failure — silent write loss is
   the unacceptable outcome); multi-statement writes go through
@@ -238,21 +155,21 @@ the user).  A logic test harness lives in the session scratchpad
   outcome a health check must never produce, so a failed exec reports
   sqlite's own message and the dialog says "did not complete" rather
   than "found issues".
-- Notify hooks on BtApp: `notify_changed` = FULL refresh (sidebar +
+- Notify hooks on TaskApp: `notify_changed` = FULL refresh (sidebar +
   tasks + reload all editors) for structural changes; `notify_tasks` =
   task pane only — editor saves and subtask/attachment edits use this
   (the full path would re-run the Notes CLI per autosave).
-  `bt_app_status()` for events.  Teardown: NULL the hooks BEFORE
-  `bt_editor_close_all` (a closing editor's flush otherwise cascades
+  `task_app_status()` for events.  Teardown: NULL the hooks BEFORE
+  `task_editor_close_all` (a closing editor's flush otherwise cascades
   refreshes into destroyed windows).
-- Async callback lifetime: never capture the BtLibrary pointer in a
+- Async callback lifetime: never capture the TaskLibrary pointer in a
   worker/idle callback — re-resolve via `lib_of(app)` and no-op when
   NULL (the window may close mid-flight).  The settings window guards
   the same way (`settings != sw`).
 
 ## Task status (the tri-state that replaced `done`)
 
-A task's completion is ONE field, `tasks.status` (`BtTaskStatus`: 0 New,
+A task's completion is ONE field, `tasks.status` (`TaskStatus`: 0 New,
 1 In Progress, 2 Done — the values are the on-disk encoding, do not
 renumber).  Schema v7 added it, backfilled `done = 1` → Done, and
 **DROPPED `tasks.done`**; the drop is conditional on the backfill's
@@ -261,10 +178,10 @@ after a copy that never ran would throw every completion away.  An
 sqlite too old for DROP COLUMN (< 3.35) just leaves `done` behind
 unread, which is harmless — its `NOT NULL DEFAULT 0` keeps INSERTs
 working.  There is no `t->done` any more: every "is it complete?" test
-is `t->status == BT_STATUS_DONE`.
+is `t->status == TASK_STATUS_DONE`.
 
 Google Tasks and Notes are both BINARY, so the third state is local by
-construction.  `bt_status_apply_done(cur, done)` is the single rule
+construction.  `task_status_apply_done(cur, done)` is the single rule
 every done-only source folds through — the ✓ column, the context menu's
 Mark Complete/Incomplete, the subtask checkboxes, a Google pull, a Notes
 listing:
@@ -274,12 +191,12 @@ listing:
   been worked on), else `cur` **unchanged** — so a New task survives a
   round trip through a done-only system instead of being promoted.
 
-The SQL paths that need the row's OLD status (`bt_db_task_apply_notes`)
+The SQL paths that need the row's OLD status (`task_db_task_apply_notes`)
 spell the same rule as a CASE rather than reading it back in a second
 statement.  **New is reachable only from the editor's dropdown.**
 
-**Every status change stamps `updated_at`** — `bt_db_task_set_status`
-and `bt_db_task_update` alike, New ↔ In Progress included.  Status is
+**Every status change stamps `updated_at`** — `task_db_task_set_status`
+and `task_db_task_update` alike, New ↔ In Progress included.  Status is
 the successor of a SYNCED field, NOT a local flag like
 `pinned`/`priority`, so it does not get their deliberate missing bump: a
 status move that stamps nothing is invisible to every consumer of
@@ -296,15 +213,66 @@ conditional bump.
 `completed_at` is stamped on ENTERING Done and cleared on leaving; an
 already-Done task keeps its first stamp.
 
+**A completed SUBTASK starts its parent**: `parent_started()` in db.c
+moves the parent New → In Progress, and every write path that can
+complete a task folds through it (`task_db_task_set_status`,
+`task_db_task_update`, `task_db_task_apply_remote`,
+`task_db_task_apply_notes`), so the editor checkbox, the ✓ column, a
+Kanban drag, a Google pull and a Notes listing all get it without five
+copies of the rule.  It is ONE guarded UPDATE
+(`WHERE id = (SELECT parent_id …) AND status = New`), which is why no
+branch is needed: a top-level task's `parent_id` is NULL and matches no
+row.  Only New → In Progress, so it never touches `completed_at` and
+cannot cascade — the rule fires on Done, and In Progress is not Done, so
+a promoted parent cannot promote a grandparent.  **A DONE parent is left
+Done** (one more finished child is progress, not regress) and unticking a
+subtask drags the parent nowhere.  Not wrapped in a transaction with the
+child's own write: a crash between the two leaves the parent New, which
+is exactly the old behavior.
+The parent's open EDITOR must be resynced (`editor_status_resync`) when
+its own subtask list ticks something — `editor_save_now` reads the status
+combo and writes it back, so a combo left reading New silently undoes the
+promotion on the next debounced save.  That was measured, not assumed:
+with the resync removed the parent comes back as New ~600 ms later.
+
 ## GUI rules (visual parity with Notes)
 
 - Toolbar: `GTK_ICON_SIZE_SMALL_TOOLBAR` metrics; buttons via
-  `bt_app_tool_item_new` (local PNG at 24 px logical, Pango-markup glyph
-  fallback); registered with `bt_app_register_toolbar` so the
+  `task_app_tool_item_new` (local PNG at 24 px logical, Pango-markup glyph
+  fallback); registered with `task_app_register_toolbar` so the
   icons/both/text style applies live (Settings combo + right-click
   radio menu).  Layout (all left-packed): the Sidebar toggle, a drawn
-  divider, Sync, the completed-visibility toggle, the Manual Sort
-  toggle, a second divider, then New Task and Delete Task.
+  divider, Sync, the completed-visibility toggle, the Manual Sort toggle,
+  the pane toggle, a second divider, then New Task and Delete Task.
+  The pane toggle sits WITH the sort toggle rather than with the task
+  pair: both change how the tasks are PRESENTED instead of acting on a
+  task, and the sort toggle is the control it pairs with (the board is
+  always drag-sorted, which is why that one greys out while this one is
+  on).  It is the toolbar twin of View → Kanban View / List View:
+  same `on_toggle_kanban`, and `task_pane_mode_apply` gives it its icon,
+  label and tooltip so both controls move together.  Its ICON names the
+  action like every other toggle here, and **BOTH faces come from
+  menu.png** (the bulleted list): upright it offers the LIST, turned a
+  quarter turn CLOCKWISE its bullets sit atop three vertical bars and it
+  offers the BOARD.  One image means the two faces cannot drift apart, and
+  the turn goes through `task_app_icon_image_rotated` — on the PIXBUF, in a
+  whole quarter turn, so a square icon comes back the same size and
+  pixel-exact rather than resampled.  `kanban.png` was the board face
+  before that and is now unreferenced.
+  The Manual Sort toggle follows the same rule with a gearbox pair:
+  **manual.png** (a gearstick) while sorting is AUTOMATIC — the column
+  headers doing it — since the click on offer is "let me drag them", and
+  **automatic.png** (a gear selector) while manual sorting is in force.  It wore menu.png until the
+  pane button existed, and two buttons in one toolbar wearing the same
+  picture read as one control.  `interactive.png` and `slide.png` are the
+  images this button used to carry and are now unreferenced (as is
+  kanban.png, see below).
+  Every image the loader builds carries its icon name as `"task-icon-name"`
+  object data and its turn as `"task-icon-rotation"` — the images are
+  surface-backed, so `gtk_image_get_pixbuf` answers NULL and there is
+  otherwise no way to ask which picture a state-swapping button is
+  showing.  The rotation has to be part of that answer now that one file
+  dresses both faces of the pane button.
   The completed-visibility toggle (`show_completed`, default 1) shows
   hidden.png while completed tasks are visible and visible.png while
   hidden (the icon names the ACTION), swapped live via
@@ -328,7 +296,7 @@ already-Done task keeps its first stamp.
   would, and the ini otherwise grows one dead entry per deleted list.
   `lw->manual_sort` caches the config flag (read per motion event and
   per refresh); `task_manual_sort_apply` is the only writer, and
-  `bt_library_window_new` seeds it before building the toolbar and View
+  `task_library_window_new` seeds it before building the toolbar and View
   menu, which read the cache.  A drag-lock (`drag_lock_ref`) prevents
   rapid row flicker at boundaries; the "ns-resize" cursor is made once
   and kept on `lw->drag_cursor` (the motion path must not allocate).
@@ -337,19 +305,63 @@ already-Done task keeps its first stamp.
   except text-only, which swaps in an "About" label
   (`about_button_fit_style` on "style-changed"); it opens the
   Notes-style about dialog (`on_menu_about`: HiDPI logo, compile
-  stamp, `bt_db_totals` vitals), shared with File → About Tasks.
+  stamp, `task_db_totals` vitals), shared with File → About Tasks.
   document.png is also the .app bundle icon (Makefile `app` target).
-- View menu: Show Completed, Manual Sort, **Kanban View**, then Show
-  Sidebar and Compact Layout.  The first three are task-PANE modes and
-  sit above the separator; the last two are window chrome.
-  Show Sidebar is the menu twin of the toolbar Sidebar button —
+- View menu, top to bottom: the **completed-visibility** item, the **sort
+  toggle**, divider, the **sidebar** item, the **controls** item, the
+  **pane** item.  The divider separates what the task PANE shows from what
+  the WINDOW looks like.
+  **There are NO check items in this menu.**  Every one of the five is an
+  ACTION item whose LABEL is what a click DOES — the same idiom as the
+  completed-visibility toolbar button, whose icon names the action it
+  offers.  The pairs live in `*_LABEL_TO_*` macros, read as
+  TO_&lt;destination&gt;:
+  `SORT_LABEL_TO_MANUAL`/`_AUTO` ("Manual Sorting" while sorting is
+  automatic, i.e. by column header; "Automatic Sorting" while dragging
+  is),
+  `DONE_LABEL_TO_HIDE`/`_SHOW` ("Hide Completed" while they are visible),
+  `SIDEBAR_LABEL_TO_HIDE`/`_SHOW`, `CTRL_LABEL_TO_COMPACT`/`_FULL`
+  ("Full Controls" while compact is on), and
+  `PANE_LABEL_TO_KANBAN`/`_LIST` ("List View" while the board is up).
+  The compact pair names the **CONTROLS**, not the layout: what the
+  setting actually swaps is the toolbar for the floating New/Delete pair,
+  and "Full Layout" would promise something about the window it does not
+  change (the sidebar follows its own item in both modes).  **"List View" is singular on
+  purpose**: "Lists" in this app is the sidebar's data type, so "Lists
+  View" would read as "show me the lists" rather than "put the tasks back
+  in a list".
+  Three consequences bind all five:
+  every handler FLIPS the persisted flag or the cache rather than reading
+  the widget (the widget no longer carries the current state); every
+  re-labeller sets the label with NO handler blocking — `set_label` cannot
+  emit "activate", where `set_active` on a check item would have; and the
+  label is written by the SINGLE APPLIER for that state, never by the
+  handler — `hide_done_icon_refresh`, `manual_sort_icon_refresh`,
+  `sidebar_menu_sync`, `compact_layout_apply` and `task_pane_mode_apply`
+  respectively, so a flag changed by any other route (the toolbar twin, a
+  config load) still reaches the menu.  That is also why the Completed,
+  Sorting and Sidebar items are wired STRAIGHT to their toolbar twins'
+  handlers (`on_toggle_done_visible`, `on_toggle_manual_sort`,
+  `on_toggle_sidebar`) instead of keeping a menu copy of each: two copies
+  of "what does this toggle do" is how the two controls drift.  The
+  controls and pane items have no toolbar twin, so they keep their own
+  handlers — which still only flip the flag and call the applier.
+  It is GREYED OUT while Kanban View is on (with the toolbar twin), from
+  `task_pane_mode_apply` — which also sets the pane item's own label: the board is always drag-sorted by its own
+  per-lane `kanban_order_*`, and the list view the setting governs is
+  unreachable in that mode, so the control would silently do nothing.
+  Keyed on `lw->kanban`, NOT on "the board is showing" — with Kanban on
+  and the forecast selected the list is still unreachable, and flickering
+  sensitivity as the sidebar selection moves reads worse than a steady
+  "unavailable while Kanban is on".
+  The sidebar item is the menu twin of the toolbar Sidebar button —
   both route through `sidebar_set_visible` (write-through
-  `sidebar_visible` + `sidebar_menu_sync`, which blocks the item's
-  handler around its own set_active, like `hide_done_icon_refresh`).
+  `sidebar_visible` + `sidebar_menu_sync`, which re-labels from the pane's
+  LIVE visibility).
   **Compact Layout** (`compact_layout`, default 0) hides the whole
   toolbar and its rule, and shows `float_bar` instead:
   a two-button pill (New Task + Delete Task, icons only, never
-  registered with `bt_app_register_toolbar`) added as a `GtkOverlay`
+  registered with `task_app_register_toolbar`) added as a `GtkOverlay`
   child over the paned with halign/valign END and 20 px end/bottom
   margins.  Its plate is themed through `themed_bg_css_apply`
   (`float_bar_css`), NOT hardcoded — the light-theme grays it shipped
@@ -369,7 +381,7 @@ already-Done task keeps its first stamp.
 - Thin `gtk_separator_new` rules under the toolbar and above the status
   bar.  Status bar: margins 8/8/3/3 (NOT border_width) and
   `label { font-size: 85%; }` on both labels — measured pixel-identical
-  to Notes.  Event messages posted via `bt_app_status()` hold for
+  to Notes.  Event messages posted via `task_app_status()` hold for
   3 s then fade out over 1 s (20 × 50 ms alpha steps via Pango markup);
   a new message resets the timer.
 - Task list: alternating white/`ROW_TINT` (#e8f2fb) stripes via a
@@ -384,7 +396,7 @@ already-Done task keeps its first stamp.
   `TL_STATUS_TEXT`.  It defaults to **HIDDEN** (`col_status_visible`,
   default 0) — the ✓ column is the same field seen as a tick.  That ✓
   column is kept as a CONVENIENCE VIEW, never a second field: `TL_DONE`
-  is `status == BT_STATUS_DONE`, and a click writes Done (ticking) or In
+  is `status == TASK_STATUS_DONE`, and a click writes Done (ticking) or In
   Progress (unticking) back through the status rule above.
   Right-clicking any column header shows a hide/show menu for the Done,
   Status, Due Date and Completion Date columns; visibility persists in
@@ -408,7 +420,7 @@ already-Done task keeps its first stamp.
   widget as object data and RELOADS it on "style-updated" (a macOS
   light/dark switch or a GTK theme swap), because resolving the color
   once at construction leaves the stale value behind, and
-  `bt_app_widget_add_css` would stack a fresh provider per change.  It
+  `task_app_widget_add_css` would stack a fresh provider per change.  It
   stores the last color it wrote and returns early when unchanged —
   that guard is what stops the recursion, since our own reload re-emits
   "style-updated".
@@ -428,7 +440,7 @@ already-Done task keeps its first stamp.
   `g_markup_escape_text`): `g_markup_escape_text` does NOT validate, so
   a bad byte from a sync payload or a hand-edited database would reach
   Pango and blank the row.  The status bar is the opposite case — a
-  plain-text label (`set_text`), so text bound for `bt_app_status` must
+  plain-text label (`set_text`), so text bound for `task_app_status` must
   NOT be markup-escaped or the user reads a literal "&amp;"; the fade
   animation escapes what it reads back off the label itself.
 - Sidebar: gray backdrop CSS (rgb 230,230,230 / text 65,65,65 /
@@ -448,7 +460,7 @@ already-Done task keeps its first stamp.
   construction-time show_all, which shows both) and clears the hidden
   regular store (a stale selection there would feed the toolbar's
   Delete Task).  Day headings are set per refresh (today: blue ● + "— Today"); the
-  day checkbox resolves its store via "bt-model" object data on the
+  day checkbox resolves its store via "task-model" object data on the
   renderer.  Empty days show an inert dimmed "No tasks due" row
   (id 0 — checkbox hidden by forecast_toggle_bg_func, activation
   ignored).
@@ -459,8 +471,8 @@ already-Done task keeps its first stamp.
   columnar, because three named statuses are what a board is.
   The row exists only while `weekly_forecast`=1 (Settings →
   Appearance; default on).  The Favorites row exists ONLY while
-  something is pinned (`bt_db_has_pinned`; mirrored Notes items carry
-  the ordinary `pinned` flag, so no bn_pins check remains); editor pin
+  something is pinned (`task_db_has_pinned` — mirrored Notes items carry
+  the ordinary `pinned` flag like anything else); editor pin
   flips arrive via
   notify_tasks, so `notify_tasks_hook` rebuilds the sidebar on the
   0 ↔ nonzero transition (tracked in `pinned_row_shown`) — the
@@ -482,9 +494,9 @@ already-Done task keeps its first stamp.
   an emoji is set.  Double-clicking a list row opens the Edit List
   dialog (metas/header/BN row: no-op).  Sidebar starts HIDDEN by default
   (`sidebar_visible`, write-through on toggle).  Lists are ALPHABETICAL
-  by default and drag-reorderable: `bt_db_lists` sorts by lower(name)
+  by default and drag-reorderable: `task_db_lists` sorts by lower(name)
   until sync_state `lists_custom_order` exists (set by
-  `bt_db_lists_reorder`, which writes position = display index; order
+  `task_db_lists_reorder`, which writes position = display index; order
   is LOCAL-ONLY — Google tasklists have none — so reorders never dirty
   rows for sync).  The DnD dest protocol is fully custom, copied from
   Notes' quirk #13: GtkTreeView's default drag-motion handler
@@ -518,7 +530,7 @@ already-Done task keeps its first stamp.
   own — TWO rows, because the window asks for 490 px and takes its
   NATURAL height, so an over-wide row would silently widen every editor
   while an extra row costs one row of height (measured 307 → 335
-  folded).  The combo's rows are the `BtTaskStatus` values IN ORDER, so
+  folded).  The combo's rows are the `TaskStatus` values IN ORDER, so
   the active index IS the enum value (`editor_status_get`, which clamps
   an out-of-range value off disk to New rather than leaving the combo
   blank).  NEVER rewrite the due entry while it has focus, and a
@@ -529,25 +541,41 @@ already-Done task keeps its first stamp.
 - Editor foot row (packed LAST so it stays at the window's bottom in both
   fold states): an "Advanced ▾/▴" link at the left, then Save at the
   right in EVERY editor, with Cancel to its right only in the
-  `bt_editor_open_new` variant — so the order reads Save, Cancel
+  `task_editor_open_new` variant — so the order reads Save, Cancel
   left-to-right, which means Cancel is `pack_end`ed FIRST (pack_end puts
   the first-packed child rightmost).  Save flushes the write-through save
   and closes;
-  **Cancel closes and tombstones the task** (`bt_db_task_delete`, so the
+  **Cancel closes and tombstones the task** (`task_db_task_delete`, so the
   delete syncs), which is why New Task uses its own entry point —
-  `bt_editor_open` must never offer that.  Cancel drops the pending
+  `task_editor_open` must never offer that.  Cancel drops the pending
   debounce and destroys the window BEFORE deleting: `on_editor_destroy`
   would otherwise flush a save into the row being tombstoned.  It then
   notifies through `notify_changed` (a vanishing task is structural), and
   `ed` is dead by then, so it captures app/task_id first.
-- Advanced disclosure (`editor_advanced_set`, the single applier):
-  Subtasks + Attachments live in `adv_box`, folded by default and
-  expanded on open when the task already HAS either
+- Advanced disclosure: Subtasks + Attachments live in `adv_box`, folded by
+  default and expanded on open when the task already HAS either
   (`editor_has_advanced_content`, read off the loaded stores, so it runs
-  after `editor_load` + `show_all`).  Expanding measures the block's
-  preferred height and grows the window by it, remembering `adv_height`
-  so the collapse gives the same pixels back — measured round trip
-  307 → 581 → 307.
+  after `editor_load`).  TWO entry points, and the difference matters:
+  `editor_advanced_reveal` shows the block and records `adv_height`;
+  `editor_advanced_set` is the applier for a window ALREADY ON SCREEN and
+  adds the window resize, so a collapse gives back exactly the pixels the
+  expand took — measured round trip 307 → 581 → 307.
+  **The OPEN path reveals BEFORE `show_all` and never resizes**, so the
+  window is presented once, at its final size.  It used to show_all and
+  then grow, which asks the window manager to present a folded window and
+  resize it a moment later: two `configure-event`s (measured 335 then 609),
+  and the second only lands once the main loop gets back to it.  Off the
+  Kanban board — where the same click also restyles every card — that gap
+  was long enough to WATCH the window scale and then unfold (reported
+  2026-08-26); from the list it usually beat the first frame, which is why
+  it read as a board-only problem.  It was neither view's fault: the
+  sequence was wrong for both, and the board only made it visible.  The
+  click-to-editor time itself is the same in both panes (measured 141 ms
+  board vs 130 ms list), so don't go looking for the cost in the card
+  handlers.
+  The block's height still measures true before the show: a GtkBox counts
+  only VISIBLE children and `adv_box` is visible by the time it is
+  measured (gotcha 15), and a size request does not need realization.
 - Editor geometry: default size is **490 × -1** — the -1 means the
   layout's NATURAL height, which is only correct because `adv_box`
   carries `no_show_all` and so is absent from that measurement (gotcha
@@ -578,8 +606,8 @@ sections turned through 90°: three side-by-side lanes, homogeneous, in a
 `GTK_POLICY_NEVER` horizontal scroller so the board always fits the pane
 and only ever grows downwards.
 
-- **Lane INDEX IS the `BtTaskStatus` value.**  That is the whole drop
-  rule: a lane carries its status as `"bt-status"` object data, and
+- **Lane INDEX IS the `TaskStatus` value.**  That is the whole drop
+  rule: a lane carries its status as `"task-status"` object data, and
   `on_lane_drop` reads the status straight off the lane the card landed
   on.  Don't reorder the lanes without reordering the enum.
 - `task_pane_mode_apply` is the SINGLE place that answers "which pane is
@@ -626,11 +654,11 @@ and only ever grows downwards.
   instead — a solid card that follows the pointer is the honest
   degradation.
 - The LANDING INDICATOR is two parts, both driven from `card_drag_move`
-  and cleared by `card_drag_stop`: a `.bt-lane-target` tint on the lane
-  says which COLUMN, and a `.bt-card-mark` bar inserted into that lane
-  says which SLOT.  The tint's rule is listed AFTER `.bt-lane` so it wins
+  and cleared by `card_drag_stop`: a `.task-lane-target` tint on the lane
+  says which COLUMN, and a `.task-card-mark` bar inserted into that lane
+  says which SLOT.  The tint's rule is listed AFTER `.task-lane` so it wins
   at equal specificity (both classes sit on the same widget).  The
-  dragged card keeps its place, dimmed with `.bt-card-dragging`, and is
+  dragged card keeps its place, dimmed with `.task-card-dragging`, and is
   NOT hidden — its GdkWindow is the grab window, and unmapping that would
   break the grab and end the drag on the spot.
 - The marker is rebuilt only when (lane, slot) CHANGES, tracked in
@@ -710,13 +738,30 @@ and only ever grows downwards.
 - Inner spacing is WIDGET MARGINS on the child (`pad_widget`, CARD_PAD 8
   / LANE_PAD 6), not CSS `padding` and not `border_width` — see gotcha
   18.  The card still paints its background and border at its own edge.
-- Cursors: an open hand (`"grab"`) over a card, a closed one
+- **A card has a ⠿ GRIP down its left edge, and that is the ONLY place a
+  drag starts** — the same division the list view's handle column makes.
+  It is its own event box (`.task-card-handle`) for two reasons: a
+  different cursor needs a different GdkWindow, and it gives the press
+  handler somewhere to live.  `on_handle_press` arms the drag and returns
+  FALSE so the press still reaches the CARD and selects — gripping selects
+  too, and a double-click on the grip still opens the editor.  The hot
+  spot is translated into the CARD's coordinates
+  (`gtk_widget_translate_coordinates`), because the ghost is a picture of
+  the whole card and must hang off the pointer where the card was gripped.
+  The GRAB goes on the grip's window, since that is where motion and
+  release are delivered.  `on_card_release` is connected to the card AS
+  WELL as the grip: press the grip, drift onto the text, let go — with no
+  grab yet that release lands on the card, and the armed flag would
+  otherwise be left set.
+- Cursors: an open hand (`"grab"`) over the GRIP ONLY, a closed one
   (`"grabbing"`) while dragging.  Both are made ONCE and cached on
   `lw->card_grab` / `card_grabbing` (`card_cursor`), like the task view's
   `drag_cursor` — a card is realized per refresh, so building one per
   card would allocate on every rebuild.  The hover cursor goes on the
-  card's own GdkWindow from its `"realize"` handler rather than being
-  tracked with enter/leave, so hovering costs nothing per motion event.
+  GRIP's own GdkWindow from its `"realize"` handler rather than being
+  tracked with enter/leave, so hovering costs nothing per motion event —
+  and the card body is given NO cursor at all, which is exactly what
+  leaves it showing the ordinary arrow for clicking and selecting.
   The CLOSED hand is set THREE ways at drag start — the `gdk_seat_grab`
   cursor argument (the portable lever, and what X11 honors), plus the
   card's and the toplevel's window cursors, because some backends apply
@@ -725,8 +770,35 @@ and only ever grows downwards.
   `card_drag_stop` puts them all back.  `gdk_cursor_new_from_name`
   answers NULL for a name a display cannot supply, and the code then
   falls back to the window default rather than a guessed stock cursor.
+- **Multi-select** is a GHashTable id SET (`kanban_sel`) plus a
+  `kanban_anchor`: plain click selects one, MODIFY_SELECTION-click
+  toggles a card in or out, EXTEND_SELECTION-click takes the run between
+  the anchor and the card WITHIN one lane (across lanes it merely adds —
+  a "run" spanning two lanes has no meaning on a board).  Both modifiers
+  come from `gtk_widget_get_modifier_mask`, never hardcoded: MODIFY is
+  Ctrl on X11 and Cmd on quartz, and asking the widget is the only way
+  to be right on both.  `selected_task_ids` returns `card_sel_ids` (board
+  display order) while Kanban is up, so every existing bulk action — the
+  context menu's plural variants, the toolbar Delete — acts on the whole
+  selection with no extra wiring.  A plain PRESS inside an existing
+  selection deliberately KEEPS it, which is what lets a multi-card drag
+  start from any of its cards; the collapse to the clicked card happens
+  on RELEASE, and only when no drag took place.  The anchor moves on
+  every plain press either way — it means "the last card plainly
+  clicked", and tying it to the collapse left a following shift-click
+  measuring its run from a card the user had touched several clicks
+  earlier.  `refresh_kanban` repaints from the set and PRUNES it to the
+  ids that survived the rebuild, so a deleted or filtered-out card
+  cannot linger in it.
+- A drag by the grip carries the WHOLE selection when the gripped card is
+  part of it, else just that card, and the ghost paints a count badge
+  whenever more than one is in flight — a snapshot of the gripped card
+  alone would claim a single-card move.  `card_drop_apply` therefore
+  takes the moving ids as a GArray: it re-inserts them at the target slot
+  preserving their relative order, writes the lane's status to each that
+  needs it, reselects them, and reports "N tasks â <status>".
 - The board's CSS is installed ONCE for the screen
-  (`kanban_css_install`, `.bt-lane` / `.bt-card` / `.bt-card-selected`),
+  (`kanban_css_install`, `.task-lane` / `.task-card` / `.task-card-selected`),
   not per widget like `themed_bg_css_apply`: there would otherwise be one
   provider per card, and every color is a NAMED theme color, so GTK
   re-resolves them itself on a light/dark switch.  That staleness problem
@@ -741,19 +813,19 @@ are the post-mortem; none of them is optional.
 - **"It opened" is NOT "it is intact."**  SQLite opens a malformed file
   happily and errors only when a damaged page is READ.  Anything that
   copies, moves or migrates the database must check with
-  `bt_db_verify_file` (integrity_check + foreign_key_check on its own
+  `task_db_verify_file` (integrity_check + foreign_key_check on its own
   read-only connection, BOTH exec return codes honored) — never by
   opening it.  That mistake is precisely what turned a bad copy into
   data loss: `switch_database` discarded `copy_file`'s return value,
-  treated a successful `bt_db_open` as proof, and deleted the original.
-- **Copy with `bt_db_copy_file` (VACUUM INTO), never a byte copy.**  It
+  treated a successful `task_db_open` as proof, and deleted the original.
+- **Copy with `task_db_copy_file` (VACUUM INTO), never a byte copy.**  It
   runs in a read transaction, so it cannot capture a torn page.  The old
   `copy_file` helper in app.c was DELETED; a comment stands in its place
   so it does not come back.
 - **COPY → VERIFY → and only then delete anything.**  In that order, with
   the delete conditional on the verify.  A copy that fails verification
   is left in place and reported, and the original is kept.
-- **A migration backs the file up FIRST.**  `bt_db_open` writes
+- **A migration backs the file up FIRST.**  `task_db_open` writes
   `<db>.pre-v<N>.bak` via VACUUM INTO before running any migration, one
   per from-version, never overwritten.  `ALTER TABLE … DROP COLUMN` (v7)
   rewrites the whole tasks table; doing that to someone's only copy with
@@ -763,7 +835,7 @@ are the post-mortem; none of them is optional.
   re-generated underneath an open connection.  That is not a hypothetical
   — it is the standing operating environment, so partial copies and
   surprise generations are REALISTIC failures to design against.
-- **`bt_app_switch_database` re-arms ALL THREE timers** (sync, Notes
+- **`task_app_switch_database` re-arms ALL THREE timers** (sync, Notes
   mirror, backup) on the new path.  Each captured the old path when
   installed, and that file has just been deleted — left alone the workers
   would open a nonexistent path and CREATE an empty database there.  This
@@ -775,7 +847,7 @@ are the post-mortem; none of them is optional.
   `tasks-*.db` filenames when pruning (so anything else in the folder is
   safe, and the live `tasks.db` is not a candidate — `tasks.` is not
   `tasks-`), and is bounded by `backup_keep`.
-  `bt_backup_dir` is the single answer to "where": `backup_dir` when set,
+  `task_backup_dir` is the single answer to "where": `backup_dir` when set,
   else the DEFAULT DATABASE DIRECTORY under the home dir, created on
   demand — so there is no enabled-but-inert state, and Settings displays
   that same resolved value so the label cannot promise a folder the
@@ -805,7 +877,7 @@ are the post-mortem; none of them is optional.
   with no local tombstone) drops its stale Google identity and is
   pushed back as a NEW remote task; a local list whose bound remote
   list vanished is re-created remotely and ALL its tasks' gtasks_ids/
-  etags are cleared (`bt_db_tasks_clear_gtasks_ids`) so the task pass
+  etags are cleared (`task_db_tasks_clear_gtasks_ids`) so the task pass
   re-pushes them.  Remote items unknown locally are pulled (created)
   as before.
 - Pushes: creates POST (parents before subtasks — the per-list query
@@ -821,7 +893,7 @@ are the post-mortem; none of them is optional.
   ↳ 🚨 ⭐️ ❗ Title),
   "High Priority" editor checkbox), list `emoji`, attachments.
   A write to a local-only field must NOT bump `updated_at`
-  (`bt_db_task_set_pinned` / `_set_priority` deliberately don't): the
+  (`task_db_task_set_pinned` / `_set_priority` deliberately don't): the
   bump marks the row sync-dirty, so every Favorite/priority toggle buys
   a no-op PATCH, and a concurrent remote edit can be starved behind a
   412 skip for as long as the flag keeps changing.
@@ -830,7 +902,7 @@ are the post-mortem; none of them is optional.
   re-attempt.  Its own `status` is BINARY too (completed /
   needsAction), so New and In Progress both push needsAction and the
   difference between them never leaves this machine; the dirty-compare
-  therefore tests `(t->status == BT_STATUS_DONE) != match->done`, not
+  therefore tests `(t->status == TASK_STATUS_DONE) != match->done`, not
   the whole field, or a New → In Progress move would push a body
   identical to what is already there.
 - `hidden` remote tasks (completed + cleared) are never re-created
@@ -876,10 +948,10 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
   a "done" tick would strike the wrong line.  The uid is stable across
   rewording and renumbering.  A Notes too old to know `--uid` makes
   the pass REFUSE to run ("Notes is too old…") rather than fall back
-  to positional addressing: `bt_bnotes_supports_uid()` tells that case
+  to positional addressing: `task_bnotes_supports_uid()` tells that case
   apart on the failure path only, so a healthy pass costs ONE spawn.
-  The old ref survives solely to drain the legacy `bn_pins`/
-  `bn_priority` tables onto each task as its mirror is created.
+  The listing's positional second field is validated as a format guard
+  and then DISCARDED — nothing keys off a positional address.
 - Field ownership: Notes owns TITLE, DONE and DUE; a title edited in
   Tasks is overwritten next pass (the CLI has no verb to rewrite an
   item's text).  Everything else is Tasks-only and never leaves.
@@ -889,7 +961,7 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
   reports as unfinished keeps whichever of the two it already had.
 - **Writes are cached, not live.** `tasks.bn_done`/`bn_due` hold what
   Notes was last known to have, so the rows whose done-ness
-  (`status == BT_STATUS_DONE`) or `due` differs
+  (`status == TASK_STATUS_DONE`) or `due` differs
   from that baseline ARE the pending-write set — no queue table to
   corrupt, and it survives a crash.  Each pass pushes them in bulk on
   `notes_sync_interval_min` (default 5; 0 = only on Sync).  A local
@@ -897,12 +969,12 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
   and the listing reads back what was just written.  A REFUSED push
   keeps the user's local value on the task but leaves the baseline
   alone, so the delta is retried — which is why
-  `bt_db_task_apply_notes` takes the baselines separately from the
+  `task_db_task_apply_notes` takes the baselines separately from the
   applied values.
 - Existence: Notes is authoritative, so an item that leaves it
   tombstones its task.  The reverse has no CLI verb, so deleting a
   mirror task in Tasks parks its uid in `bn_deleted` (done inside
-  `bt_db_task_delete`'s transaction) — without that the very next pass
+  `task_db_task_delete`'s transaction) — without that the very next pass
   would helpfully re-create what the user just deleted.  The
   suppression is dropped once the item is gone from Notes too.
 - The sidebar's "Action Items" row is a META VIEW (`SB_KIND_BN_ACTIONS`
@@ -913,20 +985,20 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
 - Items live in `notes_embed_list` when it names a live list, else
   the managed "Action Items" list (❗), created on first use.  The
   target is consulted when a task is CREATED, so changing the setting
-  needs `bt_bnsync_reconcile_target` to carry the existing items over —
+  needs `task_bnsync_reconcile_target` to carry the existing items over —
   without it the setting silently only affects the next new item, which
   reads as "the setting does nothing".  It compares against the applied
   value in `sync_state.bn_target_list` and moves only on a real change,
   so a task moved to another list BY HAND stays there; an ABSENT
   applied value counts as "not yet applied" (the upgrade case).  It
-  runs on the main thread from `bt_bnsync_auto_start` and the Settings
-  combo, and goes through `bt_gtasks_move_task` because a cross-list
+  runs on the main thread from `task_bnsync_auto_start` and the Settings
+  combo, and goes through `task_gtasks_move_task` because a cross-list
   move has a remote half — a bare `list_id` update would strand the
   Google copy in the old list.
 - Threading matches gtasks: own worker, own SQLite connection, CLI
   spawned there too, results marshalled with `g_idle_add`.  The toolbar
   Sync runs the mirror FIRST so a new action item reaches Google in one
-  press.  BOTH timers carry their db path, so `bt_app_switch_database`
+  press.  BOTH timers carry their db path, so `task_app_switch_database`
   must re-arm both.
 - The Settings CLI-path entry persists per keystroke but only runs a
   pass on Enter/focus-out (a per-keystroke pass would spawn the
@@ -965,7 +1037,7 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
     GTK_TREE_MODEL_ROW.  Harmless (that flavor is skipped, the row
     flavor still resolves); documented in User_Guide.md.  Don't
     suppress with a log filter.
-14. `bt_app_switch_database` always **removes the old database file**
+14. `task_app_switch_database` always **removes the old database file**
     after a successful switch — it is a move, not a copy.  This holds
     even when the user picks "Use Existing Database" (no copy was made,
     but the old file is still removed so no orphan is left behind).
@@ -979,9 +1051,9 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
     `sync_state.default_list_gid`; on_delete_list refuses that list up
     front (like the Notes list), and if a stale tombstone for it
     exists anyway, sync_lists RESTORES the list + its same-moment task
-    tombstones (`bt_db_list_restore`) instead of deleting or hiding
+    tombstones (`task_db_list_restore`) instead of deleting or hiding
     anything.  sync_lists also seeds the default list's emoji to 🔴
-    (`bt_db_list_emoji_if_empty` — only while empty, no updated_at
+    (`task_db_list_emoji_if_empty` — only while empty, no updated_at
     bump) so it is visibly marked; a user's later emoji edit sticks.
 15. `gtk_widget_show_all(w)` returns EARLY when `w`'s OWN `no_show_all`
     flag is set — the flag is not just "skip me when a parent recurses".
@@ -999,7 +1071,7 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
     the grow-the-window arithmetic reads 0.
 16. A `CREATE INDEX` naming a column added by a guarded `ALTER` must run
     AFTER the migrations, never inside the schema block at the top of
-    `bt_db_open`.  On an EXISTING file the column does not exist yet at
+    `task_db_open`.  On an EXISTING file the column does not exist yet at
     that point, the statement fails, and — because it rides in the same
     batch — it takes the rest of the schema setup with it, leaving the
     database unopenable.  Fresh files hide this completely: they only

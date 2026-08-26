@@ -12,10 +12,10 @@
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
- * BtSettings — the singleton window's state.
+ * TaskSettings — the singleton window's state.
  * ------------------------------------------------------------------------- */
 typedef struct {
-    BtApp     *app;
+    TaskApp     *app;
     gchar     *db_path;
     GtkWidget *window;
     GtkWidget *sync_check;           /* Google Tasks master switch          */
@@ -31,9 +31,9 @@ typedef struct {
     GtkWidget *bn_interval_spin;     /* mirror pass interval, minutes       */
     GtkWidget *bn_meta_check;        /* sidebar Action Items view toggle    */
     gboolean   loading;              /* suppress write-through on load      */
-} BtSettings;
+} TaskSettings;
 
-static BtSettings *settings = NULL;  /* the singleton, or NULL              */
+static TaskSettings *settings = NULL;  /* the singleton, or NULL            */
 
 #define SETTINGS_WIDTH 470           /* window width AND the width the      */
                                      /* column's height is measured at      */
@@ -43,18 +43,18 @@ static BtSettings *settings = NULL;  /* the singleton, or NULL              */
  * switch off, Sign In / Sign Out / the auto-sync interval all grey out.
  * ------------------------------------------------------------------------- */
 static void
-state_refresh(BtSettings *sw)
+state_refresh(TaskSettings *sw)
 {
-    gboolean enabled = bt_app_config_get_bool("google_sync_enabled",
-                                              TRUE);
-    gboolean in = bt_oauth_authenticated();
+    gboolean enabled = task_app_config_get_bool("google_sync_enabled",
+                                                TRUE);
+    gboolean in = task_oauth_authenticated();
     gtk_label_set_markup(GTK_LABEL(sw->state_label),
         !enabled ? "<span foreground=\"#888888\">Sync disabled</span>"
         : in     ? "<span foreground=\"#26a269\">Signed in</span>"
                  : "<span foreground=\"#888888\">Not signed in</span>");
     gtk_widget_set_sensitive(sw->signout_btn, enabled && in);
     gtk_widget_set_sensitive(sw->signin_btn,
-                             enabled && bt_oauth_have_client() && !in);
+                             enabled && task_oauth_have_client() && !in);
     gtk_widget_set_sensitive(sw->interval_spin, enabled);
     gtk_widget_set_sensitive(sw->sync_toolbar_check, enabled);
 }
@@ -66,128 +66,128 @@ state_refresh(BtSettings *sw)
 static void
 on_sync_enabled_toggled(GtkWidget *w, gpointer data)
 {
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
-    bt_app_config_set("google_sync_enabled", on ? "1" : "0");
+    task_app_config_set("google_sync_enabled", on ? "1" : "0");
     state_refresh(sw);
-    bt_sync_auto_start(sw->app, sw->app->db->path);
-    /* Full notify: the library hides/shows its Sync button with this.       */
-    bt_app_notify_changed(sw->app);
-    bt_app_status(sw->app, on ? "Google Tasks sync enabled"
+    task_sync_auto_start(sw->app, sw->app->db->path);
+    /* Full notify: the library hides/shows its Sync button with this.      */
+    task_app_notify_changed(sw->app);
+    task_app_status(sw->app, on ? "Google Tasks sync enabled"
                               : "Google Tasks sync disabled");
 }
 
-/* on_interval_changed() — write-through + restart the auto-sync timer.      */
+/* on_interval_changed() — write-through + restart the auto-sync timer.     */
 static void
 on_interval_changed(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gint minutes = gtk_spin_button_get_value_as_int(
         GTK_SPIN_BUTTON(sw->interval_spin));
     gchar *v = g_strdup_printf("%d", minutes);
-    bt_app_config_set("sync_interval_min", v);
+    task_app_config_set("sync_interval_min", v);
     g_free(v);
-    bt_sync_auto_start(sw->app, sw->app->db->path);
+    task_sync_auto_start(sw->app, sw->app->db->path);
 }
 
 /* on_sync_toolbar_toggled() — persist the toolbar-button visibility pref
- * and tell the library window to show or hide its Sync button live.         */
+ * and tell the library window to show or hide its Sync button live.        */
 static void
 on_sync_toolbar_toggled(GtkWidget *w, gpointer data)
 {
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
-    bt_app_config_set("sync_toolbar_button", on ? "1" : "0");
-    bt_app_notify_changed(sw->app);
+    task_app_config_set("sync_toolbar_button", on ? "1" : "0");
+    task_app_notify_changed(sw->app);
 }
 
-/* signin_done() — completion of the browser flow started here.              */
+/* signin_done() — completion of the browser flow started here.             */
 static void
 signin_done(gboolean ok, const gchar *error, gpointer data)
 {
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (settings != sw)              /* window closed mid-flow              */
         return;
     state_refresh(sw);
     if (ok)
-        bt_app_status(sw->app, "Signed in to Google");
-    bt_sync_signin_done(sw->app, GTK_WINDOW(sw->window), sw->db_path,
-                        ok, error, NULL);
+        task_app_status(sw->app, "Signed in to Google");
+    task_sync_signin_done(sw->app, GTK_WINDOW(sw->window), sw->db_path,
+                          ok, error, NULL);
 }
 
-/* on_signin() — the Sign In button.                                         */
+/* on_signin() — the Sign In button.                                        */
 static void
 on_signin(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtSettings *sw = data;
-    bt_app_status(sw->app, "Opening browser for Google sign-in\xe2\x80\xa6");
-    bt_oauth_begin(GTK_WINDOW(sw->window), signin_done, sw);
+    TaskSettings *sw = data;
+    task_app_status(sw->app, "Opening browser for Google sign-in\xe2\x80\xa6");
+    task_oauth_begin(GTK_WINDOW(sw->window), signin_done, sw);
 }
 
-/* on_signout() — the Sign Out button.                                       */
+/* on_signout() — the Sign Out button.                                      */
 static void
 on_signout(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtSettings *sw = data;
-    bt_oauth_signout();
+    TaskSettings *sw = data;
+    task_oauth_signout();
     state_refresh(sw);
-    bt_app_status(sw->app, "Signed out \xe2\x80\x94 the stored sign-in "
-                  "was removed and syncing stopped");
+    task_app_status(sw->app, "Signed out \xe2\x80\x94 the stored sign-in "
+                    "was removed and syncing stopped");
 }
 
 /* on_bn_toggled() — the Notes enable checkbox: persist, then re-arm
  * the mirror timer (switching ON runs a pass immediately, which is what
- * populates the mirror; switching OFF stops the timer).                     */
+ * populates the mirror; switching OFF stops the timer).                    */
 static void
 on_bn_toggled(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gboolean on = gtk_toggle_button_get_active(
         GTK_TOGGLE_BUTTON(sw->bn_check));
-    bt_app_config_set("notes_sync", on ? "1" : "0");
-    bt_bnsync_auto_start(sw->app, sw->db_path);
-    bt_app_notify_changed(sw->app);
+    task_app_config_set("notes_sync", on ? "1" : "0");
+    task_bnsync_auto_start(sw->app, sw->db_path);
+    task_app_notify_changed(sw->app);
 }
 
-/* on_bn_interval_changed() — write-through + re-arm the mirror timer.       */
+/* on_bn_interval_changed() — write-through + re-arm the mirror timer.      */
 static void
 on_bn_interval_changed(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gchar *v = g_strdup_printf("%d", gtk_spin_button_get_value_as_int(
         GTK_SPIN_BUTTON(sw->bn_interval_spin)));
-    bt_app_config_set("notes_sync_interval_min", v);
+    task_app_config_set("notes_sync_interval_min", v);
     g_free(v);
-    bt_bnsync_auto_start(sw->app, sw->db_path);
+    task_bnsync_auto_start(sw->app, sw->db_path);
 }
 
-/* on_bn_meta_toggled() — show/hide the sidebar's Action Items view.         */
+/* on_bn_meta_toggled() — show/hide the sidebar's Action Items view.        */
 static void
 on_bn_meta_toggled(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
-    bt_app_config_set("notes_meta_row",
+    task_app_config_set("notes_meta_row",
         gtk_toggle_button_get_active(
             GTK_TOGGLE_BUTTON(sw->bn_meta_check)) ? "1" : "0");
-    bt_app_notify_changed(sw->app);
+    task_app_notify_changed(sw->app);
 }
 
 /* on_bn_embed_changed() — which list mirrored action items live in.
@@ -198,7 +198,7 @@ on_bn_meta_toggled(GtkWidget *w, gpointer data)
 static void
 on_bn_embed_changed(GtkComboBox *combo, gpointer data)
 {
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gint active = gtk_combo_box_get_active(combo);
@@ -206,16 +206,16 @@ on_bn_embed_changed(GtkComboBox *combo, gpointer data)
         return;
     gint64 id = g_array_index(sw->bn_embed_ids, gint64, active);
     if (id == 0) {
-        bt_app_config_set("notes_embed_list", NULL);
+        task_app_config_set("notes_embed_list", NULL);
     } else {
         gchar *v = g_strdup_printf("%" G_GINT64_FORMAT, id);
-        bt_app_config_set("notes_embed_list", v);
+        task_app_config_set("notes_embed_list", v);
         g_free(v);
     }
-    bt_bnsync_reconcile_target(sw->app);
-    if (bt_app_config_get_bool("notes_sync", FALSE))
-        bt_bnsync_start(sw->app, sw->db_path, NULL, NULL);
-    bt_app_notify_changed(sw->app);
+    task_bnsync_reconcile_target(sw->app);
+    if (task_app_config_get_bool("notes_sync", FALSE))
+        task_bnsync_start(sw->app, sw->db_path, NULL, NULL);
+    task_app_notify_changed(sw->app);
 }
 
 /* on_bn_cli_changed() — the CLI path entry: persist ONLY.  The mirror
@@ -225,29 +225,29 @@ static void
 on_bn_cli_changed(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     const gchar *cli = gtk_entry_get_text(GTK_ENTRY(sw->bn_cli_entry));
-    bt_app_config_set("notes_cli", *cli != '\0' ? cli : NULL);
+    task_app_config_set("notes_cli", *cli != '\0' ? cli : NULL);
 }
 
 /* on_bn_cli_commit() — Enter in the CLI path entry: run a mirror pass
  * against the newly named binary so a wrong path reports itself now
- * rather than at the next tick.                                             */
+ * rather than at the next tick.                                            */
 static void
 on_bn_cli_commit(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
-    if (bt_app_config_get_bool("notes_sync", FALSE))
-        bt_bnsync_start(sw->app, sw->db_path, NULL, NULL);
-    bt_app_notify_changed(sw->app);
+    if (task_app_config_get_bool("notes_sync", FALSE))
+        task_bnsync_start(sw->app, sw->db_path, NULL, NULL);
+    task_app_notify_changed(sw->app);
 }
 
-/* on_bn_cli_focus_out() — leaving the CLI path entry: commit now.           */
+/* on_bn_cli_focus_out() — leaving the CLI path entry: commit now.          */
 static gboolean
 on_bn_cli_focus_out(GtkWidget *w, GdkEventFocus *event, gpointer data)
 {
@@ -258,48 +258,48 @@ on_bn_cli_focus_out(GtkWidget *w, GdkEventFocus *event, gpointer data)
 
 /* on_forecast_toggled() — Appearance: show or hide the sidebar's Weekly
  * Forecast view.  The full notify rebuilds the sidebar; a hidden view
- * that was selected falls back to the first list there.                     */
+ * that was selected falls back to the first list there.                    */
 static void
 on_forecast_toggled(GtkWidget *w, gpointer data)
 {
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
-    bt_app_config_set("weekly_forecast", on ? "1" : "0");
-    bt_app_notify_changed(sw->app);
+    task_app_config_set("weekly_forecast", on ? "1" : "0");
+    task_app_notify_changed(sw->app);
 }
 
 /* on_bold_titles_toggled() — Appearance: bold task titles on/off,
- * applied live (the task pane re-renders its markup).                       */
+ * applied live (the task pane re-renders its markup).                      */
 static void
 on_due_today_overdue_toggled(GtkWidget *w, gpointer data)
 {
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
-    bt_app_config_set("due_today_show_overdue", on ? "1" : "0");
-    bt_app_notify_changed(sw->app);
+    task_app_config_set("due_today_show_overdue", on ? "1" : "0");
+    task_app_notify_changed(sw->app);
 }
 
 static void
 on_bold_titles_toggled(GtkWidget *w, gpointer data)
 {
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gboolean bold = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
-    bt_app_config_set("bold_task_titles", bold ? "1" : "0");
-    bt_app_notify_changed(sw->app);
+    task_app_config_set("bold_task_titles", bold ? "1" : "0");
+    task_app_notify_changed(sw->app);
 }
 
 /* on_toolbar_style_changed() — the Appearance combo: apply the chosen
- * toolbar style live (icons / text below icons / text only).                */
+ * toolbar style live (icons / text below icons / text only).               */
 static void
 on_toolbar_style_changed(GtkComboBox *combo, gpointer data)
 {
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     static const GtkToolbarStyle STYLES[] = {
@@ -307,34 +307,34 @@ on_toolbar_style_changed(GtkComboBox *combo, gpointer data)
     };
     gint active = gtk_combo_box_get_active(combo);
     if (active >= 0 && active < (gint)G_N_ELEMENTS(STYLES))
-        bt_app_set_toolbar_style(sw->app, STYLES[active]);
+        task_app_set_toolbar_style(sw->app, STYLES[active]);
 }
 
 #ifdef HAVE_GTKOSX
 /* on_native_menubar_toggled() — move the library menu into (or out of)
- * the native macOS menu bar, live, and persist the choice.                  */
+ * the native macOS menu bar, live, and persist the choice.                 */
 static void
 on_native_menubar_toggled(GtkToggleButton *check, gpointer data)
 {
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gboolean native = gtk_toggle_button_get_active(check);
-    bt_app_config_set("native_menubar", native ? "1" : "0");
-    bt_library_apply_native_menubar(sw->app, native);
+    task_app_config_set("native_menubar", native ? "1" : "0");
+    task_library_apply_native_menubar(sw->app, native);
 }
 #endif /* HAVE_GTKOSX */
 
 /* on_integrity_check_toggled() — persist the db_integrity_check pref and
- * update the in-memory flag so the setting takes effect next launch.         */
+ * update the in-memory flag so the setting takes effect next launch.       */
 static void
 on_integrity_check_toggled(GtkWidget *w, gpointer data)
 {
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (sw->loading)
         return;
     gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
-    bt_app_config_set("db_integrity_check", on ? "1" : "0");
+    task_app_config_set("db_integrity_check", on ? "1" : "0");
     sw->app->db_integrity_check = on;
 }
 
@@ -343,17 +343,17 @@ on_integrity_check_toggled(GtkWidget *w, gpointer data)
  * handlers can update them after a location switch.
  * ------------------------------------------------------------------------- */
 typedef struct {
-    BtApp     *app;
-    GtkWidget *check;                /* "custom folder" checkbox             */
+    TaskApp     *app;
+    GtkWidget *check;                /* "custom folder" checkbox            */
     GtkWidget *choose_btn;           /* "Choose Folder…" (sensitive = custom)*/
-    GtkWidget *path_label;           /* shows the active db file path        */
+    GtkWidget *path_label;           /* shows the active db file path       */
     /* Rotating backups (backup.h) — off by default.                        */
-    GtkWidget *bk_check;             /* master switch                        */
-    GtkWidget *bk_choose_btn;        /* destination folder chooser           */
-    GtkWidget *bk_path_label;        /* the chosen folder, or a prompt       */
-    GtkWidget *bk_interval_spin;     /* minutes; 0 = manual only             */
-    GtkWidget *bk_keep_spin;         /* how many to retain                   */
-    GtkWidget *bk_now_btn;           /* "Back Up Now"                        */
+    GtkWidget *bk_check;             /* master switch                       */
+    GtkWidget *bk_choose_btn;        /* destination folder chooser          */
+    GtkWidget *bk_path_label;        /* the chosen folder, or a prompt      */
+    GtkWidget *bk_interval_spin;     /* minutes; 0 = manual only            */
+    GtkWidget *bk_keep_spin;         /* how many to retain                  */
+    GtkWidget *bk_now_btn;           /* "Back Up Now"                       */
 } DbSection;
 
 /* ---------------------------------------------------------------------------
@@ -367,7 +367,7 @@ typedef struct {
 static void
 bk_section_refresh(DbSection *s)
 {
-    gboolean on = bt_app_config_get_bool("backup_enabled", FALSE);
+    gboolean on = task_app_config_get_bool("backup_enabled", FALSE);
     gtk_widget_set_sensitive(s->bk_choose_btn,    on);
     gtk_widget_set_sensitive(s->bk_interval_spin, on);
     gtk_widget_set_sensitive(s->bk_keep_spin,     on);
@@ -377,8 +377,8 @@ bk_section_refresh(DbSection *s)
      * so the label cannot promise a folder the backups do not go to.  With
      * no folder chosen that is the default database location under the
      * home directory, and the label says which case it is.                */
-    gchar *dir      = bt_backup_dir();
-    gchar *chosen   = bt_app_config_get("backup_dir");
+    gchar *dir      = task_backup_dir();
+    gchar *chosen   = task_app_config_get("backup_dir");
     gboolean picked = (chosen != NULL && *chosen != '\0');
     g_free(chosen);
     gchar *db_dir = g_path_get_dirname(s->app->db->path);
@@ -402,7 +402,7 @@ bk_section_refresh(DbSection *s)
     g_free(dir);
 }
 
-/* db_section_refresh() — sync the widgets with the current app state.       */
+/* db_section_refresh() — sync the widgets with the current app state.      */
 static void
 db_section_refresh(DbSection *s)
 {
@@ -420,7 +420,7 @@ static void on_db_custom_toggled(GtkToggleButton *check, gpointer user_data);
 static void
 db_switch_report(DbSection *s, const gchar *new_dir)
 {
-    bt_app_switch_database(s->app, new_dir);
+    task_app_switch_database(s->app, new_dir);
     g_signal_handlers_block_by_func(s->check, on_db_custom_toggled, s);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(s->check),
                                  s->app->db_dir != NULL);
@@ -440,7 +440,7 @@ bk_pick_folder(DbSection *s)
         "_Cancel", GTK_RESPONSE_CANCEL,
         "_Select", GTK_RESPONSE_ACCEPT,
         NULL);
-    gchar *cur = bt_app_config_get("backup_dir");
+    gchar *cur = task_app_config_get("backup_dir");
     if (cur != NULL && *cur != '\0')
         gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), cur);
     g_free(cur);
@@ -459,15 +459,15 @@ on_bk_toggled(GtkToggleButton *check, gpointer user_data)
 {
     DbSection *s = user_data;
     gboolean on = gtk_toggle_button_get_active(check);
-    bt_app_config_set("backup_enabled", on ? "1" : "0");
-    /* No folder prompt: bt_backup_dir falls back to the default database
+    task_app_config_set("backup_enabled", on ? "1" : "0");
+    /* No folder prompt: task_backup_dir falls back to the default database
      * location, so switching this on always does something.  Choosing a
      * folder is an improvement, not a prerequisite.                       */
-    bt_backup_auto_start(s->app, s->app->db->path);
+    task_backup_auto_start(s->app, s->app->db->path);
     bk_section_refresh(s);
 }
 
-/* on_bk_choose_clicked() — re-pick the destination folder.                  */
+/* on_bk_choose_clicked() — re-pick the destination folder.                 */
 static void
 on_bk_choose_clicked(GtkButton *btn, gpointer user_data)
 {
@@ -475,22 +475,22 @@ on_bk_choose_clicked(GtkButton *btn, gpointer user_data)
     DbSection *s = user_data;
     gchar *dir = bk_pick_folder(s);
     if (dir != NULL) {
-        bt_app_config_set("backup_dir", dir);
+        task_app_config_set("backup_dir", dir);
         g_free(dir);
-        bt_backup_auto_start(s->app, s->app->db->path);
+        task_backup_auto_start(s->app, s->app->db->path);
         bk_section_refresh(s);
     }
 }
 
-/* on_bk_interval_changed() / on_bk_keep_changed() — persist and re-arm.     */
+/* on_bk_interval_changed() / on_bk_keep_changed() — persist and re-arm.    */
 static void
 on_bk_interval_changed(GtkSpinButton *spin, gpointer user_data)
 {
     DbSection *s = user_data;
     gchar *v = g_strdup_printf("%d", gtk_spin_button_get_value_as_int(spin));
-    bt_app_config_set("backup_interval_min", v);
+    task_app_config_set("backup_interval_min", v);
     g_free(v);
-    bt_backup_auto_start(s->app, s->app->db->path);
+    task_backup_auto_start(s->app, s->app->db->path);
 }
 
 static void
@@ -498,7 +498,7 @@ on_bk_keep_changed(GtkSpinButton *spin, gpointer user_data)
 {
     (void)user_data;
     gchar *v = g_strdup_printf("%d", gtk_spin_button_get_value_as_int(spin));
-    bt_app_config_set("backup_keep", v);
+    task_app_config_set("backup_keep", v);
     g_free(v);
 }
 
@@ -510,7 +510,7 @@ on_bk_now_clicked(GtkButton *btn, gpointer user_data)
 {
     (void)btn;
     DbSection *s = user_data;
-    bt_backup_start(s->app, s->app->db->path, NULL, NULL);
+    task_backup_start(s->app, s->app->db->path, NULL, NULL);
 }
 
 /* db_pick_folder() — run a folder-chooser dialog; returns new path or NULL. */
@@ -534,7 +534,7 @@ db_pick_folder(DbSection *s)
     return dir;
 }
 
-/* on_db_custom_toggled() — checkbox toggled: switch to custom or default.   */
+/* on_db_custom_toggled() — checkbox toggled: switch to custom or default.  */
 static void
 on_db_custom_toggled(GtkToggleButton *check, gpointer user_data)
 {
@@ -552,7 +552,7 @@ on_db_custom_toggled(GtkToggleButton *check, gpointer user_data)
         db_switch_report(s, dir);
         g_free(dir);
     } else if (!want_custom && s->app->db_dir != NULL) {
-        db_switch_report(s, NULL);   /* back to the default location         */
+        db_switch_report(s, NULL);   /* back to the default location        */
     }
 }
 
@@ -569,12 +569,12 @@ on_db_choose_clicked(GtkButton *btn, gpointer user_data)
     }
 }
 
-/* on_settings_destroy() — clear the singleton.                              */
+/* on_settings_destroy() — clear the singleton.                             */
 static void
 on_settings_destroy(GtkWidget *w, gpointer data)
 {
     (void)w;
-    BtSettings *sw = data;
+    TaskSettings *sw = data;
     if (settings == sw)
         settings = NULL;
     if (sw->bn_embed_ids != NULL)
@@ -583,7 +583,7 @@ on_settings_destroy(GtkWidget *w, gpointer data)
     g_free(sw);
 }
 
-/* section_label() — a bold section heading, left-aligned.                   */
+/* section_label() — a bold section heading, left-aligned.                  */
 static GtkWidget *
 section_label(const gchar *text)
 {
@@ -595,7 +595,7 @@ section_label(const gchar *text)
     return label;
 }
 
-/* wrapped_label() — a wrapping, left-aligned explanatory label.             */
+/* wrapped_label() — a wrapping, left-aligned explanatory label.            */
 static GtkWidget *
 wrapped_label(const gchar *text)
 {
@@ -670,17 +670,17 @@ settings_scroller_new(GtkWidget *child, GtkWindow *parent)
 }
 
 /* ---------------------------------------------------------------------------
- * bt_settings_window_open() — show (or raise) the window (see header).
+ * task_settings_window_open() — show (or raise) the window (see header).
  * ------------------------------------------------------------------------- */
 void
-bt_settings_window_open(BtApp *app, GtkWindow *parent,
-                        const gchar *db_path)
+task_settings_window_open(TaskApp *app, GtkWindow *parent,
+                          const gchar *db_path)
 {
     if (settings != NULL) {
         gtk_window_present(GTK_WINDOW(settings->window));
         return;
     }
-    BtSettings *sw = g_new0(BtSettings, 1);
+    TaskSettings *sw = g_new0(TaskSettings, 1);
     settings = sw;
     sw->app = app;
     sw->db_path = g_strdup(db_path);
@@ -704,7 +704,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     GtkWidget *bold_check = gtk_check_button_new_with_label(
         "Show task titles in bold");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(bold_check),
-        bt_app_config_get_bool("bold_task_titles", FALSE));
+        task_app_config_get_bool("bold_task_titles", FALSE));
     g_signal_connect(bold_check, "toggled",
                      G_CALLBACK(on_bold_titles_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), bold_check, FALSE, FALSE, 0);
@@ -712,7 +712,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     GtkWidget *forecast_check = gtk_check_button_new_with_label(
         "Show the Weekly Forecast view (this week, day by day)");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(forecast_check),
-        bt_app_config_get_bool("weekly_forecast", TRUE));
+        task_app_config_get_bool("weekly_forecast", TRUE));
     g_signal_connect(forecast_check, "toggled",
                      G_CALLBACK(on_forecast_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), forecast_check, FALSE, FALSE, 0);
@@ -720,7 +720,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     GtkWidget *overdue_check = gtk_check_button_new_with_label(
         "Include all past-due tasks in the Due Today view");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(overdue_check),
-        bt_app_config_get_bool("due_today_show_overdue", FALSE));
+        task_app_config_get_bool("due_today_show_overdue", FALSE));
     g_signal_connect(overdue_check, "toggled",
                      G_CALLBACK(on_due_today_overdue_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), overdue_check, FALSE, FALSE, 0);
@@ -752,7 +752,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
 #ifdef HAVE_GTKOSX
     gtk_toggle_button_set_active(
         GTK_TOGGLE_BUTTON(mac_check),
-        bt_app_config_get_bool("native_menubar", FALSE));
+        task_app_config_get_bool("native_menubar", FALSE));
     g_signal_connect(mac_check, "toggled",
                      G_CALLBACK(on_native_menubar_toggled), sw);
 #else
@@ -774,7 +774,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
 
     DbSection *dbs = g_new0(DbSection, 1);
     dbs->app = app;
-    g_object_set_data_full(G_OBJECT(sw->window), "bt-db-section",
+    g_object_set_data_full(G_OBJECT(sw->window), "task-db-section",
                            dbs, g_free);
 
     dbs->check = gtk_check_button_new_with_label(
@@ -815,7 +815,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
         "pointing at a disk INDEPENDENT of wherever the database itself "
         "lives, so one mishap cannot take both.");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dbs->bk_check),
-        bt_app_config_get_bool("backup_enabled", FALSE));
+        task_app_config_get_bool("backup_enabled", FALSE));
     gtk_box_pack_start(GTK_BOX(vbox), dbs->bk_check, FALSE, FALSE, 0);
 
     GtkWidget *bk_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -847,9 +847,9 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
         "Minutes between backups.  0 backs up only when you press "
         "Back Up Now.  A pass whose database has not changed since the "
         "last backup writes nothing.");
-    gchar *bkiv = bt_app_config_get("backup_interval_min");
+    gchar *bkiv = task_app_config_get("backup_interval_min");
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(dbs->bk_interval_spin),
-        bkiv != NULL ? atoi(bkiv) : BT_BACKUP_INTERVAL_DEFAULT);
+        bkiv != NULL ? atoi(bkiv) : TASK_BACKUP_INTERVAL_DEFAULT);
     g_free(bkiv);
     gtk_box_pack_start(GTK_BOX(bk_opts), dbs->bk_interval_spin,
                        FALSE, FALSE, 0);
@@ -859,9 +859,9 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     gtk_widget_set_tooltip_text(dbs->bk_keep_spin,
         "How many backup files to retain.  The oldest are removed once a "
         "NEW backup has been verified, never before.");
-    gchar *bkkeep = bt_app_config_get("backup_keep");
+    gchar *bkkeep = task_app_config_get("backup_keep");
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(dbs->bk_keep_spin),
-        bkkeep != NULL ? atoi(bkkeep) : BT_BACKUP_KEEP_DEFAULT);
+        bkkeep != NULL ? atoi(bkkeep) : TASK_BACKUP_KEEP_DEFAULT);
     g_free(bkkeep);
     gtk_box_pack_start(GTK_BOX(bk_opts), dbs->bk_keep_spin,
                        FALSE, FALSE, 0);
@@ -885,7 +885,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
         "Check database integrity on startup (PRAGMA integrity_check)");
     gtk_widget_set_margin_start(integrity_check, 12);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(integrity_check),
-        bt_app_config_get_bool("db_integrity_check", TRUE));
+        task_app_config_get_bool("db_integrity_check", TRUE));
     g_signal_connect(integrity_check, "toggled",
                      G_CALLBACK(on_integrity_check_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), integrity_check, FALSE, FALSE, 0);
@@ -939,14 +939,14 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
     g_array_append_val(sw->bn_embed_ids, own);
     gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(sw->bn_embed_combo),
                                    "Action Items (managed list)");
-    gchar *embed_v = bt_app_config_get("notes_embed_list");
+    gchar *embed_v = task_app_config_get("notes_embed_list");
     gint64 embed_id = embed_v != NULL
                       ? g_ascii_strtoll(embed_v, NULL, 10) : 0;
     g_free(embed_v);
     gint embed_active = 0;           /* combo index to preselect            */
-    GPtrArray *lists = bt_db_lists(app->db, FALSE);
+    GPtrArray *lists = task_db_lists(app->db, FALSE);
     for (guint i = 0; i < lists->len; i++) {
-        BtList *l = g_ptr_array_index(lists, i);
+        TaskList *l = g_ptr_array_index(lists, i);
         gchar *label = *l->emoji != '\0'
             ? g_strdup_printf("%s  %s", l->emoji, l->name)
             : g_strdup(l->name);
@@ -957,7 +957,7 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
         if (l->id == embed_id)
             embed_active = (gint)sw->bn_embed_ids->len - 1;
     }
-    bt_ptr_array_free_lists(lists);
+    task_ptr_array_free_lists(lists);
     gtk_combo_box_set_active(GTK_COMBO_BOX(sw->bn_embed_combo),
                              embed_active);
     gtk_widget_set_tooltip_text(sw->bn_embed_combo,
@@ -1052,19 +1052,19 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
                        FALSE, FALSE, 0);
 
     /* --- Load current values ------------------------------------------------ */
-    gchar *iv  = bt_app_config_get("sync_interval_min");
-    gchar *bnc = bt_app_config_get("notes_cli");
+    gchar *iv  = task_app_config_get("sync_interval_min");
+    gchar *bnc = task_app_config_get("notes_cli");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_check),
-        bt_app_config_get_bool("google_sync_enabled", TRUE));
+        task_app_config_get_bool("google_sync_enabled", TRUE));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_toolbar_check),
-        bt_app_config_get_bool("sync_toolbar_button", TRUE));
+        task_app_config_get_bool("sync_toolbar_button", TRUE));
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->interval_spin),
                               iv != NULL ? g_ascii_strtod(iv, NULL) : 5);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_check),
-        bt_app_config_get_bool("notes_sync", FALSE));
+        task_app_config_get_bool("notes_sync", FALSE));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_meta_check),
-        bt_app_config_get_bool("notes_meta_row", TRUE));
-    gchar *bniv = bt_app_config_get("notes_sync_interval_min");
+        task_app_config_get_bool("notes_meta_row", TRUE));
+    gchar *bniv = task_app_config_get("notes_sync_interval_min");
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->bn_interval_spin),
                               bniv != NULL ? g_ascii_strtod(bniv, NULL) : 5);
     g_free(bniv);
