@@ -54,14 +54,18 @@
  *
  * ABI COMPATIBILITY
  * -----------------
- * The host tells the plugin its abi_version, the size of Task, and the
- * size of the API table.  A plugin built against a different
- * TASK_PLUGIN_ABI_VERSION is refused at load, loudly.  Task grows only
- * by APPENDING fields, so a plugin compiled against an older header
- * simply does not see the newer ones; sizeof is checked so a mismatch
- * fails at load rather than silently reading past the end of a struct.
- * The API table grows the same way — new groups are appended, and
- * host_api_size says how much of it is real.
+ * Two numbers: see TASK_PLUGIN_ABI_VERSION / _REVISION below.  The major
+ * must match exactly; the host's revision must be at or above the
+ * plugin's.  Both are checked at load and a mismatch is refused loudly,
+ * naming which way round it is, so "this plugin is too new for this
+ * Tasks" and "this plugin is too old" are different messages.
+ *
+ * Growth is APPEND-ONLY within a major: fields are added to the end of
+ * Task, groups to the end of TaskHostApi.  task_struct_size and
+ * host_api_size travel with the table so a plugin can assert the build
+ * it is running against actually matches the header it compiled with —
+ * a belt-and-braces check for headers that drifted without a revision
+ * bump, which is a mistake no version number can catch by itself.
  * =========================================================================== */
 
 #ifndef TASK_PLUGIN_H
@@ -71,9 +75,33 @@
 #include "task_view.h"
 #include "task_ops.h"
 #include "task_worker.h"
+#include "settings_window.h"
+#include "task_rows.h"
 
-/* Bumped on ANY incompatible change to the structs below.                  */
-#define TASK_PLUGIN_ABI_VERSION 1u
+/* ---------------------------------------------------------------------------
+ * TWO numbers, because there are two kinds of change.
+ *
+ * VERSION is the breaking one: a field reordered or removed, a signature
+ * changed, a meaning changed.  Host and plugin must match EXACTLY — an
+ * older plugin cannot be reasoned about across such a change, so it is
+ * refused rather than guessed at.
+ *
+ * REVISION is the additive one: a group appended to TaskHostApi, a field
+ * appended to Task.  The host must be at or above the plugin's, never
+ * below.  A plugin built at revision 3 reads a group the host added at
+ * revision 3; a revision-2 host never filled that pointer, so letting it
+ * load would hand the plugin garbage at a fixed offset.  The reverse is
+ * safe by construction: appending moves nothing the older plugin knows
+ * about, so a revision-2 plugin on a revision-5 host reads exactly the
+ * fields it was compiled against and ignores the rest.
+ *
+ * This is what makes the size fields below meaningful.  With a single
+ * exact-match number they were decoration — every change refused every
+ * older plugin, so nothing could ever be tolerated and nothing needed
+ * measuring.
+ * ------------------------------------------------------------------------- */
+#define TASK_PLUGIN_ABI_VERSION  1u
+#define TASK_PLUGIN_ABI_REVISION 3u
 
 /* The directory plugins are loaded from, relative to the executable.       */
 #define TASK_PLUGIN_DIR "plugins"
@@ -227,6 +255,94 @@ typedef struct {
     void (*register_view)(const TaskView *v);
 } TaskHostViews;
 
+/* ---------------------------------------------------------------------------
+ * Settings.
+ *
+ * A plugin configures itself by contributing a SECTION to the one
+ * scrolling column the Settings window is — the same mechanism the app
+ * uses for Google Tasks, Notes and the rest, so a feature does not
+ * change shape when it becomes a plugin.
+ *
+ * Contributed sections are built AFTER the Plugins list, which makes
+ * that list read as a table of contents: the plugin's name, README and
+ * enable checkbox, then its controls directly below.
+ *
+ * Register from init().  The BUILDER then runs every time Settings is
+ * opened, against a window that is destroyed and rebuilt each time — so
+ * keep no widget pointers between calls, and keep the builder fast, for
+ * the same reason init() must be fast: a slow builder is a Settings
+ * window that takes a visible moment to appear.
+ *
+ * Use `heading` and `note` so a contributed section is indistinguishable
+ * from a built-in one.
+ *
+ * NOTE a plugin the user has switched OFF can contribute nothing: its
+ * code was never loaded.  Its enable checkbox in the Plugins list is the
+ * only control it has in that state, which is exactly why enable/disable
+ * lives there and not in the plugin's own section.
+ * ------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+ * Task rows — the app's own row renderer (see task_rows.h).  ABI 1.2.
+ *
+ * A plugin that displays tasks uses THIS rather than building its own
+ * tree view, so its rows look like every other task in the app and stay
+ * looking like them.  The Weekly Forecast needs seven of these; a
+ * reimplementation would drift from the task pane the first time either
+ * changed.
+ *
+ * PERFORMANCE: build one ctx per refresh and fill every store from it.
+ * The context exists to make the attachment counts, subtasks and list
+ * names ONE query each instead of one per row, which is the difference
+ * between a refresh and a stall.  Never call any of this from a cell
+ * data function — those run per draw.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    GtkListStore *(*store_new)(void);
+    void   (*ctx_init)(TaskApp *app, TaskRowCtx *ctx, gboolean virtual_view);
+    void   (*ctx_clear)(TaskRowCtx *ctx);
+    guint  (*append)(GtkListStore *store, GPtrArray *tasks,
+                     const TaskRowCtx *ctx);
+    gchar *(*desc_markup)(const Task *t, const gchar *list_name,
+                          gint att_count, GPtrArray *subs, gboolean bold);
+    const gchar *(*stripe_color)(GtkTreeModel *model, GtkTreeIter *iter);
+    void   (*bg_func)(GtkTreeViewColumn *col, GtkCellRenderer *cell,
+                      GtkTreeModel *model, GtkTreeIter *iter, gpointer data);
+    /* What a click on the ✓ column means — the status rule, the
+     * fade-out when completed tasks are hidden, and the refresh.  Use
+     * this rather than writing a status directly, or a plugin's
+     * checkbox will quietly mean something different from the app's.   */
+    void   (*toggle_done)(TaskApp *app, GtkListStore *store,
+                          GtkTreeIter *iter);
+} TaskHostRows;
+
+/* ---------------------------------------------------------------------------
+ * Window services a panel needs.  ABI 1.3.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    /* Open the editor for a task — what a double-click on a row means.
+     * Editors are singletons per task, so calling this for one already
+     * open presents it rather than making a second.                      */
+    void (*editor_open)(TaskApp *app, gint64 task_id);
+
+    /* Preserve a scrolled window's position across a model rebuild.
+     * Call BEFORE clearing the stores: clearing a store zeroes the
+     * scrollbar, so the position has to be captured first and restored
+     * once the rebuild settles.  Getting this wrong is invisible until
+     * someone scrolls down and a refresh throws them back to the top. */
+    void (*scroll_keep)(GtkWidget *scrolled_window);
+
+    /* The status bar's LEFT label — where you are and how much is here.
+     * A panel owns its pane, so it owns this line; the transient event
+     * message on the right is notify->status.  Plain text.             */
+    void (*set_location)(TaskApp *app, const gchar *text);
+} TaskHostUi;
+
+typedef struct {
+    void       (*add_section)(TaskSettingsSectionFn fn, gpointer user_data);
+    GtkWidget *(*heading)(const gchar *text);
+    GtkWidget *(*note)(const gchar *text);
+} TaskHostSettings;
+
 typedef struct {
     gboolean (*move_to_list)(TaskApp *app, gint64 task_id, gint64 dest_list);
     guint    (*clear_completed)(TaskApp *app, gint64 list_id);
@@ -244,6 +360,7 @@ typedef struct {
  * ------------------------------------------------------------------------- */
 struct TaskHostApi {
     guint32 abi_version;             /* TASK_PLUGIN_ABI_VERSION            */
+    guint32 abi_revision;            /* TASK_PLUGIN_ABI_REVISION           */
     gsize   task_struct_size;        /* sizeof(Task) as the HOST sees it   */
     gsize   host_api_size;           /* sizeof(TaskHostApi), ditto         */
     const gchar *host_version;       /* TASK_VERSION, for diagnostics      */
@@ -254,6 +371,9 @@ struct TaskHostApi {
     const TaskHostWorker *worker;
     const TaskHostViews  *views;
     const TaskHostOps    *ops;
+    const TaskHostSettings *settings;
+    const TaskHostRows     *rows;    /* since ABI 1.2                      */
+    const TaskHostUi       *ui;      /* since ABI 1.3                      */
 };
 
 /* ---------------------------------------------------------------------------
@@ -283,6 +403,7 @@ struct TaskHostApi {
  * ------------------------------------------------------------------------- */
 struct TaskPlugin {
     guint32      abi_version;        /* TASK_PLUGIN_ABI_VERSION            */
+    guint32      abi_revision;       /* TASK_PLUGIN_ABI_REVISION           */
     const gchar *id;                 /* "gtasks"; config namespace         */
     const gchar *name;               /* "Google Tasks"; shown to the user  */
     const gchar *description;        /* one line, shown in Settings        */

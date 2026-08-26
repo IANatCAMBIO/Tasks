@@ -18,6 +18,16 @@ Tasks.app/
 # database, and no editor or script backup belongs in this repo either.
 *.bak
 
+# Built plugins.  The SOURCES live in src/plugins/ and are committed;
+# everything under plugins/ is output — `make` compiles each .c there and
+# copies its README beside it.  A .so also bakes in whatever the plugin
+# was built against, so it is no more committable than the binary itself.
+# Anything a user drops into plugins/ by hand is theirs, not the repo's.
+plugins/*.so
+plugins/*.dylib
+plugins/*.dSYM/
+plugins/*.README.md
+
 client_credentials.mk
 .DS_Store
 

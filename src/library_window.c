@@ -10,7 +10,9 @@
 #include "task_ops.h"
 #include "backup.h"
 #include "task_worker.h"
+#include "plugin_loader.h"
 #include "task_view.h"
+#include "task_rows.h"
 #include "settings_window.h"
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +22,6 @@
 #endif
 
 /* Odd-row stripe tint of the task list (the Notes list palette).          */
-#define ROW_TINT      "#e8f2fb"
 /* Background applied to the row currently held during a manual drag.       */
 #define DRAG_ROW_TINT "#fde68a"
 
@@ -55,23 +56,6 @@ enum {
     SB_N_COLS
 };
 
-/* Task pane store columns.                                                 */
-enum {
-    TL_ID = 0,                       /* gint64: task id (0 only for the
-                                      * forecast's placeholder rows)        */
-    TL_DONE,                         /* gboolean: status == TASK_STATUS_DONE,
-                                      * the checkbox column's view of the
-                                      * status — never stored separately   */
-    TL_DESC,                         /* gchar*: the tall markup cell        */
-    TL_DUE,                          /* gchar*: formatted due date ("")     */
-    TL_DUE_RAW,                      /* gint64: due timestamp (sort/tint)   */
-    TL_TITLE,                        /* gchar*: raw task title (sort key)   */
-    TL_COMPLETED,                    /* gchar*: formatted completion date   */
-    TL_COMPLETED_RAW,                /* gint64: completed_at (sort key)     */
-    TL_STATUS,                       /* gint: TaskStatus (sort key)       */
-    TL_STATUS_TEXT,                  /* gchar*: its label ("In Progress")   */
-    TL_N_COLS
-};
 
 /* ---------------------------------------------------------------------------
  * TaskLibrary — the window's state.
@@ -86,14 +70,10 @@ typedef struct {
     GtkListStore *task_store;
     GtkWidget    *task_view;
     GtkWidget    *task_scroll;       /* the regular task pane; swapped
-                                      * with forecast_box (visibility)      */
+                                      * with a panel view's widget or the
+                                      * board (visibility)                  */
     GPtrArray    *panels;            /* GtkWidget* per view index, NULL
                                       * for a query view (see task_view.h) */
-    GtkWidget    *forecast_box;      /* Weekly Forecast: the scroller
-                                      * holding the 7 stacked day lists     */
-    GtkWidget    *day_labels[7];     /* the day headings, Sunday first      */
-    GtkListStore *day_stores[7];     /* one store per day view              */
-    GtkWidget    *day_views[7];      /* the per-day tree views              */
     /* Kanban board — the THIRD task-pane variant, one lane per
      * TaskStatus.  Lane INDEX IS the status value, which is what lets a
      * drop read its target status straight off the lane it landed on.      */
@@ -354,216 +334,6 @@ header_button_flatten(GtkWidget *hbtn)
 #endif
 }
 
-/* line_is_blank() — TRUE when [start, end) holds nothing but whitespace.
- * Unicode-aware on purpose: a stray U+00A0 pasted into a note is just as
- * invisible as a space and must not earn a preview line either.            */
-static gboolean
-line_is_blank(const gchar *start, const gchar *end)
-{
-    for (const gchar *p = start; p < end; p = g_utf8_next_char(p))
-        if (!g_unichar_isspace(g_utf8_get_char(p)))
-            return FALSE;
-    return TRUE;
-}
-
-/* append_line() — add a `\n`-separated markup line.                        */
-static void
-append_line(GString *s, const gchar *markup)
-{
-    if (s->len > 0)
-        g_string_append_c(s, '\n');
-    g_string_append(s, markup);
-}
-
-/* ---------------------------------------------------------------------------
- * markup_escape_db() — g_markup_escape_text() for a string that came out of
- * the DATABASE, i.e. one whose UTF-8 validity we do not control.
- *
- * A whole task cell is ONE Pango markup string, so a single bad byte
- * anywhere in it makes pango_parse_markup reject the lot and the row draws
- * completely blank — title, list, notes and all.  g_markup_escape_text does
- * not validate (it escapes the markup metacharacters and copies the rest),
- * so invalid bytes pass straight through to Pango.  g_utf8_make_valid
- * substitutes U+FFFD for them, which shows the user a replacement glyph in
- * the one bad spot instead of silently losing the entire row.
- *
- * Text the app itself produced (GtkTextBuffer contents, our own literals)
- * is always valid; this is for anything a sync payload or a hand-edited
- * database could have put there.  New string (g_free).
- * ------------------------------------------------------------------------- */
-static gchar *
-markup_escape_db(const gchar *text)
-{
-    if (g_utf8_validate(text, -1, NULL))
-        return g_markup_escape_text(text, -1);
-    gchar *valid = g_utf8_make_valid(text, -1);
-    gchar *esc   = g_markup_escape_text(valid, -1);
-    g_free(valid);
-    return esc;
-}
-
-/* ---------------------------------------------------------------------------
- * task_desc_markup() — build the Task cell: bold title (struck when
- * done), an "in <list>" line in the virtual views, a dimmed notes
- * preview, an attachment count, and up to four subtask lines.  This is
- * what makes the rows "extra tall".
- *
- * Prefix glyphs stack outwards from the title: ❗ marks a mirrored
- * Notes action item, then ⭐️ a favorite, then 🚨 high priority, then
- * ↳ a subtask shown in a virtual view.  The ❗ sits INNERMOST (nearest
- * the title) because it describes what the row IS, not how it is
- * flagged — and unlike the pre-mirror tag it shows in every view,
- * including the item's own list.
- *   list_name  — the owning list's name, or NULL when the view IS that
- *                list (no need to repeat it).
- *   att_count  — the task's attachment count.
- *   subs       — the task's visible subtasks (may be NULL).
- *   bold       — render the title in bold (the "bold_task_titles"
- *                setting, read once per refresh by the caller).
- * ------------------------------------------------------------------------- */
-static gchar *
-task_desc_markup(const Task *t, const gchar *list_name, gint att_count,
-                 GPtrArray *subs, gboolean bold)
-{
-    GString *s = g_string_new(NULL);
-    gchar *title = markup_escape_db(
-        *t->title != '\0' ? t->title : "Untitled Task");
-    const gchar *open  = bold ? "<b>" : "";
-    const gchar *close = bold ? "</b>" : "";
-    gchar *line = t->status == TASK_STATUS_DONE
-        ? g_strdup_printf("%s<s>%s</s>%s", open, title, close)
-        : g_strdup_printf("%s%s%s", open, title, close);
-    if (t->bn_uid != 0) {            /* mirrored Notes action item        */
-        gchar *p = g_strdup_printf("\xe2\x9d\x97  %s", line);
-        g_free(line);
-        line = p;
-    }
-    if (t->pinned) {                  /* favorite task wears a star         */
-        gchar *p = g_strdup_printf("\xe2\xad\x90\xef\xb8\x8f  %s", line);
-        g_free(line);
-        line = p;
-    }
-    if (t->priority) {               /* high priority wears a siren         */
-        gchar *p = g_strdup_printf("\xf0\x9f\x9a\xa8  %s", line);
-        g_free(line);
-        line = p;
-    }
-    if (t->parent_id != 0) {         /* a subtask row in a virtual view     */
-        gchar *sub = g_strdup_printf("\xe2\x86\xb3 %s", line);
-        g_free(line);
-        line = sub;
-    }
-    append_line(s, line);
-    g_free(line);
-    g_free(title);
-
-    /* Dimmed lines use Pango ALPHA, never a fixed gray: a hardcoded
-     * foreground stays gray on the selection's blue background and is
-     * unreadable — alpha dims whatever color the theme picks, so the
-     * text follows the row's selected/unselected state.                    */
-    if (list_name != NULL) {
-        gchar *esc = markup_escape_db(list_name);
-        gchar *l = g_strdup_printf(
-            "<small><i><span alpha=\"60%%\">in %s</span></i>"
-            "</small>", esc);
-        append_line(s, l);
-        g_free(l);
-        g_free(esc);
-    }
-
-    /* Notes preview: the first line that actually HAS content, capped,
-     * dimmed.  Testing `*notes != '\0'` was not enough — a note holding
-     * just a space (or a leading blank line) previewed as an empty line,
-     * which reads as nothing at all while still making that one row a
-     * whole line taller than every other row in the list.                  */
-    const gchar *nline = t->notes;   /* candidate line, start …             */
-    const gchar *nend  = nline;      /* … and one past its last byte        */
-    while (*nline != '\0') {
-        const gchar *eol = strchr(nline, '\n');
-        nend = eol != NULL ? eol : nline + strlen(nline);
-        if (!line_is_blank(nline, nend))
-            break;
-        if (eol == NULL) {           /* every line was blank                */
-            nline = nend;
-            break;
-        }
-        nline = eol + 1;
-    }
-    if (nline < nend) {
-        gsize len   = (gsize)(nend - nline);
-        gsize shown = MIN(len, (gsize)120);
-        /* The cap is a BYTE cap, so walk it back to a character boundary:
-         * a multi-byte character straddling byte 120 would leave a partial
-         * sequence, and the whole cell is ONE Pango markup string — so
-         * pango_parse_markup rejects it and the row renders completely
-         * blank, title and all (not just the preview).  g_utf8_find_prev_char
-         * from the cut point gives the last character that STARTS before it;
-         * keep it only when it also ends at or before the cut.             */
-        if (shown < len) {
-            const gchar *cut  = nline + shown;
-            const gchar *prev = g_utf8_find_prev_char(nline, cut);
-            if (prev == NULL)            /* no boundary found: drop it all  */
-                shown = 0;
-            else if (g_utf8_next_char(prev) > cut)
-                shown = (gsize)(prev - nline);   /* char is cut: exclude it */
-        }
-        gchar *preview = g_strndup(nline, shown);
-        /* Trim both ends: leading indentation reads as a stray gap in a
-         * one-line preview, trailing space would sit before the ellipsis.
-         * g_strstrip chugs in place, so `preview` stays the pointer to
-         * free.                                                            */
-        g_strstrip(preview);
-        /* Nothing survived the cap (a single over-long character, or bytes
-         * that were not valid UTF-8 to begin with): emit no line at all
-         * rather than an empty one — an empty preview reads as nothing
-         * while still making this row a line taller than its neighbours,
-         * which is the bug the content-gating above exists to prevent.     */
-        if (*preview != '\0') {
-            gchar *esc = markup_escape_db(preview);
-            gchar *l = g_strdup_printf(
-                "<small><span alpha=\"65%%\">%s%s</span></small>", esc,
-                /* more of THIS line, or any line after it                  */
-                shown < len || *nend != '\0' ? "\xe2\x80\xa6" : "");
-            append_line(s, l);
-            g_free(l);
-            g_free(esc);
-        }
-        g_free(preview);
-    }
-
-    if (att_count > 0) {
-        gchar *l = g_strdup_printf(
-            "<small><span alpha=\"65%%\">\xf0\x9f\x93\x8e "
-            "%d attachment%s</span></small>",
-            att_count, att_count == 1 ? "" : "s");
-        append_line(s, l);
-        g_free(l);
-    }
-
-    guint nsubs = subs != NULL ? subs->len : 0;
-    for (guint i = 0; i < MIN(nsubs, 4u); i++) {
-        Task *sub = g_ptr_array_index(subs, i);
-        gchar *esc = markup_escape_db(
-            *sub->title != '\0' ? sub->title : "Untitled");
-        gchar *l = sub->status == TASK_STATUS_DONE
-            ? g_strdup_printf("<small>\xe2\x98\x91 <span "
-                              "alpha=\"55%%\"><s>%s</s></span>"
-                              "</small>", esc)
-            : g_strdup_printf("<small>\xe2\x98\x90 %s</small>", esc);
-        append_line(s, l);
-        g_free(l);
-        g_free(esc);
-    }
-    if (nsubs > 4) {
-        gchar *l = g_strdup_printf(
-            "<small><span alpha=\"65%%\">\xe2\x80\xa6 +%u more "
-            "subtask%s</span></small>", nsubs - 4,
-            nsubs - 4 == 1 ? "" : "s");
-        append_line(s, l);
-        g_free(l);
-    }
-    return g_string_free(s, FALSE);
-}
 
 /* ===========================================================================
  * Refreshes.
@@ -604,6 +374,24 @@ scroll_keep_queue_win(GtkWidget *scroll)
     g_idle_add(scroll_keep_apply, sk);
 }
 
+/* task_library_scroll_keep() — the same, exported for panel plugins (see
+ * library_window.h).                                                       */
+void
+task_library_scroll_keep(GtkWidget *scroll)
+{
+    scroll_keep_queue_win(scroll);
+}
+
+/* task_library_set_location() — see library_window.h.  Re-resolves the
+ * window, so it is safe from a panel that outlived it.                     */
+void
+task_library_set_location(TaskApp *app, const gchar *text)
+{
+    TaskLibrary *lw = lib_of(app);
+    if (lw != NULL && lw->status_left != NULL)
+        gtk_label_set_text(GTK_LABEL(lw->status_left), text);
+}
+
 static void
 scroll_keep_queue(GtkWidget *view)
 {
@@ -620,7 +408,7 @@ static gchar   *list_order_key(gint64 list_id);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
 static void     on_toggle_kanban(GtkWidget *, gpointer);
 static void     full_refresh(TaskLibrary *lw);
-static GtkWidget *forecast_day_section(TaskLibrary *lw, gint d);
+static void     scroll_keep_queue_win(GtkWidget *scroll);
 
 /* sel_view() — the registered view the sidebar is sitting on, or NULL
  * when the selection is a list or a group.                                 */
@@ -891,117 +679,6 @@ refresh_sidebar(TaskLibrary *lw)
     lw->populating = FALSE;
 }
 
-/* ---------------------------------------------------------------------------
- * TaskRowCtx — the shared lookups behind the task rows of one refresh
- * (avoid per-row queries).  Subtasks come as ONE query grouped in
- * memory, not one query per top-level row; list names are loaded only
- * for the virtual views (the "in <list>" line).
- * ------------------------------------------------------------------------- */
-typedef struct {
-    GHashTable *att_counts;          /* task id → attachment count          */
-    GPtrArray  *all_subs;            /* owns the subtask rows below         */
-    GHashTable *subs_by_parent;      /* parent id → GPtrArray of borrowed   */
-    GHashTable *list_names;          /* list id → name, NULL for list views */
-    gboolean    bold;                /* the bold_task_titles setting        */
-    gboolean    show_done;           /* the show_completed toggle           */
-} TaskRowCtx;
-
-static void
-task_row_ctx_init(TaskLibrary *lw, TaskRowCtx *ctx, gboolean virtual_view)
-{
-    ctx->att_counts = task_db_attachment_counts(lw->app->db);
-    ctx->all_subs = task_db_subtasks_all_visible(lw->app->db);
-    ctx->subs_by_parent =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                              (GDestroyNotify)g_ptr_array_unref);
-    for (guint i = 0; i < ctx->all_subs->len; i++) {
-        Task *s = g_ptr_array_index(ctx->all_subs, i);
-        GPtrArray *bucket = g_hash_table_lookup(ctx->subs_by_parent,
-            GINT_TO_POINTER(s->parent_id));
-        if (bucket == NULL) {
-            bucket = g_ptr_array_new();
-            g_hash_table_insert(ctx->subs_by_parent,
-                GINT_TO_POINTER(s->parent_id), bucket);
-        }
-        g_ptr_array_add(bucket, s);
-    }
-    ctx->list_names = NULL;
-    if (virtual_view) {
-        ctx->list_names = g_hash_table_new_full(g_direct_hash,
-                                                g_direct_equal,
-                                                NULL, g_free);
-        GPtrArray *lists = task_db_lists(lw->app->db, FALSE);
-        for (guint i = 0; i < lists->len; i++) {
-            TaskList *l = g_ptr_array_index(lists, i);
-            g_hash_table_insert(ctx->list_names,
-                                GINT_TO_POINTER(l->id),
-                                g_strdup(l->name));
-        }
-        task_ptr_array_free_lists(lists);
-    }
-    ctx->bold = task_app_config_get_bool("bold_task_titles", FALSE);
-    ctx->show_done = task_app_config_get_bool("show_completed", TRUE);
-}
-
-static void
-task_row_ctx_clear(TaskRowCtx *ctx)
-{
-    g_hash_table_destroy(ctx->att_counts);
-    g_hash_table_destroy(ctx->subs_by_parent);
-    task_ptr_array_free_tasks(ctx->all_subs);
-    if (ctx->list_names != NULL)
-        g_hash_table_destroy(ctx->list_names);
-}
-
-/* append_task_rows() — append `tasks` to `store` through the shared-
- * lookup context, honoring the completed-visibility toggle.  Returns
- * the number of rows actually appended.                                    */
-static guint
-append_task_rows(GtkListStore *store, GPtrArray *tasks,
-                 const TaskRowCtx *ctx)
-{
-    guint appended = 0;              /* rows actually in the pane           */
-    for (guint i = 0; i < tasks->len; i++) {
-        Task *t = g_ptr_array_index(tasks, i);
-        gboolean done = t->status == TASK_STATUS_DONE;
-        if (!ctx->show_done && done)
-            continue;                /* toolbar completed-visibility toggle */
-        GPtrArray *subs = t->parent_id == 0
-            ? g_hash_table_lookup(ctx->subs_by_parent,
-                                  GINT_TO_POINTER(t->id))
-            : NULL;
-        const gchar *list_name = ctx->list_names != NULL
-            ? g_hash_table_lookup(ctx->list_names,
-                                  GINT_TO_POINTER(t->list_id))
-            : NULL;
-        gint att_count = GPOINTER_TO_INT(
-            g_hash_table_lookup(ctx->att_counts,
-                                GINT_TO_POINTER(t->id)));
-        gchar *desc      = task_desc_markup(t, list_name, att_count, subs,
-                                            ctx->bold);
-        gchar *due       = task_due_format(t->due);
-        gchar *completed = task_due_format(t->completed_at);
-        GtkTreeIter iter;
-        gtk_list_store_append(store, &iter);
-        gtk_list_store_set(store, &iter,
-                           TL_ID,            t->id,
-                           TL_DONE,          done,
-                           TL_DESC,          desc,
-                           TL_DUE,           due,
-                           TL_DUE_RAW,       t->due,
-                           TL_TITLE,         t->title,
-                           TL_COMPLETED,     completed,
-                           TL_COMPLETED_RAW, t->completed_at,
-                           TL_STATUS,        (gint)t->status,
-                           TL_STATUS_TEXT,   task_status_label(t->status),
-                           -1);
-        g_free(desc);
-        g_free(due);
-        g_free(completed);
-        appended++;
-    }
-    return appended;
-}
 
 /* ===========================================================================
  * Kanban board — the third task-pane variant.
@@ -2315,7 +1992,7 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
             : NULL;
         gint att = GPOINTER_TO_INT(
             g_hash_table_lookup(ctx->att_counts, GINT_TO_POINTER(t->id)));
-        gchar *markup = task_desc_markup(t, list_name, att, subs, ctx->bold);
+        gchar *markup = task_rows_desc_markup(t, list_name, att, subs, ctx->bold);
         gboolean selected = card_sel_has(lw, t->id);
         if (selected)
             g_hash_table_add(alive, GSIZE_TO_POINTER((gsize)t->id));
@@ -2364,9 +2041,10 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
 
 /* ---------------------------------------------------------------------------
  * kanban_lane_new() — one lane: a heading label over a framed, padded
- * body that holds the cards and accepts drops.  Mirrors
- * forecast_day_section's shape (label + framed body, natural height, no
- * scroller of its own).  Fills lw->kanban_labels / kanban_lanes [status].
+ * body that holds the cards and accepts drops.  Mirrors the Weekly
+ * Forecast's day sections (label + framed body, natural height, no
+ * scroller of their own) — that view is a plugin now, but the shape was
+ * borrowed from it and the two still want to look alike.  Fills lw->kanban_labels / kanban_lanes [status].
  *
  * The drop target is an EVENT BOX wrapping the card box, not the card box
  * itself: a GtkBox is a no-window widget, and a drag destination needs a
@@ -2411,162 +2089,6 @@ kanban_lane_new(TaskLibrary *lw, TaskStatus status)
      * way down, not just behind the cards it happens to hold.              */
     gtk_box_pack_start(GTK_BOX(col), frame, TRUE, TRUE, 0);
     return col;
-}
-
-/* ---------------------------------------------------------------------------
- * refresh_forecast() — the Weekly Forecast view: seven per-day list
- * views stacked vertically (Sunday through Saturday), each under a
- * day-of-the-week heading, scrolling together as one page.  Rebuilds
- * every day's store and heading; the panel itself is swapped in by
- * refresh_tasks.
- * ------------------------------------------------------------------------- */
-static void
-refresh_forecast(TaskLibrary *lw)
-{
-    /* Days elapsed since this week's Sunday: GDateTime weekdays run
-     * 1 (Monday) through 7 (Sunday), so it is the weekday mod 7.           */
-    GDateTime *now = g_date_time_new_now_local();
-    gint since_sunday = g_date_time_get_day_of_week(now) % 7;
-
-    /* One outer scroller wraps the whole week — restore its position
-     * after the rebuild (clearing the stores collapses the page).          */
-    scroll_keep_queue_win(lw->forecast_box);
-
-    TaskRowCtx ctx;                  /* shared lookups (see above)          */
-    task_row_ctx_init(lw, &ctx, TRUE);
-    guint shown = 0;                 /* task rows across the week           */
-    for (gint d = 0; d < 7; d++) {
-        gint offset = d - since_sunday;      /* this day vs. today          */
-        GDateTime *day = g_date_time_add_days(now, offset);
-        gchar *name = g_date_time_format(day, "%A");
-        gchar *date = g_date_time_format(day, "%b %-e");
-        /* Today wears a small blue dot (the sidebar selection blue)
-         * beside its name, plus the "— Today" tag on the date line.        */
-        gchar *hdr = g_strdup_printf(
-            "%s<b>%s</b>\n<small><span alpha=\"60%%\">%s%s"
-            "</span></small>",
-            offset == 0 ? "<small><span foreground=\"#5683e0\">"
-                          "\xe2\x97\x8f</span></small> " : "",
-            name, date,
-            offset == 0 ? " \xe2\x80\x94 Today" : "");
-        gtk_label_set_markup(GTK_LABEL(lw->day_labels[d]), hdr);
-        g_free(hdr);
-        g_free(name);
-        g_free(date);
-        g_date_time_unref(day);
-
-        gtk_list_store_clear(lw->day_stores[d]);
-        gint64 lo, hi;               /* the day's local midnight bounds     */
-        task_day_bounds(offset, &lo, &hi);
-        GPtrArray *tasks = task_db_tasks_due_between(lw->app->db, lo, hi);
-        guint n = append_task_rows(lw->day_stores[d], tasks, &ctx);
-        task_ptr_array_free_tasks(tasks);
-        if (n == 0) {
-            /* An empty day still shows a one-row list: an inert dimmed
-             * placeholder (id 0 — checkbox hidden, activation ignored).    */
-            GtkTreeIter iter;
-            gtk_list_store_append(lw->day_stores[d], &iter);
-            gtk_list_store_set(lw->day_stores[d], &iter,
-                               TL_ID, (gint64)0,
-                               TL_DESC, "<i><span alpha=\"55%\">"
-                                        "No tasks due</span></i>",
-                               TL_DUE, "",
-                               -1);
-        }
-        shown += n;
-    }
-    g_date_time_unref(now);
-    task_row_ctx_clear(&ctx);
-
-    gchar *loc = g_strdup_printf(
-        "Weekly Forecast - %u task%s this week",
-        shown, shown == 1 ? "" : "s");
-    gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
-    g_free(loc);
-}
-
-/* ---------------------------------------------------------------------------
- * The Weekly Forecast as a registered PANEL view (see task_view.h).
- *
- * It is not a task list with a layout — it is seven dated day sections
- * in one scroller — so there is nothing for the core's list or board to
- * render, and nothing for a manual or card order to order.  That is what
- * `panel_new` means, and it is why a panel view outranks Kanban.
- *
- * `panel_selection` is deliberately absent: the seven day views are
- * SELECTION_MODE_NONE (seven views would otherwise each keep their own
- * selection), so the honest answer to "what is selected" is nothing, and
- * Delete Task correctly has nothing to act on while the forecast is up.
- *
- * user_data is the library window, bound at registration.  That is sound
- * only because the window is a process singleton — see
- * task_library_views_register().
- * ------------------------------------------------------------------------- */
-static gboolean
-forecast_visible(TaskApp *app, gpointer user_data)
-{
-    (void)app;
-    (void)user_data;
-    return task_app_config_get_bool("weekly_forecast", TRUE);
-}
-
-static GtkWidget *
-forecast_panel_new(TaskApp *app, gpointer user_data)
-{
-    (void)app;
-    TaskLibrary *lw = user_data;
-    /* Seven full-width day sections stacked vertically, 6 px apart so the
-     * lists never touch, scrolling together in one outer scroller.        */
-    GtkWidget *week_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(week_box), 6);
-    for (gint d = 0; d < 7; d++)
-        gtk_box_pack_start(GTK_BOX(week_box),
-                           forecast_day_section(lw, d), FALSE, FALSE, 0);
-    lw->forecast_box = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lw->forecast_box),
-                                   GTK_POLICY_NEVER,
-                                   GTK_POLICY_AUTOMATIC);
-    gtk_container_add(GTK_CONTAINER(lw->forecast_box), week_box);
-    return lw->forecast_box;
-}
-
-static void
-forecast_panel_refresh(TaskApp *app, GtkWidget *panel, gpointer user_data)
-{
-    (void)app;
-    (void)panel;
-    refresh_forecast(user_data);
-}
-
-static TaskView forecast_view = {
-    .id       = "forecast",
-    .label    = "\xf0\x9f\x8c\xa4\xef\xb8\x8f  Weekly Forecast",
-    .name     = "Weekly Forecast",
-    .sort     = 50,
-    .visible  = forecast_visible,
-    .panel_new     = forecast_panel_new,
-    .panel_refresh = forecast_panel_refresh,
-};
-
-/* ---------------------------------------------------------------------------
- * task_library_views_register() — register the views the library window
- * itself implements.
- *
- * Called from task_library_window_new BEFORE the pane is built, and safe
- * to bind `lw` into the registry only because there is exactly one
- * library window per process (main.c's on_activate presents the existing
- * one rather than making a second).  When the forecast moves out to a
- * plugin it will own its own state and this goes away.
- * ------------------------------------------------------------------------- */
-static void
-task_library_views_register(TaskLibrary *lw)
-{
-    static gboolean done = FALSE;
-    if (done)
-        return;
-    forecast_view.user_data = lw;
-    task_view_register(&forecast_view);
-    done = TRUE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -2709,10 +2231,10 @@ refresh_tasks(TaskLibrary *lw)
     }
 
     TaskRowCtx ctx;                  /* shared lookups (see above)          */
-    task_row_ctx_init(lw, &ctx, virtual_view);
+    task_row_ctx_init(lw->app, &ctx, virtual_view);
     guint shown = kanban
         ? refresh_kanban(lw, tasks, &ctx)
-        : append_task_rows(lw->task_store, tasks, &ctx);
+        : task_rows_append(lw->task_store, tasks, &ctx);
     task_row_ctx_clear(&ctx);
 
     /* Reorder to match the saved manual order.  No-op when the mode is
@@ -3063,139 +2585,6 @@ on_task_activated(GtkTreeView *view, GtkTreePath *path,
     task_editor_open(lw->app, id);
 }
 
-/* ---------------------------------------------------------------------------
- * Fade-out animation for tasks marked done while completeds are hidden.
- *
- * 20 steps × 50 ms = 1 s.  Each step wraps TL_DESC in a <span alpha="N%">
- * that decrements from 95 → 0.  At step 20 a full_refresh removes the row.
- * lib_of() / gtk_tree_row_reference_get_path() guard against a window close
- * or another refresh occurring mid-flight.
- * ------------------------------------------------------------------------- */
-#define FADE_STEPS    20
-#define FADE_INTERVAL 50   /* ms — 20 × 50 ms = 1 s                         */
-
-typedef struct {
-    TaskApp              *app;
-    GtkListStore       *store;
-    GtkTreeRowReference *row_ref;
-    gchar              *orig_desc;  /* TL_DESC value at fade-start          */
-    gint                step;
-} FadeCtx;
-
-static void
-fade_ctx_free(FadeCtx *ctx)
-{
-    gtk_tree_row_reference_free(ctx->row_ref);
-    g_free(ctx->orig_desc);
-    g_free(ctx);
-}
-
-/* fade_done() — shared terminal path: decrement lw->pending_fades and
- * call full_refresh only when the last active fade finishes.               */
-static void
-fade_done(TaskLibrary *lw)
-{
-    if (--lw->pending_fades <= 0) {
-        lw->pending_fades = 0;
-        full_refresh(lw);
-    }
-}
-
-static gboolean
-fade_step_cb(gpointer data)
-{
-    FadeCtx   *ctx = data;
-    TaskLibrary *lw  = lib_of(ctx->app);
-    ctx->step++;
-
-    /* Window closed, or a new window opened at a different address — this
-     * timer is stale.  Check store membership to detect the latter case.   */
-    if (lw == NULL) {
-        fade_ctx_free(ctx);
-        return G_SOURCE_REMOVE;
-    }
-    gboolean store_ok = (ctx->store == lw->task_store);
-    for (gint i = 0; i < 7 && !store_ok; i++)
-        store_ok = (ctx->store == lw->day_stores[i]);
-    if (!store_ok) {
-        fade_ctx_free(ctx);
-        return G_SOURCE_REMOVE;
-    }
-
-    GtkTreePath *path = gtk_tree_row_reference_get_path(ctx->row_ref);
-    if (path == NULL) {              /* row already gone (external refresh) */
-        fade_done(lw);
-        fade_ctx_free(ctx);
-        return G_SOURCE_REMOVE;
-    }
-
-    GtkTreeIter iter;
-    if (!gtk_tree_model_get_iter(GTK_TREE_MODEL(ctx->store), &iter, path)) {
-        gtk_tree_path_free(path);
-        fade_done(lw);
-        fade_ctx_free(ctx);
-        return G_SOURCE_REMOVE;
-    }
-
-    if (ctx->step >= FADE_STEPS) {   /* fade complete — remove this row     */
-        gtk_list_store_remove(ctx->store, &iter);
-        gtk_tree_path_free(path);
-        fade_done(lw);               /* full_refresh fires on the last one  */
-        fade_ctx_free(ctx);
-        return G_SOURCE_REMOVE;
-    }
-
-    gtk_tree_path_free(path);
-
-    /* alpha: 95 → 5 across FADE_STEPS steps (step 1 = 95%, step 19 = 5%)  */
-    gint alpha = 100 - (ctx->step * 100 / FADE_STEPS);
-    gchar *faded = g_strdup_printf("<span alpha=\"%d%%\">%s</span>",
-                                   alpha, ctx->orig_desc);
-    gtk_list_store_set(ctx->store, &iter, TL_DESC, faded, -1);
-    g_free(faded);
-
-    return G_SOURCE_CONTINUE;
-}
-
-/* start_fade() — kick off a fade-out for iter in store.  Reads orig_desc
- * from the store, marks the row done (checkbox AND status cell, which
- * the row wears until the refresh removes it), posts a status message,
- * and fires the repeating timer.                                           */
-static void
-start_fade(TaskLibrary *lw, GtkListStore *store, GtkTreeIter *iter,
-           const gchar *title)
-{
-    gchar *orig_desc = NULL;
-    gtk_tree_model_get(GTK_TREE_MODEL(store), iter, TL_DESC, &orig_desc, -1);
-
-    gtk_list_store_set(store, iter,
-                       TL_DONE,        TRUE,
-                       TL_STATUS,      (gint)TASK_STATUS_DONE,
-                       TL_STATUS_TEXT, task_status_label(TASK_STATUS_DONE),
-                       -1);
-
-    /* The RAW title: the status bar is a plain-text label (set_text, no
-     * markup), so escaping here put a literal "&amp;" on screen for any
-     * task with an ampersand in its name.  The fade animation is the only
-     * thing that needs markup, and it escapes what it reads back off the
-     * label itself.                                                        */
-    task_app_status(lw->app,
-                    "\xe2\x80\x9c%s\xe2\x80\x9d \xe2\x80\x94 Completed",
-                    title != NULL && *title != '\0' ? title : "Untitled Task");
-
-    GtkTreePath *path =
-        gtk_tree_model_get_path(GTK_TREE_MODEL(store), iter);
-    FadeCtx *ctx   = g_new0(FadeCtx, 1);
-    ctx->app       = lw->app;
-    ctx->store     = store;
-    ctx->row_ref   = gtk_tree_row_reference_new(GTK_TREE_MODEL(store), path);
-    ctx->orig_desc = orig_desc;          /* ownership transferred           */
-    ctx->step      = 0;
-    gtk_tree_path_free(path);
-
-    lw->pending_fades++;
-    g_timeout_add(FADE_INTERVAL, fade_step_cb, ctx);
-}
 
 /* ---------------------------------------------------------------------------
  * on_task_done_toggled() — the ✓ column.  The checkbox is a VIEW of the
@@ -3213,68 +2602,9 @@ on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
     (void)cell;
     TaskLibrary *lw = data;
     GtkTreeIter iter;
-    GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
-    if (!gtk_tree_model_get_iter_from_string(model, &iter, path_str))
-        return;
-    gint64 id;
-    gboolean done;
-    gchar *title = NULL;
-    gtk_tree_model_get(model, &iter,
-                       TL_ID, &id, TL_DONE, &done, TL_TITLE, &title, -1);
-
-    /* A mirrored Notes item is written like any other task: the tick
-     * lands in the database now and rides to Notes with the next
-     * mirror pass (bnsync.h) — that is what makes the write-back bulk
-     * rather than one CLI spawn per click.                                 */
-    task_db_task_set_status(lw->app->db, id,
-                            done ? TASK_STATUS_IN_PROGRESS : TASK_STATUS_DONE);
-
-    /* When hiding completed tasks and a task is just being ticked done,
-     * animate a 1 s fade-out before the full_refresh removes the row.      */
-    gboolean hiding = !task_app_config_get_bool("show_completed", TRUE);
-    if (!done && hiding) {
-        start_fade(lw, lw->task_store, &iter, title);
-        g_free(title);
-        return;
-    }
-    g_free(title);
-    full_refresh(lw);
-}
-
-/* on_forecast_done_toggled() — the done checkbox of a Weekly Forecast
- * day view.  Each day view has its own store (the handler above is
- * bound to the main task store), stashed on the renderer as
- * "task-model".  Day views hold real tasks only — no Notes rows.           */
-static void
-on_forecast_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
-                         gpointer data)
-{
-    TaskLibrary *lw = data;
-    GtkTreeModel *model = g_object_get_data(G_OBJECT(cell), "task-model");
-    GtkTreeIter iter;
-    if (model == NULL ||
-        !gtk_tree_model_get_iter_from_string(model, &iter, path_str))
-        return;
-    gint64 id;
-    gboolean done;
-    gchar *title = NULL;
-    gtk_tree_model_get(model, &iter,
-                       TL_ID, &id, TL_DONE, &done, TL_TITLE, &title, -1);
-    if (id == 0) {
-        g_free(title);
-        return;
-    }
-    task_db_task_set_status(lw->app->db, id,
-                            done ? TASK_STATUS_IN_PROGRESS : TASK_STATUS_DONE);
-
-    gboolean hiding = !task_app_config_get_bool("show_completed", TRUE);
-    if (!done && hiding) {
-        start_fade(lw, GTK_LIST_STORE(model), &iter, title);
-        g_free(title);
-        return;
-    }
-    g_free(title);
-    full_refresh(lw);
+    if (gtk_tree_model_get_iter_from_string(GTK_TREE_MODEL(lw->task_store),
+                                            &iter, path_str))
+        task_rows_toggle_done(lw->app, lw->task_store, &iter);
 }
 
 /* task_row_bg_func() — cell data function giving list rows alternating
@@ -3287,39 +2617,25 @@ task_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
 {
     (void)col;
     TaskLibrary *lw = data;            /* may be NULL for forecast day views */
-    GtkTreePath *path = gtk_tree_model_get_path(model, iter);
-    gboolean even =                  /* row parity drives the tint          */
-        (gtk_tree_path_get_indices(path)[0] % 2) == 0;
-    const gchar *bg = even ? NULL : ROW_TINT;
+    /* The stripe itself is the renderer's (task_rows.h) — one rule, so a
+     * panel and the task pane cannot end up striping differently.  All
+     * this adds is the drag highlight, which is the pane's own business. */
+    const gchar *bg = task_rows_stripe_color(model, iter);
 
     /* While dragging, paint the held row amber so it is easy to track.     */
     if (lw && lw->drag_active && lw->drag_row_ref) {
         GtkTreePath *drag_path =
             gtk_tree_row_reference_get_path(lw->drag_row_ref);
         if (drag_path) {
+            GtkTreePath *path = gtk_tree_model_get_path(model, iter);
             if (gtk_tree_path_compare(path, drag_path) == 0)
                 bg = DRAG_ROW_TINT;
+            gtk_tree_path_free(path);
             gtk_tree_path_free(drag_path);
         }
     }
 
-    gtk_tree_path_free(path);
     g_object_set(cell, "cell-background", bg, NULL);
-}
-
-/* forecast_toggle_bg_func() — the day views' checkbox data func: the
- * row stripe, plus hiding the checkbox on the "No tasks due"
- * placeholder rows (id 0 — day stores never hold Notes rows, so
- * the id alone identifies them).                                           */
-static void
-forecast_toggle_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
-                        GtkTreeModel *model, GtkTreeIter *iter,
-                        gpointer data)
-{
-    task_row_bg_func(col, cell, model, iter, data);
-    gint64 id;
-    gtk_tree_model_get(model, iter, TL_ID, &id, -1);
-    g_object_set(cell, "visible", id != 0, NULL);
 }
 
 /* due_color_func() — tint the Due cell by urgency at draw time (rolls
@@ -4616,6 +3932,7 @@ on_open_db(GtkWidget *widget, gpointer user_data)
 
     task_editor_close_all(app);
     gchar *old_path = g_strdup(app->db->path);
+    task_plugins_db_closing(app, app->db);   /* plugin tables live here too */
     task_db_close(app->db);
     GError *gerr = NULL;
     app->db = task_db_open(file_path, &gerr);
@@ -4631,11 +3948,14 @@ on_open_db(GtkWidget *widget, gpointer user_data)
         if (app->db == NULL)
             g_critical("on_open_db: cannot revert to %s: %s", old_path,
                        gerr != NULL ? gerr->message : "?");
+        else
+            task_plugins_db_open(app, app->db);   /* reverted, but OPEN     */
         g_clear_error(&gerr);
         g_free(old_path);
         g_free(file_path);
         return;
     }
+    task_plugins_db_open(app, app->db);
 
     if (set_default) {
         gchar *dir = g_path_get_dirname(file_path);
@@ -4980,84 +4300,6 @@ compact_bar_new(TaskLibrary *lw)
     gtk_widget_set_margin_bottom(bar, 20);
     lw->float_bar = bar;
     return bar;
-}
-
-/* ---------------------------------------------------------------------------
- * forecast_day_section() — build one Weekly Forecast day section: a
- * heading label (day of the week over the date, set per refresh) above
- * a two-column (done + task) list view with its own store, sharing the
- * main pane's stripes, activation handler and row markup.  The view is
- * framed but NOT scrolled — it takes its natural full-content height;
- * the whole week scrolls together in the panel's one outer scroller.
- * Fills lw->day_labels / day_stores / day_views [d].
- * ------------------------------------------------------------------------- */
-static GtkWidget *
-forecast_day_section(TaskLibrary *lw, gint d)
-{
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-
-    lw->day_labels[d] = gtk_label_new(NULL);
-    gtk_label_set_justify(GTK_LABEL(lw->day_labels[d]),
-                          GTK_JUSTIFY_CENTER);
-    gtk_label_set_ellipsize(GTK_LABEL(lw->day_labels[d]),
-                            PANGO_ELLIPSIZE_END);
-    gtk_box_pack_start(GTK_BOX(box), lw->day_labels[d], FALSE, FALSE, 2);
-
-    lw->day_stores[d] = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
-                                           G_TYPE_BOOLEAN, G_TYPE_STRING,
-                                           G_TYPE_STRING, G_TYPE_INT64,
-                                           G_TYPE_STRING, G_TYPE_STRING,
-                                           G_TYPE_INT64, G_TYPE_INT,
-                                           G_TYPE_STRING);
-    lw->day_views[d] = gtk_tree_view_new_with_model(
-        GTK_TREE_MODEL(lw->day_stores[d]));
-    g_object_unref(lw->day_stores[d]);
-    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(lw->day_views[d]),
-                                      FALSE);
-    gtk_tree_view_set_enable_search(GTK_TREE_VIEW(lw->day_views[d]),
-                                    FALSE);
-    /* No selection: seven views would each keep their own, leaving up
-     * to seven "selected" rows on screen.  Double-click activation
-     * (and the checkbox) work without one.                                 */
-    gtk_tree_selection_set_mode(
-        gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->day_views[d])),
-        GTK_SELECTION_NONE);
-    g_signal_connect(lw->day_views[d], "row-activated",
-                     G_CALLBACK(on_task_activated), lw);
-
-    GtkCellRenderer *done_cell = gtk_cell_renderer_toggle_new();
-    g_object_set_data(G_OBJECT(done_cell), "task-model",
-                      lw->day_stores[d]);
-    g_signal_connect(done_cell, "toggled",
-                     G_CALLBACK(on_forecast_done_toggled), lw);
-    GtkTreeViewColumn *cdone =
-        gtk_tree_view_column_new_with_attributes("\xe2\x9c\x93",
-            done_cell, "active", TL_DONE, NULL);
-    gtk_tree_view_column_set_cell_data_func(cdone, done_cell,
-                                            forecast_toggle_bg_func,
-                                            NULL, NULL);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->day_views[d]), cdone);
-
-    GtkCellRenderer *desc_cell = gtk_cell_renderer_text_new();
-    g_object_set(desc_cell,
-                 "ypad", 6,
-                 "ellipsize", PANGO_ELLIPSIZE_END,
-                 NULL);
-    GtkTreeViewColumn *cdesc =
-        gtk_tree_view_column_new_with_attributes("Task", desc_cell,
-            "markup", TL_DESC, NULL);
-    gtk_tree_view_column_set_cell_data_func(cdesc, desc_cell,
-                                            task_row_bg_func, NULL, NULL);
-    gtk_tree_view_column_set_expand(cdesc, TRUE);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->day_views[d]), cdesc);
-
-    /* A frame so each day reads as its own list even where the white
-     * rows meet the 6 px gaps.                                             */
-    GtkWidget *frame = gtk_frame_new(NULL);
-    gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_IN);
-    gtk_container_add(GTK_CONTAINER(frame), lw->day_views[d]);
-    gtk_box_pack_start(GTK_BOX(box), frame, FALSE, FALSE, 0);
-    return box;
 }
 
 /* on_paned_position() — track the divider for persistence.  Fires on
@@ -5535,9 +4777,6 @@ task_library_window_new(TaskApp *app)
 {
     TaskLibrary *lw = g_new0(TaskLibrary, 1);
     lw->app = app;
-    /* Before anything reads the registry: the sidebar, the pane builder
-     * and refresh_tasks all walk it.                                       */
-    task_library_views_register(lw);
     /* Seeded here, not left to task_manual_sort_apply at the end of this
      * function: the toolbar icon, tooltip and View-menu check are all built
      * before that call and read the cache.                                 */
@@ -6034,10 +5273,9 @@ task_library_window_new(TaskApp *app)
                                    GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(lw->task_scroll), lw->task_view);
 
-    /* Every panel view builds its pane here (see task_view.h).  The
-     * Weekly Forecast is currently the only one, and the core still owns
-     * its implementation — but it goes through the same interface a
-     * plugin would, so moving it out is relocation, not redesign.         */
+    /* Every panel view builds its pane here (see task_view.h).  The core
+     * implements none of them: the Weekly Forecast, the only one so far,
+     * is a plugin.  What arrives is whatever panel_new returned.          */
     lw->panels = g_ptr_array_new();
     for (guint i = 0; i < task_view_count(); i++) {
         const TaskView *v = task_view_nth(i);

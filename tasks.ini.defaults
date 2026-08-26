@@ -110,3 +110,18 @@ backup_keep=10
 # so it is not seeded here.
 # win_w/win_h — the library window size, written on clean close and
 # restored at launch (980x640 fallback); not meant for hand-editing.
+
+# --- Plugins -----------------------------------------------------------------
+# Folder plugins (.so / .dylib) are loaded from.  Commented out = the
+# default: a "plugins" folder beside the Tasks binary when one exists (a
+# portable or development install), otherwise <data dir>/tasks/plugins —
+# the same folder the database lives in, created on demand.
+#
+# The DEFAULT database folder is used rather than a relocated db_dir on
+# purpose: plugins are compiled code, and that folder is often a sync
+# folder, which would push architecture-specific binaries between
+# machines.  Settable in File -> Settings... -> Plugins.
+#plugin_dir=
+
+# Each plugin found also gets a "<id>_plugin_enabled" key (default 1).
+# Set to 0 and the plugin is never opened at all, not merely hidden.

@@ -56,4 +56,84 @@ void task_plugins_shutdown(TaskApp *app);
 guint              task_plugins_count(void);
 const TaskPlugin  *task_plugins_nth(guint index);
 
+/* ---------------------------------------------------------------------------
+ * What Settings needs to draw the plugin list.
+ *
+ * This covers every module FOUND, not every module loaded — which is the
+ * whole point.  A plugin that is switched off is never opened, and one
+ * that failed its ABI check is not running, yet both must still appear
+ * with a way back: a list that showed only what loaded would make
+ * disabling a plugin the last thing you could ever do to it.
+ *
+ * `name`/`description`/`version` come from the plugin itself when it
+ * loaded, and fall back to the id when it did not — there is nowhere
+ * else to read them from without opening the module, which is exactly
+ * what a disabled plugin must not have done to it.
+ *
+ * `problem` is NULL when all is well, else a short reason ("built for a
+ * different version of Tasks").  Borrowed; valid for the process.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    const gchar *id;
+    const gchar *name;
+    const gchar *description;
+    const gchar *version;
+    gboolean     enabled;            /* the user's setting                 */
+    gboolean     loaded;             /* actually running now               */
+    const gchar *problem;            /* why not, or NULL                   */
+    /* Absolute path of the plugin's README, or NULL when it ships
+     * without one.  Found by CONVENTION — "<id>.README.md" beside the
+     * module — and not declared by the plugin, because it has to be
+     * readable for a plugin that is switched OFF, and a plugin that is
+     * switched off is never opened.  A struct field could not be read
+     * without loading exactly what the user asked not to load.           */
+    const gchar *readme;
+} TaskPluginInfo;
+
+/* The README filename a plugin is looked for under, given its id.        */
+#define TASK_PLUGIN_README_SUFFIX ".README.md"
+
+guint                  task_plugins_available(void);
+const TaskPluginInfo  *task_plugins_info(guint index);
+
+/* task_plugins_set_enabled() — write the enabled setting for `id`.
+ *
+ * Takes effect at the NEXT START, and deliberately so: a plugin may have
+ * registered a GType, a CSS provider or an icon-theme path, none of
+ * which can be undone, so unloading one in place is not something this
+ * app can honestly offer.  The caller is expected to say so.
+ * ------------------------------------------------------------------------- */
+void task_plugins_set_enabled(const gchar *id, gboolean enabled);
+
+/* ---------------------------------------------------------------------------
+ * task_plugins_dir() — the absolute path plugins were loaded from THIS
+ * RUN.  Borrowed string, valid for the process.
+ *
+ * Resolved once, in order:
+ *   1. the "plugin_dir" setting, when set;
+ *   2. a "plugins" folder beside the binary, when one exists (a portable
+ *      install, or a source tree someone just ran `make` in);
+ *   3. "<data dir>/tasks/plugins", beside the DEFAULT database, created
+ *      on demand.
+ *
+ * Step 3 uses the DEFAULT database directory rather than a relocated
+ * `db_dir`, matching task_backup_dir.  The reason is sharper here:
+ * plugins are compiled code, this database routinely lives in a sync
+ * folder, and following it would push architecture-specific shared
+ * objects between machines.
+ * ------------------------------------------------------------------------- */
+const gchar *task_plugins_dir(void);
+
+/* ---------------------------------------------------------------------------
+ * task_plugins_set_dir() — choose the folder for NEXT start.  NULL or ""
+ * restores the default.
+ *
+ * Deliberately does not re-scan: plugins cannot be loaded or unloaded
+ * after startup (a module that has registered a GType cannot be undone),
+ * so a new folder can only take effect on restart.  task_plugins_dir()
+ * keeps reporting where this run actually looked, which is the honest
+ * answer while the old plugins are still running.
+ * ------------------------------------------------------------------------- */
+void task_plugins_set_dir(const gchar *dir);
+
 #endif /* TASK_PLUGIN_LOADER_H */

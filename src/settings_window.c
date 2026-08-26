@@ -6,6 +6,7 @@
 #include "db.h"
 #include "oauth.h"
 #include "gtasks.h"
+#include "plugin_loader.h"
 #include "bnsync.h"
 #include "backup.h"
 #include "library_window.h"
@@ -254,20 +255,6 @@ on_bn_cli_focus_out(GtkWidget *w, GdkEventFocus *event, gpointer data)
     (void)event;
     on_bn_cli_commit(w, data);
     return FALSE;                    /* propagate                           */
-}
-
-/* on_forecast_toggled() — Appearance: show or hide the sidebar's Weekly
- * Forecast view.  The full notify rebuilds the sidebar; a hidden view
- * that was selected falls back to the first list there.                    */
-static void
-on_forecast_toggled(GtkWidget *w, gpointer data)
-{
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
-    task_app_config_set("weekly_forecast", on ? "1" : "0");
-    task_app_notify_changed(sw->app);
 }
 
 /* on_bold_titles_toggled() — Appearance: bold task titles on/off,
@@ -595,6 +582,28 @@ section_label(const gchar *text)
     return label;
 }
 
+/* ---------------------------------------------------------------------------
+ * Contributed sections (see settings_window.h).  Registered once at
+ * startup; never removed.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    TaskSettingsSectionFn fn;
+    gpointer              user_data;
+} Section;
+
+static GSList *sections = NULL;      /* Section*, registration order        */
+
+void
+task_settings_add_section(TaskSettingsSectionFn fn, gpointer user_data)
+{
+    if (fn == NULL)
+        return;
+    Section *s = g_new0(Section, 1);
+    s->fn        = fn;
+    s->user_data = user_data;
+    sections = g_slist_append(sections, s);
+}
+
 /* wrapped_label() — a wrapping, left-aligned explanatory label.            */
 static GtkWidget *
 wrapped_label(const gchar *text)
@@ -604,6 +613,242 @@ wrapped_label(const gchar *text)
     gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
     gtk_widget_set_halign(label, GTK_ALIGN_START);
     return label;
+}
+
+/* The same two, exported so a contributed section looks built-in.        */
+GtkWidget *
+task_settings_section_heading(const gchar *text)
+{
+    return section_label(text);
+}
+
+GtkWidget *
+task_settings_section_note(const gchar *text)
+{
+    return wrapped_label(text);
+}
+
+/* ===========================================================================
+ * The Plugins section.
+ *
+ * Built through task_settings_add_section() like any contributed one —
+ * if the app's own section needed a shortcut, the registry would not be
+ * good enough for a plugin's.
+ * =========================================================================== */
+
+/* on_plugin_toggled() — write the enabled setting and say what it means.
+ *
+ * The change takes effect at the NEXT START, and the message says so
+ * rather than pretending otherwise: a plugin may have registered a
+ * GType, a CSS provider or an icon-theme path, and none of those can be
+ * undone, so unloading one in place is not something this app can
+ * honestly offer.                                                        */
+static void
+on_plugin_toggled(GtkWidget *check, gpointer data)
+{
+    const gchar *id = data;
+    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(check));
+    task_plugins_set_enabled(id, on);
+
+    TaskApp *app = g_object_get_data(G_OBJECT(check), "task-app");
+    task_app_status(app, "%s will be %s the next time Tasks starts",
+                    id, on ? "loaded" : "left unloaded");
+}
+
+/* on_readme_link() — open a plugin's README in whatever the desktop uses
+ * for it.
+ *
+ * GTK's default handler for an <a href> in a label already calls
+ * gtk_show_uri, so this exists for the FAILURE case: on a desktop with
+ * no handler registered for Markdown, the default silently does nothing
+ * and the click reads as a broken link.  Saying so on the status bar is
+ * the difference between "no handler for .md" and "this app is buggy".
+ *
+ * Returning TRUE claims the signal so GTK does not then try again.       */
+static gboolean
+on_readme_link(GtkWidget *label, const gchar *uri, gpointer data)
+{
+    TaskApp *app = data;
+    GError *err = NULL;
+    if (!gtk_show_uri_on_window(
+            GTK_WINDOW(gtk_widget_get_toplevel(label)), uri,
+            GDK_CURRENT_TIME, &err)) {
+        task_app_status(app, "Could not open the README: %s",
+                        err != NULL ? err->message : "no application "
+                        "is set up to open Markdown files");
+        g_clear_error(&err);
+    }
+    return TRUE;
+}
+
+/* on_plugin_dir_choose() — pick the folder plugins are loaded from.
+ *
+ * The label is NOT updated afterwards: it reports where THIS run actually
+ * looked, and that does not change until a restart.  Rewriting it to the
+ * new folder would claim the running plugins came from somewhere they
+ * did not.                                                               */
+static void
+on_plugin_dir_choose(GtkWidget *btn, gpointer data)
+{
+    TaskApp *app = data;
+    GtkWidget *chooser = gtk_file_chooser_dialog_new(
+        "Choose Plugin Folder",
+        GTK_WINDOW(gtk_widget_get_toplevel(btn)),
+        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Select", GTK_RESPONSE_ACCEPT,
+        NULL);
+    gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser),
+                                        task_plugins_dir());
+    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
+        gchar *dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
+        if (dir != NULL) {
+            task_plugins_set_dir(dir);
+            task_app_status(app, "Plugins will load from %s the next time "
+                            "Tasks starts", dir);
+            g_free(dir);
+        }
+    }
+    gtk_widget_destroy(chooser);
+}
+
+/* on_plugin_dir_default() — go back to the standard location.            */
+static void
+on_plugin_dir_default(GtkWidget *btn, gpointer data)
+{
+    (void)btn;
+    TaskApp *app = data;
+    task_plugins_set_dir(NULL);
+    task_app_status(app, "Plugins will load from the default folder the "
+                    "next time Tasks starts");
+}
+
+/* plugins_section() — the list of every plugin FOUND, running or not.    */
+static void
+plugins_section(TaskApp *app, GtkWidget *vbox, GtkWindow *window,
+                gpointer user_data)
+{
+    (void)window;
+    (void)user_data;
+
+    gtk_box_pack_start(GTK_BOX(vbox), section_label("Plugins"),
+                       FALSE, FALSE, 0);
+
+    /* Where they come from and how to add one.  Shown even when none are
+     * installed — that is precisely when someone needs to be told where
+     * to put the first.                                                  */
+    gchar *where = g_strdup_printf(
+        "Plugins are loaded from\n%s\n\nTo add one, copy it into that "
+        "folder and restart Tasks.", task_plugins_dir());
+    gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(where),
+                       FALSE, FALSE, 0);
+    g_free(where);
+
+    GtkWidget *dir_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *choose  = gtk_button_new_with_label(
+        "Choose Folder\xe2\x80\xa6");
+    g_signal_connect(choose, "clicked",
+                     G_CALLBACK(on_plugin_dir_choose), app);
+    gtk_box_pack_start(GTK_BOX(dir_row), choose, FALSE, FALSE, 0);
+
+    GtkWidget *reset = gtk_button_new_with_label("Use Default Folder");
+    gtk_widget_set_tooltip_text(reset,
+        "The plugins folder beside the database, in your home directory");
+    g_signal_connect(reset, "clicked",
+                     G_CALLBACK(on_plugin_dir_default), app);
+    gtk_box_pack_start(GTK_BOX(dir_row), reset, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), dir_row, FALSE, FALSE, 0);
+
+    guint n = task_plugins_available();
+    if (n == 0) {
+        gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
+            "No plugins are installed."), FALSE, FALSE, 0);
+        return;
+    }
+
+    gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
+        "Enabling or Disabling a plugin requires a restart of the "
+        "application."), FALSE, FALSE, 0);
+
+    for (guint i = 0; i < n; i++) {
+        const TaskPluginInfo *pi = task_plugins_info(i);
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+
+        GtkWidget *check = gtk_check_button_new_with_label(
+            pi->name != NULL ? pi->name : pi->id);
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(check), pi->enabled);
+        g_object_set_data(G_OBJECT(check), "task-app", app);
+        /* The id string belongs to the loader and outlives this window,
+         * so the handler can borrow it.                                  */
+        g_signal_connect(check, "toggled",
+                         G_CALLBACK(on_plugin_toggled), (gpointer)pi->id);
+        gtk_box_pack_start(GTK_BOX(row), check, FALSE, FALSE, 0);
+
+        /* One dimmed line under the name: what it does, its version, and
+         * — the part that matters — why it is not running when it should
+         * be.  A plugin that failed silently is a plugin that looks
+         * broken for no reason.                                          */
+        GString *sub = g_string_new(NULL);
+        if (pi->description != NULL)
+            g_string_append(sub, pi->description);
+        if (pi->version != NULL) {
+            if (sub->len > 0)
+                g_string_append(sub, "  ");
+            g_string_append_printf(sub, "v%s", pi->version);
+        }
+        if (pi->problem != NULL) {
+            if (sub->len > 0)
+                g_string_append(sub, "  \xe2\x80\x94  ");
+            g_string_append_printf(sub, "Not loaded: %s", pi->problem);
+        } else if (pi->enabled && !pi->loaded) {
+            if (sub->len > 0)
+                g_string_append(sub, "  \xe2\x80\x94  ");
+            g_string_append(sub, "Will load on restart");
+        }
+        if (sub->len > 0 || pi->readme != NULL) {
+            /* The description is DB- and plugin-sourced text going into
+             * Pango markup, so it is escaped; the link is ours to build.
+             * A bad byte or a stray "&" in a plugin's description would
+             * otherwise make pango_parse_markup reject the whole label
+             * and the row would draw blank.                              */
+            gchar *esc = g_markup_escape_text(sub->str, -1);
+            GString *m = g_string_new("<small><span alpha=\"65%\">");
+            g_string_append(m, esc);
+            if (pi->readme != NULL) {
+                gchar *uri = g_filename_to_uri(pi->readme, NULL, NULL);
+                if (uri != NULL) {
+                    gchar *uesc = g_markup_escape_text(uri, -1);
+                    if (sub->len > 0)
+                        g_string_append(m, "  \xe2\x80\x94  ");
+                    g_string_append_printf(m, "<a href=\"%s\">README</a>",
+                                           uesc);
+                    g_free(uesc);
+                    g_free(uri);
+                }
+            }
+            g_string_append(m, "</span></small>");
+
+            GtkWidget *lbl = gtk_label_new(NULL);
+            gtk_label_set_markup(GTK_LABEL(lbl), m->str);
+            gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+            gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+            gtk_widget_set_margin_start(lbl, 24);
+            g_signal_connect(lbl, "activate-link",
+                             G_CALLBACK(on_readme_link), app);
+            gtk_box_pack_start(GTK_BOX(row), lbl, FALSE, FALSE, 0);
+            g_string_free(m, TRUE);
+            g_free(esc);
+        }
+        g_string_free(sub, TRUE);
+        gtk_box_pack_start(GTK_BOX(vbox), row, FALSE, FALSE, 0);
+    }
+}
+
+/* task_settings_init() — register the app's own contributed sections.    */
+void
+task_settings_init(void)
+{
+    task_settings_add_section(plugins_section, NULL);
 }
 
 /* ---------------------------------------------------------------------------
@@ -708,14 +953,6 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
     g_signal_connect(bold_check, "toggled",
                      G_CALLBACK(on_bold_titles_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), bold_check, FALSE, FALSE, 0);
-
-    GtkWidget *forecast_check = gtk_check_button_new_with_label(
-        "Show the Weekly Forecast view (this week, day by day)");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(forecast_check),
-        task_app_config_get_bool("weekly_forecast", TRUE));
-    g_signal_connect(forecast_check, "toggled",
-                     G_CALLBACK(on_forecast_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), forecast_check, FALSE, FALSE, 0);
 
     GtkWidget *overdue_check = gtk_check_button_new_with_label(
         "Include all past-due tasks in the Due Today view");
@@ -1050,6 +1287,17 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
                      G_CALLBACK(on_sync_toolbar_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), sw->sync_toolbar_check,
                        FALSE, FALSE, 0);
+
+    /* --- Contributed sections ----------------------------------------------- */
+    /* After the app's own, in registration order, each separated from the
+     * last exactly as the built-in sections are.                          */
+    for (GSList *n = sections; n != NULL; n = n->next) {
+        Section *sec = n->data;
+        gtk_box_pack_start(GTK_BOX(vbox),
+                           gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                           FALSE, FALSE, 2);
+        sec->fn(app, vbox, GTK_WINDOW(sw->window), sec->user_data);
+    }
 
     /* --- Load current values ------------------------------------------------ */
     gchar *iv  = task_app_config_get("sync_interval_min");

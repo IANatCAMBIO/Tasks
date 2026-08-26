@@ -19,6 +19,7 @@
 #include "task_worker.h"
 #include "core_views.h"
 #include "plugin_loader.h"
+#include "settings_window.h"
 #include "library_window.h"
 #ifdef HAVE_GTKOSX
 #include <gtkosxapplication.h>
@@ -338,6 +339,12 @@ main(int argc, char **argv)
      * to be in it by then.  Loading after the app's own registrations
      * also means a plugin's view sorts after the built-ins at equal
      * `sort`, which is the expected reading order.                       */
+    /* BEFORE the plugins load: contributed settings sections are built in
+     * registration order, and the Plugins list has to come first so it
+     * reads as a table of contents with each plugin's controls below it.
+     * Registering early is safe because the BUILDER runs when Settings is
+     * opened, by which time everything has been discovered.              */
+    task_settings_init();
     task_plugins_load(app);
     task_plugins_db_open(app, db);
 
@@ -357,6 +364,13 @@ main(int argc, char **argv)
     g_slist_free_full(app->changed_l, g_free);
     g_slist_free_full(app->tasks_l,   g_free);
     g_slist_free_full(app->status_l,  g_free);
+    /* db_closing BEFORE shutdown, and both before the handle goes: a
+     * plugin's last chance to touch its own tables is while the database
+     * is still open.  Without this the switch paths announced a closing
+     * database and the exit path did not, which is the kind of asymmetry
+     * a plugin author would only find by losing a write.                 */
+    if (app->db != NULL)
+        task_plugins_db_closing(app, app->db);
     task_plugins_shutdown(app);
     task_db_close(app->db);
     g_free(app->db_dir);

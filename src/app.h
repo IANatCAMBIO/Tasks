@@ -93,6 +93,9 @@ typedef struct TaskApp {
     gchar           *icons_dir;
     gchar           *db_dir;
     gboolean         db_integrity_check; /* run PRAGMA checks on startup    */
+    gint             pending_fades;      /* row fade-outs in flight; the
+                                          * refresh waits for the last one
+                                          * (see task_rows_toggle_done)     */
 } TaskApp;
 
 /* ---------------------------------------------------------------------------
@@ -258,6 +261,11 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
  *   database   — db_dir (custom directory for tasks.db; absent = default
  *                location), db_integrity_check, backup_enabled,
  *                backup_dir, backup_interval_min, backup_keep
+ *   plugins    — plugin_dir (folder to load plugins from; absent =
+ *                beside the binary if that exists, else
+ *                <data>/tasks/plugins), and one <id>_plugin_enabled per
+ *                plugin found.  A plugin's OWN keys are namespaced by
+ *                its id (see task_app_config_get_ns).
  *   UI         — toolbar_style, bold_task_titles, native_menubar,
  *                show_completed, sidebar_visible, compact_layout,
  *                weekly_forecast, due_today_show_overdue,

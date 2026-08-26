@@ -9,6 +9,7 @@
 #include "bnsync.h"
 #include "backup.h"
 #include "task_worker.h"
+#include "plugin_loader.h"
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
@@ -307,6 +308,9 @@ task_app_switch_database(TaskApp *app, const gchar *new_dir)
         }
     }
 
+    /* Plugins own tables in this database; tell them before it goes so
+     * they can drop anything they cached from it.                         */
+    task_plugins_db_closing(app, app->db);
     task_db_close(app->db);
     app->db = NULL;
 
@@ -377,6 +381,14 @@ task_app_switch_database(TaskApp *app, const gchar *new_dir)
 
     g_free(target);
     g_free(old_path);
+
+    /* ONE call covering both outcomes: on success app->db is the new
+     * database, on failure it is the reopened original, and either way a
+     * plugin has to be given the chance to create its tables in it.
+     * Announcing it at each open site instead is how one of them ends up
+     * forgotten — the same trap the timer re-arm fell into.               */
+    if (app->db != NULL)
+        task_plugins_db_open(app, app->db);
 
     if (ok)
         task_app_notify_changed(app);

@@ -85,6 +85,7 @@ SRCS     := src/main.c \
             src/task_worker.c \
             src/plugin_loader.c \
             src/task_view.c \
+            src/task_rows.c \
             src/core_views.c \
             src/bnotes.c \
             src/bnsync.c \
@@ -135,6 +136,17 @@ endif
 
 PLUGINS := $(patsubst src/plugins/%.c,$(PLUGIN_DIR)/%.$(PLUGIN_EXT),$(PLUGIN_SRCS))
 
+# A plugin's README travels WITH it: the Settings list finds one by the
+# convention "<id>.README.md" beside the module, which is the only way it
+# can be offered for a plugin the user has switched OFF (a disabled
+# plugin is never opened, so nothing inside it can be read).
+PLUGIN_DOCS := $(patsubst src/plugins/%,$(PLUGIN_DIR)/%,\
+                 $(wildcard src/plugins/*.README.md))
+
+$(PLUGIN_DIR)/%.README.md: src/plugins/%.README.md
+	@mkdir -p $(PLUGIN_DIR)
+	cp $< $@
+
 $(PLUGIN_DIR)/%.$(PLUGIN_EXT): src/plugins/%.c $(wildcard src/*.h) Makefile
 	@mkdir -p $(PLUGIN_DIR)
 	$(CC) $(CFLAGS) -fPIC -fvisibility=hidden -Isrc \
@@ -146,7 +158,7 @@ $(PLUGIN_DIR)/%.$(PLUGIN_EXT): src/plugins/%.c $(wildcard src/*.h) Makefile
 
 # Default target: build the application binary (and keep the clangd
 # compilation database fresh — it only regenerates on Makefile changes).
-all: $(BIN) $(PLUGINS) compile_commands.json
+all: $(BIN) $(PLUGINS) $(PLUGIN_DOCS) compile_commands.json
 
 # Link all object files into the final binary.
 $(BIN): $(OBJS)
@@ -181,15 +193,22 @@ compile_commands.json: Makefile VERSION $(wildcard client_credentials.mk)
 	@echo "wrote $@"
 
 # Build only the plugins.
-plugins: $(PLUGINS)
+plugins: $(PLUGINS) $(PLUGIN_DOCS)
 
 # Build and launch the application.
 run: $(BIN)
 	./$(BIN)
 
 # Remove all build artifacts.
+# Removes only what this Makefile BUILT.  Note plugins/ itself is left
+# alone, and only the modules and docs we produced are deleted from it:
+# Settings tells the user to copy third-party plugins into that folder,
+# so `rm -rf` on it would make `make clean` quietly delete something the
+# app had just invited them to put there.
 clean:
-	rm -rf build $(BIN) $(DIST) $(PLUGIN_DIR)
+	rm -rf build $(BIN) $(DIST)
+	rm -rf $(PLUGINS) $(PLUGIN_DOCS) $(addsuffix .dSYM,$(PLUGINS))
+	-rmdir $(PLUGIN_DIR) 2>/dev/null || true
 
 # =============================================================================
 # Optional packaging targets — everything lands in dist/.

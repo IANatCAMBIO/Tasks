@@ -69,6 +69,53 @@ static const TaskView overdue_view = {
 };
 
 /* ---------------------------------------------------------------------------
+ * The plugin's Settings section.
+ *
+ * A plugin configures itself by contributing a section to the Settings
+ * column, exactly as the app's own features do — so a feature keeps its
+ * settings UI whether it is built in or shipped separately.
+ *
+ * The builder runs on EVERY Settings open, against a window that is
+ * destroyed and rebuilt each time, so nothing here is cached and no
+ * widget pointer is kept.  The current value is read from config at build
+ * time for the same reason.
+ * ------------------------------------------------------------------------- */
+static void
+on_show_row_toggled(GtkWidget *check, gpointer data)
+{
+    TaskApp *app = data;
+    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(check));
+    host->config->set(self, "show_row", on ? "1" : "0");
+    /* The sidebar is rebuilt from the view registry and the view's
+     * visible() reads this key, so a full refresh is all it takes for the
+     * row to appear or vanish — no plugin-side bookkeeping.               */
+    host->notify->notify_changed(app);
+}
+
+static void
+overdue_settings(TaskApp *app, GtkWidget *column, GtkWindow *window,
+                 gpointer user_data)
+{
+    (void)window;
+    (void)user_data;
+    gtk_box_pack_start(GTK_BOX(column),
+                       host->settings->heading("Overdue"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(column), host->settings->note(
+        "Lists every task whose due date has passed, gathered from all "
+        "of your lists.  Tasks with no due date never appear."),
+        FALSE, FALSE, 0);
+
+    GtkWidget *check = gtk_check_button_new_with_label(
+        "Show the Overdue view in the sidebar");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(check),
+                                 host->config->get_bool(self, "show_row",
+                                                        TRUE));
+    g_signal_connect(check, "toggled",
+                     G_CALLBACK(on_show_row_toggled), app);
+    gtk_box_pack_start(GTK_BOX(column), check, FALSE, FALSE, 0);
+}
+
+/* ---------------------------------------------------------------------------
  * overdue_init() — registration only.  Anything slower than this belongs
  * on a worker: init() runs before the window is shown.
  * ------------------------------------------------------------------------- */
@@ -78,11 +125,13 @@ overdue_init(TaskApp *app, const TaskPlugin *me)
     (void)app;
     (void)me;
     host->views->register_view(&overdue_view);
+    host->settings->add_section(overdue_settings, NULL);
     return TRUE;
 }
 
 static const TaskPlugin overdue_plugin = {
     .abi_version     = TASK_PLUGIN_ABI_VERSION,
+    .abi_revision    = TASK_PLUGIN_ABI_REVISION,
     .id              = "overdue",
     .name            = "Overdue",
     .description     = "A sidebar view of every task past its due date.",
