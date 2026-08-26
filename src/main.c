@@ -15,6 +15,7 @@
 #include "oauth.h"
 #include "gtasks.h"
 #include "bnsync.h"
+#include "backup.h"
 #include "library_window.h"
 #ifdef HAVE_GTKOSX
 #include <gtkosxapplication.h>
@@ -243,6 +244,10 @@ on_activate(GtkApplication *gtk_app, gpointer data)
     bt_library_window_new(boot->app);
     bt_sync_auto_start(boot->app, boot->db_path);
     bt_bnsync_auto_start(boot->app, boot->db_path);
+    /* Third timer, off unless the user turned backups on.  It carries its
+     * own db path like the other two, so bt_app_switch_database re-arms
+     * all THREE.                                                          */
+    bt_backup_auto_start(boot->app, boot->db_path);
 
     if (boot->app->db_integrity_check && db_ok)
         bt_app_status(boot->app, "DB at %s loaded, integrity check passed",

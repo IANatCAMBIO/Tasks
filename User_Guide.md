@@ -79,6 +79,42 @@ the database schema and the sync engine see [Internals](Internals.md).
 - **Status bar** — the left side describes the current view and
   selection; the right side shows the latest event message (a sync
   result, a save failure), which fades out after a few seconds.
+- **Kanban View** (*View → Kanban View*) — shows whatever you have
+  selected as a board of three lanes, **New**, **In Progress** and
+  **Done**, instead of a list. Each task becomes a card, and each lane
+  is headed by its name and a count.
+  - **Drag a card from one lane to another to change its status.**
+    Dropping a card on *Done* completes the task exactly as ticking its
+    checkbox would, and dropping it back on *In Progress* reopens it.
+  - **Drag a card up or down within a lane to reorder it**, and drag
+    between lanes to land at a particular position rather than just "in
+    that column". While you drag, the lane you are over is tinted and a
+    blue bar shows the exact slot the card will drop into, so you can put
+    something at the very top or bottom of a column deliberately. The
+    order is remembered per view, separately from the list view's
+    *Manual Sort* order — rearranging a board never disturbs a list you
+    have hand-sorted.
+  - The pointer turns into an open hand over a card and closes while you
+    drag it; the card you are carrying follows the pointer as a
+    see-through copy, and the original stays dimmed in place until you
+    drop. Press **Escape** mid-drag to abandon it, changing nothing.
+  - **Double-click a card** to open its editor, the same as
+    double-clicking a row. A single click selects the card, which is
+    what **Delete Task** acts on while the board is up.
+  - The board follows your sidebar selection, so it works for a single
+    list and for the rolled-up views (*All Tasks*, *Favorites*, *Due
+    Today*, *Action Items*) alike. **Weekly Forecast** is the one
+    exception — it keeps its seven-day panel, since a week of dated days
+    is not something three status lanes can express. Leave the forecast
+    and the board comes back.
+  - *Show Completed* still applies: with completed tasks hidden the Done
+    lane is empty. It stays on screen so you can still drag onto it —
+    the card just disappears once it lands, the same as a row does in
+    the list.
+  - The *Manual Sort* toggle governs the LIST view only. The board is
+    always drag-orderable, and keeps its own order — the two never
+    overwrite each other.
+  - The choice persists between launches.
 - **View menu** — *Show Completed* and *Manual Sort* mirror their
   toolbar buttons, *Show Sidebar* mirrors the Sidebar toggle, and
   *Compact Layout* strips the window down to the task list: the whole
@@ -178,6 +214,40 @@ Everything lives in a single SQLite database:
   falling back to `~/.config/tasks/` when that directory is not
   writable; it is seeded from `tasks.ini.defaults` on first launch
   and rewritten by the app as you change things.
+
+### Backups
+
+*Settings → Database* can keep rotating backups of your database. It is
+**off** by default.
+
+Turn on **Back up the database automatically** and the app writes a
+verified copy named `tasks-YYYYMMDD-HHMMSS.db` on your chosen interval,
+keeping only the most recent few. Set the interval to `0` to back up only
+when you press **Back Up Now**.
+
+If you don't choose a folder, backups go to the default database location
+in your home directory (`~/.local/share/tasks`) — so switching it on
+always does something. **Choose Folder…** points them somewhere else.
+
+Three things worth knowing:
+
+- **Point it at a disk independent of wherever your database lives.** If
+  the database is in iCloud Drive (or Dropbox, or a network share) and
+  the backups are too, one mishap can take both. An external drive is the
+  strongest choice; the home-directory default is already independent of
+  a synced database. If the backup folder ends up being the *same* folder
+  as the database, Settings says so — it is still a real, separate,
+  verified file, but it cannot survive losing that folder.
+- **It cannot fill your disk.** The "keeping N files" setting is a hard
+  cap, and old backups are only deleted *after* a new one has been
+  written and verified — so a spell of failing backups can never eat the
+  history you already have.
+- **An idle app writes nothing.** A backup pass whose database has not
+  changed since the last one does nothing at all.
+
+Every backup is a complete, ordinary SQLite database. To restore one,
+quit the app, and either copy it over your `tasks.db` or point *Settings
+→ Database* at a folder containing it renamed to `tasks.db`.
 
 ### Upgrading from Lists (version 3.x)
 

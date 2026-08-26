@@ -62,6 +62,11 @@
 #define BT_APP_DIR            "tasks"
 #define BT_APP_DIR_LEGACY     "lists"
 
+/* The schema version this build writes.  Kept here rather than spelled as
+ * a literal in bt_db_open so the pre-migration backup and the version
+ * stamp cannot drift apart.                                               */
+#define BT_DB_SCHEMA_VERSION 7
+
 /* ---------------------------------------------------------------------------
  * BtDatabase — one open connection.  A connection must not cross threads:
  * the sync worker opens its own on the same path (bt_db_open).
@@ -188,6 +193,33 @@ void bt_db_close(BtDatabase *db);
  * BT_APP_DIR / BT_DB_FILENAME), creating the directory.  Returns a new
  * string (g_free it).                                                       */
 gchar *bt_db_default_path(void);
+
+/* ---------------------------------------------------------------------------
+ * bt_db_verify_file() — is the database at `path` structurally sound?
+ *
+ * Runs PRAGMA integrity_check (and foreign_key_check) on a SEPARATE
+ * read-only connection, so it says nothing about whatever is open
+ * elsewhere.  Returns TRUE only when both actually RAN and both passed;
+ * `detail` (optional, g_free) receives sqlite's own words on failure.
+ *
+ * This exists because "sqlite3_open succeeded" proves nothing: SQLite
+ * opens a malformed file happily and only errors when a damaged page is
+ * READ.  Anything that copies the database must verify the copy this way
+ * before it is trusted — never by opening it.
+ * ------------------------------------------------------------------------- */
+gboolean bt_db_verify_file(const gchar *path, gchar **detail);
+
+/* ---------------------------------------------------------------------------
+ * bt_db_copy_file() — a CONSISTENT copy of the open database at `dest`,
+ * made with VACUUM INTO rather than a byte copy: it runs inside a read
+ * transaction, so it cannot capture a torn page, and it cannot be
+ * confused by a sync daemon rewriting the source mid-read.
+ *
+ * `dest` must not already exist (VACUUM INTO refuses to overwrite) — the
+ * caller removes it first if that is what it means to do.  Returns TRUE
+ * on success; on failure *err (optional, g_free) gets sqlite's message.
+ * ------------------------------------------------------------------------- */
+gboolean bt_db_copy_file(BtDatabase *db, const gchar *dest, gchar **err);
 
 /* ---------------------------------------------------------------------------
  * bt_db_resolve_path() — the database file to open, adopting a pre-4.0

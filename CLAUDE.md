@@ -6,6 +6,27 @@ and one editor window per task.  Two-way Google Tasks sync.  No GNOME
 HeaderBars anywhere — plain `GtkWindow` titlebars, formatted
 `"Tasks - <thing>"`.
 
+## Target platform: LINUX FIRST
+
+**This is a Linux / Debian / XFCE-first application.  macOS is SECONDARY
+support.**  It is developed on a Mac, which makes it easy to get this
+backwards — don't.  What that means in practice:
+
+- Choose the PORTABLE mechanism, and judge it by how it behaves on
+  X11/GTK.  macOS behavior is a compatibility check, never the reason a
+  design is picked.
+- Where a quartz quirk has to be worked around, the workaround must not
+  degrade the X11 path, and it gets a comment saying which platform it
+  is for (`#ifndef GDK_WINDOWING_QUARTZ` around the column-header
+  flattening is the model: it compiles OUT everywhere else, and an X11
+  build on a Mac keeps the standard theme).
+- Several gotchas below are quartz-specific (12, 13, 19).  They are
+  recorded so nobody re-investigates them, NOT because the Mac drives
+  the design.  A fix justified only by "AppKit does X" is the wrong
+  shape — restate it in terms of what is portable.
+- The GTK version, the widget set and the theming assumptions are all
+  stock GTK3, so an XFCE desktop with Adwaita is the reference look.
+
 ## THIS app's renames: Hacienda → Lists → Tasks
 
 Renamed to **Tasks** at version 4.0 (2026-08-25).  Everything a user
@@ -159,8 +180,9 @@ the user).  A logic test harness lives in the session scratchpad
 |---|---|
 | `src/main.c` | GtkApplication entry; config → curl_global_init → db → oauth snapshot → window → auto-sync; icon-theme path for HiDPI expanders |
 | `src/app.[ch]` | Shared `BtApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
+| `src/backup.[ch]` | OPTIONAL rotating db backups: own worker + connection, VACUUM INTO + verify, bounded rotation; off by default |
 | `src/db.[ch]` | SQLite schema (user_version 7) + CRUD; `BtTaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
-| `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, multi-select context menu, status bar |
+| `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, Kanban board, multi-select context menu, status bar |
 | `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); Status dropdown; read-only "From Google" section |
 | `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Notes integration, toolbar style, native menubar |
 | `src/oauth.[ch]` | OAuth 2.0 installed-app flow: PKCE + loopback listener; refresh token in ini; access tokens in memory |
@@ -317,8 +339,10 @@ already-Done task keeps its first stamp.
   Notes-style about dialog (`on_menu_about`: HiDPI logo, compile
   stamp, `bt_db_totals` vitals), shared with File → About Tasks.
   document.png is also the .app bundle icon (Makefile `app` target).
-- View menu: Show Completed, Manual Sort, then Show Sidebar and Compact
-  Layout.  Show Sidebar is the menu twin of the toolbar Sidebar button —
+- View menu: Show Completed, Manual Sort, **Kanban View**, then Show
+  Sidebar and Compact Layout.  The first three are task-PANE modes and
+  sit above the separator; the last two are window chrome.
+  Show Sidebar is the menu twin of the toolbar Sidebar button —
   both route through `sidebar_set_visible` (write-through
   `sidebar_visible` + `sidebar_menu_sync`, which blocks the item's
   handler around its own set_active, like `hide_done_icon_refresh`).
@@ -429,7 +453,10 @@ already-Done task keeps its first stamp.
   (id 0 — checkbox hidden by forecast_toggle_bg_func, activation
   ignored).
   In-list day-section headers and side-by-side day columns were both
-  tried and rejected (2026-07-16) — don't reintroduce.
+  tried and rejected FOR THE FORECAST (2026-07-16) — don't reintroduce
+  them there.  That rejection is about the forecast's seven dated days,
+  not about columns generally: the Kanban board below is deliberately
+  columnar, because three named statuses are what a board is.
   The row exists only while `weekly_forecast`=1 (Settings →
   Appearance; default on).  The Favorites row exists ONLY while
   something is pinned (`bt_db_has_pinned`; mirrored Notes items carry
@@ -540,6 +567,222 @@ already-Done task keeps its first stamp.
   `"gtk-emoji-chooser"` object data).  GTK3 popovers render INSIDE
   their toplevel — the dialog grows to 440×470 while the chooser is
   open and shrinks back on its "closed" signal.
+
+## Kanban board (the THIRD task-pane variant)
+
+`kanban_view` (default 0; View → Kanban View) renders the current view's
+tasks as a board instead of a list.  Built from the Weekly Forecast's
+parts — heading label over a framed body, everything at natural height
+inside ONE outer scroller so the board scrolls as a page — with the
+sections turned through 90°: three side-by-side lanes, homogeneous, in a
+`GTK_POLICY_NEVER` horizontal scroller so the board always fits the pane
+and only ever grows downwards.
+
+- **Lane INDEX IS the `BtTaskStatus` value.**  That is the whole drop
+  rule: a lane carries its status as `"bt-status"` object data, and
+  `on_lane_drop` reads the status straight off the lane the card landed
+  on.  Don't reorder the lanes without reordering the enum.
+- `task_pane_mode_apply` is the SINGLE place that answers "which pane is
+  on screen", called from `refresh_tasks` and again after the
+  construction-time `show_all` (which reveals all three at once).
+  **Weekly Forecast OUTRANKS Kanban** — it is its own panel of seven
+  dated day views, not a task list with a layout, so there is nothing
+  for a board to lay out; leaving the forecast puts the board back.
+- The task COLLECTION in `refresh_tasks` is shared: every view that
+  yields a task list can be shown as a board, list views and virtual
+  views alike.  Only the presentation branches
+  (`refresh_kanban` vs `append_task_rows`).
+- **The drag is HAND-ROLLED — GTK DnD is NOT used on the board.**  The
+  reason is PORTABILITY, not any one platform: a pointer grab plus a
+  popup ghost is plain GDK and behaves the same on X11 and everywhere
+  else, while GTK's DnD delegates to whatever the platform provides and
+  so looks and behaves differently per backend (gotcha 19 records what
+  quartz does with it; gotchas 12 and 13 are more of the same).  Owning
+  the gesture is also the only way to decide what a drag LOOKS like —
+  the cursor, a translucent copy of the card, and a highlighted target
+  lane are all ours.  The manual-sort row drag works the same way, so
+  this is the established shape here.
+- The engine: `on_card_press` ARMS (records the card, its task, the press
+  in ROOT coords and the pointer's offset inside the card) but does not
+  drag — `on_card_motion` starts one only once
+  `gtk_drag_check_threshold` passes, so a click that wobbles a pixel is
+  still a click.  Starting takes a `gdk_seat_grab` whose CURSOR argument
+  is the whole point: it holds over every widget the pointer crosses.
+  `card_drag_stop` is the ONE way out — release, Escape, a broken grab
+  and window teardown all funnel through it, so the grab can never be
+  left held (which would kill the pointer app-wide) and the ghost can
+  never be orphaned.  `on_library_destroy` calls it too.
+- The ghost is a `GTK_WINDOW_POPUP` holding the card drawn into a surface
+  made from the card's OWN window, so it inherits the display scale and
+  stays sharp on HiDPI.  Translucency is a PAINTED alpha
+  (`CARD_GHOST_ALPHA`) on an RGBA visual in the window's own `"draw"`
+  handler, NOT `gtk_widget_set_opacity`: window opacity is a compositor
+  feature that plenty of X11 setups quietly ignore, which is exactly how
+  this shipped opaque the first time.  The window is `app_paintable` and
+  draws nothing else, which is what stops the theme's window background
+  showing as a grey plate around the card.  On a screen with no
+  compositor (`gdk_screen_is_composited` false) the clear-to-transparent
+  would land as BLACK, so the handler paints the card opaque there
+  instead — a solid card that follows the pointer is the honest
+  degradation.
+- The LANDING INDICATOR is two parts, both driven from `card_drag_move`
+  and cleared by `card_drag_stop`: a `.bt-lane-target` tint on the lane
+  says which COLUMN, and a `.bt-card-mark` bar inserted into that lane
+  says which SLOT.  The tint's rule is listed AFTER `.bt-lane` so it wins
+  at equal specificity (both classes sit on the same widget).  The
+  dragged card keeps its place, dimmed with `.bt-card-dragging`, and is
+  NOT hidden — its GdkWindow is the grab window, and unmapping that would
+  break the grab and end the drag on the spot.
+- The marker is rebuilt only when (lane, slot) CHANGES, tracked in
+  `card_mark_lane`/`card_mark_slot`.  It occupies a slot in the lane, so
+  re-inserting it per motion event would shuffle the cards under the
+  pointer continuously; `CARD_MARK_H` is 3 px for the same reason.
+  Rebuilding rather than reparenting avoids ref juggling —
+  `gtk_container_remove` would drop the last reference and destroy the
+  widget being moved.  `refresh_kanban` NULLs the pointer without freeing
+  it, because the rebuild already destroyed it with the rest of the lane
+  (a refresh can land mid-drag: an editor autosave does it).
+- The drop reads its slot from the MARKER, not by re-measuring: the
+  marker is what the user was looking at, and measuring again would
+  answer against a lane whose geometry the marker itself has shifted.
+- **CARD ORDER** lives in ONE config key per view
+  (`kanban_order_<view>`, `kanban_order_key`) holding every card of that
+  view as a comma-separated id list, lane by lane in display order.  One
+  list rather than three because the lanes already filter by status, so
+  the concatenation projects onto each lane correctly — and one key per
+  view is one key for `on_delete_list` to remove.  It is its OWN key
+  family, NOT the manual sort's: a board drag must not silently rearrange
+  a list the user hand-sorted in the list view, and board ordering is
+  always live where manual sort is behind a toggle.
+  `kanban_order_apply` runs in `refresh_kanban` BEFORE the tasks are
+  handed out to lanes.
+- `card_drop_apply` has two independent halves, either of which may be a
+  no-op: the STATUS (only when the lane changed — a real write that
+  stamps `updated_at` and syncs) and the ORDER (local-only config, never
+  touches the row).  A drag that lands the card exactly where it was does
+  NEITHER.  Only a status move posts to the status bar — a reorder is its
+  own feedback, and announcing it would spam "— New" for every nudge.
+- Drops hit-test in ROOT coordinates against `lw->kanban_drops[]`
+  (`card_lane_at_root`), because the pointer spends the drag over other
+  widgets.  The refresh after a drop is `g_idle_add`-DEFERRED: the drop
+  runs inside the dragged card's own handler and `full_refresh` destroys
+  every card including that one, so refreshing inline would return into
+  a freed widget.
+- The lane body is an EVENT BOX wrapping the card box, never the box
+  itself: a GtkBox is a no-window widget, so it has no window origin to
+  hit-test against and no surface to paint the lane tint on.  It is
+  packed `expand=TRUE` so a short lane is still a target all the way
+  down.
+- `on_card_press` returns FALSE for a single click so the press keeps
+  propagating; a double-click opens the editor (cancelling the drag its
+  own first click armed) and returns TRUE.  The click's selection
+  restyle walks the lanes IN PLACE rather than calling a refresh — a
+  refresh here would destroy the very widget the drag is about to start
+  from, and the click would never become one.
+- `lw->kanban_sel` is the board's answer to a tree selection, and
+  `selected_task_ids` returns it while the board is up — that is what
+  keeps Delete Task working from the toolbar, the File menu AND the
+  Compact Layout floating pair without any of those knowing which pane
+  is showing.  It is cleared when the card's task disappears, and on
+  every Kanban toggle (the two panes track selection differently).
+- The floating New/Delete pair keeps working for free: the overlay wraps
+  the PANED and `kanban_box` is just another child of the task pane
+  inside it.
+- `show_completed` applies as it does everywhere else, so with completed
+  hidden the Done lane simply empties.  The lane stays on screen as a
+  drop target, so dragging a task there still completes it — the card
+  vanishing afterwards is the same behavior as the list's fade-out.
+- The MANUAL SORT toggle governs the list view only: the board is always
+  drag-orderable (see CARD ORDER below), and
+  `task_view_apply_manual_order` walks `task_store`, which the board
+  deliberately leaves empty (a selection left there would feed Delete
+  Task).  The two orders are separate keys and never overwrite each
+  other.
+- A same-lane drop is a NO-OP by design — every status write stamps
+  `updated_at`, so letting it through would buy a sync round trip for a
+  drag that changed nothing.
+- **Corners are SQUARE**, matching the forecast's framed day sections (a
+  plain `GTK_SHADOW_IN` GtkFrame, which has no radius).  Rounded lanes
+  and cards were the first cut and were rejected (2026-08-25): a rounded
+  tint inside a square frame reads as a mistake, and rounded cards made
+  the board the odd view out.  No `border-radius` in the board's CSS is
+  deliberate — don't add one back.
+- Inner spacing is WIDGET MARGINS on the child (`pad_widget`, CARD_PAD 8
+  / LANE_PAD 6), not CSS `padding` and not `border_width` — see gotcha
+  18.  The card still paints its background and border at its own edge.
+- Cursors: an open hand (`"grab"`) over a card, a closed one
+  (`"grabbing"`) while dragging.  Both are made ONCE and cached on
+  `lw->card_grab` / `card_grabbing` (`card_cursor`), like the task view's
+  `drag_cursor` — a card is realized per refresh, so building one per
+  card would allocate on every rebuild.  The hover cursor goes on the
+  card's own GdkWindow from its `"realize"` handler rather than being
+  tracked with enter/leave, so hovering costs nothing per motion event.
+  The CLOSED hand is set THREE ways at drag start — the `gdk_seat_grab`
+  cursor argument (the portable lever, and what X11 honors), plus the
+  card's and the toplevel's window cursors, because some backends apply
+  the cursor of the window under the pointer instead.  All three cost
+  nothing and leave no backend showing an arrow mid-drag;
+  `card_drag_stop` puts them all back.  `gdk_cursor_new_from_name`
+  answers NULL for a name a display cannot supply, and the code then
+  falls back to the window default rather than a guessed stock cursor.
+- The board's CSS is installed ONCE for the screen
+  (`kanban_css_install`, `.bt-lane` / `.bt-card` / `.bt-card-selected`),
+  not per widget like `themed_bg_css_apply`: there would otherwise be one
+  provider per card, and every color is a NAMED theme color, so GTK
+  re-resolves them itself on a light/dark switch.  That staleness problem
+  only exists in the per-widget helper because it bakes a resolved
+  literal into its CSS from C.
+
+## Data safety (read this before touching the database file)
+
+A 1965-task production database was destroyed on 2026-08-26.  These rules
+are the post-mortem; none of them is optional.
+
+- **"It opened" is NOT "it is intact."**  SQLite opens a malformed file
+  happily and errors only when a damaged page is READ.  Anything that
+  copies, moves or migrates the database must check with
+  `bt_db_verify_file` (integrity_check + foreign_key_check on its own
+  read-only connection, BOTH exec return codes honored) — never by
+  opening it.  That mistake is precisely what turned a bad copy into
+  data loss: `switch_database` discarded `copy_file`'s return value,
+  treated a successful `bt_db_open` as proof, and deleted the original.
+- **Copy with `bt_db_copy_file` (VACUUM INTO), never a byte copy.**  It
+  runs in a read transaction, so it cannot capture a torn page.  The old
+  `copy_file` helper in app.c was DELETED; a comment stands in its place
+  so it does not come back.
+- **COPY → VERIFY → and only then delete anything.**  In that order, with
+  the delete conditional on the verify.  A copy that fails verification
+  is left in place and reported, and the original is kept.
+- **A migration backs the file up FIRST.**  `bt_db_open` writes
+  `<db>.pre-v<N>.bak` via VACUUM INTO before running any migration, one
+  per from-version, never overwritten.  `ALTER TABLE … DROP COLUMN` (v7)
+  rewrites the whole tasks table; doing that to someone's only copy with
+  no backup is how this happened.
+- **The database routinely lives in a SYNC FOLDER** (iCloud Drive is the
+  user's normal setup).  Assume the file can be replaced, evicted or
+  re-generated underneath an open connection.  That is not a hypothetical
+  — it is the standing operating environment, so partial copies and
+  surprise generations are REALISTIC failures to design against.
+- **`bt_app_switch_database` re-arms ALL THREE timers** (sync, Notes
+  mirror, backup) on the new path.  Each captured the old path when
+  installed, and that file has just been deleted — left alone the workers
+  would open a nonexistent path and CREATE an empty database there.  This
+  doc claimed it happened long before the code did; it does now.
+- The optional rotating backup (`backup.[ch]`, off by default) is the
+  independent-copy safety net: own worker + connection, VACUUM INTO,
+  verify, and prune ONLY after a new backup verifies — so a run of
+  failures cannot erode good history.  It matches only its own
+  `tasks-*.db` filenames when pruning (so anything else in the folder is
+  safe, and the live `tasks.db` is not a candidate — `tasks.` is not
+  `tasks-`), and is bounded by `backup_keep`.
+  `bt_backup_dir` is the single answer to "where": `backup_dir` when set,
+  else the DEFAULT DATABASE DIRECTORY under the home dir, created on
+  demand — so there is no enabled-but-inert state, and Settings displays
+  that same resolved value so the label cannot promise a folder the
+  worker does not use.  A pass whose source is unchanged writes nothing;
+  the stamp (`sync_state.backup_source_stamp`) includes the DESTINATION,
+  because otherwise choosing a new folder would leave it empty until the
+  database happened to change and the feature would look broken.
 
 ## Sync architecture (Google Tasks)
 
@@ -771,3 +1014,44 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
     The socket was `records.sock` before the 2026-08-11 rename, so a GUI
     started before it still owns the OLD path and answers nothing on the
     new one — restart that GUI rather than debugging the CLI.
+18. A visible-window `GtkEventBox` honors NEITHER CSS `padding` NOR
+    `gtk_container_set_border_width` for its own size: it comes out
+    exactly as big as its child, with the content hard against the
+    border its CSS just drew.  Both were tried on the Kanban cards and
+    both silently did nothing — measured 214x15 around a 15 px label.
+    Use WIDGET MARGINS on the CHILD (`pad_widget`); GTK folds those into
+    the preferred size everywhere, so the parent grows by them while its
+    background and border still paint at its own edge.  Note this is the
+    OPPOSITE lever from gotcha 6, where the status bar needed margins
+    because `border_width` pads every edge — here the widget ignores it
+    outright.  If a padding looks like it did nothing, MEASURE
+    (`gtk_widget_get_allocation` on the parent and the child) rather
+    than nudging the number: a value that is being ignored looks exactly
+    like a value that is too small.
+19. GTK's drag-and-drop DELEGATES to the platform, so what a drag looks
+    like is not yours to decide through it.  On quartz specifically it
+    becomes an AppKit `NSDraggingSession`, which owns the cursor for the
+    duration (arrow-with-green-plus badge) and ignores
+    `gdk_window_set_cursor` anywhere, including from `"drag-begin"`.
+    When a drag has to LOOK a particular way — the Kanban board wants a
+    closed-hand cursor, a translucent copy of the card, and a highlighted
+    target — own the gesture instead of delegating: arm on press, start
+    past `gtk_drag_check_threshold`, `gdk_seat_grab` with the cursor you
+    want, follow the pointer with a `GTK_WINDOW_POPUP` ghost, hit-test in
+    root coordinates on release.  That is plain GDK and behaves the same
+    on X11, which is the point — the manual-sort row drag already worked
+    this way.  Two traps inside it: set the drag cursor on the GRAB *and*
+    on the card and toplevel windows (backends disagree about which
+    wins), and funnel EVERY exit (release, Escape, grab-broken, window
+    teardown) through one stop function — a grab left held kills the
+    pointer for the whole app, not just this window.
+20. `gtk_widget_set_opacity` on a toplevel is a COMPOSITOR feature and is
+    quietly ignored where none is running (and on some backends' popups),
+    so a "translucent" window can ship fully opaque with no warning.  For
+    a window that must be see-through, paint the alpha yourself: set an
+    RGBA visual from `gdk_screen_get_rgba_visual`, make the window
+    `app_paintable` (otherwise the theme's own background draws as a grey
+    plate around your content), and in `"draw"` clear to transparent with
+    `CAIRO_OPERATOR_SOURCE` before `cairo_paint_with_alpha`.  Guard the
+    clear on `gdk_screen_is_composited` — without a compositor it lands
+    as BLACK, so paint opaque there instead.

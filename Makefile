@@ -83,6 +83,7 @@ SRCS     := src/main.c \
             src/bnotes.c \
             src/bnsync.c \
             src/db.c \
+            src/backup.c \
             src/json.c \
             src/http.c \
             src/oauth.c \

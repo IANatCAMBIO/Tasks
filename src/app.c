@@ -5,6 +5,9 @@
 #include "app.h"
 #include "db.h"
 #include "editor_window.h"
+#include "gtasks.h"
+#include "bnsync.h"
+#include "backup.h"
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
@@ -98,21 +101,12 @@ bt_app_widget_add_css(GtkWidget *widget, const gchar *css_text)
     g_object_unref(provider);
 }
 
-/* ---------------------------------------------------------------------------
- * copy_file() — overwrite-copy src to dest via GIO.
- * ------------------------------------------------------------------------- */
-static gboolean
-copy_file(const gchar *src, const gchar *dest)
-{
-    GFile    *fsrc  = g_file_new_for_path(src);
-    GFile    *fdest = g_file_new_for_path(dest);
-    gboolean  ok    = g_file_copy(fsrc, fdest,
-                                  G_FILE_COPY_OVERWRITE,
-                                  NULL, NULL, NULL, NULL);
-    g_object_unref(fsrc);
-    g_object_unref(fdest);
-    return ok;
-}
+/* The old copy_file() (a plain g_file_copy) was REMOVED on 2026-08-26.
+ * Database copies go through bt_db_copy_file (VACUUM INTO) instead: a
+ * byte copy of a live SQLite file can capture a torn page, and this
+ * database routinely lives in a sync folder where the source can be
+ * rewritten mid-read.  If you need to copy the database, use the db.h
+ * helper and VERIFY the result with bt_db_verify_file.                    */
 
 /* ---------------------------------------------------------------------------
  * bt_app_switch_database() — move tasks.db to a new directory (see app.h).
@@ -164,33 +158,92 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
     bt_editor_close_all(app);
 
     gchar *old_path = g_strdup(app->db->path);
+
+    /* ---------------------------------------------------------------------
+     * COPY, THEN VERIFY, THEN — and only then — remove the original.
+     *
+     * This function used to discard copy_file's return value and treat
+     * "bt_db_open(target) succeeded" as proof the copy was good.  It is
+     * not: SQLite opens a malformed file happily and errors only when a
+     * damaged page is READ.  A short copy therefore passed both checks and
+     * the original was deleted — which is how a 1965-task database was
+     * reduced to a 14-page fragment on 2026-08-26.  This database
+     * routinely lives in a sync folder, so a partial copy is a REALISTIC
+     * outcome, not a theoretical one.
+     *
+     * The copy itself is now VACUUM INTO on the still-open connection
+     * (transactionally consistent, cannot capture a torn page) rather
+     * than a byte-for-byte file copy, and the result is checked with
+     * integrity_check on its own connection before anything is deleted.
+     * ------------------------------------------------------------------- */
+    gboolean copied = FALSE;         /* we wrote `target` ourselves         */
+    gboolean copy_ok = TRUE;         /* ... and it verified                 */
+    gchar   *copy_err = NULL;
+    if (g_file_test(old_path, G_FILE_TEST_EXISTS) &&
+        (overwrite || !g_file_test(target, G_FILE_TEST_EXISTS))) {
+        /* VACUUM INTO refuses to overwrite, so clear the way first — only
+         * ever when the user explicitly chose to overwrite.                */
+        if (g_file_test(target, G_FILE_TEST_EXISTS))
+            g_unlink(target);
+        copy_ok = bt_db_copy_file(app->db, target, &copy_err);
+        copied  = TRUE;
+        if (copy_ok) {
+            gchar *detail = NULL;
+            copy_ok = bt_db_verify_file(target, &detail);
+            if (!copy_ok) {
+                g_free(copy_err);
+                copy_err = detail;   /* ownership moves                     */
+            } else {
+                g_free(detail);
+            }
+        }
+    }
+
     bt_db_close(app->db);
     app->db = NULL;
 
-    if (g_file_test(old_path, G_FILE_TEST_EXISTS)) {
-        if (overwrite || !g_file_test(target, G_FILE_TEST_EXISTS))
-            copy_file(old_path, target);
+    GError *gerr = NULL;
+    /* A copy that did not verify means the target is NOT the user's data.
+     * Leave it where it is for inspection, keep the original, and say so —
+     * silently continuing is what turned this into data loss before.       */
+    gboolean ok = copy_ok;
+    if (ok) {
+        app->db = bt_db_open(target, &gerr);
+        ok = (app->db != NULL);
     }
 
-    GError *gerr = NULL;
-    app->db = bt_db_open(target, &gerr);
-    gboolean ok = (app->db != NULL);
-
     if (!ok) {
-        g_warning("switch_database: cannot open %s: %s", target,
-                  gerr != NULL ? gerr->message : "?");
+        if (copied && !copy_ok) {
+            g_warning("switch_database: the copy at %s did not verify (%s) "
+                      "— keeping %s", target,
+                      copy_err != NULL ? copy_err : "?", old_path);
+            bt_app_notice(app->library_window != NULL
+                              ? GTK_WINDOW(app->library_window) : NULL,
+                          GTK_MESSAGE_ERROR, NULL,
+                          "The database could not be copied to that "
+                          "location intact, so nothing was moved.\n\n"
+                          "Your database is still where it was:\n%s\n\n"
+                          "The failed copy was left at\n%s\n"
+                          "for you to inspect or delete.",
+                          old_path, target);
+        } else {
+            g_warning("switch_database: cannot open %s: %s", target,
+                      gerr != NULL ? gerr->message : "?");
+            bt_app_notice(app->library_window != NULL
+                              ? GTK_WINDOW(app->library_window) : NULL,
+                          GTK_MESSAGE_ERROR, NULL,
+                          "Could not open a database at that location.\n"
+                          "The previous database is still in use.");
+        }
         g_clear_error(&gerr);
-        bt_app_notice(app->library_window != NULL
-                          ? GTK_WINDOW(app->library_window) : NULL,
-                      GTK_MESSAGE_ERROR, NULL,
-                      "Could not open a database at that location.\n"
-                      "The previous database is still in use.");
         app->db = bt_db_open(old_path, &gerr);
         if (app->db == NULL)
             g_critical("switch_database: cannot revert to %s: %s", old_path,
                        gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
     } else {
+        /* Only now is the original expendable: the target exists, was
+         * written from a consistent read, and passed integrity_check.      */
         if (g_file_test(old_path, G_FILE_TEST_EXISTS)) {
             GFile *fold = g_file_new_for_path(old_path);
             if (!g_file_delete(fold, NULL, NULL))
@@ -200,7 +253,18 @@ bt_app_switch_database(BtApp *app, const gchar *new_dir)
         g_free(app->db_dir);
         app->db_dir = g_strdup(new_dir);
         bt_app_config_set("db_dir", new_dir);  /* NULL clears the key        */
+
+        /* RE-ARM ALL THREE TIMERS on the new path.  Each one captured the
+         * old path when it was installed, and that file has just been
+         * deleted — left alone, the sync and Notes workers would open a
+         * path that no longer exists and helpfully CREATE an empty
+         * database there, then sync against it.  (CLAUDE.md long claimed
+         * this happened; it did not until 2026-08-26.)                     */
+        bt_sync_auto_start(app, app->db->path);
+        bt_bnsync_auto_start(app, app->db->path);
+        bt_backup_auto_start(app, app->db->path);
     }
+    g_free(copy_err);
 
     g_free(target);
     g_free(old_path);

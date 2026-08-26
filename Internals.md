@@ -11,8 +11,9 @@ and the sync engine. For everyday use see the
 |----------------------------|----------------------------------------------------|
 | `src/main.c`               | GtkApplication entry point; config, database and OAuth init, auto-sync timer |
 | `src/app.[ch]`             | Shared `BtApp` context: ini config, dialogs, toolbar styles, icon loading, date helpers |
+| `src/backup.[ch]`          | Optional rotating database backups: worker thread, VACUUM INTO + verify, bounded rotation |
 | `src/db.[ch]`              | SQLite layer: lists, tasks, subtasks, attachments; tombstones and `updated_at` for sync |
-| `src/library_window.[ch]`  | Sidebar (virtual views, list groups), tall task rows, toolbar, Compact Layout + floating button bar, Weekly Forecast panel, context menus, status bar |
+| `src/library_window.[ch]`  | Sidebar (virtual views, list groups), tall task rows, toolbar, Compact Layout + floating button bar, Weekly Forecast panel, Kanban board, context menus, status bar |
 | `src/editor_window.[ch]`   | Per-task editor; debounced write-through saves; Advanced fold for Subtasks/Attachments |
 | `src/settings_window.[ch]` | The Settings window                                |
 | `src/oauth.[ch]`           | OAuth 2.0 installed-app flow: PKCE, loopback redirect |

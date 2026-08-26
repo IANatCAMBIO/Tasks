@@ -7,6 +7,7 @@
 #include "oauth.h"
 #include "gtasks.h"
 #include "bnsync.h"
+#include "backup.h"
 #include "library_window.h"
 #include <string.h>
 
@@ -346,7 +347,60 @@ typedef struct {
     GtkWidget *check;                /* "custom folder" checkbox             */
     GtkWidget *choose_btn;           /* "Choose Folder…" (sensitive = custom)*/
     GtkWidget *path_label;           /* shows the active db file path        */
+    /* Rotating backups (backup.h) — off by default.                        */
+    GtkWidget *bk_check;             /* master switch                        */
+    GtkWidget *bk_choose_btn;        /* destination folder chooser           */
+    GtkWidget *bk_path_label;        /* the chosen folder, or a prompt       */
+    GtkWidget *bk_interval_spin;     /* minutes; 0 = manual only             */
+    GtkWidget *bk_keep_spin;         /* how many to retain                   */
+    GtkWidget *bk_now_btn;           /* "Back Up Now"                        */
 } DbSection;
+
+/* ---------------------------------------------------------------------------
+ * bk_section_refresh() — mirror the backup settings into the widgets and
+ * grey out everything the master switch does not apply to.
+ *
+ * The destination label carries the honest state: an enabled backup with
+ * no folder chosen does nothing, and saying so here is what keeps that
+ * from looking like a feature that silently failed.
+ * ------------------------------------------------------------------------- */
+static void
+bk_section_refresh(DbSection *s)
+{
+    gboolean on = bt_app_config_get_bool("backup_enabled", FALSE);
+    gtk_widget_set_sensitive(s->bk_choose_btn,    on);
+    gtk_widget_set_sensitive(s->bk_interval_spin, on);
+    gtk_widget_set_sensitive(s->bk_keep_spin,     on);
+    gtk_widget_set_sensitive(s->bk_now_btn,       on);
+
+    /* Always the RESOLVED destination, from the same call the worker uses,
+     * so the label cannot promise a folder the backups do not go to.  With
+     * no folder chosen that is the default database location under the
+     * home directory, and the label says which case it is.                */
+    gchar *dir      = bt_backup_dir();
+    gchar *chosen   = bt_app_config_get("backup_dir");
+    gboolean picked = (chosen != NULL && *chosen != '\0');
+    g_free(chosen);
+    gchar *db_dir = g_path_get_dirname(s->app->db->path);
+    gchar *markup;
+    if (g_strcmp0(dir, db_dir) == 0)
+        /* Same folder as the live database: still a real backup (a
+         * separate, verified file), but it cannot survive losing that
+         * folder — say so instead of implying independence.               */
+        markup = g_markup_printf_escaped(
+            "<small>Backups: %s\n<i>\xe2\x9a\xa0 the same folder as the "
+            "database \xe2\x80\x94 choose another to survive losing "
+            "it</i></small>", dir);
+    else if (picked)
+        markup = g_markup_printf_escaped("<small>Backups: %s</small>", dir);
+    else
+        markup = g_markup_printf_escaped(
+            "<small>Backups: %s <i>(default)</i></small>", dir);
+    gtk_label_set_markup(GTK_LABEL(s->bk_path_label), markup);
+    g_free(markup);
+    g_free(db_dir);
+    g_free(dir);
+}
 
 /* db_section_refresh() — sync the widgets with the current app state.       */
 static void
@@ -372,6 +426,91 @@ db_switch_report(DbSection *s, const gchar *new_dir)
                                  s->app->db_dir != NULL);
     g_signal_handlers_unblock_by_func(s->check, on_db_custom_toggled, s);
     db_section_refresh(s);
+}
+
+/* bk_pick_folder() — folder chooser for the BACKUP destination.  Starts at
+ * the current choice when there is one.  Returns a new path, or NULL.      */
+static gchar *
+bk_pick_folder(DbSection *s)
+{
+    GtkWidget *chooser = gtk_file_chooser_dialog_new(
+        "Choose Backup Folder",
+        GTK_WINDOW(gtk_widget_get_toplevel(s->bk_check)),
+        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Select", GTK_RESPONSE_ACCEPT,
+        NULL);
+    gchar *cur = bt_app_config_get("backup_dir");
+    if (cur != NULL && *cur != '\0')
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), cur);
+    g_free(cur);
+    gchar *dir = NULL;
+    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
+        dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
+    gtk_widget_destroy(chooser);
+    return dir;
+}
+
+/* on_bk_toggled() — the backup master switch: persist, re-arm the timer,
+ * and prompt for a folder the first time it is switched on with none set
+ * (enabling a backup that cannot run is not a useful state to leave in).   */
+static void
+on_bk_toggled(GtkToggleButton *check, gpointer user_data)
+{
+    DbSection *s = user_data;
+    gboolean on = gtk_toggle_button_get_active(check);
+    bt_app_config_set("backup_enabled", on ? "1" : "0");
+    /* No folder prompt: bt_backup_dir falls back to the default database
+     * location, so switching this on always does something.  Choosing a
+     * folder is an improvement, not a prerequisite.                       */
+    bt_backup_auto_start(s->app, s->app->db->path);
+    bk_section_refresh(s);
+}
+
+/* on_bk_choose_clicked() — re-pick the destination folder.                  */
+static void
+on_bk_choose_clicked(GtkButton *btn, gpointer user_data)
+{
+    (void)btn;
+    DbSection *s = user_data;
+    gchar *dir = bk_pick_folder(s);
+    if (dir != NULL) {
+        bt_app_config_set("backup_dir", dir);
+        g_free(dir);
+        bt_backup_auto_start(s->app, s->app->db->path);
+        bk_section_refresh(s);
+    }
+}
+
+/* on_bk_interval_changed() / on_bk_keep_changed() — persist and re-arm.     */
+static void
+on_bk_interval_changed(GtkSpinButton *spin, gpointer user_data)
+{
+    DbSection *s = user_data;
+    gchar *v = g_strdup_printf("%d", gtk_spin_button_get_value_as_int(spin));
+    bt_app_config_set("backup_interval_min", v);
+    g_free(v);
+    bt_backup_auto_start(s->app, s->app->db->path);
+}
+
+static void
+on_bk_keep_changed(GtkSpinButton *spin, gpointer user_data)
+{
+    (void)user_data;
+    gchar *v = g_strdup_printf("%d", gtk_spin_button_get_value_as_int(spin));
+    bt_app_config_set("backup_keep", v);
+    g_free(v);
+}
+
+/* on_bk_now_clicked() — "Back Up Now": one pass, reported in the status
+ * bar.  Also the only way to exercise the feature without waiting for a
+ * timer, which is why it is worth a button.                                */
+static void
+on_bk_now_clicked(GtkButton *btn, gpointer user_data)
+{
+    (void)btn;
+    DbSection *s = user_data;
+    bt_backup_start(s->app, s->app->db->path, NULL, NULL);
 }
 
 /* db_pick_folder() — run a folder-chooser dialog; returns new path or NULL. */
@@ -664,6 +803,83 @@ bt_settings_window_open(BtApp *app, GtkWindow *parent,
                      G_CALLBACK(on_db_custom_toggled), dbs);
     g_signal_connect(dbs->choose_btn, "clicked",
                      G_CALLBACK(on_db_choose_clicked), dbs);
+
+    /* --- Rotating backups (off by default) -------------------------------- */
+    dbs->bk_check = gtk_check_button_new_with_label(
+        "Back up the database automatically");
+    gtk_widget_set_margin_start(dbs->bk_check, 12);
+    gtk_widget_set_margin_top(dbs->bk_check, 6);
+    gtk_widget_set_tooltip_text(dbs->bk_check,
+        "Writes a verified copy of the database into a folder of your "
+        "choice on a timer, keeping only the most recent few.  Worth "
+        "pointing at a disk INDEPENDENT of wherever the database itself "
+        "lives, so one mishap cannot take both.");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dbs->bk_check),
+        bt_app_config_get_bool("backup_enabled", FALSE));
+    gtk_box_pack_start(GTK_BOX(vbox), dbs->bk_check, FALSE, FALSE, 0);
+
+    GtkWidget *bk_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_start(bk_row, 12);
+    dbs->bk_choose_btn = gtk_button_new_with_label(
+        "Choose Folder\xe2\x80\xa6");
+    gtk_box_pack_start(GTK_BOX(bk_row), dbs->bk_choose_btn,
+                       FALSE, FALSE, 0);
+    dbs->bk_now_btn = gtk_button_new_with_label("Back Up Now");
+    gtk_box_pack_start(GTK_BOX(bk_row), dbs->bk_now_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), bk_row, FALSE, FALSE, 0);
+
+    dbs->bk_path_label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(dbs->bk_path_label), 0.0);
+    gtk_label_set_line_wrap(GTK_LABEL(dbs->bk_path_label), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(dbs->bk_path_label), 40);
+    gtk_widget_set_margin_start(dbs->bk_path_label, 12);
+    gtk_box_pack_start(GTK_BOX(vbox), dbs->bk_path_label, FALSE, FALSE, 0);
+
+    /* Interval and retention.  The retention cap is the "don't fill the
+     * disk" guarantee, so it is a spin button with a hard floor of 1 —
+     * a rotation that keeps nothing is not a rotation.                     */
+    GtkWidget *bk_opts = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_start(bk_opts, 12);
+    gtk_box_pack_start(GTK_BOX(bk_opts), gtk_label_new("Every"),
+                       FALSE, FALSE, 0);
+    dbs->bk_interval_spin = gtk_spin_button_new_with_range(0, 10080, 15);
+    gtk_widget_set_tooltip_text(dbs->bk_interval_spin,
+        "Minutes between backups.  0 backs up only when you press "
+        "Back Up Now.  A pass whose database has not changed since the "
+        "last backup writes nothing.");
+    gchar *bkiv = bt_app_config_get("backup_interval_min");
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(dbs->bk_interval_spin),
+        bkiv != NULL ? atoi(bkiv) : BT_BACKUP_INTERVAL_DEFAULT);
+    g_free(bkiv);
+    gtk_box_pack_start(GTK_BOX(bk_opts), dbs->bk_interval_spin,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bk_opts), gtk_label_new("minutes, keeping"),
+                       FALSE, FALSE, 0);
+    dbs->bk_keep_spin = gtk_spin_button_new_with_range(1, 500, 1);
+    gtk_widget_set_tooltip_text(dbs->bk_keep_spin,
+        "How many backup files to retain.  The oldest are removed once a "
+        "NEW backup has been verified, never before.");
+    gchar *bkkeep = bt_app_config_get("backup_keep");
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(dbs->bk_keep_spin),
+        bkkeep != NULL ? atoi(bkkeep) : BT_BACKUP_KEEP_DEFAULT);
+    g_free(bkkeep);
+    gtk_box_pack_start(GTK_BOX(bk_opts), dbs->bk_keep_spin,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bk_opts), gtk_label_new("files"),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), bk_opts, FALSE, FALSE, 0);
+
+    bk_section_refresh(dbs);
+    g_signal_connect(dbs->bk_check, "toggled",
+                     G_CALLBACK(on_bk_toggled), dbs);
+    g_signal_connect(dbs->bk_choose_btn, "clicked",
+                     G_CALLBACK(on_bk_choose_clicked), dbs);
+    g_signal_connect(dbs->bk_interval_spin, "value-changed",
+                     G_CALLBACK(on_bk_interval_changed), dbs);
+    g_signal_connect(dbs->bk_keep_spin, "value-changed",
+                     G_CALLBACK(on_bk_keep_changed), dbs);
+    g_signal_connect(dbs->bk_now_btn, "clicked",
+                     G_CALLBACK(on_bk_now_clicked), dbs);
 
     GtkWidget *integrity_check = gtk_check_button_new_with_label(
         "Check database integrity on startup (PRAGMA integrity_check)");

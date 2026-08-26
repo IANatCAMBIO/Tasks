@@ -265,6 +265,92 @@ bt_db_resolve_path(const gchar *dir)
 }
 
 /* ---------------------------------------------------------------------------
+ * bt_db_verify_file() — integrity_check + foreign_key_check on a separate
+ * read-only connection (see db.h).
+ *
+ * Both exec return codes are load-bearing, the same rule
+ * startup_integrity_check follows: a PRAGMA that never RAN collects no
+ * rows, which is indistinguishable from a clean result if you only look
+ * at the collector.  Reporting "verified" when nothing was checked is the
+ * one answer this function must never give — it is what a caller is about
+ * to delete the original on.
+ * ------------------------------------------------------------------------- */
+static int
+verify_collect(void *data, int argc, char **argv, char **cols)
+{
+    (void)cols;
+    GString *out = data;
+    for (int i = 0; i < argc; i++)
+        if (argv[i] != NULL && g_strcmp0(argv[i], "ok") != 0) {
+            if (out->len > 0)
+                g_string_append_c(out, '\n');
+            g_string_append(out, argv[i]);
+        }
+    return 0;
+}
+
+gboolean
+bt_db_verify_file(const gchar *path, gchar **detail)
+{
+    if (detail != NULL)
+        *detail = NULL;
+    gchar   *uri = g_strdup_printf("file:%s?mode=ro", path);
+    sqlite3 *sq  = NULL;
+    if (sqlite3_open_v2(uri, &sq, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
+                        NULL) != SQLITE_OK) {
+        if (detail != NULL)
+            *detail = g_strdup_printf("cannot open %s: %s", path,
+                sq != NULL ? sqlite3_errmsg(sq) : "?");
+        sqlite3_close(sq);
+        g_free(uri);
+        return FALSE;
+    }
+    g_free(uri);
+
+    GString *bad = g_string_new(NULL);
+    gboolean ran = TRUE;
+    gchar   *msg = NULL;
+    if (sqlite3_exec(sq, "PRAGMA integrity_check", verify_collect, bad,
+                     &msg) != SQLITE_OK) {
+        ran = FALSE;
+        g_string_append_printf(bad, "integrity_check did not run: %s",
+                               msg != NULL ? msg : "?");
+    }
+    sqlite3_free(msg);
+    msg = NULL;
+    if (ran && sqlite3_exec(sq, "PRAGMA foreign_key_check", verify_collect,
+                            bad, &msg) != SQLITE_OK) {
+        ran = FALSE;
+        g_string_append_printf(bad, "foreign_key_check did not run: %s",
+                               msg != NULL ? msg : "?");
+    }
+    sqlite3_free(msg);
+    sqlite3_close(sq);
+
+    gboolean ok = ran && bad->len == 0;
+    if (!ok && detail != NULL)
+        *detail = g_strdup(bad->str);
+    g_string_free(bad, TRUE);
+    return ok;
+}
+
+/* bt_db_copy_file() — a transactionally consistent copy (see db.h).        */
+gboolean
+bt_db_copy_file(BtDatabase *db, const gchar *dest, gchar **err)
+{
+    if (err != NULL)
+        *err = NULL;
+    gchar *q   = sqlite3_mprintf("VACUUM INTO %Q", dest);
+    gchar *msg = NULL;
+    gboolean ok = (sqlite3_exec(db->sq, q, NULL, NULL, &msg) == SQLITE_OK);
+    if (!ok && err != NULL)
+        *err = g_strdup(msg != NULL ? msg : "?");
+    sqlite3_free(msg);
+    sqlite3_free(q);
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
  * bt_db_open() — open + create/migrate the schema (see db.h).
  * ------------------------------------------------------------------------- */
 BtDatabase *
@@ -355,6 +441,42 @@ bt_db_open(const gchar *path, GError **err)
         == SQLITE_OK && sqlite3_step(vst) == SQLITE_ROW)
         uv = sqlite3_column_int(vst, 0);
     sqlite3_finalize(vst);
+
+    /* ---------------------------------------------------------------------
+     * A MIGRATION IS ABOUT TO REWRITE THIS FILE — back it up first.
+     *
+     * Not paranoia: `ALTER TABLE … DROP COLUMN` (v7) rewrites the entire
+     * tasks table, and this database routinely lives in a sync folder
+     * (iCloud Drive), where the file can be replaced or re-generated
+     * underneath an open connection.  A v7 migration that ran without a
+     * backup is exactly how a 1965-task database became unrecoverable on
+     * 2026-08-26; the only reason ANY history survived was a
+     * `.pre-v6.bak` an earlier build had left behind.
+     *
+     * One file per FROM-version, never overwritten, so repeated launches
+     * cannot erode it and each upgrade step keeps its own snapshot.
+     * ------------------------------------------------------------------- */
+    if (uv > 0 && uv < BT_DB_SCHEMA_VERSION) {
+        gchar *bak = g_strdup_printf("%s.pre-v%d.bak", path, uv);
+        if (!g_file_test(bak, G_FILE_TEST_EXISTS)) {
+            /* VACUUM INTO, not a byte copy: it is transactionally
+             * consistent, so it cannot capture a torn page even if
+             * something else is mid-write.                              */
+            gchar *q = sqlite3_mprintf("VACUUM INTO %Q", bak);
+            gchar *msg = NULL;
+            if (sqlite3_exec(sq, q, NULL, NULL, &msg) == SQLITE_OK)
+                g_message("Backed up the pre-v%d database to %s before "
+                          "migrating", uv, bak);
+            else
+                g_warning("could not back up %s before the v%d migration "
+                          "(%s) — MIGRATING ANYWAY", path, uv,
+                          msg != NULL ? msg : "?");
+            sqlite3_free(msg);
+            sqlite3_free(q);
+        }
+        g_free(bak);
+    }
+
     if (uv < 2)
         sqlite3_exec(sq, "ALTER TABLE lists ADD COLUMN emoji TEXT "
                      "NOT NULL DEFAULT ''", NULL, NULL, NULL);

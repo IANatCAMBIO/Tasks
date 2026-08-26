@@ -74,6 +74,16 @@ weekly_forecast=1
 # Let the Due Today view also list everything already past due
 # (1|0, default 0; Settings → Appearance).
 due_today_show_overdue=0
+# Kanban View (1|0, default 0; View → Kanban View): show the selected
+# view's tasks as a three-lane board (New / In Progress / Done) instead
+# of a list, with cards you drag between lanes to change their status —
+# and up and down within a lane to order them.  The Weekly Forecast keeps
+# its own seven-day panel either way.  The card order is stored per view
+# in kanban_order_list_<id>, kanban_order_all, kanban_order_pinned,
+# kanban_order_today and kanban_order_bn_actions — written by the app,
+# not hand-edited, and separate from the manual_order_* keys above so a
+# board drag never rearranges a hand-sorted list view.
+kanban_view=0
 # Manual task ordering (1|0, default 0; the toolbar sort-mode toggle or
 # View → Manual Sort): shows a drag handle and lets rows be dragged.
 # The order itself is stored per view in manual_order_list_<id>,
@@ -91,6 +101,23 @@ col_completed_visible=1
 # Run PRAGMA integrity_check + foreign_key_check on the database at
 # startup (1|0, default 1); the result lands in the status bar.
 db_integrity_check=1
+# Rotating backups (Settings -> Database).  OFF by default.  With no
+# backup_dir set they go to the DEFAULT DATABASE LOCATION under the home
+# directory (~/.local/share/tasks), so switching this on always does
+# something.  Choosing a folder is still worth it: the point is a copy
+# somewhere INDEPENDENT of wherever the database itself lives, so one
+# mishap cannot take both.  Each pass writes tasks-YYYYMMDD-HHMMSS.db
+# there, verifies it, and only then prunes the oldest beyond backup_keep,
+# so the folder is bounded and a failing backup can never erode the
+# history already on disk.  A pass whose database has not changed since
+# the last backup writes nothing at all.
+backup_enabled=0
+# backup_dir -- destination folder; per-machine, so it is not seeded here.
+# Unset = ~/.local/share/tasks (the default database location).
+# Minutes between passes (0 = only when "Back Up Now" is pressed).
+backup_interval_min=60
+# How many backup files to retain.
+backup_keep=10
 # db_dir — a custom directory holding tasks.db (Settings → Database);
 # absent = the default location under the user data dir.  Per-machine,
 # so it is not seeded here.

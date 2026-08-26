@@ -50,6 +50,10 @@
  *   bn_sync_running— the same guard for the Notes mirror pass, which
  *                    is a separate worker on its own schedule.
  *   bn_sync_timer  — the periodic Notes-mirror GSource id, or 0.
+ *   backup_running — the same guard again for the optional rotating
+ *                    backup (backup.h), a third worker on its own
+ *                    schedule.
+ *   backup_timer   — its periodic GSource id, or 0.
  *   toolbar_style  — how toolbar buttons render (icons only, text below
  *                    icons, or text only); persisted as "toolbar_style".
  *   toolbars       — every live toolbar, so a style change can be
@@ -73,6 +77,8 @@ typedef struct BtApp {
     guint            sync_timer;
     gboolean         bn_sync_running;
     guint            bn_sync_timer;
+    gboolean         backup_running;     /* rotating-backup worker in flight */
+    guint            backup_timer;       /* its periodic GSource, or 0       */
     GtkToolbarStyle  toolbar_style;
     GPtrArray       *toolbars;
     gchar           *icons_dir;
@@ -182,16 +188,20 @@ gboolean bt_app_confirm(GtkWindow *parent, const gchar *title,
  *   Notes — notes_sync, notes_cli, notes_embed_list,
  *                notes_sync_interval_min, notes_meta_row
  *   database   — db_dir (custom directory for tasks.db; absent = default
- *                location), db_integrity_check
+ *                location), db_integrity_check, backup_enabled,
+ *                backup_dir, backup_interval_min, backup_keep
  *   UI         — toolbar_style, bold_task_titles, native_menubar,
  *                show_completed, sidebar_visible, compact_layout,
  *                weekly_forecast, due_today_show_overdue,
- *                task_list_manual_sort, col_done_visible,
- *                col_status_visible, col_due_visible,
+ *                task_list_manual_sort, kanban_view,
+ *                col_done_visible, col_status_visible, col_due_visible,
  *                col_completed_visible, win_w, win_h
  *   per-view   — manual_order_list_<id>, manual_order_all,
  *                manual_order_pinned, manual_order_today,
- *                manual_order_bn_actions (drag-reorder positions)
+ *                manual_order_bn_actions (task-pane drag-reorder), and
+ *                kanban_order_* under the same five names (the board's
+ *                own card order — a separate family on purpose, see
+ *                kanban_order_key)
  * ------------------------------------------------------------------------- */
 void      bt_app_config_init(const gchar *argv0);
 gchar    *bt_app_config_get(const gchar *key);         /* NULL when unset   */
