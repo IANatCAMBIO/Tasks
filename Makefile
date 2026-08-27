@@ -21,6 +21,12 @@
 # Semantic version — read from VERSION file (the single source of truth).
 # Baked into the binary as TASK_VERSION (shown in the About dialog) and into
 # the .app bundle's Info.plist.  To release: edit VERSION, then `make`.
+# Stated explicitly rather than left to "the first rule in the file".
+# Twice now a rule defined above `all:` has silently become the default
+# goal and `make` stopped building the binary — once for the `plugins`
+# convenience target, once for a per-plugin rule created by $(eval).
+.DEFAULT_GOAL := all
+
 VERSION  := $(strip $(shell cat VERSION))
 
 # The compiler to use.  clang is the system compiler on macOS.
@@ -44,14 +50,19 @@ PKGCONF  := $(shell command -v pkg-config 2>/dev/null || echo /opt/local/bin/pkg
 HAVE_GTKOSX := $(shell $(PKGCONF) --exists gtk-mac-integration-gtk3 && echo 1)
 
 # Every pkg-config module the build needs, resolved in a single query.
-PKGS     := gtk+-3.0 sqlite3 libcurl
+# NO libcurl.  The only thing that ever needed it was the Google Tasks
+# sync, which is a plugin and brings its own (src/plugins/gtasks/deps.mk).
+# An installation without that plugin links no network library at all —
+# which is the point of the whole exercise, and is checkable with
+# `otool -L tasks` / `ldd tasks`.
+PKGS     := gtk+-3.0 sqlite3
 ifeq ($(HAVE_GTKOSX),1)
 PKGS    += gtk-mac-integration-gtk3
 endif
 
 # Compiler flags: C11, broad warnings, debug symbols, plus the include
 # paths for the modules above.
-CFLAGS   := -std=c11 -Wall -Wextra -g \
+CFLAGS   := -std=c11 -Wall -Wextra -g -Isrc \
             -DTASK_VERSION='"$(VERSION)"' \
             $(shell $(PKGCONF) --cflags $(PKGS))
 ifeq ($(HAVE_GTKOSX),1)
@@ -86,15 +97,12 @@ SRCS     := src/main.c \
             src/plugin_loader.c \
             src/task_view.c \
             src/task_rows.c \
+            src/task_ui.c \
             src/core_views.c \
             src/bnotes.c \
             src/bnsync.c \
             src/db.c \
             src/backup.c \
-            src/json.c \
-            src/http.c \
-            src/oauth.c \
-            src/gtasks.c \
             src/library_window.c \
             src/editor_window.c \
             src/settings_window.c
@@ -120,7 +128,16 @@ BIN      := tasks
 # -fvisibility=hidden keeps everything but task_plugin_entry (marked
 # TASK_PLUGIN_EXPORT) out of the module's dynamic symbol table: a smaller
 # table resolves faster under RTLD_NOW, and nothing else is callable.
+# A plugin is EITHER a single src/plugins/<id>.c, or a directory
+# src/plugins/<id>/ of several .c files that link into one module.  The
+# second exists because a real integration is not one file: the Google
+# Tasks plugin is its sync engine, its OAuth flow, an HTTP wrapper and a
+# JSON parser, and splitting a plugin across files must not mean
+# splitting it across modules.
 PLUGIN_SRCS := $(wildcard src/plugins/*.c)
+# Every directory under src/plugins/ is a plugin.
+PLUGIN_PKGS := $(notdir $(patsubst %/,%,\
+                 $(sort $(dir $(wildcard src/plugins/*/*.c)))))
 PLUGIN_DIR  := plugins
 
 # .so everywhere, including macOS: the extension is a build convention,
@@ -134,18 +151,42 @@ else
 PLUGIN_LDFLAGS := -shared
 endif
 
-PLUGINS := $(patsubst src/plugins/%.c,$(PLUGIN_DIR)/%.$(PLUGIN_EXT),$(PLUGIN_SRCS))
+PLUGINS := $(patsubst src/plugins/%.c,$(PLUGIN_DIR)/%.$(PLUGIN_EXT),$(PLUGIN_SRCS)) \
+           $(foreach d,$(PLUGIN_PKGS),$(PLUGIN_DIR)/$(d).$(PLUGIN_EXT))
 
 # A plugin's README travels WITH it: the Settings list finds one by the
 # convention "<id>.README.md" beside the module, which is the only way it
 # can be offered for a plugin the user has switched OFF (a disabled
 # plugin is never opened, so nothing inside it can be read).
 PLUGIN_DOCS := $(patsubst src/plugins/%,$(PLUGIN_DIR)/%,\
-                 $(wildcard src/plugins/*.README.md))
+                 $(wildcard src/plugins/*.README.md)) \
+               $(foreach d,$(PLUGIN_PKGS),\
+                 $(if $(wildcard src/plugins/$(d)/README.md),\
+                   $(PLUGIN_DIR)/$(d).README.md))
+
+$(PLUGIN_DIR)/%.README.md: src/plugins/%/README.md
+	@mkdir -p $(PLUGIN_DIR)
+	cp $< $@
 
 $(PLUGIN_DIR)/%.README.md: src/plugins/%.README.md
 	@mkdir -p $(PLUGIN_DIR)
 	cp $< $@
+
+# A plugin may bring its OWN dependencies: src/plugins/<id>/deps.mk, when
+# present, is included and may add to that plugin's CFLAGS/LDFLAGS.  This
+# is how the Google Tasks plugin asks for libcurl WITHOUT the application
+# linking it — see the PKGS list above, which no longer mentions it.
+define PLUGIN_PKG_RULE
+-include src/plugins/$(1)/deps.mk
+$$(PLUGIN_DIR)/$(1).$$(PLUGIN_EXT): $$(wildcard src/plugins/$(1)/*.c) \
+                                   $$(wildcard src/plugins/$(1)/*.h) \
+                                   $$(wildcard src/*.h) Makefile
+	@mkdir -p $$(PLUGIN_DIR)
+	$$(CC) $$(CFLAGS) $$(PLUGIN_CFLAGS_$(1)) -fPIC -fvisibility=hidden \
+	      -Isrc -Isrc/plugins/$(1) $$(PLUGIN_LDFLAGS) -o $$@ \
+	      $$(wildcard src/plugins/$(1)/*.c) $$(PLUGIN_LIBS_$(1))
+endef
+$(foreach d,$(PLUGIN_PKGS),$(eval $(call PLUGIN_PKG_RULE,$(d))))
 
 $(PLUGIN_DIR)/%.$(PLUGIN_EXT): src/plugins/%.c $(wildcard src/*.h) Makefile
 	@mkdir -p $(PLUGIN_DIR)
@@ -169,7 +210,7 @@ $(BIN): $(OBJS)
 # on header change are cheap), and on the Makefile so a VERSION bump
 # recompiles the baked-in TASK_VERSION.
 build/%.o: src/%.c $(wildcard src/*.h) Makefile VERSION $(wildcard client_credentials.mk)
-	@mkdir -p build
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # --- clangd / IDE support ----------------------------------------------------

@@ -6,7 +6,8 @@
 #include "bnotes.h"
 #include "task_ops.h"                /* cross-list moves are a core op       */
 #include "task_worker.h"             /* the shared periodic-pass scheduler   */
-#include "task_view.h"               /* the "Action Items" sidebar view      */
+#include "task_view.h"
+#include "task_rows.h"               /* the "Action Items" sidebar view      */
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -16,6 +17,161 @@
  * list.                                                                    */
 #define BN_LIST_NAME  "Action Items"
 #define BN_LIST_EMOJI "\xe2\x9d\x97"          /* ❗                          */
+
+/* ===========================================================================
+ * The side tables (schema v9).
+ *
+ * A mirrored task's Notes identity — its stable uid — and the BASELINE of
+ * what Notes was last known to hold live in notes_task, keyed by task id.
+ * notes_deleted holds uids whose task was deleted here, suppressing the
+ * re-create.  None of it is on the core rows any more.
+ *
+ * The baseline is what makes the write-back a bulk diff rather than a
+ * queue: a row whose done-ness or due differs from it IS pending, which
+ * survives a crash and cannot drift out of step with the task.
+ * =========================================================================== */
+
+/* collect_i64() — exec_query callback appending the first column to a
+ * GArray of gint64.                                                      */
+static gint
+collect_i64(gpointer data, gint n_cols, gchar **values, gchar **names)
+{
+    (void)names;
+    GArray *out = data;
+    if (n_cols > 0 && values[0] != NULL) {
+        gint64 v = g_ascii_strtoll(values[0], NULL, 10);
+        g_array_append_val(out, v);
+    }
+    return 0;
+}
+
+/* bn_tasks_for() — run an id-yielding query and load those tasks.
+ *
+ * Two steps rather than one join returning task columns: the row shape
+ * belongs to db.c and is not the plugin's to reproduce.  The id list is
+ * one query; the loads are by primary key.                               */
+static GPtrArray *
+bn_tasks_for(TaskDatabase *db, const gchar *id_sql)
+{
+    GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+    task_db_exec_query(db, id_sql, collect_i64, ids);
+    GPtrArray *out = g_ptr_array_new();
+    for (guint i = 0; i < ids->len; i++) {
+        Task *t = task_db_task_get(db, g_array_index(ids, gint64, i));
+        if (t != NULL)
+            g_ptr_array_add(out, t);
+    }
+    g_array_free(ids, TRUE);
+    return out;
+}
+
+/* bn_uid_of() — a task's Notes uid, or 0.                                 */
+static gint64
+bn_uid_of(TaskDatabase *db, gint64 task_id)
+{
+    gchar *sql = g_strdup_printf(
+        "SELECT uid FROM notes_task WHERE task_id = %" G_GINT64_FORMAT,
+        task_id);
+    gint64 uid = task_db_scalar(db, sql);
+    g_free(sql);
+    return uid > 0 ? uid : 0;
+}
+
+/* bn_task_for_uid() — the visible mirror task carrying `uid`, or NULL.   */
+static Task *
+bn_task_for_uid(TaskDatabase *db, gint64 uid)
+{
+    gchar *sql = g_strdup_printf(
+        "SELECT n.task_id FROM notes_task n JOIN tasks t ON t.id = n.task_id"
+        " WHERE n.uid = %" G_GINT64_FORMAT " AND t.deleted = 0 LIMIT 1",
+        uid);
+    gint64 id = task_db_scalar(db, sql);
+    g_free(sql);
+    return id > 0 ? task_db_task_get(db, id) : NULL;
+}
+
+/* bn_baseline() — what Notes was last known to hold for this task.       */
+static void
+bn_baseline(TaskDatabase *db, gint64 task_id, gboolean *done, gint64 *due)
+{
+    gchar *sql = g_strdup_printf(
+        "SELECT done FROM notes_task WHERE task_id = %" G_GINT64_FORMAT,
+        task_id);
+    *done = task_db_scalar(db, sql) > 0;
+    g_free(sql);
+    sql = g_strdup_printf(
+        "SELECT due FROM notes_task WHERE task_id = %" G_GINT64_FORMAT,
+        task_id);
+    gint64 d = task_db_scalar(db, sql);
+    *due = d > 0 ? d : 0;
+    g_free(sql);
+}
+
+/* bn_set() — bind a task to a uid and record the baseline.  Deliberately
+ * does NOT stamp updated_at: the binding is local bookkeeping, not a
+ * change to the task.                                                    */
+static void
+bn_set(TaskDatabase *db, gint64 task_id, gint64 uid, gboolean done,
+       gint64 due)
+{
+    gchar *sql = g_strdup_printf(
+        "INSERT INTO notes_task (task_id, uid, done, due)"
+        " VALUES (%" G_GINT64_FORMAT ", %" G_GINT64_FORMAT ", %d,"
+        "         %" G_GINT64_FORMAT ")"
+        " ON CONFLICT(task_id) DO UPDATE SET uid = excluded.uid,"
+        "   done = excluded.done, due = excluded.due",
+        task_id, uid, done ? 1 : 0, due);
+    task_db_exec_sql(db, sql);
+    g_free(sql);
+}
+
+/* bn_mirror_tasks() — every visible mirrored task.                       */
+static GPtrArray *
+bn_mirror_tasks(TaskDatabase *db)
+{
+    return bn_tasks_for(db,
+        "SELECT n.task_id FROM notes_task n JOIN tasks t ON t.id = n.task_id"
+        " WHERE t.deleted = 0"
+        " ORDER BY t.priority DESC, t.list_id, t.position, t.id");
+}
+
+/* bn_suppressed() — the uid set whose tasks were deleted here.           */
+/* bn_suppressed() — the uid set whose tasks were deleted here.
+ *
+ * Keyed by DIRECT POINTER (GSIZE_TO_POINTER), matching the `present` set
+ * it is compared against in reap_missing.  Two sets of the same thing
+ * keyed differently is a wild dereference waiting to happen: a
+ * g_int64_hash table probed with GSIZE_TO_POINTER reads the uid AS an
+ * address.  uids are small positive integers, so the direct-pointer form
+ * is exact on any platform this builds for.                             */
+static gint
+collect_uid_direct(gpointer data, gint n_cols, gchar **values, gchar **names)
+{
+    (void)names;
+    GHashTable *set = data;
+    if (n_cols > 0 && values[0] != NULL)
+        g_hash_table_add(set,
+            GSIZE_TO_POINTER((gsize)g_ascii_strtoll(values[0], NULL, 10)));
+    return 0;
+}
+
+static GHashTable *
+bn_suppressed(TaskDatabase *db)
+{
+    GHashTable *set = g_hash_table_new(g_direct_hash, g_direct_equal);
+    task_db_exec_query(db, "SELECT uid FROM notes_deleted",
+                       collect_uid_direct, set);
+    return set;
+}
+
+static void
+bn_forget(TaskDatabase *db, gint64 uid)
+{
+    gchar *sql = g_strdup_printf(
+        "DELETE FROM notes_deleted WHERE uid = %" G_GINT64_FORMAT, uid);
+    task_db_exec_sql(db, sql);
+    g_free(sql);
+}
 
 /* ---------------------------------------------------------------------------
  * bn_delete_hook() — contribute the mirror's half of a task delete (see
@@ -35,12 +191,14 @@ bn_delete_hook(TaskDatabase *db, gint64 task_id, GString *sql,
 {
     (void)db;                        /* hooks contribute SQL, never run it  */
     (void)user_data;
-    gchar *s = sqlite3_mprintf(
-        "INSERT OR IGNORE INTO bn_deleted (uid) "
-        "  SELECT bn_uid FROM tasks WHERE id = %lld AND bn_uid > 0;",
-        (long long)task_id);
-    g_string_append(sql, s);
-    sqlite3_free(s);
+    /* Reads the uid from the side table now (schema v9).  Still spliced
+     * into the delete's own transaction, which is the point: a
+     * suppression that commits without its delete, or a delete without
+     * its suppression, are both worse than neither.                      */
+    g_string_append_printf(sql,
+        "INSERT OR IGNORE INTO notes_deleted (uid)"
+        "  SELECT uid FROM notes_task WHERE task_id = %" G_GINT64_FORMAT ";",
+        task_id);
 }
 
 /* ---------------------------------------------------------------------------
@@ -123,7 +281,7 @@ task_bnsync_reconcile_target(TaskApp *app)
     if (known && applied == target)
         return;                      /* nothing changed — leave hand moves  */
 
-    GPtrArray *mirror = task_db_tasks_bn_mirror(app->db);
+    GPtrArray *mirror = bn_mirror_tasks(app->db);
     guint moved = 0;                 /* rows that actually changed list     */
     for (guint i = 0; i < mirror->len; i++) {
         Task *t = g_ptr_array_index(mirror, i);
@@ -154,7 +312,7 @@ task_bnsync_reconcile_target(TaskApp *app)
 static void
 sync_item(BnJob *job, TaskDatabase *db, const TaskNoteAction *it, gint64 target)
 {
-    Task *t = task_db_task_by_bn_uid(db, it->uid);
+    Task *t = bn_task_for_uid(db, it->uid);
 
     if (t == NULL) {                 /* new item → new mirror task          */
         gint64 id = task_db_task_create(db, target, 0, it->text);
@@ -162,9 +320,8 @@ sync_item(BnJob *job, TaskDatabase *db, const TaskNoteAction *it, gint64 target)
             job->n_failed++;         /* create failures must not be silent  */
             return;
         }
-        task_db_task_apply_notes(db, id, it->text, it->done, it->due,
-                                 it->done, it->due);
-        task_db_task_set_bn(db, id, it->uid, it->done, it->due);
+        task_db_task_apply_done_source(db, id, it->text, it->done, it->due);
+        bn_set(db, id, it->uid, it->done, it->due);
         job->n_created++;
         return;
     }
@@ -174,10 +331,15 @@ sync_item(BnJob *job, TaskDatabase *db, const TaskNoteAction *it, gint64 target)
      * pending write and has nothing to push.                              */
     gboolean local_done = t->status == TASK_STATUS_DONE;
 
+    /* The baseline: what Notes was last known to hold for this task.     */
+    gboolean base_have_done;
+    gint64   base_have_due;
+    bn_baseline(db, t->id, &base_have_done, &base_have_due);
+
     /* The pending-write set: fields that drifted from the baseline since
      * the last successful push.                                            */
-    gboolean done_dirty = local_done != t->bn_done;
-    gboolean due_dirty  = t->due  != t->bn_due;
+    gboolean done_dirty = local_done != base_have_done;
+    gboolean due_dirty  = t->due  != base_have_due;
     gboolean done_sent  = FALSE;     /* did Notes accept the push?        */
     gboolean due_sent   = FALSE;
 
@@ -202,24 +364,27 @@ sync_item(BnJob *job, TaskDatabase *db, const TaskNoteAction *it, gint64 target)
 
     /* What Notes now holds: the pushed value only if it was accepted;
      * an unsent change keeps the old baseline so it is retried.            */
-    gboolean base_done = done_dirty ? (done_sent ? local_done : t->bn_done)
-                                    : it->done;
-    gint64   base_due  = due_dirty  ? (due_sent  ? t->due  : t->bn_due)
-                                    : it->due;
+    gboolean base_done = done_dirty
+                       ? (done_sent ? local_done : base_have_done)
+                       : it->done;
+    gint64   base_due  = due_dirty
+                       ? (due_sent  ? t->due : base_have_due)
+                       : it->due;
 
     gboolean content = g_strcmp0(t->title, it->text) != 0 ||
                        new_done != local_done || new_due != t->due;
 
     if (content) {
         /* Stamps updated_at, so the change reaches Google too.             */
-        task_db_task_apply_notes(db, t->id, it->text, new_done, new_due,
-                                 base_done, base_due);
+        task_db_task_apply_done_source(db, t->id, it->text, new_done,
+                                       new_due);
+        bn_set(db, t->id, it->uid, base_done, base_due);
         job->n_updated++;
-    } else if (base_done != t->bn_done || base_due != t->bn_due) {
+    } else if (base_done != base_have_done || base_due != base_have_due) {
         /* Nothing the user can see changed — only the push baseline —
          * so this must NOT stamp updated_at, or every pass would dirty
          * the row and buy a no-op Google PATCH.                            */
-        task_db_task_set_bn(db, t->id, it->uid, base_done, base_due);
+        bn_set(db, t->id, it->uid, base_done, base_due);
     }
     task_free(t);
 }
@@ -238,16 +403,16 @@ static void
 reap_missing(BnJob *job, TaskDatabase *db, GHashTable *present,
              GHashTable *suppressed)
 {
-    GPtrArray *mirror = task_db_tasks_bn_mirror(db);
+    GPtrArray *mirror = bn_mirror_tasks(db);
     for (guint i = 0; i < mirror->len; i++) {
         Task *t = g_ptr_array_index(mirror, i);
-        if (g_hash_table_contains(present, GSIZE_TO_POINTER(t->bn_uid)))
+        if (g_hash_table_contains(present, GSIZE_TO_POINTER(bn_uid_of(db, t->id))))
             continue;
         task_db_task_delete(db, t->id);
         /* task_delete parks the uid in bn_deleted so a live item is not
          * re-created after a local delete; here the item is gone from
          * Notes, so that suppression has nothing left to suppress.       */
-        task_db_bn_deleted_forget(db, t->bn_uid);
+        bn_forget(db, bn_uid_of(db, t->id));
         job->n_removed++;
     }
     task_ptr_array_free_tasks(mirror);
@@ -257,7 +422,7 @@ reap_missing(BnJob *job, TaskDatabase *db, GHashTable *present,
     g_hash_table_iter_init(&iter, suppressed);
     while (g_hash_table_iter_next(&iter, &key, NULL)) {
         if (!g_hash_table_contains(present, key))
-            task_db_bn_deleted_forget(db, (gint64)GPOINTER_TO_SIZE(key));
+            bn_forget(db, (gint64)GPOINTER_TO_SIZE(key));
     }
 }
 
@@ -329,7 +494,7 @@ bn_thread(gpointer data)
         return NULL;
     }
 
-    GHashTable *suppressed = task_db_bn_deleted(db);
+    GHashTable *suppressed = bn_suppressed(db);
     GHashTable *present = g_hash_table_new(g_direct_hash, g_direct_equal);
     for (guint i = 0; i < items->len; i++) {
         TaskNoteAction *it = g_ptr_array_index(items, i);
@@ -479,7 +644,7 @@ static GPtrArray *
 bn_view_query(TaskApp *app, gpointer d)
 {
     (void)d;
-    return task_db_tasks_bn_mirror(app->db);
+    return bn_mirror_tasks(app->db);
 }
 
 /* The id is "bn_actions" because that is what manual_order_bn_actions and
@@ -499,6 +664,45 @@ static const TaskView bn_view = {
 };
 
 /* ---------------------------------------------------------------------------
+ * The ❗ glyph on a mirrored task's row.
+ *
+ * It used to be a hard-coded `t->bn_uid != 0` test inside the row
+ * renderer — the renderer knowing what a Notes item was.  It is now a
+ * registered decoration (task_rows.h), collected in ONE query per
+ * refresh rather than asked per row.
+ *
+ * It sorts below the app's own glyphs (favourite 100, priority 200) so it
+ * lands INNERMOST, nearest the title: it describes what the row IS, not
+ * how the user has flagged it.  The full stack reads ↳ 🚨 ⭐️ ❗ Title.
+ * ------------------------------------------------------------------------- */
+static GHashTable *
+bn_decor_collect(TaskApp *app, gpointer user_data)
+{
+    (void)user_data;
+    if (!task_app_config_get_bool("notes_sync", FALSE))
+        return NULL;                 /* integration off: nothing to mark   */
+
+    GHashTable *set = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+                                            g_free, NULL);
+    GPtrArray *mirror = bn_mirror_tasks(app->db);
+    for (guint i = 0; i < mirror->len; i++) {
+        Task *t = g_ptr_array_index(mirror, i);
+        gint64 *k = g_new(gint64, 1);
+        *k = t->id;
+        g_hash_table_add(set, k);
+    }
+    task_ptr_array_free_tasks(mirror);
+    return set;
+}
+
+static const TaskRowDecorDef bn_decor = {
+    .id      = "notes-action-item",
+    .sort    = 50,                   /* inside favourite (100)             */
+    .collect = bn_decor_collect,
+    .prefix  = "\xe2\x9d\x97  ",       /* ❗                               */
+};
+
+/* ---------------------------------------------------------------------------
  * task_bnsync_init() — register the mirror's worker and db hooks (see bnsync.h).
  * ------------------------------------------------------------------------- */
 void
@@ -511,4 +715,5 @@ task_bnsync_init(TaskApp *app)
 
     task_db_add_delete_hook(bn_delete_hook, NULL);
     task_view_register(&bn_view);
+    task_rows_add_decoration(&bn_decor);
 }

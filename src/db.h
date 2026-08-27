@@ -55,7 +55,7 @@
 /* The schema version this build writes.  Kept here rather than spelled as
  * a literal in task_db_open so the pre-migration backup and the version
  * stamp cannot drift apart.                                               */
-#define TASK_DB_SCHEMA_VERSION 7
+#define TASK_DB_SCHEMA_VERSION 9
 
 /* ---------------------------------------------------------------------------
  * TaskDatabase — one open connection.  A connection must not cross threads:
@@ -112,7 +112,6 @@ typedef struct {
     gint64    id;
     gchar    *name;
     gchar    *emoji;                 /* optional display prefix ("")        */
-    gchar    *gtasks_id;             /* Google tasklist id, or NULL         */
     gint64    updated_at;
     gint      position;
     gint64    group_id;              /* 0 = ungrouped                       */
@@ -126,11 +125,12 @@ typedef struct {
     gint    position;
 } TaskGroup;
 
-/* One task or subtask.  Strings are owned by the struct.  The last five
- * fields mirror read-only (or Google-managed) Task resource data pulled
- * by the sync: completion time, the concurrency etag, the deep link
- * into Google's own UI, and the links[]/assignmentInfo substructures
- * kept as their raw JSON.                                                  */
+/* One task or subtask.  Strings are owned by the struct.
+ *
+ * There is nothing here belonging to a particular INTEGRATION.  A sync's
+ * per-task state — a remote id, an etag, a deep link — lives in that
+ * integration's own table keyed by task id (schema v8), so a task
+ * carries only what a task is.                                            */
 typedef struct {
     gint64    id;
     gint64    list_id;
@@ -146,18 +146,9 @@ typedef struct {
                                       * pinned (Google has no priority);
                                       * sorts to the top of every view      */
     gint      position;
-    gchar    *gtasks_id;             /* Google task id, or NULL             */
     gint64    updated_at;
     gboolean  deleted;
-    gint64    bn_uid;                /* Notes action-item identity;
-                                      * 0 = an ordinary task               */
-    gboolean  bn_done;               /* last state Notes was known to    */
-    gint64    bn_due;                /* hold — the bulk push's baseline    */
     gint64    completed_at;          /* unix; 0 = never / not done         */
-    gchar    *etag;                  /* Google etag, or NULL                */
-    gchar    *web_link;              /* Google Tasks UI URL, or NULL        */
-    gchar    *glinks;                /* links[] as raw JSON, or NULL        */
-    gchar    *assigned;              /* assignmentInfo as raw JSON, / NULL  */
 } Task;
 
 /* One file attachment on a task.                                           */
@@ -240,11 +231,14 @@ void task_db_lists_reorder(TaskDatabase *db, const gint64 *ids, gsize n);
 
 TaskList  *task_db_list_get(TaskDatabase *db, gint64 id);
 
-/* Seed the emoji of the list bound to `gtasks_id` — ONLY while its
- * emoji is empty, so a later user edit sticks.  Used by the sync to
- * mark Google's undeletable default list.  No updated_at bump (the
- * emoji is local-only; this must not dirty the row for sync).              */
-void task_db_list_emoji_if_empty(TaskDatabase *db, const gchar *gtasks_id,
+/* Seed a list's emoji — ONLY while it is still empty, so a later edit by
+ * the user is never overwritten.  Does NOT stamp updated_at: an emoji is
+ * local-only, and stamping would make every launch look like a change.
+ *
+ * Keyed on the LIST ID.  It used to take a Google tasklist id and find
+ * the list by it, which put one integration's addressing scheme into a
+ * core function; the caller resolves its own id to a list now.           */
+void task_db_list_emoji_if_empty(TaskDatabase *db, gint64 list_id,
                                  const gchar *emoji);
 
 /* Create a list.  `emoji` is the optional local-only display prefix
@@ -364,11 +358,13 @@ void task_db_task_move_list(TaskDatabase *db, gint64 id, gint64 dest_list);
  * which hides them on Google's side, so no tombstones are needed).         */
 void task_db_purge_done(TaskDatabase *db, gint64 list_id);
 
-/* Insert a bare tombstone carrying a Google task id — the offline
- * fallback for cross-list moves: the moved row starts a NEW remote
- * task while this stub deletes the old remote copy on the next sync.       */
-void task_db_insert_remote_tombstone(TaskDatabase *db, gint64 list_id,
-                                     const gchar *gtasks_id);
+/* Insert a bare tombstone row in `list_id` and return its id, or 0.
+ *
+ * The caller is an integration recording "something that used to exist
+ * here has gone" — it attaches its own remote identity to the returned
+ * id in its own table.  The tombstone itself carries none, which is why
+ * this takes no identity argument.                                        */
+gint64 task_db_insert_remote_tombstone(TaskDatabase *db, gint64 list_id);
 
 /* ------------------------------ attachments ------------------------------ */
 
@@ -388,52 +384,54 @@ GHashTable *task_db_attachment_counts(TaskDatabase *db);
  * Either out-pointer may be NULL; a failed query leaves 0.                 */
 void task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists);
 
-/* --------------------------- Notes mirror ------------------------------ */
+/* ---------------------------------------------------------------------------
+ * task_db_task_apply_done_source() — apply what a DONE-ONLY source
+ * reports about a task: its title, its due date, and whether it is done.
+ *
+ * Stamps updated_at, so the change propagates on to anything else
+ * watching the row.  The status transition is the app's own rule, spelled
+ * as a CASE over the row's CURRENT status so it needs no read-back:
+ * done → Done; not-done → In Progress only if it WAS Done (unticking
+ * means work resumed), otherwise unchanged, so a New task survives a
+ * round trip through a system that has no third state.
+ *
+ * `completed_at` is stamped on ENTERING Done and cleared on leaving; an
+ * already-Done task keeps its first stamp.
+ *
+ * The source's own bookkeeping — what it last knew, for diffing — is
+ * NOT here.  That belongs to the integration, in its own table.
+ * ------------------------------------------------------------------------- */
+void task_db_task_apply_done_source(TaskDatabase *db, gint64 id,
+                                    const gchar *title, gboolean done,
+                                    gint64 due);
 
-/* Every visible task bound to a Notes action item, across all lists,
- * high-priority first (the "Action Items" meta view).  Returns Task*
- * elements; free with task_ptr_array_free_tasks.                           */
-GPtrArray *task_db_tasks_bn_mirror(TaskDatabase *db);
-
-/* The visible mirror task carrying `uid`, or NULL.  Free with
- * task_free.                                                             */
-Task *task_db_task_by_bn_uid(TaskDatabase *db, gint64 uid);
-
-/* Bind a task to Notes item `uid` and record the push baseline
- * (bn_done/bn_due = what Notes currently holds).  LOCAL bookkeeping:
- * deliberately no updated_at bump, so binding never dirties the row for
- * the Google sync.                                                         */
-void task_db_task_set_bn(TaskDatabase *db, gint64 id, gint64 uid,
-                         gboolean done, gint64 due);
-
-/* Overwrite the Notes-owned fields (title/done/due) from a listing and
- * re-baseline in one statement.  DOES stamp updated_at — the change
- * originated outside Tasks and must propagate to Google.  `done` is
- * Notes' binary flag and reaches tasks.status through
- * task_status_apply_done's rule, expressed as a CASE over the OLD row, so
- * a still-unfinished item keeps whichever of New/In Progress it had.
- * bn_done/bn_due are passed separately from done/due because a FAILED
- * push keeps the user's local value on the task while leaving the
- * baseline at what Notes still holds, so the delta is retried next
- * pass.                                                                */
-void task_db_task_apply_notes(TaskDatabase *db, gint64 id, const gchar *title,
-                              gboolean done, gint64 due, gboolean bn_done,
-                              gint64 bn_due);
-
-/* Uids the user deleted in Tasks.  Notes cannot delete an action item
- * from the CLI, so the item survives there; without this set the next
- * mirror pass would re-create the task.  Keys are GSIZE_TO_POINTER'd
- * uids (a uid is 64-bit, so packing it into a gint could collide);
- * free with g_hash_table_destroy.                                          */
-GHashTable *task_db_bn_deleted(TaskDatabase *db);
-
-/* Drop one suppression — called when the item finally leaves Notes.       */
-void task_db_bn_deleted_forget(TaskDatabase *db, gint64 uid);
-
-/* Drop every gtasks_id/etag of one list's tasks — used when the bound
- * remote list vanished and the list is re-created remotely: its tasks
- * must push as NEW remote tasks (non-destructive sync).                    */
-void        task_db_tasks_clear_gtasks_ids(TaskDatabase *db, gint64 list_id);
+/* ---------------------------------------------------------------------------
+ * Generic query helpers.
+ *
+ * Not tied to any one feature: they exist because an integration keeping
+ * its own side table needs to read and write it, and the alternative was
+ * a public db.c function per integration — which is the coupling the
+ * side tables were introduced to remove.  The plugin API exposes exactly
+ * these (see plugin.h), so in-tree and out-of-tree callers use one
+ * implementation.
+ *
+ * `task_db_exec_sql` runs statements with no result; FALSE on failure,
+ * with sqlite's own message logged.
+ *
+ * `task_db_scalar` returns a one-value SELECT, or -1 when the statement
+ * could not run AT ALL — a caller checking a count must be able to tell
+ * "zero problems" from "the check never ran".
+ *
+ * `task_db_exec_query` is sqlite3_exec's callback shape without the
+ * sqlite3 types.  Return non-zero from `cb` to stop early; that is the
+ * documented way and is NOT reported as failure.
+ * ------------------------------------------------------------------------- */
+gboolean task_db_exec_sql(TaskDatabase *db, const gchar *sql);
+gint64   task_db_scalar(TaskDatabase *db, const gchar *sql);
+gboolean task_db_exec_query(TaskDatabase *db, const gchar *sql,
+                            gint (*cb)(gpointer user_data, gint n_cols,
+                                       gchar **values, gchar **names),
+                            gpointer user_data);
 
 /* ------------------------------- sync state ------------------------------ */
 
@@ -441,10 +439,6 @@ void        task_db_tasks_clear_gtasks_ids(TaskDatabase *db, gint64 list_id);
 gchar *task_db_state_get(TaskDatabase *db, const gchar *key);
 void   task_db_state_set(TaskDatabase *db, const gchar *key, const gchar *value);
 
-/* Record the Google-side id of a row WITHOUT stamping updated_at (used
- * right after a successful push — the row is not "newly dirty").           */
-void task_db_list_set_gtasks_id(TaskDatabase *db, gint64 id, const gchar *gid);
-void task_db_task_set_gtasks_id(TaskDatabase *db, gint64 id, const gchar *gid);
 
 /* Overwrite a row from remote data WITHOUT the usual now() stamp — the
  * caller passes the remote updated time so the row is clean afterwards.    */

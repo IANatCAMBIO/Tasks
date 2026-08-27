@@ -77,6 +77,7 @@
 #include "task_worker.h"
 #include "settings_window.h"
 #include "task_rows.h"
+#include "task_ui.h"
 
 /* ---------------------------------------------------------------------------
  * TWO numbers, because there are two kinds of change.
@@ -101,7 +102,7 @@
  * measuring.
  * ------------------------------------------------------------------------- */
 #define TASK_PLUGIN_ABI_VERSION  1u
-#define TASK_PLUGIN_ABI_REVISION 3u
+#define TASK_PLUGIN_ABI_REVISION 5u
 
 /* The directory plugins are loaded from, relative to the executable.       */
 #define TASK_PLUGIN_DIR "plugins"
@@ -234,6 +235,27 @@ typedef struct {
     /* Quote a string as a SQL literal — sqlite3_mprintf's %Q, so a
      * plugin never hand-rolls escaping.  g_free the result.            */
     gchar      *(*quote)(const gchar *s);
+
+    /* --- since ABI 1.4: what a two-way sync needs ---------------------
+     * These write a row from REMOTE data without the usual now() stamp,
+     * or physically remove one that both sides agree has gone.  They are
+     * not general-purpose: apply_remote leaves pinned/priority alone
+     * because those are local-only, and the purges are for rows whose
+     * removal has already propagated.                                   */
+    void        (*list_apply_remote)(TaskDatabase *db, gint64 id,
+                                     const gchar *name, gint64 updated_at);
+    void        (*task_apply_remote)(TaskDatabase *db, const Task *t);
+    void        (*list_restore)(TaskDatabase *db, gint64 id);
+    void        (*list_purge)(TaskDatabase *db, gint64 id);
+    void        (*list_emoji_if_empty)(TaskDatabase *db, gint64 list_id,
+                                       const gchar *emoji);
+    /* Every row of one list including subtasks and tombstones, parents
+     * before subtasks — a new parent must own a remote id before its
+     * children push.                                                    */
+    GPtrArray  *(*tasks_in_list_all)(TaskDatabase *db, gint64 list_id);
+    /* A bare tombstone; the caller attaches its own identity to the id
+     * this returns.                                                     */
+    gint64      (*insert_remote_tombstone)(TaskDatabase *db, gint64 list_id);
 } TaskHostDb;
 
 /* ---------------------------------------------------------------------------
@@ -303,7 +325,12 @@ typedef struct {
     guint  (*append)(GtkListStore *store, GPtrArray *tasks,
                      const TaskRowCtx *ctx);
     gchar *(*desc_markup)(const Task *t, const gchar *list_name,
-                          gint att_count, GPtrArray *subs, gboolean bold);
+                          gint att_count, GPtrArray *subs,
+                          const TaskRowCtx *ctx);
+    /* Add a glyph to the task cell — since ABI 1.5.  BATCH-shaped on
+     * purpose: the host asks once per refresh for the whole set of ids
+     * to decorate, never per row (see task_rows.h).                    */
+    void   (*add_decoration)(const TaskRowDecorDef *def);
     const gchar *(*stripe_color)(GtkTreeModel *model, GtkTreeIter *iter);
     void   (*bg_func)(GtkTreeViewColumn *col, GtkCellRenderer *cell,
                       GtkTreeModel *model, GtkTreeIter *iter, gpointer data);
@@ -335,6 +362,26 @@ typedef struct {
      * A panel owns its pane, so it owns this line; the transient event
      * message on the right is notify->status.  Plain text.             */
     void (*set_location)(TaskApp *app, const gchar *text);
+
+    /* --- since ABI 1.4 ------------------------------------------------ */
+    /* A modal message dialog.  For the rare thing a status-bar line
+     * cannot carry — a sign-in that failed and needs explaining.       */
+    void (*notice)(GtkWindow *parent, GtkMessageType type,
+                   const gchar *title, const gchar *message);
+    /* One-off CSS on a single widget, so a contributed section can match
+     * the app's own type scale rather than guessing at it.             */
+    void (*widget_add_css)(GtkWidget *widget, const gchar *css);
+
+    /* The directory holding the executable — where a plugin looks for a
+     * credentials file shipped beside the app.                         */
+    const gchar *(*exe_dir)(void);
+
+    /* The registries the window builds its chrome from.                */
+    void (*add_tool)(const TaskUiToolDef *def);
+    void (*tool_set_sensitive)(const gchar *id, gboolean sensitive);
+    void (*add_task_menu_item)(const TaskUiTaskMenuDef *def);
+    void (*add_editor_section)(const TaskUiEditorDef *def);
+    void (*add_menu_item)(const TaskUiMenuDef *def);
 } TaskHostUi;
 
 typedef struct {
@@ -342,6 +389,22 @@ typedef struct {
     GtkWidget *(*heading)(const gchar *text);
     GtkWidget *(*note)(const gchar *text);
 } TaskHostSettings;
+
+/* ---------------------------------------------------------------------------
+ * Pure helpers — no state, just the app's own rules, so a plugin cannot
+ * disagree with them.  ABI 1.4.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    /* The single rule mapping a binary done flag onto the tri-state
+     * status.  Every done-only source folds through this, which is what
+     * stops a round trip through such a system promoting a New task. */
+    TaskStatus (*status_apply_done)(TaskStatus cur, gboolean done);
+
+    /* Dates, in the app's spellings.                                  */
+    gint64  (*due_from_ymd)(gint y, gint m, gint d);
+    gchar  *(*due_format_iso)(gint64 due);
+    void    (*day_bounds)(gint offset_days, gint64 *lo, gint64 *hi);
+} TaskHostUtil;
 
 typedef struct {
     gboolean (*move_to_list)(TaskApp *app, gint64 task_id, gint64 dest_list);
@@ -374,6 +437,7 @@ struct TaskHostApi {
     const TaskHostSettings *settings;
     const TaskHostRows     *rows;    /* since ABI 1.2                      */
     const TaskHostUi       *ui;      /* since ABI 1.3                      */
+    const TaskHostUtil     *util;    /* since ABI 1.4                      */
 };
 
 /* ---------------------------------------------------------------------------

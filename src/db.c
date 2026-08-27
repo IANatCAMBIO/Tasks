@@ -23,6 +23,65 @@ exec(TaskDatabase *db, const gchar *sql)
 }
 
 /* ---------------------------------------------------------------------------
+ * scalar() — run a one-value SELECT and return it, or -1 when the
+ * statement could not run at all.  The -1 matters: a verification query
+ * that never executed must not be mistaken for one that returned zero
+ * problems, which is the "checked, all good, when nothing was checked"
+ * failure the error discipline exists to prevent.
+ * ------------------------------------------------------------------------- */
+gint64
+task_db_scalar(TaskDatabase *db, const gchar *sql)
+{
+    sqlite3_stmt *st = NULL;
+    gint64 v = -1;
+    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW)
+        v = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return v;
+}
+
+/* task_db_exec_sql() / task_db_exec_query() — see db.h.  Both are thin
+ * public faces on the internal exec paths, so there is exactly one
+ * implementation whether the caller is in-tree or a plugin.             */
+gboolean
+task_db_exec_sql(TaskDatabase *db, const gchar *sql)
+{
+    return exec(db, sql);
+}
+
+typedef struct {
+    gint (*cb)(gpointer, gint, gchar **, gchar **);
+    gpointer user_data;
+} QueryTramp;
+
+static int
+query_tramp(void *data, int n_cols, char **values, char **names)
+{
+    QueryTramp *q = data;
+    return q->cb(q->user_data, n_cols, values, names);
+}
+
+gboolean
+task_db_exec_query(TaskDatabase *db, const gchar *sql,
+                   gint (*cb)(gpointer, gint, gchar **, gchar **),
+                   gpointer user_data)
+{
+    QueryTramp q = { cb, user_data };
+    gchar *msg = NULL;
+    gint rc = sqlite3_exec(db->sq, sql, query_tramp, &q, &msg);
+    /* SQLITE_ABORT is a callback asking to stop, which is the documented
+     * way to read only the rows you need — not a failure.               */
+    if (rc != SQLITE_OK && rc != SQLITE_ABORT) {
+        g_warning("db: %s: %s", sql, msg != NULL ? msg : "?");
+        sqlite3_free(msg);
+        return FALSE;
+    }
+    sqlite3_free(msg);
+    return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
  * exec_txn() — run `sql` (one or more statements) inside a transaction,
  * ROLLING BACK on failure.  A bare "BEGIN;…;COMMIT;" through exec()
  * would leave the connection stuck inside an open transaction when a
@@ -95,7 +154,6 @@ task_list_free(TaskList *l)
         return;
     g_free(l->name);
     g_free(l->emoji);
-    g_free(l->gtasks_id);
     g_free(l);
 }
 
@@ -107,11 +165,6 @@ task_free(Task *t)
         return;
     g_free(t->title);
     g_free(t->notes);
-    g_free(t->gtasks_id);
-    g_free(t->etag);
-    g_free(t->web_link);
-    g_free(t->glinks);
-    g_free(t->assigned);
     g_free(t);
 }
 
@@ -351,7 +404,6 @@ task_db_open(const gchar *path, GError **err)
         "  emoji      TEXT    NOT NULL DEFAULT '',"
         "  position   INTEGER NOT NULL DEFAULT 0,"
         "  group_id   INTEGER REFERENCES list_groups(id),"
-        "  gtasks_id  TEXT,"
         "  updated_at INTEGER NOT NULL DEFAULT 0,"
         "  deleted    INTEGER NOT NULL DEFAULT 0)");
     exec(db,
@@ -366,17 +418,10 @@ task_db_open(const gchar *path, GError **err)
         "  pinned       INTEGER NOT NULL DEFAULT 0,"
         "  priority     INTEGER NOT NULL DEFAULT 0,"
         "  position     INTEGER NOT NULL DEFAULT 0,"
-        "  gtasks_id    TEXT,"
         "  updated_at   INTEGER NOT NULL DEFAULT 0,"
         "  deleted      INTEGER NOT NULL DEFAULT 0,"
         "  completed_at INTEGER NOT NULL DEFAULT 0,"
-        "  etag         TEXT,"
-        "  web_link     TEXT,"
-        "  glinks       TEXT,"
-        "  assigned     TEXT,"
-        "  bn_uid       INTEGER NOT NULL DEFAULT 0,"
-        "  bn_done      INTEGER NOT NULL DEFAULT 0,"
-        "  bn_due       INTEGER NOT NULL DEFAULT 0)");
+        "  status       INTEGER NOT NULL DEFAULT 0)");
     exec(db,
         "CREATE TABLE IF NOT EXISTS attachments ("
         "  id         INTEGER PRIMARY KEY,"
@@ -389,16 +434,28 @@ task_db_open(const gchar *path, GError **err)
         "  key   TEXT PRIMARY KEY,"
         "  value TEXT)");
     exec(db,
-        "CREATE TABLE IF NOT EXISTS bn_deleted ("
-        "  uid INTEGER PRIMARY KEY)");  /* mirror tasks deleted in Tasks   */
-    /* Both indexes sit in the schema block.  The old rule about creating
-     * idx_tasks_bn_uid only AFTER the migrations existed because bn_uid
-     * arrived via ALTER; it is a declared column now, so there is no
-     * ordering hazard left.                                                */
+        /* Integration-owned side tables, keyed by the row they describe.
+         * They live here rather than in the sync's own code ONLY because
+         * the v8 migration below has to have somewhere to copy into; when
+         * the Google sync becomes a plugin it creates these from its
+         * db_open hook and this block goes.
+         *
+         * ON DELETE CASCADE so purging a task cannot leave its remote
+         * identity behind to be matched against later.                   */
+        "CREATE TABLE IF NOT EXISTS gtasks_list ("
+        "  list_id   INTEGER PRIMARY KEY REFERENCES lists(id)"
+        "            ON DELETE CASCADE,"
+        "  gtasks_id TEXT);"
+        "CREATE TABLE IF NOT EXISTS gtasks_task ("
+        "  task_id   INTEGER PRIMARY KEY REFERENCES tasks(id)"
+        "            ON DELETE CASCADE,"
+        "  gtasks_id TEXT,"
+        "  etag      TEXT,"
+        "  web_link  TEXT,"
+        "  glinks    TEXT,"
+        "  assigned  TEXT)");
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
              "ON tasks(list_id, parent_id, position)");
-    exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_bn_uid "
-             "ON tasks(bn_uid)");
 
     sqlite3_stmt *vst = NULL;
     gint uv = 0;                     /* the file's schema version           */
@@ -451,18 +508,167 @@ task_db_open(const gchar *path, GError **err)
      * discipline forbids, so it gets a warning naming the file.  Seen once
      * on a database living in an iCloud Drive folder, where two copies of
      * the file can diverge; never reproduced locally.                      */
-    exec(db, "PRAGMA user_version = 7");
+    /* -----------------------------------------------------------------
+     * v8 — the Google Tasks columns move to side tables the sync owns.
+     *
+     * COPY, VERIFY, and only then DROP.  The drop rewrites the whole
+     * tasks table, and doing that to someone's only copy after a copy
+     * that silently did nothing is precisely how a 1965-task database
+     * became unrecoverable.  A verify that fails leaves every column in
+     * place and says so: an un-migrated database still works, because
+     * the readers below no longer look at those columns either way.
+     *
+     * The copy is guarded on gtasks_id/etag/... EXISTING, which they do
+     * not on a fresh file — hence the version test rather than an
+     * unconditional run.
+     * ----------------------------------------------------------------- */
+    if (uv > 0 && uv < 8) {
+        gboolean copied =
+            exec(db, "INSERT OR REPLACE INTO gtasks_list (list_id, gtasks_id)"
+                     "  SELECT id, gtasks_id FROM lists"
+                     "   WHERE gtasks_id IS NOT NULL") &&
+            exec(db, "INSERT OR REPLACE INTO gtasks_task"
+                     "       (task_id, gtasks_id, etag, web_link, glinks,"
+                     "        assigned)"
+                     "  SELECT id, gtasks_id, etag, web_link, glinks,"
+                     "         assigned FROM tasks"
+                     "   WHERE gtasks_id IS NOT NULL OR etag IS NOT NULL"
+                     "      OR web_link IS NOT NULL OR glinks IS NOT NULL"
+                     "      OR assigned IS NOT NULL");
+
+        /* VERIFY: every row that had a remote identity must have one now,
+         * and it must be the SAME one.  Counting is not enough — a copy
+         * that wrote the right number of wrong rows would pass that.     */
+        gint64 wrong = copied
+            ? task_db_scalar(db, "SELECT COUNT(*) FROM tasks t"
+                         " LEFT JOIN gtasks_task g ON g.task_id = t.id"
+                         " WHERE (t.gtasks_id IS NOT NULL"
+                         "        AND g.gtasks_id IS NOT t.gtasks_id)"
+                         "    OR (t.etag IS NOT NULL"
+                         "        AND g.etag IS NOT t.etag)")
+            : -1;
+        gint64 wrong_l = copied && wrong == 0
+            ? task_db_scalar(db, "SELECT COUNT(*) FROM lists l"
+                         " LEFT JOIN gtasks_list g ON g.list_id = l.id"
+                         " WHERE l.gtasks_id IS NOT NULL"
+                         "   AND g.gtasks_id IS NOT l.gtasks_id")
+            : -1;
+
+        if (copied && wrong == 0 && wrong_l == 0) {
+            /* An sqlite too old for DROP COLUMN (< 3.35) simply leaves the
+             * columns behind, unread.  Harmless: nothing selects them any
+             * more, and the data now lives in the side tables.           */
+            exec(db, "ALTER TABLE lists DROP COLUMN gtasks_id");
+            exec(db, "ALTER TABLE tasks DROP COLUMN gtasks_id");
+            exec(db, "ALTER TABLE tasks DROP COLUMN etag");
+            exec(db, "ALTER TABLE tasks DROP COLUMN web_link");
+            exec(db, "ALTER TABLE tasks DROP COLUMN glinks");
+            exec(db, "ALTER TABLE tasks DROP COLUMN assigned");
+            g_message("Migrated %s to schema v8: the Google Tasks columns "
+                      "now live in gtasks_task / gtasks_list", path);
+        } else {
+            g_warning("db: %s — the v8 copy did not verify (%lld task "
+                      "mismatches, %lld list mismatches); the old columns "
+                      "were LEFT IN PLACE and nothing was dropped",
+                      path, (long long)wrong, (long long)wrong_l);
+        }
+    }
+
+    /* -----------------------------------------------------------------
+     * v9 — the Notes mirror's columns move to its own side table, the
+     * same shape v8 gave the Google sync.  COPY, VERIFY, then DROP.
+     *
+     * The INDEX goes first: SQLite refuses ALTER TABLE ... DROP COLUMN on
+     * an indexed column, so leaving idx_tasks_bn_uid in place would fail
+     * the drop and strand the migration half-applied.
+     * ----------------------------------------------------------------- */
+    if (uv > 0 && uv < 9) {
+        gboolean copied =
+            exec(db, "CREATE TABLE IF NOT EXISTS notes_task ("
+                     "  task_id INTEGER PRIMARY KEY REFERENCES tasks(id)"
+                     "          ON DELETE CASCADE,"
+                     "  uid     INTEGER NOT NULL,"
+                     "  done    INTEGER NOT NULL DEFAULT 0,"
+                     "  due     INTEGER NOT NULL DEFAULT 0)") &&
+            exec(db, "CREATE INDEX IF NOT EXISTS idx_notes_task_uid "
+                     "ON notes_task(uid)") &&
+            exec(db, "CREATE TABLE IF NOT EXISTS notes_deleted ("
+                     "  uid INTEGER PRIMARY KEY)") &&
+            exec(db, "INSERT OR REPLACE INTO notes_task"
+                     "       (task_id, uid, done, due)"
+                     "  SELECT id, bn_uid, bn_done, bn_due FROM tasks"
+                     "   WHERE bn_uid > 0") &&
+            exec(db, "INSERT OR IGNORE INTO notes_deleted (uid)"
+                     "  SELECT uid FROM bn_deleted");
+
+        gint64 wrong = copied
+            ? task_db_scalar(db,
+                  "SELECT COUNT(*) FROM tasks t"
+                  " LEFT JOIN notes_task n ON n.task_id = t.id"
+                  " WHERE t.bn_uid > 0"
+                  "   AND (n.uid IS NOT t.bn_uid"
+                  "     OR n.done IS NOT t.bn_done"
+                  "     OR n.due IS NOT t.bn_due)")
+            : -1;
+        gint64 lost = copied && wrong == 0
+            ? task_db_scalar(db, "SELECT (SELECT COUNT(*) FROM bn_deleted)"
+                                 "     - (SELECT COUNT(*) FROM notes_deleted)")
+            : -1;
+
+        if (copied && wrong == 0 && lost == 0) {
+            exec(db, "DROP INDEX IF EXISTS idx_tasks_bn_uid");
+            exec(db, "ALTER TABLE tasks DROP COLUMN bn_uid");
+            exec(db, "ALTER TABLE tasks DROP COLUMN bn_done");
+            exec(db, "ALTER TABLE tasks DROP COLUMN bn_due");
+            exec(db, "DROP TABLE IF EXISTS bn_deleted");
+
+            /* bn_pins / bn_priority stored a Notes item's pin and
+             * priority back when action items were a special row type;
+             * the 2026-08-05 mirror rewrite made them ordinary tasks
+             * carrying the ordinary flags, and nothing has referenced
+             * either table since.  Dropped ONLY when provably empty — a
+             * row in one is evidence the assumption is wrong, and that is
+             * worth more than the tidiness.                             */
+            if (task_db_scalar(db, "SELECT COUNT(*) FROM bn_pins") == 0)
+                exec(db, "DROP TABLE IF EXISTS bn_pins");
+            else
+                g_warning("db: bn_pins is not empty \xe2\x80\x94 left in place");
+            if (task_db_scalar(db, "SELECT COUNT(*) FROM bn_priority") == 0)
+                exec(db, "DROP TABLE IF EXISTS bn_priority");
+            else
+                g_warning("db: bn_priority is not empty \xe2\x80\x94 left in place");
+
+            g_message("Migrated %s to schema v9: the Notes mirror's "
+                      "columns now live in notes_task / notes_deleted",
+                      path);
+        } else {
+            g_warning("db: %s \xe2\x80\x94 the v9 copy did not verify (%lld task "
+                      "mismatches, %lld suppressions lost); the old columns "
+                      "were LEFT IN PLACE", path,
+                      (long long)wrong, (long long)lost);
+        }
+    }
+
+    {   /* Stamped from the CONSTANT for the same reason.               */
+        gchar *stamp = g_strdup_printf("PRAGMA user_version = %d",
+                                       TASK_DB_SCHEMA_VERSION);
+        exec(db, stamp);
+        g_free(stamp);
+    }
     gint uv_after = -1;              /* what the file now claims            */
     vst = NULL;
     if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
         == SQLITE_OK && sqlite3_step(vst) == SQLITE_ROW)
         uv_after = sqlite3_column_int(vst, 0);
     sqlite3_finalize(vst);
-    if (uv_after != 7)
+    /* Checked against the CONSTANT, not a literal: the two drifted apart
+     * once already, and a check comparing to the wrong number warns on
+     * every SUCCESSFUL migration.                                      */
+    if (uv_after != TASK_DB_SCHEMA_VERSION)
         g_warning("db: %s still reports schema version %d after the "
-                  "migration to 7 — the version stamp did not stick "
+                  "migration to %d — the version stamp did not stick "
                   "(migrations will re-run harmlessly on every launch)",
-                  path, uv_after);
+                  path, uv_after, TASK_DB_SCHEMA_VERSION);
     return db;
 }
 
@@ -488,11 +694,10 @@ read_list(sqlite3_stmt *st)
     l->id         = sqlite3_column_int64(st, 0);
     l->name       = column_text_dup(st, 1);
     l->position   = sqlite3_column_int(st, 2);
-    l->gtasks_id  = column_text_dup(st, 3);
-    l->updated_at = sqlite3_column_int64(st, 4);
-    l->deleted    = sqlite3_column_int(st, 5) != 0;
-    l->emoji      = column_text_dup(st, 6);
-    l->group_id   = sqlite3_column_int64(st, 7);
+    l->updated_at = sqlite3_column_int64(st, 3);
+    l->deleted    = sqlite3_column_int(st, 4) != 0;
+    l->emoji      = column_text_dup(st, 5);
+    l->group_id   = sqlite3_column_int64(st, 6);
     if (l->name == NULL)
         l->name = g_strdup("");
     if (l->emoji == NULL)
@@ -501,7 +706,7 @@ read_list(sqlite3_stmt *st)
 }
 
 /* The shared column list for read_list().                                  */
-#define LIST_COLS "id, name, position, gtasks_id, updated_at, deleted, " \
+#define LIST_COLS "id, name, position, updated_at, deleted, " \
                   "emoji, COALESCE(group_id, 0)"
 
 /* ---------------------------------------------------------------------------
@@ -750,15 +955,15 @@ task_db_list_set_group(TaskDatabase *db, gint64 list_id, gint64 group_id)
  * `gtasks_id` (see db.h).  Deliberately NO updated_at bump: the emoji
  * is local-only and must not dirty the row for sync.                       */
 void
-task_db_list_emoji_if_empty(TaskDatabase *db, const gchar *gtasks_id,
+task_db_list_emoji_if_empty(TaskDatabase *db, gint64 list_id,
                             const gchar *emoji)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
-            "UPDATE lists SET emoji = ?1 WHERE gtasks_id = ?2 AND "
+            "UPDATE lists SET emoji = ?1 WHERE id = ?2 AND "
             "emoji = '' AND deleted = 0", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, emoji, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 2, gtasks_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 2, list_id);
         step_done(db, st, "list emoji seed");
     } else {
         step_done(db, NULL, "list emoji seed");
@@ -770,9 +975,8 @@ task_db_list_emoji_if_empty(TaskDatabase *db, const gchar *gtasks_id,
  * read_task() — build a Task from the standard tasks SELECT.
  * ------------------------------------------------------------------------- */
 #define TASK_COLS "id, list_id, COALESCE(parent_id, 0), title, notes, due, " \
-                  "status, pinned, position, gtasks_id, updated_at, deleted, "\
-                  "completed_at, etag, web_link, glinks, assigned, priority, "\
-                  "bn_uid, bn_done, bn_due"
+                  "status, pinned, position, updated_at, deleted, "\
+                  "completed_at, priority"
 
 static Task *
 read_task(sqlite3_stmt *st)
@@ -787,18 +991,10 @@ read_task(sqlite3_stmt *st)
     t->status       = (TaskStatus)sqlite3_column_int(st, 6);
     t->pinned       = sqlite3_column_int(st, 7) != 0;
     t->position     = sqlite3_column_int(st, 8);
-    t->gtasks_id    = column_text_dup(st, 9);
-    t->updated_at   = sqlite3_column_int64(st, 10);
-    t->deleted      = sqlite3_column_int(st, 11) != 0;
-    t->completed_at = sqlite3_column_int64(st, 12);
-    t->etag         = column_text_dup(st, 13);
-    t->web_link     = column_text_dup(st, 14);
-    t->glinks       = column_text_dup(st, 15);
-    t->assigned     = column_text_dup(st, 16);
-    t->priority     = sqlite3_column_int(st, 17) != 0;
-    t->bn_uid       = sqlite3_column_int64(st, 18);
-    t->bn_done      = sqlite3_column_int(st, 19) != 0;
-    t->bn_due       = sqlite3_column_int64(st, 20);
+    t->updated_at   = sqlite3_column_int64(st, 9);
+    t->deleted      = sqlite3_column_int(st, 10) != 0;
+    t->completed_at = sqlite3_column_int64(st, 11);
+    t->priority     = sqlite3_column_int(st, 12) != 0;
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
     return t;
@@ -1373,39 +1569,6 @@ task_db_state_set(TaskDatabase *db, const gchar *key, const gchar *value)
     sqlite3_finalize(st);
 }
 
-/* set_gtasks_id() — shared body of the two id setters.                     */
-static void
-set_gtasks_id(TaskDatabase *db, const gchar *table, gint64 id,
-              const gchar *gid)
-{
-    gchar *sql = g_strdup_printf(
-        "UPDATE %s SET gtasks_id = ? WHERE id = %lld",
-        table, (long long)id);
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, gid, -1, SQLITE_TRANSIENT);
-        step_done(db, st, "gtasks id set");
-    } else {
-        step_done(db, NULL, "gtasks id set");
-    }
-    sqlite3_finalize(st);
-    g_free(sql);
-}
-
-/* task_db_list_set_gtasks_id() — bind a list to its Google id WITHOUT
- * stamping updated_at (see db.h).                                          */
-void
-task_db_list_set_gtasks_id(TaskDatabase *db, gint64 id, const gchar *gid)
-{
-    set_gtasks_id(db, "lists", id, gid);
-}
-
-/* task_db_task_set_gtasks_id() — task variant of the above (see db.h).     */
-void
-task_db_task_set_gtasks_id(TaskDatabase *db, gint64 id, const gchar *gid)
-{
-    set_gtasks_id(db, "tasks", id, gid);
-}
 
 /* task_db_list_apply_remote() — overwrite name with the remote's, stamping
  * the REMOTE updated time so the row is clean after the sync.              */
@@ -1427,20 +1590,26 @@ task_db_list_apply_remote(TaskDatabase *db, gint64 id, const gchar *name,
     sqlite3_finalize(st);
 }
 
-/* task_db_task_apply_remote() — overwrite the synced fields (title, notes,
- * due, status) plus the Google-mirror metadata (completed_at, etag,
- * web_link, glinks, assigned) from remote data; pinned and priority are
- * local-only and untouched.  `t->status` is written VERBATIM: Google
- * only ever reports done-ness, so the caller has already folded that
- * through task_status_apply_done against the row it read.                  */
+/* task_db_task_apply_remote() — overwrite the fields a remote source
+ * owns (title, notes, due, status, completed_at) WITHOUT the usual now()
+ * stamp: the caller passes the remote `updated_at`, so the row lands
+ * clean rather than immediately dirty again.  pinned and priority are
+ * local-only and untouched.
+ *
+ * `t->status` is written VERBATIM.  A done-only source has already
+ * folded its flag through task_status_apply_done against the row it
+ * read, which is what stops a round trip promoting a New task.
+ *
+ * An integration's OWN per-task state (a remote id, an etag, a deep
+ * link) is not here: it lives in that integration's side table, and it
+ * writes that itself.                                                     */
 void
 task_db_task_apply_remote(TaskDatabase *db, const Task *t)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
             "UPDATE tasks SET title = ?, notes = ?, due = ?, status = ?, "
-            "updated_at = ?, completed_at = ?, etag = ?, web_link = ?, "
-            "glinks = ?, assigned = ? WHERE id = ?", -1, &st, NULL)
+            "updated_at = ?, completed_at = ? WHERE id = ?", -1, &st, NULL)
         == SQLITE_OK) {
         sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 2, t->notes, -1, SQLITE_TRANSIENT);
@@ -1448,11 +1617,7 @@ task_db_task_apply_remote(TaskDatabase *db, const Task *t)
         sqlite3_bind_int(st, 4, (gint)t->status);
         sqlite3_bind_int64(st, 5, t->updated_at);
         sqlite3_bind_int64(st, 6, t->completed_at);
-        sqlite3_bind_text(st, 7, t->etag, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 8, t->web_link, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 9, t->glinks, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 10, t->assigned, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 11, t->id);
+        sqlite3_bind_int64(st, 7, t->id);
         step_done(db, st, "task apply remote");
     } else {
         step_done(db, NULL, "task apply remote");
@@ -1497,66 +1662,12 @@ task_db_purge_done(TaskDatabase *db, gint64 list_id)
     sqlite3_free(sql);
 }
 
-/* task_db_tasks_bn_mirror() — every visible mirror task (see db.h).        */
-GPtrArray *
-task_db_tasks_bn_mirror(TaskDatabase *db)
-{
-    return task_query(db,
-        "SELECT " TASK_COLS " FROM tasks WHERE bn_uid > 0 AND deleted = 0 "
-        "ORDER BY priority DESC, list_id, position, id", 0, 0, 0);
-}
-
-/* task_db_task_by_bn_uid() — the visible mirror task for `uid` (see db.h). */
-Task *
-task_db_task_by_bn_uid(TaskDatabase *db, gint64 uid)
-{
-    GPtrArray *a = task_query(db,
-        "SELECT " TASK_COLS " FROM tasks WHERE bn_uid = ? AND deleted = 0 "
-        "LIMIT 1", 1, uid, 0);
-    Task *t = a->len > 0 ? g_ptr_array_index(a, 0) : NULL;
-    g_ptr_array_free(a, TRUE);
-    return t;
-}
-
 /* ---------------------------------------------------------------------------
- * task_db_task_set_bn() — bind a task to a Notes item and record the
- * push baseline (see db.h).  NO updated_at bump: the binding is local
- * bookkeeping, and dirtying the row here would buy a no-op Google PATCH
- * on every mirror pass (the same reasoning as set_pinned).
+ * task_db_task_apply_done_source() — see db.h.
  * ------------------------------------------------------------------------- */
 void
-task_db_task_set_bn(TaskDatabase *db, gint64 id, gint64 uid, gboolean done,
-                    gint64 due)
-{
-    gchar *sql = sqlite3_mprintf(
-        "UPDATE tasks SET bn_uid = %lld, bn_done = %d, bn_due = %lld "
-        "WHERE id = %lld", (long long)uid, done ? 1 : 0, (long long)due,
-        (long long)id);
-    exec(db, sql);
-    sqlite3_free(sql);
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_task_apply_notes() — overwrite the Notes-owned fields and
- * re-baseline in ONE statement (see db.h).  updated_at IS stamped: the
- * change came from outside Tasks and has to reach Google too.  The
- * completed_at CASE repeats set_status's transition rule, which relies
- * on SET expressions reading the OLD row (gotcha 8).
- *
- * Notes has no third state, so its binary `done` reaches tasks.status
- * through task_status_apply_done's rule, spelled here as a CASE for the
- * same reason: it needs the status the row already held, and reading it
- * back in C would be a second statement racing the first.
- *
- * The baselines are passed SEPARATELY from the applied values because
- * the two diverge on a failed push: the task keeps the user's local
- * done/due, while bn_done/bn_due must stay at what Notes still holds
- * so the delta is retried instead of being silently swallowed.
- * ------------------------------------------------------------------------- */
-void
-task_db_task_apply_notes(TaskDatabase *db, gint64 id, const gchar *title,
-                         gboolean done, gint64 due, gboolean bn_done,
-                         gint64 bn_due)
+task_db_task_apply_done_source(TaskDatabase *db, gint64 id,
+                               const gchar *title, gboolean done, gint64 due)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
@@ -1564,88 +1675,46 @@ task_db_task_apply_notes(TaskDatabase *db, gint64 id, const gchar *title,
             "                     WHEN ?1 = 1 AND status <> 2 THEN ?2 "
             "                     WHEN ?1 = 0 THEN 0 "
             "                     ELSE completed_at END, "
-            "title = ?3, due = ?4, bn_done = ?5, bn_due = ?6, "
+            "title = ?3, due = ?4, "
             "status = CASE WHEN ?1 = 1   THEN 2 "     /* → Done            */
             "              WHEN status = 2 THEN 1 "   /* Done → In Progress*/
             "              ELSE status END, "         /* New/In Prog. stay */
-            "updated_at = ?2 WHERE id = ?7", -1, &st, NULL) == SQLITE_OK) {
+            "updated_at = ?2 WHERE id = ?5", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int(st, 1, done ? 1 : 0);
         sqlite3_bind_int64(st, 2, now());
         sqlite3_bind_text(st, 3, title != NULL ? title : "", -1,
                           SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 4, due);
-        sqlite3_bind_int(st, 5, bn_done ? 1 : 0);
-        sqlite3_bind_int64(st, 6, bn_due);
-        sqlite3_bind_int64(st, 7, id);
-        step_done(db, st, "task apply notes");
+        sqlite3_bind_int64(st, 5, id);
+        step_done(db, st, "task apply done-source");
     } else {
-        step_done(db, NULL, "task apply notes");
+        step_done(db, NULL, "task apply done-source");
     }
     sqlite3_finalize(st);
     if (done)
         parent_started(db, id);
 }
 
-/* task_db_bn_deleted() — the suppressed-uid set (see db.h).  Keys are the
- * packed uids; the table owns nothing.                                     */
-GHashTable *
-task_db_bn_deleted(TaskDatabase *db)
-{
-    GHashTable *set = g_hash_table_new(g_direct_hash, g_direct_equal);
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, "SELECT uid FROM bn_deleted", -1,
-                           &st, NULL) == SQLITE_OK) {
-        while (sqlite3_step(st) == SQLITE_ROW)
-            g_hash_table_add(set,
-                GSIZE_TO_POINTER(sqlite3_column_int64(st, 0)));
-    } else {
-        step_done(db, NULL, "bn deleted query");
-    }
-    sqlite3_finalize(st);
-    return set;
-}
-
-/* task_db_bn_deleted_forget() — drop one suppression (see db.h).           */
-void
-task_db_bn_deleted_forget(TaskDatabase *db, gint64 uid)
-{
-    gchar *sql = sqlite3_mprintf("DELETE FROM bn_deleted WHERE uid = %lld",
-                                 (long long)uid);
-    exec(db, sql);
-    sqlite3_free(sql);
-}
-
-/* task_db_tasks_clear_gtasks_ids() — unbind one list's tasks (see db.h).   */
-void
-task_db_tasks_clear_gtasks_ids(TaskDatabase *db, gint64 list_id)
-{
-    gchar *sql = sqlite3_mprintf(
-        "UPDATE tasks SET gtasks_id = NULL, etag = NULL "
-        "WHERE list_id = %lld", (long long)list_id);
-    exec(db, sql);
-    sqlite3_free(sql);
-}
-
 /* ---------------------------------------------------------------------------
  * task_db_insert_remote_tombstone() — offline-move stub (see db.h).
  * ------------------------------------------------------------------------- */
-void
-task_db_insert_remote_tombstone(TaskDatabase *db, gint64 list_id,
-                                const gchar *gtasks_id)
+gint64
+task_db_insert_remote_tombstone(TaskDatabase *db, gint64 list_id)
 {
     sqlite3_stmt *st = NULL;
+    gint64 id = 0;
     if (sqlite3_prepare_v2(db->sq,
-            "INSERT INTO tasks(list_id, title, deleted, gtasks_id, "
-            "updated_at) VALUES(?, '', 1, ?, ?)", -1,
-            &st, NULL) == SQLITE_OK) {
+            "INSERT INTO tasks(list_id, title, deleted, updated_at) "
+            "VALUES(?, '', 1, ?)", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(st, 1, list_id);
-        sqlite3_bind_text(st, 2, gtasks_id, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 3, now());
-        step_done(db, st, "remote tombstone insert");
+        sqlite3_bind_int64(st, 2, now());
+        if (step_done(db, st, "remote tombstone insert"))
+            id = sqlite3_last_insert_rowid(db->sq);
     } else {
         step_done(db, NULL, "remote tombstone insert");
     }
     sqlite3_finalize(st);
+    return id;
 }
 
 /* task_db_list_purge() — physically delete a list row + all its tasks'

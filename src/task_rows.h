@@ -75,7 +75,49 @@ typedef struct {
     GHashTable *list_names;          /* list id → name, NULL for list views */
     gboolean    bold;                /* the bold_task_titles setting        */
     gboolean    show_done;           /* the show_completed toggle           */
+    GPtrArray  *decor_sets;          /* one id-set per registered decoration,
+                                      * in registry order; owned            */
 } TaskRowCtx;
+
+/* ---------------------------------------------------------------------------
+ * Row decorations — a glyph a feature prefixes to the task cell.
+ *
+ * The task cell already stacks several: ↳ for a subtask shown in a
+ * virtual view, 🚨 high priority, ⭐️ a favourite, and — until this
+ * existed — ❗ for a mirrored Notes item, which the renderer knew about
+ * by reading `bn_uid` straight off the row.  That is exactly the coupling
+ * a plugin cannot have, and the reason this hook exists.
+ *
+ * IT IS DELIBERATELY BATCH-SHAPED.  `collect` is called ONCE when the row
+ * context is built and returns the SET of task ids to decorate; drawing a
+ * row is then a hash lookup.  The alternative — asking per row — would
+ * put a plugin call inside markup generation for every task in the pane,
+ * and `task_desc_markup` feeds a cell renderer, so that cost lands on
+ * every refresh of a list that can hold thousands of rows.  A decoration
+ * that cannot answer for the whole set at once does not belong here.
+ *
+ * `sort` orders the stack from the TITLE OUTWARDS: the lowest sort sits
+ * innermost, nearest the title, because a glyph that says what the row IS
+ * belongs closer to it than one saying how it is flagged.  The app's own
+ * glyphs occupy 100 (favourite) and 200 (priority), so a decoration
+ * describing the row's nature should sort below 100.
+ *
+ * `prefix` is Pango markup, inserted verbatim ahead of the title — glyph
+ * plus its spacing, e.g. "\xe2\x9d\x97  ".  Register at startup.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    const gchar *id;
+    gint         sort;
+    /* The ids to decorate this refresh, as a GHashTable whose KEYS are
+     * gint64* (g_int64_hash/equal).  NULL means "nothing this time",
+     * which is the normal answer for a switched-off integration.  The
+     * caller takes ownership and destroys it.                          */
+    GHashTable *(*collect)(TaskApp *app, gpointer user_data);
+    const gchar *prefix;
+    gpointer     user_data;
+} TaskRowDecorDef;
+
+void task_rows_add_decoration(const TaskRowDecorDef *def);
 
 void task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx, gboolean virtual_view);
 void task_row_ctx_clear(TaskRowCtx *ctx);
@@ -93,7 +135,8 @@ guint task_rows_append(GtkListStore *store, GPtrArray *tasks,
  * its own row (the Kanban cards do this).  New string (g_free).
  * ------------------------------------------------------------------------- */
 gchar *task_rows_desc_markup(const Task *t, const gchar *list_name,
-                             gint att_count, GPtrArray *subs, gboolean bold);
+                             gint att_count, GPtrArray *subs,
+                             const TaskRowCtx *ctx);
 
 /* ---------------------------------------------------------------------------
  * task_rows_stripe_color() — the alternating tint for a row, or NULL for

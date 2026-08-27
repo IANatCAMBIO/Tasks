@@ -5,7 +5,6 @@
 #include "app.h"
 #include "db.h"
 #include "editor_window.h"
-#include "gtasks.h"
 #include "bnsync.h"
 #include "backup.h"
 #include "task_worker.h"

@@ -87,6 +87,12 @@ typedef struct {
     void            (*run)(TaskApp *app, const gchar *db_path);
     gboolean        (*ready)(TaskApp *app);
     void            (*on_arm)(TaskApp *app);
+    /* The user explicitly asked for a pass (Sync Now) but `ready` said
+     * no.  A chance to do something about it rather than appear to do
+     * nothing — the Google sync opens its sign-in flow here.  NULL means
+     * stay silent, which is right for a worker whose "not now" is not
+     * the user's to fix.                                                */
+    void            (*on_blocked)(TaskApp *app, const gchar *db_path);
 } TaskWorkerDef;
 
 /* ---------------------------------------------------------------------------
@@ -114,5 +120,28 @@ void task_worker_arm(TaskApp *app, const TaskWorkerDef *def,
  * individual workers there is what let one go missing.
  * ------------------------------------------------------------------------- */
 void task_worker_arm_all(TaskApp *app, const gchar *db_path);
+
+/* ---------------------------------------------------------------------------
+ * task_worker_run_all() — run every enabled worker's pass NOW.
+ *
+ * This is what "Sync Now" means.  It used to be a handler that named the
+ * Notes mirror and the Google sync in order, which was wrong twice over:
+ * a third integration would have had to be added to it by hand, and the
+ * button was gated on Google's setting while also running Notes.
+ *
+ * Order is registration order, which is deliberate rather than
+ * incidental: a cheap local pass registered first has its results in the
+ * database before a network pass reads them, so an item picked up from
+ * one integration can reach another in a single press.
+ *
+ * A worker that is switched off, already running, or whose `ready` says
+ * no is skipped silently — the button means "bring everything up to
+ * date", and a worker with nothing to do has done that.
+ * ------------------------------------------------------------------------- */
+void task_worker_run_all(TaskApp *app, const gchar *db_path);
+
+/* task_worker_any_enabled() — is there anything for "Sync Now" to do?
+ * Drives whether the control is shown at all.                             */
+gboolean task_worker_any_enabled(void);
 
 #endif /* TASK_WORKER_H */

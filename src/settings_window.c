@@ -4,8 +4,6 @@
 
 #include "settings_window.h"
 #include "db.h"
-#include "oauth.h"
-#include "gtasks.h"
 #include "plugin_loader.h"
 #include "bnsync.h"
 #include "backup.h"
@@ -19,12 +17,6 @@ typedef struct {
     TaskApp     *app;
     gchar     *db_path;
     GtkWidget *window;
-    GtkWidget *sync_check;           /* Google Tasks master switch          */
-    GtkWidget *sync_toolbar_check;   /* show Sync button in toolbar         */
-    GtkWidget *interval_spin;
-    GtkWidget *signin_btn;
-    GtkWidget *signout_btn;
-    GtkWidget *state_label;          /* "Signed in" / "Not signed in"       */
     GtkWidget *bn_check;             /* Notes mirror master switch        */
     GtkWidget *bn_cli_entry;         /* Notes command path                */
     GtkWidget *bn_embed_combo;       /* list mirrored items are filed into  */
@@ -38,112 +30,6 @@ static TaskSettings *settings = NULL;  /* the singleton, or NULL            */
 
 #define SETTINGS_WIDTH 470           /* window width AND the width the      */
                                      /* column's height is measured at      */
-
-/* ---------------------------------------------------------------------------
- * state_refresh() — reflect the master switch + sign-in state: with the
- * switch off, Sign In / Sign Out / the auto-sync interval all grey out.
- * ------------------------------------------------------------------------- */
-static void
-state_refresh(TaskSettings *sw)
-{
-    gboolean enabled = task_app_config_get_bool("google_sync_enabled",
-                                                TRUE);
-    gboolean in = task_oauth_authenticated();
-    gtk_label_set_markup(GTK_LABEL(sw->state_label),
-        !enabled ? "<span foreground=\"#888888\">Sync disabled</span>"
-        : in     ? "<span foreground=\"#26a269\">Signed in</span>"
-                 : "<span foreground=\"#888888\">Not signed in</span>");
-    gtk_widget_set_sensitive(sw->signout_btn, enabled && in);
-    gtk_widget_set_sensitive(sw->signin_btn,
-                             enabled && task_oauth_have_client() && !in);
-    gtk_widget_set_sensitive(sw->interval_spin, enabled);
-    gtk_widget_set_sensitive(sw->sync_toolbar_check, enabled);
-}
-
-/* ---------------------------------------------------------------------------
- * on_sync_enabled_toggled() — the Google Tasks master switch: persist,
- * re-grey the section, and arm/disarm the auto-sync timer.
- * ------------------------------------------------------------------------- */
-static void
-on_sync_enabled_toggled(GtkWidget *w, gpointer data)
-{
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
-    task_app_config_set("google_sync_enabled", on ? "1" : "0");
-    state_refresh(sw);
-    task_sync_auto_start(sw->app, sw->app->db->path);
-    /* Full notify: the library hides/shows its Sync button with this.      */
-    task_app_notify_changed(sw->app);
-    task_app_status(sw->app, on ? "Google Tasks sync enabled"
-                              : "Google Tasks sync disabled");
-}
-
-/* on_interval_changed() — write-through + restart the auto-sync timer.     */
-static void
-on_interval_changed(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    gint minutes = gtk_spin_button_get_value_as_int(
-        GTK_SPIN_BUTTON(sw->interval_spin));
-    gchar *v = g_strdup_printf("%d", minutes);
-    task_app_config_set("sync_interval_min", v);
-    g_free(v);
-    task_sync_auto_start(sw->app, sw->app->db->path);
-}
-
-/* on_sync_toolbar_toggled() — persist the toolbar-button visibility pref
- * and tell the library window to show or hide its Sync button live.        */
-static void
-on_sync_toolbar_toggled(GtkWidget *w, gpointer data)
-{
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
-    task_app_config_set("sync_toolbar_button", on ? "1" : "0");
-    task_app_notify_changed(sw->app);
-}
-
-/* signin_done() — completion of the browser flow started here.             */
-static void
-signin_done(gboolean ok, const gchar *error, gpointer data)
-{
-    TaskSettings *sw = data;
-    if (settings != sw)              /* window closed mid-flow              */
-        return;
-    state_refresh(sw);
-    if (ok)
-        task_app_status(sw->app, "Signed in to Google");
-    task_sync_signin_done(sw->app, GTK_WINDOW(sw->window), sw->db_path,
-                          ok, error, NULL);
-}
-
-/* on_signin() — the Sign In button.                                        */
-static void
-on_signin(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskSettings *sw = data;
-    task_app_status(sw->app, "Opening browser for Google sign-in\xe2\x80\xa6");
-    task_oauth_begin(GTK_WINDOW(sw->window), signin_done, sw);
-}
-
-/* on_signout() — the Sign Out button.                                      */
-static void
-on_signout(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskSettings *sw = data;
-    task_oauth_signout();
-    state_refresh(sw);
-    task_app_status(sw->app, "Signed out \xe2\x80\x94 the stored sign-in "
-                    "was removed and syncing stopped");
-}
 
 /* on_bn_toggled() — the Notes enable checkbox: persist, then re-arm
  * the mirror timer (switching ON runs a pass immediately, which is what
@@ -1206,7 +1092,7 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
                        FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), embed_row, FALSE, FALSE, 0);
 
-    /* How often the mirror runs — the same shape as the Google interval
+    /* How often the mirror runs — the same shape the Google sync's own
      * (0 = only when Sync is pressed).                                     */
     GtkWidget *bn_iv_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start(GTK_BOX(bn_iv_row),
@@ -1236,58 +1122,6 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                        FALSE, FALSE, 2);
 
-    /* --- Google Tasks ------------------------------------------------------ */
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Google Tasks"),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
-        "Two-way non-destructive sync with Google Tasks.  Sign in will "
-        "open a browser window for authentication; Sign out will remove "
-        "the local stored token."), FALSE, FALSE, 0);
-
-    sw->sync_check = gtk_check_button_new_with_label(
-        "Enable Google Tasks sync");
-    g_signal_connect(sw->sync_check, "toggled",
-                     G_CALLBACK(on_sync_enabled_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), sw->sync_check, FALSE, FALSE, 0);
-
-    GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    sw->signin_btn = gtk_button_new_with_label(
-        "Sign In to Google\xe2\x80\xa6");
-    g_signal_connect(sw->signin_btn, "clicked",
-                     G_CALLBACK(on_signin), sw);
-    gtk_box_pack_start(GTK_BOX(btn_row), sw->signin_btn, FALSE, FALSE, 0);
-    sw->signout_btn = gtk_button_new_with_label("Sign Out");
-    g_signal_connect(sw->signout_btn, "clicked",
-                     G_CALLBACK(on_signout), sw);
-    gtk_box_pack_start(GTK_BOX(btn_row), sw->signout_btn,
-                       FALSE, FALSE, 0);
-    sw->state_label = gtk_label_new("");
-    gtk_box_pack_end(GTK_BOX(btn_row), sw->state_label, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), btn_row, FALSE, FALSE, 0);
-
-    GtkWidget *interval_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_box_pack_start(GTK_BOX(interval_row),
-                       gtk_label_new("Auto-sync every"), FALSE, FALSE, 0);
-    sw->interval_spin = gtk_spin_button_new_with_range(0, 720, 1);
-    gtk_widget_set_tooltip_text(sw->interval_spin,
-        "Minutes between automatic syncs while signed in; 0 disables "
-        "the timer (the Sync button always works)");
-    g_signal_connect(sw->interval_spin, "value-changed",
-                     G_CALLBACK(on_interval_changed), sw);
-    gtk_box_pack_start(GTK_BOX(interval_row), sw->interval_spin,
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(interval_row),
-                       gtk_label_new("minutes (0 = off)"),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), interval_row, FALSE, FALSE, 0);
-
-    sw->sync_toolbar_check = gtk_check_button_new_with_label(
-        "Show Sync button in toolbar");
-    g_signal_connect(sw->sync_toolbar_check, "toggled",
-                     G_CALLBACK(on_sync_toolbar_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), sw->sync_toolbar_check,
-                       FALSE, FALSE, 0);
-
     /* --- Contributed sections ----------------------------------------------- */
     /* After the app's own, in registration order, each separated from the
      * last exactly as the built-in sections are.                          */
@@ -1300,14 +1134,7 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
     }
 
     /* --- Load current values ------------------------------------------------ */
-    gchar *iv  = task_app_config_get("sync_interval_min");
     gchar *bnc = task_app_config_get("notes_cli");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_check),
-        task_app_config_get_bool("google_sync_enabled", TRUE));
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->sync_toolbar_check),
-        task_app_config_get_bool("sync_toolbar_button", TRUE));
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->interval_spin),
-                              iv != NULL ? g_ascii_strtod(iv, NULL) : 5);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_check),
         task_app_config_get_bool("notes_sync", FALSE));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_meta_check),
@@ -1318,11 +1145,9 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
     g_free(bniv);
     if (bnc != NULL)
         gtk_entry_set_text(GTK_ENTRY(sw->bn_cli_entry), bnc);
-    g_free(iv);
     g_free(bnc);
     sw->loading = FALSE;
 
-    state_refresh(sw);
     g_signal_connect(sw->window, "destroy",
                      G_CALLBACK(on_settings_destroy), sw);
     gtk_widget_show_all(sw->window);

@@ -76,31 +76,5 @@ void task_sync_signin_done(TaskApp *app, GtkWindow *parent,
  * ------------------------------------------------------------------------- */
 void task_sync_auto_start(TaskApp *app, const gchar *db_path);
 
-/* ---------------------------------------------------------------------------
- * task_gtasks_init() — register the sync engine's worker and its
- * task_ops hooks.  Call ONCE from main(), after task_app_config_init()
- * and BEFORE any worker thread exists (the registries are process-wide
- * and unlocked).  `app` is needed because the worker definition points
- * at the app's own in-flight flag and GSource id.
- *
- * This is the whole of the Google side's involvement in local
- * operations.  Moving a task between lists, clearing a list's completed
- * tasks and deleting a list are task_ops' operations (see task_ops.h);
- * the hooks registered here add the REMOTE consequence of each:
- *
- *   moved   — tasks.move with destinationTasklist on a worker when both
- *             lists are synced and an account is connected, else the
- *             delete-old + create-new fallback on the next sync.
- *   cleared — one tasks.clear call, after which the already-tombstoned
- *             rows are purged outright instead of being pushed as N
- *             separate deletes.  Skipping it is always safe.
- *   veto    — refuses deletion of Google's default tasklist, which the
- *             API will not delete for any client.
- *
- * Registration is unconditional and does not depend on the sync being
- * enabled or an account being connected: each hook makes that decision
- * for itself when it runs, so toggling the setting needs nothing here.
- * ------------------------------------------------------------------------- */
-void task_gtasks_init(TaskApp *app);
 
 #endif /* TASK_GTASKS_H */

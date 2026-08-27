@@ -5,14 +5,13 @@
 #include "library_window.h"
 #include "bnsync.h"
 #include "editor_window.h"
-#include "gtasks.h"
-#include "oauth.h"
 #include "task_ops.h"
 #include "backup.h"
 #include "task_worker.h"
 #include "plugin_loader.h"
 #include "task_view.h"
 #include "task_rows.h"
+#include "task_ui.h"
 #include "settings_window.h"
 #include <stdlib.h>
 #include <string.h>
@@ -70,8 +69,7 @@ typedef struct {
     GtkListStore *task_store;
     GtkWidget    *task_view;
     GtkWidget    *task_scroll;       /* the regular task pane; swapped
-                                      * with a panel view's widget or the
-                                      * board (visibility)                  */
+                                      * with forecast_box (visibility)      */
     GPtrArray    *panels;            /* GtkWidget* per view index, NULL
                                       * for a query view (see task_view.h) */
     /* Kanban board — the THIRD task-pane variant, one lane per
@@ -123,6 +121,7 @@ typedef struct {
     GtkWidget    *sidebar_box;       /* for the toolbar show/hide toggle    */
     GtkWidget    *toolbar;           /* hidden by Compact Layout            */
     GtkWidget    *toolbar_rule;      /* the thin rule under the toolbar     */
+    GtkWidget    *ui_tool_rule;      /* divider before contributed buttons  */
     GtkWidget    *float_bar;         /* Compact Layout's floating New /
                                       * Delete Task pair (overlay child)    */
     GtkWidget    *status_left;       /* selection info label                */
@@ -130,7 +129,6 @@ typedef struct {
     guint         listen_changed;    /* TaskApp event subscriptions —       */
     guint         listen_tasks;      /* dropped in on_library_destroy       */
     guint         listen_status;     /* BEFORE the editors close            */
-    GtkWidget    *sync_item;         /* the toolbar's Sync button        */
     GtkWidget    *hide_done_item;    /* completed-visibility toggle button  */
     GtkWidget    *manual_sort_item;  /* manual-sort mode toggle button      */
     GtkWidget    *pane_item;         /* list <-> Kanban pane toggle button  */
@@ -408,6 +406,7 @@ static gchar   *list_order_key(gint64 list_id);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
 static void     on_toggle_kanban(GtkWidget *, gpointer);
 static void     full_refresh(TaskLibrary *lw);
+static void     on_ui_task_menu_activated(GtkWidget *, gpointer);
 static void     scroll_keep_queue_win(GtkWidget *scroll);
 
 /* sel_view() — the registered view the sidebar is sitting on, or NULL
@@ -1992,7 +1991,7 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
             : NULL;
         gint att = GPOINTER_TO_INT(
             g_hash_table_lookup(ctx->att_counts, GINT_TO_POINTER(t->id)));
-        gchar *markup = task_rows_desc_markup(t, list_name, att, subs, ctx->bold);
+        gchar *markup = task_rows_desc_markup(t, list_name, att, subs, ctx);
         gboolean selected = card_sel_has(lw, t->id);
         if (selected)
             g_hash_table_add(alive, GSIZE_TO_POINTER((gsize)t->id));
@@ -2041,10 +2040,9 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
 
 /* ---------------------------------------------------------------------------
  * kanban_lane_new() — one lane: a heading label over a framed, padded
- * body that holds the cards and accepts drops.  Mirrors the Weekly
- * Forecast's day sections (label + framed body, natural height, no
- * scroller of their own) — that view is a plugin now, but the shape was
- * borrowed from it and the two still want to look alike.  Fills lw->kanban_labels / kanban_lanes [status].
+ * body that holds the cards and accepts drops.  Mirrors
+ * forecast_day_section's shape (label + framed body, natural height, no
+ * scroller of its own).  Fills lw->kanban_labels / kanban_lanes [status].
  *
  * The drop target is an EVENT BOX wrapping the card box, not the card box
  * itself: a GtkBox is a no-window widget, and a drag destination needs a
@@ -2268,9 +2266,14 @@ full_refresh(TaskLibrary *lw)
 {
     refresh_sidebar(lw);
     refresh_tasks(lw);
-    gtk_widget_set_visible(lw->sync_item,
-        task_app_config_get_bool("google_sync_enabled", TRUE) &&
-        task_app_config_get_bool("sync_toolbar_button", TRUE));
+    /* Contributed toolbar buttons decide their own visibility (see
+     * task_ui.h).  The window used to own a Sync button and gate it on
+     * Google's setting while it also ran the Notes mirror; each
+     * integration now brings its own button and answers for it.         */
+    task_ui_tools_apply_visibility(lw->app);
+    if (lw->ui_tool_rule != NULL)
+        gtk_widget_set_visible(lw->ui_tool_rule,
+                               task_ui_any_tool_visible(lw->app));
     task_editor_refresh_all(lw->app);
 }
 
@@ -3396,23 +3399,6 @@ on_ctx_info(GtkWidget *item, gpointer data)
     task_editor_open(lw->app, g_array_index(ids, gint64, 0));
 }
 
-/* on_ctx_open_google() — open the row's webViewLink in the browser.        */
-static void
-on_ctx_open_google(GtkWidget *item, gpointer data)
-{
-    TaskLibrary *lw = data;
-    const gchar *url = g_object_get_data(G_OBJECT(item), "task-url");
-    if (url == NULL)
-        return;
-    GError *gerr = NULL;
-    if (!gtk_show_uri_on_window(GTK_WINDOW(lw->window), url,
-                                GDK_CURRENT_TIME, &gerr)) {
-        task_app_status(lw->app, "Cannot open browser: %s",
-                        gerr != NULL ? gerr->message : "?");
-        g_clear_error(&gerr);
-    }
-}
-
 /* item_ids() — the gint64 id array stashed on a context-menu item.         */
 static GArray *
 item_ids(GtkWidget *item)
@@ -3623,18 +3609,28 @@ task_context_menu_popup(TaskLibrary *lw, GtkWidget *anchor,
     gtk_menu_shell_append(GTK_MENU_SHELL(menu),
                           gtk_separator_menu_item_new());
 
-    /* Open in Google Tasks — single, synced task only.                     */
-    GtkWidget *open_item =
-        gtk_menu_item_new_with_label("Open in Google Tasks");
-    if (single && t != NULL && t->web_link != NULL) {
-        g_object_set_data_full(G_OBJECT(open_item), "task-url",
-                               g_strdup(t->web_link), g_free);
-        g_signal_connect(open_item, "activate",
-                         G_CALLBACK(on_ctx_open_google), lw);
-    } else {
-        gtk_widget_set_sensitive(open_item, FALSE);
+    /* Contributed items (see task_ui.h).  An item that does not apply to
+     * this selection is GREYED, not hidden: the menu keeps its shape
+     * between right-clicks rather than moving under the pointer.          */
+    for (guint i = 0; i < task_ui_task_menu_count(); i++) {
+        const TaskUiTaskMenuDef *d = task_ui_task_menu_nth(i);
+        GtkWidget *item = gtk_menu_item_new_with_label(d->label);
+        gboolean on = d->enabled == NULL ||
+                      d->enabled(lw->app, ids, d->user_data);
+        if (on) {
+            g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
+            /* The ids array outlives the menu: it is ref'd onto the item
+             * exactly as the app's own bulk actions do.                   */
+            g_object_set_data_full(G_OBJECT(item), "task-ids",
+                                   g_array_ref(ids),
+                                   (GDestroyNotify)g_array_unref);
+            g_signal_connect(item, "activate",
+                             G_CALLBACK(on_ui_task_menu_activated), lw);
+        } else {
+            gtk_widget_set_sensitive(item, FALSE);
+        }
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
     }
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), open_item);
 
     /* Move to List — applies to the selection's top-level tasks.           */
     GtkWidget *move_item = gtk_menu_item_new_with_label("Move to List");
@@ -3749,70 +3745,37 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     return task_context_menu_popup(lw, view, event);
 }
 
-/* sync_done() — re-enable the Sync button after a run.  The library is
- * re-resolved through the app context: the completion idle can fire
- * AFTER the window was closed and its TaskLibrary freed, so a captured lw
- * pointer would dangle (the settings window guards the same way).          */
-static void
-sync_done(TaskApp *app, gboolean ok, const gchar *message, gpointer data)
-{
-    (void)ok; (void)message; (void)data;
-    TaskLibrary *lw = lib_of(app);
-    if (lw != NULL)
-        gtk_widget_set_sensitive(lw->sync_item, TRUE);
-}
-
-/* sync_after_signin() — the Sync button's browser flow finished: run the
- * actual sync, or report why not.  Same lifetime rule as sync_done.        */
-static void
-sync_after_signin(gboolean ok, const gchar *error, gpointer data)
-{
-    TaskApp *app = data;
-    TaskLibrary *lw = lib_of(app);
-    if (lw == NULL)
-        return;                      /* window closed mid-flow              */
-    if (!ok)
-        gtk_widget_set_sensitive(lw->sync_item, TRUE);
-    task_sync_signin_done(app, GTK_WINDOW(lw->window), app->db->path,
-                          ok, error, sync_done);
-}
-
-/* on_sync() — the toolbar Sync button.  Sign-in is per session: when the
- * in-memory token is missing/expired this re-runs the browser flow first
- * (usually a silent redirect), then syncs.
+/* ---------------------------------------------------------------------------
+ * on_sync() — the Sync button and File → Sync Now.
  *
- * The Notes mirror runs FIRST and on its own worker: it is the cheap
- * local pass, and going first means anything it pulls in from Notes
- * is already in the database when the Google pass reads it, so a new
- * action item reaches Google in one press rather than two.                 */
+ * "Sync" means EVERY registered background worker (see task_worker.h),
+ * not a named list of them.  This used to start the Notes mirror and
+ * then the Google sync by hand, which was wrong twice over: a third
+ * integration would have had to be added here, and the button was gated
+ * on Google's setting while also running Notes.
+ *
+ * Sign-in is no longer this function's business either.  A worker that
+ * cannot run right now says so itself, and the Google sync opens its
+ * browser flow from its own `on_blocked` — which is why pressing this
+ * while signed out still signs in, without the window knowing what
+ * OAuth is.
+ *
+ * The button is NOT greyed while a pass runs.  With several workers
+ * there is no single "the sync" to be busy; each already refuses to
+ * start a second pass over itself, and a control that greys out for the
+ * length of a network round trip is worse than one that is idempotent.
+ * ------------------------------------------------------------------------- */
 static void
 on_sync(GtkWidget *w, gpointer data)
 {
     (void)w;
     TaskLibrary *lw = data;
-    if (task_app_config_get_bool("notes_sync", FALSE))
-        task_bnsync_start(lw->app, lw->app->db->path, NULL, NULL);
-    if (!task_app_config_get_bool("google_sync_enabled", TRUE)) {
-        task_app_status(lw->app, "Google Tasks sync is disabled \xe2\x80\x94 "
-                        "enable it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
+    if (!task_worker_any_enabled()) {
+        task_app_status(lw->app, "No sync is switched on \xe2\x80\x94 see "
+                        "File \xe2\x86\x92 Settings\xe2\x80\xa6");
         return;
     }
-    if (!task_oauth_have_client()) {
-        task_app_status(lw->app, "Google sync is not configured \xe2\x80\x94 "
-                        "see File \xe2\x86\x92 Settings\xe2\x80\xa6");
-        task_settings_window_open(lw->app, GTK_WINDOW(lw->window),
-                                  lw->app->db->path);
-        return;
-    }
-    gtk_widget_set_sensitive(lw->sync_item, FALSE);
-    if (task_oauth_authenticated()) {
-        task_sync_start(lw->app, lw->app->db->path, sync_done, NULL);
-    } else {
-        task_app_status(lw->app,
-                        "Opening browser for Google sign-in\xe2\x80\xa6");
-        task_oauth_begin(GTK_WINDOW(lw->window), sync_after_signin,
-                         lw->app);
-    }
+    task_worker_run_all(lw->app, lw->app->db->path);
 }
 
 /* ===========================================================================
@@ -4207,6 +4170,64 @@ task_library_apply_native_menubar(TaskApp *app, gboolean native)
  * Construction.
  * =========================================================================== */
 
+/* on_ui_tool_clicked() — a contributed toolbar button was pressed.  The
+ * definition rides on the widget, so one handler serves every item.     */
+static void
+on_ui_tool_clicked(GtkWidget *item, gpointer data)
+{
+    TaskLibrary *lw = data;
+    const TaskUiToolDef *d = g_object_get_data(G_OBJECT(item),
+                                               "task-ui-def");
+    if (d != NULL && d->clicked != NULL)
+        d->clicked(lw->app, d->user_data);
+}
+
+/* on_ui_menu_activated() — the same for a contributed menu item.        */
+static void
+on_ui_menu_activated(GtkWidget *item, gpointer data)
+{
+    TaskLibrary *lw = data;
+    const TaskUiMenuDef *d = g_object_get_data(G_OBJECT(item),
+                                               "task-ui-def");
+    if (d != NULL && d->activate != NULL)
+        d->activate(lw->app, d->user_data);
+}
+
+/* on_ui_task_menu_activated() — a contributed task context-menu item.
+ * Both the definition and the selection ride on the widget.             */
+static void
+on_ui_task_menu_activated(GtkWidget *item, gpointer data)
+{
+    TaskLibrary *lw = data;
+    const TaskUiTaskMenuDef *d = g_object_get_data(G_OBJECT(item),
+                                                   "task-ui-def");
+    GArray *ids = g_object_get_data(G_OBJECT(item), "task-ids");
+    if (d != NULL && d->activate != NULL && ids != NULL)
+        d->activate(lw->app, ids, d->user_data);
+}
+
+/* ui_menu_items() — append every contributed item for `which`, followed
+ * by a separator so the group reads as its own section.  Appends NOTHING
+ * when there are none, which keeps an app with no plugins looking
+ * exactly as it did.                                                     */
+static void
+ui_menu_items(TaskLibrary *lw, GtkWidget *menu, TaskUiMenu which)
+{
+    gboolean any = FALSE;
+    for (guint i = 0; i < task_ui_menu_count(); i++) {
+        const TaskUiMenuDef *d = task_ui_menu_nth(i);
+        if (d->menu != which)
+            continue;
+        GtkWidget *item = menu_item(menu, d->label,
+                                    G_CALLBACK(on_ui_menu_activated), lw);
+        g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
+        any = TRUE;
+    }
+    if (any)
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                              gtk_separator_menu_item_new());
+}
+
 /* tool_button() — a style-aware toolbar button (local icon + label)
  * wired to `cb` and appended to `bar`.                                     */
 static GtkToolItem *
@@ -4360,6 +4381,7 @@ on_library_destroy(GtkWidget *w, gpointer data)
     /* The widgets belong to the pane and die with it; only the index
      * array is ours.                                                       */
     g_clear_pointer(&lw->panels, (GDestroyNotify)g_ptr_array_unref);
+    task_ui_tool_forget_all();   /* the toolbar destroyed them */
     task_app_unlisten(lw->app, lw->listen_changed);
     task_app_unlisten(lw->app, lw->listen_tasks);
     task_app_unlisten(lw->app, lw->listen_status);
@@ -4821,6 +4843,7 @@ task_library_window_new(TaskApp *app)
               G_CALLBACK(on_menu_clear_completed), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
+    ui_menu_items(lw, file_menu, TASK_UI_MENU_FILE);
     menu_item(file_menu, "Open Database File\xe2\x80\xa6",
               G_CALLBACK(on_open_db), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
@@ -4912,9 +4935,6 @@ task_library_window_new(TaskApp *app)
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
 
-    lw->sync_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
-        "google-symbol", "\xe2\x9f\xb3", "Sync",
-        "Sync with Google Tasks now", G_CALLBACK(on_sync)));
     lw->hide_done_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
         "hidden", "\xf0\x9f\x91\x81", "Completed",
         "Hide completed tasks", G_CALLBACK(on_toggle_done_visible)));
@@ -4942,6 +4962,35 @@ task_library_window_new(TaskApp *app)
     tool_button(lw, GTK_TOOLBAR(toolbar), "remove", NULL,
                 "Delete Task", "Delete the selected task",
                 G_CALLBACK(on_delete_task));
+
+    /* Contributed toolbar items (see task_ui.h) sit LAST, behind their
+     * own divider: an integration's button is neither one of the view
+     * controls nor one of the task actions, and grouping it with either
+     * would say it was.  The divider is added only when there is
+     * something to divide, so an app with no plugins keeps exactly the
+     * toolbar it had.
+     *
+     * The divider follows the BUTTONS, not the registry: an item can be
+     * registered and hidden (an integration switched off), and a rule
+     * with nothing after it reads as a mistake.  It is kept in
+     * lw->ui_tool_rule and hidden with them.                              */
+    task_ui_tool_forget_all();
+    if (task_ui_tool_count() > 0) {
+        GtkToolItem *rule = gtk_separator_tool_item_new();
+        lw->ui_tool_rule = GTK_WIDGET(rule);
+        gtk_toolbar_insert(GTK_TOOLBAR(toolbar), rule, -1);
+    }
+    for (guint i = 0; i < task_ui_tool_count(); i++) {
+        const TaskUiToolDef *d = task_ui_tool_nth(i);
+        GtkToolItem *item = task_app_tool_item_new(lw->app, d->icon,
+                                                   d->fallback_markup,
+                                                   d->label, d->tooltip);
+        g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
+        g_signal_connect(item, "clicked", G_CALLBACK(on_ui_tool_clicked),
+                         lw);
+        gtk_toolbar_insert(GTK_TOOLBAR(toolbar), item, -1);
+        task_ui_tool_bind(d->id, GTK_WIDGET(item));
+    }
 
     /* Expanding blank separator pushes the About button to the right
      * edge (the Notes layout).                                            */
@@ -5273,9 +5322,10 @@ task_library_window_new(TaskApp *app)
                                    GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(lw->task_scroll), lw->task_view);
 
-    /* Every panel view builds its pane here (see task_view.h).  The core
-     * implements none of them: the Weekly Forecast, the only one so far,
-     * is a plugin.  What arrives is whatever panel_new returned.          */
+    /* Every panel view builds its pane here (see task_view.h).  The
+     * Weekly Forecast is currently the only one, and the core still owns
+     * its implementation — but it goes through the same interface a
+     * plugin would, so moving it out is relocation, not redesign.         */
     lw->panels = g_ptr_array_new();
     for (guint i = 0; i < task_view_count(); i++) {
         const TaskView *v = task_view_nth(i);
@@ -5371,9 +5421,12 @@ task_library_window_new(TaskApp *app)
     /* show_all made ALL THREE task-pane variants visible — put the
      * regular-list / Weekly Forecast / Kanban choice back.                 */
     task_pane_mode_apply(lw);
-    /* Hide Sync button when the master switch is off or user opted out.    */
-    if (!task_app_config_get_bool("google_sync_enabled", TRUE) ||
-        !task_app_config_get_bool("sync_toolbar_button", TRUE))
-        gtk_widget_hide(lw->sync_item);
+    /* show_all revealed every contributed toolbar button; let each one
+     * answer for itself (see task_ui.h).  Same reason the pane choice is
+     * re-applied above.                                                   */
+    task_ui_tools_apply_visibility(lw->app);
+    if (lw->ui_tool_rule != NULL)
+        gtk_widget_set_visible(lw->ui_tool_rule,
+                               task_ui_any_tool_visible(lw->app));
     return lw->window;
 }

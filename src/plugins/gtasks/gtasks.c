@@ -3,16 +3,329 @@
  * =========================================================================== */
 
 #include "gtasks.h"
+#include "plugin_ctx.h"
+#include <curl/curl.h>
 #include "oauth.h"
 #include "http.h"
 #include "json.h"
 #include "task_ops.h"                /* the hooks the remote half rides on  */
-#include "task_worker.h"             /* the shared periodic-pass scheduler  */
+#include "task_worker.h"
+#include "task_ui.h"
+#include "settings_window.h"             /* the shared periodic-pass scheduler  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define GTASKS_API "https://tasks.googleapis.com/tasks/v1"
+
+/* The host table and this plugin's identity.  Defined here, declared in
+ * plugin_ctx.h for the module's other translation units.                 */
+const TaskHostApi *host;
+const TaskPlugin  *self;
+
+/* This sync's own in-flight guard and periodic timer.  They were fields
+ * on TaskApp while this was compiled into the app; a plugin owns its own
+ * — the scheduler is handed pointers to them (see task_worker.h), so the
+ * host needs no field per integration.                                   */
+static gboolean gt_running;
+static guint    gt_timer;
+
+/* ---------------------------------------------------------------------------
+ * gt_status() / gt_notice() — printf-style wrappers over the host's
+ * plain-string message calls.
+ *
+ * The host table deliberately takes a FINISHED string, so a plugin can
+ * never hand user-supplied text to a format parser across the ABI
+ * boundary.  These keep that property while letting the call sites read
+ * the way they always did.
+ * ------------------------------------------------------------------------- */
+static void gt_status(TaskApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
+static void
+gt_status(TaskApp *app, const gchar *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    gchar *msg = g_strdup_vprintf(fmt, ap);
+    va_end(ap);
+    host->notify->status(app, msg);
+    g_free(msg);
+}
+
+static void gt_notice(GtkWindow *parent, GtkMessageType type,
+                      const gchar *title, const gchar *fmt, ...)
+                      G_GNUC_PRINTF(4, 5);
+static void
+gt_notice(GtkWindow *parent, GtkMessageType type, const gchar *title,
+          const gchar *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    gchar *msg = g_strdup_vprintf(fmt, ap);
+    va_end(ap);
+    host->ui->notice(parent, type, title, msg);
+    g_free(msg);
+}
+
+
+/* ===========================================================================
+ * The side tables (schema v8).
+ *
+ * A task's Google identity — its remote id, its etag, the deep link and
+ * the raw links[]/assignmentInfo blobs — lives in gtasks_task keyed by
+ * task id, and a list's in gtasks_list.  None of it is on the core rows
+ * any more: a task carries only what a task is, and this integration
+ * carries what it knows about that task.
+ *
+ * These are per-row queries rather than a batched map, deliberately.
+ * Every caller here is on the sync WORKER and is already making an HTTP
+ * request per row, so one indexed primary-key lookup beside it is
+ * nothing.  The batch rule in plugin.h is about the UI's draw path,
+ * which none of this is on.
+ * =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * Reading and writing the side tables.
+ *
+ * Every statement goes through the HOST (host->db->exec / exec_query).  A
+ * plugin must never link SQLite itself: it is handed a live sqlite3*
+ * belonging to the host, and a second copy of the library operating on
+ * that handle is undefined behaviour — the one failure mode plugin.h
+ * calls out as worth being paranoid about, given this database's
+ * history.  So there is no sqlite3_* call anywhere below, and none in
+ * this plugin at all.
+ *
+ * String values are quoted with host->db->quote (sqlite3_mprintf's %Q,
+ * re-homed onto g_free), so nothing here hand-rolls escaping.  Integers
+ * are formatted directly — they cannot carry an injection.
+ * ------------------------------------------------------------------------- */
+
+/* collect_text() — exec_query callback taking the first column of the
+ * first row as a newly-allocated string.  Returns non-zero to stop after
+ * that row.                                                              */
+static gint
+collect_text(gpointer data, gint n_cols, gchar **values, gchar **names)
+{
+    (void)names;
+    gchar **out = data;
+    if (n_cols > 0 && values[0] != NULL)
+        *out = g_strdup(values[0]);
+    return 1;                        /* one row is all we want            */
+}
+
+/* gt_text() — one TEXT column of a side row, or NULL.  New string.       */
+static gchar *
+gt_text(TaskDatabase *db, const gchar *table, const gchar *key_col,
+        const gchar *col, gint64 id)
+{
+    gchar *sql = g_strdup_printf("SELECT %s FROM %s WHERE %s = %" G_GINT64_FORMAT,
+                                 col, table, key_col, id);
+    gchar *out = NULL;
+    host->db->exec_query(db, sql, collect_text, &out);
+    g_free(sql);
+    return out;
+}
+
+/* gt_list_by_gid() — the local list bound to a Google tasklist id, or 0.
+ * The reverse of gt_list_gid, for the places Google names a list.        */
+static gint64
+gt_list_by_gid(TaskDatabase *db, const gchar *gid)
+{
+    if (gid == NULL)
+        return 0;
+    gchar *q   = host->db->quote(gid);
+    gchar *sql = g_strdup_printf(
+        "SELECT list_id FROM gtasks_list WHERE gtasks_id = %s", q);
+    gchar *got = NULL;
+    host->db->exec_query(db, sql, collect_text, &got);
+    gint64 id = got != NULL ? g_ascii_strtoll(got, NULL, 10) : 0;
+    g_free(got);
+    g_free(sql);
+    g_free(q);
+    return id;
+}
+
+static gchar *
+gt_list_gid(TaskDatabase *db, gint64 list_id)
+{
+    return gt_text(db, "gtasks_list", "list_id", "gtasks_id", list_id);
+}
+
+static gchar *
+gt_task_gid(TaskDatabase *db, gint64 task_id)
+{
+    return gt_text(db, "gtasks_task", "task_id", "gtasks_id", task_id);
+}
+
+static gchar *
+gt_task_etag(TaskDatabase *db, gint64 task_id)
+{
+    return gt_text(db, "gtasks_task", "task_id", "etag", task_id);
+}
+
+/* gt_list_set_gid() — bind (or unbind, with NULL) a list.                */
+static void
+gt_list_set_gid(TaskDatabase *db, gint64 list_id, const gchar *gid)
+{
+    gchar *sql;
+    if (gid != NULL) {
+        gchar *q = host->db->quote(gid);
+        sql = g_strdup_printf(
+            "INSERT INTO gtasks_list (list_id, gtasks_id)"
+            " VALUES (%" G_GINT64_FORMAT ", %s)"
+            " ON CONFLICT(list_id) DO UPDATE SET gtasks_id = %s",
+            list_id, q, q);
+        g_free(q);
+    } else {
+        sql = g_strdup_printf(
+            "DELETE FROM gtasks_list WHERE list_id = %" G_GINT64_FORMAT,
+            list_id);
+    }
+    host->db->exec(db, sql);
+    g_free(sql);
+}
+
+/* gt_task_set() — write a task's whole Google identity.  A NULL `gid`
+ * DELETES the row: a task with no remote id has nothing to remember, and
+ * leaving a stale etag behind would guard a push that no longer applies. */
+static void
+gt_task_set(TaskDatabase *db, gint64 task_id, const gchar *gid,
+            const gchar *etag, const gchar *web_link,
+            const gchar *glinks, const gchar *assigned)
+{
+    gchar *sql;
+    if (gid != NULL) {
+        gchar *qg = host->db->quote(gid);
+        gchar *qe = host->db->quote(etag);
+        gchar *qw = host->db->quote(web_link);
+        gchar *ql = host->db->quote(glinks);
+        gchar *qa = host->db->quote(assigned);
+        sql = g_strdup_printf(
+            "INSERT INTO gtasks_task"
+            "  (task_id, gtasks_id, etag, web_link, glinks, assigned)"
+            "  VALUES (%" G_GINT64_FORMAT ", %s, %s, %s, %s, %s)"
+            "  ON CONFLICT(task_id) DO UPDATE SET"
+            "    gtasks_id = excluded.gtasks_id,"
+            "    etag      = excluded.etag,"
+            "    web_link  = excluded.web_link,"
+            "    glinks    = excluded.glinks,"
+            "    assigned  = excluded.assigned",
+            task_id, qg, qe, qw, ql, qa);
+        g_free(qg); g_free(qe); g_free(qw); g_free(ql); g_free(qa);
+    } else {
+        sql = g_strdup_printf(
+            "DELETE FROM gtasks_task WHERE task_id = %" G_GINT64_FORMAT,
+            task_id);
+    }
+    host->db->exec(db, sql);
+    g_free(sql);
+}
+
+/* gt_task_set_gid() — bind the id alone, leaving any etag/link intact.   */
+static void
+gt_task_set_gid(TaskDatabase *db, gint64 task_id, const gchar *gid)
+{
+    if (gid == NULL) {
+        gt_task_set(db, task_id, NULL, NULL, NULL, NULL, NULL);
+        return;
+    }
+    gchar *q = host->db->quote(gid);
+    gchar *sql = g_strdup_printf(
+        "INSERT INTO gtasks_task (task_id, gtasks_id)"
+        " VALUES (%" G_GINT64_FORMAT ", %s)"
+        " ON CONFLICT(task_id) DO UPDATE SET gtasks_id = %s",
+        task_id, q, q);
+    host->db->exec(db, sql);
+    g_free(sql);
+    g_free(q);
+}
+
+/* ---------------------------------------------------------------------------
+ * gt_gids_for_list() — every bound task of one list, as task id → gid.
+ *
+ * ONE query for the whole list rather than a lookup per task, because
+ * this one IS on a hot path: the match passes below consult it for every
+ * task on both sides.  The map owns its strings, which is what lets them
+ * double as keys in the gid → Task index the caller builds.
+ * ------------------------------------------------------------------------- */
+static gint
+collect_gid_row(gpointer data, gint n_cols, gchar **values, gchar **names)
+{
+    (void)names;
+    GHashTable *m = data;
+    if (n_cols >= 2 && values[0] != NULL && values[1] != NULL) {
+        gint64 *k = g_new(gint64, 1);
+        *k = g_ascii_strtoll(values[0], NULL, 10);
+        g_hash_table_insert(m, k, g_strdup(values[1]));
+    }
+    return 0;                        /* keep going                        */
+}
+
+static GHashTable *
+gt_gids_for_list(TaskDatabase *db, gint64 list_id)
+{
+    GHashTable *m = g_hash_table_new_full(g_int64_hash, g_int64_equal,
+                                          g_free, g_free);
+    gchar *sql = g_strdup_printf(
+        "SELECT g.task_id, g.gtasks_id FROM gtasks_task g"
+        "  JOIN tasks t ON t.id = g.task_id"
+        " WHERE t.list_id = %" G_GINT64_FORMAT
+        "   AND g.gtasks_id IS NOT NULL", list_id);
+    host->db->exec_query(db, sql, collect_gid_row, m);
+    g_free(sql);
+    return m;
+}
+
+/* gid_of() — a task's Google id from that map, or NULL.                   */
+static const gchar *
+gid_of(GHashTable *m, gint64 task_id)
+{
+    return g_hash_table_lookup(m, &task_id);
+}
+
+/* gid_put() — record a binding just made, so later passes see it.  NULL
+ * removes.  The map owns the copy.                                        */
+static void
+gid_put(GHashTable *m, gint64 task_id, const gchar *gid)
+{
+    if (gid == NULL) {
+        g_hash_table_remove(m, &task_id);
+        return;
+    }
+    gint64 *k = g_new(gint64, 1);
+    *k = task_id;
+    g_hash_table_insert(m, k, g_strdup(gid));
+}
+
+/* gt_list_forget_tasks() — drop every task binding of one list, so the
+ * task pass re-pushes them all as new (the bound remote list vanished). */
+static void
+gt_list_forget_tasks(TaskDatabase *db, gint64 list_id)
+{
+    gchar *sql = g_strdup_printf(
+        "DELETE FROM gtasks_task WHERE task_id IN"
+        "  (SELECT id FROM tasks WHERE list_id = %" G_GINT64_FORMAT ")",
+        list_id);
+    host->db->exec(db, sql);
+    g_free(sql);
+}
+
+/* ---------------------------------------------------------------------------
+ * gt_remote_tombstone() — a bare tombstone carrying a Google id.
+ *
+ * The offline half of a cross-list move: the moved row starts a NEW
+ * remote task in the destination, while this stub deletes the old remote
+ * copy on the next pass.  The tombstone is a core row; the id it carries
+ * is ours, so it goes in the side table.
+ * ------------------------------------------------------------------------- */
+static void
+gt_remote_tombstone(TaskDatabase *db, gint64 list_id, const gchar *gid)
+{
+    if (gid == NULL)
+        return;
+    gint64 id = host->db->insert_remote_tombstone(db, list_id);
+    if (id != 0)
+        gt_task_set_gid(db, id, gid);
+}
 
 static void post_status(TaskApp *app, const gchar *msg);
 
@@ -143,7 +456,7 @@ due_from_rfc3339(const gchar *s)
     gint y = 0, m = 0, d = 0;        /* the date portion                    */
     if (s == NULL || sscanf(s, "%d-%d-%d", &y, &m, &d) != 3)
         return 0;
-    return task_due_from_ymd(y, m, d);
+    return host->util->due_from_ymd(y, m, d);
 }
 
 /* due_to_rfc3339() — local midnight unix → "YYYY-MM-DDT00:00:00.000Z"
@@ -154,7 +467,7 @@ due_to_rfc3339(gint64 due)
 {
     if (due == 0)
         return NULL;
-    gchar *date = task_due_format_iso(due);
+    gchar *date = host->util->due_format_iso(due);
     gchar *s = g_strdup_printf("%sT00:00:00.000Z", date);
     g_free(date);
     return s;
@@ -451,7 +764,7 @@ fetch_default_list_gid(TaskDatabase *db, const gchar *token, gchar **err)
     TaskJson *reply = NULL;
     gboolean ok = api_call("GET", url, token, NULL, NULL, &reply, err);
     if (ok && task_json_str(reply, "id") != NULL)
-        task_db_state_set(db, "default_list_gid",
+        host->db->state_set(db, "default_list_gid",
                           task_json_str(reply, "id"));
     task_json_free(reply);
     g_free(url);
@@ -475,25 +788,30 @@ sync_lists(TaskApp *app, TaskDatabase *db, const gchar *token,
 {
     if (!fetch_default_list_gid(db, token, err))
         return FALSE;
-    gchar *default_gid = task_db_state_get(db, "default_list_gid");
+    gchar *default_gid = host->db->state_get(db, "default_list_gid");
 
     GPtrArray *remote = fetch_remote_lists(token, err);
     if (remote == NULL) {
         g_free(default_gid);
         return FALSE;
     }
-    GPtrArray *local = task_db_lists(db, TRUE);
+    GPtrArray *local = host->db->lists(db, TRUE);
     gboolean ok = TRUE;
 
     for (guint i = 0; i < local->len && ok; i++) {
         TaskList *l = g_ptr_array_index(local, i);
+        /* This list's Google identity, from the side table (schema v8).
+         * Held as a local for the iteration because the binding can
+         * CHANGE below — adopted by name, or replaced when the remote
+         * list had to be re-created.                                      */
+        gchar *lgid = gt_list_gid(db, l->id);
 
         /* Find the remote row this local one is bound to.                  */
         RemoteList *match = NULL;
-        if (l->gtasks_id != NULL) {
+        if (lgid != NULL) {
             for (guint j = 0; j < remote->len; j++) {
                 RemoteList *r = g_ptr_array_index(remote, j);
-                if (strcmp(r->gid, l->gtasks_id) == 0) {
+                if (strcmp(r->gid, lgid) == 0) {
                     match = r;
                     break;
                 }
@@ -505,9 +823,9 @@ sync_lists(TaskApp *app, TaskDatabase *db, const gchar *token,
                 RemoteList *r = g_ptr_array_index(remote, j);
                 if (!r->matched && strcmp(r->title, l->name) == 0) {
                     match = r;
-                    task_db_list_set_gtasks_id(db, l->id, r->gid);
-                    g_free(l->gtasks_id);
-                    l->gtasks_id = g_strdup(r->gid);
+                    gt_list_set_gid(db, l->id, r->gid);
+                    g_free(lgid);
+                    lgid = g_strdup(r->gid);
                     break;
                 }
             }
@@ -520,36 +838,38 @@ sync_lists(TaskApp *app, TaskDatabase *db, const gchar *token,
              * up front; this catches a tombstone from an older build):
              * RESTORE the list and its same-moment task tombstones —
              * remote is the source of truth and still has everything.      */
-            if (l->gtasks_id != NULL && default_gid != NULL &&
-                strcmp(l->gtasks_id, default_gid) == 0) {
-                task_db_list_restore(db, l->id);
+            if (lgid != NULL && default_gid != NULL &&
+                strcmp(lgid, default_gid) == 0) {
+                host->db->list_restore(db, l->id);
                 post_status(app, "Google's default list cannot be "
                             "deleted \xe2\x80\x94 restored");
-                ListPair p = { l->id, g_strdup(l->gtasks_id) };
+                ListPair p = { l->id, g_strdup(lgid) };
                 g_array_append_val(pairs, p);
+                g_free(lgid);
                 continue;
             }
             /* Local tombstone: propagate, then purge.                      */
-            if (l->gtasks_id != NULL) {
-                gchar *url = tasklist_url(l->gtasks_id);
+            if (lgid != NULL) {
+                gchar *url = tasklist_url(lgid);
                 ok = api_call_delete(url, token, err);
                 g_free(url);
             }
             if (ok) {
-                task_db_list_purge(db, l->id);
+                host->db->list_purge(db, l->id);
                 stats->deleted++;
             }
+            g_free(lgid);
             continue;
         }
 
-        if (l->gtasks_id == NULL || match == NULL) {
+        if (lgid == NULL || match == NULL) {
             /* Local new — or its bound remote list vanished without a
              * local tombstone.  NON-DESTRUCTIVE: absence never deletes;
              * the list exists here, so (re-)create it remotely and
              * adopt the new id.  On a re-create the list's tasks drop
              * their stale Google identities too, so the task pass
              * pushes every one of them as a new remote task.               */
-            gboolean rebind = l->gtasks_id != NULL;
+            gboolean rebind = lgid != NULL;
             gchar *body = list_body(l->name);
             TaskJson *reply = NULL;
             gchar *url = tasklist_url(NULL);
@@ -557,13 +877,12 @@ sync_lists(TaskApp *app, TaskDatabase *db, const gchar *token,
             g_free(url);
             if (ok && task_json_str(reply, "id") != NULL) {
                 if (rebind)
-                    task_db_tasks_clear_gtasks_ids(db, l->id);
-                task_db_list_set_gtasks_id(db, l->id,
-                                           task_json_str(reply, "id"));
-                task_db_list_apply_remote(db, l->id, l->name,
+                    gt_list_forget_tasks(db, l->id);
+                gt_list_set_gid(db, l->id, task_json_str(reply, "id"));
+                host->db->list_apply_remote(db, l->id, l->name,
                     remote_updated_of(reply, l->updated_at));
-                g_free(l->gtasks_id);
-                l->gtasks_id = g_strdup(task_json_str(reply, "id"));
+                g_free(lgid);
+                lgid = g_strdup(task_json_str(reply, "id"));
                 stats->pushed++;
             }
             task_json_free(reply);
@@ -573,23 +892,24 @@ sync_lists(TaskApp *app, TaskDatabase *db, const gchar *token,
             gboolean local_dirty = l->updated_at > last_sync;
             if (local_dirty && l->updated_at >= match->updated) {
                 gchar *body = list_body(l->name);
-                gchar *url = tasklist_url(l->gtasks_id);
+                gchar *url = tasklist_url(lgid);
                 ok = api_call("PATCH", url, token, NULL, body, NULL, err);
                 if (ok)
                     stats->pushed++;
                 g_free(url);
                 g_free(body);
             } else {
-                task_db_list_apply_remote(db, l->id, match->title,
+                host->db->list_apply_remote(db, l->id, match->title,
                                           match->updated);
                 stats->pulled++;
             }
         }
 
-        if (ok && l->gtasks_id != NULL) {
-            ListPair p = { l->id, g_strdup(l->gtasks_id) };
+        if (ok && lgid != NULL) {
+            ListPair p = { l->id, g_strdup(lgid) };
             g_array_append_val(pairs, p);
         }
+        g_free(lgid);
     }
 
     /* Remote lists nobody local claimed: new on the Google side.           */
@@ -597,10 +917,10 @@ sync_lists(TaskApp *app, TaskDatabase *db, const gchar *token,
         RemoteList *r = g_ptr_array_index(remote, j);
         if (r->matched)
             continue;
-        gint64 id = task_db_list_create(db, r->title, "");
+        gint64 id = host->db->list_create(db, r->title, "");
         if (id != 0) {
-            task_db_list_set_gtasks_id(db, id, r->gid);
-            task_db_list_apply_remote(db, id, r->title, r->updated);
+            gt_list_set_gid(db, id, r->gid);
+            host->db->list_apply_remote(db, id, r->title, r->updated);
             ListPair p = { id, g_strdup(r->gid) };
             g_array_append_val(pairs, p);
             stats->pulled++;
@@ -610,32 +930,50 @@ sync_lists(TaskApp *app, TaskDatabase *db, const gchar *token,
     /* Google's undeletable DEFAULT list always wears a 🔴 indicator:
      * seeded only while the emoji is empty, so a user's later Edit List
      * choice sticks (clearing it brings the dot back next sync).           */
-    if (ok && default_gid != NULL)
-        task_db_list_emoji_if_empty(db, default_gid, "\xf0\x9f\x94\xb4");
+    if (ok && default_gid != NULL) {
+        /* Resolve Google's id to a local list first: the emoji setter is
+         * a core function and is keyed on the list, not on whatever any
+         * one integration calls it.                                       */
+        gint64 dl = gt_list_by_gid(db, default_gid);
+        if (dl != 0)
+            host->db->list_emoji_if_empty(db, dl, "\xf0\x9f\x94\xb4");
+    }
 
     for (guint i = 0; i < remote->len; i++)
         remote_list_free(g_ptr_array_index(remote, i));
     g_ptr_array_free(remote, TRUE);
-    task_ptr_array_free_lists(local);
+    host->db->lists_free(local);
     g_free(default_gid);
     return ok;
 }
 
 /* stamp_clean() — after a successful create/patch, write the local row
- * back clean: the reply's updated time, etag and webViewLink (keeping
- * the stored link when the reply omits it).  Shallow overlay — nothing
- * in *t is modified or freed.                                              */
+ * back CLEAN: the reply's updated time on the core row (so it is not
+ * immediately dirty again), and the fresh etag / webViewLink in the side
+ * table.
+ *
+ * A reply that omits webViewLink keeps whatever is stored: Google sends
+ * it on create and not always on patch, and dropping it would lose the
+ * "Open in Google Tasks" link on the next push.  Nothing in *t is
+ * modified or freed.                                                       */
 static void
-stamp_clean(TaskDatabase *db, const Task *t, TaskJson *reply,
-            SyncStats *stats)
+stamp_clean(TaskDatabase *db, const Task *t, const gchar *gid,
+            TaskJson *reply, SyncStats *stats)
 {
     Task clean = *t;
     clean.updated_at = remote_updated_of(reply, t->updated_at);
-    clean.etag       = (gchar *)task_json_str(reply, "etag");
-    clean.web_link   = task_json_str(reply, "webViewLink") != NULL
-                       ? (gchar *)task_json_str(reply, "webViewLink")
-                       : t->web_link;
-    task_db_task_apply_remote(db, &clean);
+    host->db->task_apply_remote(db, &clean);
+
+    gchar *web = task_json_str(reply, "webViewLink") != NULL
+               ? g_strdup(task_json_str(reply, "webViewLink"))
+               : gt_text(db, "gtasks_task", "task_id", "web_link", t->id);
+    gchar *glinks   = gt_text(db, "gtasks_task", "task_id", "glinks", t->id);
+    gchar *assigned = gt_text(db, "gtasks_task", "task_id", "assigned", t->id);
+    gt_task_set(db, t->id, gid, task_json_str(reply, "etag"), web,
+                glinks, assigned);
+    g_free(web);
+    g_free(glinks);
+    g_free(assigned);
     stats->pushed++;
 }
 
@@ -661,10 +999,7 @@ push_task_create(TaskDatabase *db, const gchar *token, const gchar *list_gid,
     TaskJson *reply = NULL;
     gboolean ok = api_call("POST", url, token, NULL, body, &reply, err);
     if (ok && task_json_str(reply, "id") != NULL) {
-        task_db_task_set_gtasks_id(db, t->id, task_json_str(reply, "id"));
-        g_free(t->gtasks_id);
-        t->gtasks_id = g_strdup(task_json_str(reply, "id"));
-        stamp_clean(db, t, reply, stats);
+        stamp_clean(db, t, task_json_str(reply, "id"), reply, stats);
     }
     task_json_free(reply);
     g_free(url);
@@ -681,15 +1016,17 @@ push_task_create(TaskDatabase *db, const gchar *token, const gchar *list_gid,
  * ------------------------------------------------------------------------- */
 static gboolean
 push_task_patch(TaskDatabase *db, const gchar *token, const gchar *list_gid,
-                const Task *t, SyncStats *stats, gchar **err)
+                const Task *t, const gchar *gid, SyncStats *stats,
+                gchar **err)
 {
     gchar *body = task_body(t);
-    gchar *url = task_url(list_gid, t->gtasks_id);
+    gchar *url = task_url(list_gid, gid);
+    gchar *etag = gt_task_etag(db, t->id);
     TaskJson *reply = NULL;
-    gboolean ok = api_call("PATCH", url, token, t->etag, body,
-                           &reply, err);
+    gboolean ok = api_call("PATCH", url, token, etag, body, &reply, err);
+    g_free(etag);
     if (ok) {
-        stamp_clean(db, t, reply, stats);
+        stamp_clean(db, t, gid, reply, stats);
     } else if (*err != NULL && strstr(*err, "HTTP 412") != NULL) {
         g_clear_pointer(err, g_free);  /* remote moved on: theirs wins      */
         ok = TRUE;
@@ -706,17 +1043,24 @@ push_task_patch(TaskDatabase *db, const gchar *token, const gchar *list_gid,
  * find it.                                                                 */
 static gboolean
 push_as_new(TaskDatabase *db, const gchar *token, const gchar *list_gid,
-            Task *t, GHashTable *local_by_gid, SyncStats *stats,
-            gchar **err)
+            Task *t, GHashTable *gids, GHashTable *local_by_gid,
+            SyncStats *stats, gchar **err)
 {
-    Task *p = t->parent_id != 0 ? task_db_task_get(db, t->parent_id)
-                                  : NULL;
-    gboolean ok = push_task_create(db, token, list_gid, t,
-                                   p != NULL ? p->gtasks_id : NULL,
+    const gchar *parent_gid = t->parent_id != 0
+                            ? gid_of(gids, t->parent_id) : NULL;
+    gboolean ok = push_task_create(db, token, list_gid, t, parent_gid,
                                    stats, err);
-    task_free(p);                 /* owns parent_gid until after push    */
-    if (t->gtasks_id != NULL)
-        g_hash_table_insert(local_by_gid, t->gtasks_id, t);
+    /* The create adopted an id; read it back into the map so a later
+     * child of this task can address its parent.                        */
+    if (ok) {
+        gchar *fresh = gt_task_gid(db, t->id);
+        if (fresh != NULL) {
+            gid_put(gids, t->id, fresh);
+            g_hash_table_insert(local_by_gid,
+                                (gpointer)gid_of(gids, t->id), t);
+            g_free(fresh);
+        }
+    }
     return ok;
 }
 
@@ -742,7 +1086,7 @@ sync_tasks_for_list(TaskDatabase *db, const gchar *token, gint64 list_id,
     /* This list's rows, tombstones included; parents before subtasks, so
      * a new parent is pushed — and owns a gtasks_id — before its
      * children.  (One per-list query, not an all-rows scan per list.)      */
-    GPtrArray *local = task_db_tasks_in_list_all(db, list_id);
+    GPtrArray *local = host->db->tasks_in_list_all(db, list_id);
 
     /* gid → RemoteTask and gid → local Task maps for the match passes.    */
     GHashTable *by_gid = g_hash_table_new(g_str_hash, g_str_equal);
@@ -750,11 +1094,14 @@ sync_tasks_for_list(TaskDatabase *db, const gchar *token, gint64 list_id,
         RemoteTask *r = g_ptr_array_index(remote, i);
         g_hash_table_insert(by_gid, r->gid, r);
     }
+    /* Every bound task of this list, in one query (see gt_gids_for_list).*/
+    GHashTable *gids = gt_gids_for_list(db, list_id);
     GHashTable *local_by_gid = g_hash_table_new(g_str_hash, g_str_equal);
     for (guint i = 0; i < local->len; i++) {
         Task *t = g_ptr_array_index(local, i);
-        if (t->gtasks_id != NULL)
-            g_hash_table_insert(local_by_gid, t->gtasks_id, t);
+        const gchar *g = gid_of(gids, t->id);
+        if (g != NULL)
+            g_hash_table_insert(local_by_gid, (gpointer)g, t);
     }
 
     gboolean ok = TRUE;
@@ -762,25 +1109,26 @@ sync_tasks_for_list(TaskDatabase *db, const gchar *token, gint64 list_id,
     for (guint i = 0; i < local->len && ok; i++) {
         Task *t = g_ptr_array_index(local, i);
 
-        RemoteTask *match = t->gtasks_id != NULL
-            ? g_hash_table_lookup(by_gid, t->gtasks_id) : NULL;
+        const gchar *tgid = gid_of(gids, t->id);
+        RemoteTask *match = tgid != NULL
+            ? g_hash_table_lookup(by_gid, tgid) : NULL;
 
         /* First-sync dedup: adopt an unmatched live remote task with the
          * same title (top-level against top-level only — subtask titles
          * repeat too easily across parents to guess).  Only meaningful
          * against a FULL listing.                                          */
         if (full_listing &&
-            match == NULL && t->gtasks_id == NULL && !t->deleted &&
+            match == NULL && tgid == NULL && !t->deleted &&
             t->parent_id == 0) {
             for (guint j = 0; j < remote->len; j++) {
                 RemoteTask *r = g_ptr_array_index(remote, j);
                 if (!r->matched && !r->deleted && r->parent_gid == NULL &&
                     strcmp(r->title, t->title) == 0) {
                     match = r;
-                    task_db_task_set_gtasks_id(db, t->id, r->gid);
-                    g_free(t->gtasks_id);
-                    t->gtasks_id = g_strdup(r->gid);
-                    g_hash_table_insert(local_by_gid, t->gtasks_id, t);
+                    gt_task_set_gid(db, t->id, r->gid);
+                    gid_put(gids, t->id, r->gid);
+                    tgid = gid_of(gids, t->id);
+                    g_hash_table_insert(local_by_gid, (gpointer)tgid, t);
                     break;
                 }
             }
@@ -790,22 +1138,22 @@ sync_tasks_for_list(TaskDatabase *db, const gchar *token, gint64 list_id,
 
         if (t->deleted) {
             /* Local tombstone: propagate, then purge.                      */
-            if (t->gtasks_id != NULL &&
+            if (tgid != NULL &&
                 (match == NULL || !match->deleted)) {
-                gchar *url = task_url(list_gid, t->gtasks_id);
+                gchar *url = task_url(list_gid, tgid);
                 ok = api_call_delete(url, token, err);
                 g_free(url);
             }
             if (ok) {
-                task_db_task_purge(db, t->id);
+                host->db->task_purge(db, t->id);
                 stats->deleted++;
             }
             continue;
         }
 
-        if (t->gtasks_id == NULL) {
+        if (tgid == NULL) {
             /* Local new.                                                   */
-            ok = push_as_new(db, token, list_gid, t, local_by_gid,
+            ok = push_as_new(db, token, list_gid, t, gids, local_by_gid,
                              stats, err);
             continue;
         }
@@ -819,20 +1167,21 @@ sync_tasks_for_list(TaskDatabase *db, const gchar *token, gint64 list_id,
                  * task.  Explicit deletes still propagate: a local
                  * tombstone DELETEs remotely (above) and a remote
                  * `deleted:true` purges locally (below).                   */
-                g_hash_table_remove(local_by_gid, t->gtasks_id);
-                task_db_task_set_gtasks_id(db, t->id, NULL);
-                g_clear_pointer(&t->gtasks_id, g_free);
-                ok = push_as_new(db, token, list_gid, t, local_by_gid,
-                                 stats, err);
+                g_hash_table_remove(local_by_gid, tgid);
+                gt_task_set(db, t->id, NULL, NULL, NULL, NULL, NULL);
+                gid_put(gids, t->id, NULL);
+                ok = push_as_new(db, token, list_gid, t, gids,
+                                 local_by_gid, stats, err);
             } else if (t->updated_at > last_sync) {
                 /* Incremental listing: absent just means unchanged — but
                  * the LOCAL side is dirty, so push (etag-guarded).         */
-                ok = push_task_patch(db, token, list_gid, t, stats, err);
+                ok = push_task_patch(db, token, list_gid, t, tgid, stats,
+                                     err);
             }
             continue;
         }
         if (match->deleted) {
-            task_db_task_purge(db, t->id);
+            host->db->task_purge(db, t->id);
             stats->deleted++;
             continue;
         }
@@ -849,24 +1198,27 @@ sync_tasks_for_list(TaskDatabase *db, const gchar *token, gint64 list_id,
             /* Content equal — still refresh the mirror metadata when the
              * remote bumped OR the row predates the metadata columns
              * (etag/web_link empty while the remote has them).             */
+            gchar *have_etag = gt_task_etag(db, t->id);
+            gchar *have_link  = gt_text(db, "gtasks_task", "task_id",
+                                        "web_link", t->id);
             gboolean meta_stale =
-                (t->etag == NULL && match->etag != NULL) ||
-                (t->web_link == NULL && match->web_link != NULL);
+                (have_etag == NULL && match->etag != NULL) ||
+                (have_link == NULL && match->web_link != NULL);
+            g_free(have_etag);
+            g_free(have_link);
             if (match->updated > t->updated_at || meta_stale) {
                 Task apply = *t;
                 apply.updated_at   = match->updated;
                 apply.completed_at = match->completed;
-                apply.etag         = match->etag;
-                apply.web_link     = match->web_link;
-                apply.glinks       = match->glinks;
-                apply.assigned     = match->assigned;
-                task_db_task_apply_remote(db, &apply);
+                host->db->task_apply_remote(db, &apply);
+                gt_task_set(db, t->id, tgid, match->etag, match->web_link,
+                            match->glinks, match->assigned);
             }
             continue;
         }
         gboolean local_dirty = t->updated_at > last_sync;
         if (local_dirty && t->updated_at >= match->updated) {
-            ok = push_task_patch(db, token, list_gid, t, stats, err);
+            ok = push_task_patch(db, token, list_gid, t, tgid, stats, err);
         } else {
             Task apply = *t;       /* shallow copy is fine here           */
             apply.title        = match->title;
@@ -875,15 +1227,13 @@ sync_tasks_for_list(TaskDatabase *db, const gchar *token, gint64 list_id,
             /* Google reports done-ness only, so fold it onto the status
              * the row already holds: a remote un-tick lands on In
              * Progress, and a still-unfinished New task stays New.         */
-            apply.status       = task_status_apply_done(t->status,
+            apply.status       = host->util->status_apply_done(t->status,
                                                         match->done);
             apply.updated_at   = match->updated;
             apply.completed_at = match->completed;
-            apply.etag         = match->etag;
-            apply.web_link     = match->web_link;
-            apply.glinks       = match->glinks;
-            apply.assigned     = match->assigned;
-            task_db_task_apply_remote(db, &apply);
+            host->db->task_apply_remote(db, &apply);
+            gt_task_set(db, t->id, tgid, match->etag, match->web_link,
+                        match->glinks, match->assigned);
             stats->pulled++;
         }
     }
@@ -907,11 +1257,10 @@ sync_tasks_for_list(TaskDatabase *db, const gchar *token, gint64 list_id,
                     continue;        /* orphan / over-deep: skip            */
                 parent_id = p->id;
             }
-            gint64 id = task_db_task_create(db, list_id, parent_id,
+            gint64 id = host->db->task_create(db, list_id, parent_id,
                                             r->title);
             if (id == 0)
                 continue;
-            task_db_task_set_gtasks_id(db, id, r->gid);
             Task nt = { 0 };       /* the fields apply_remote writes      */
             nt.id           = id;
             nt.title        = r->title;
@@ -922,18 +1271,18 @@ sync_tasks_for_list(TaskDatabase *db, const gchar *token, gint64 list_id,
             nt.status       = r->done ? TASK_STATUS_DONE : TASK_STATUS_NEW;
             nt.updated_at   = r->updated;
             nt.completed_at = r->completed;
-            nt.etag         = r->etag;
-            nt.web_link     = r->web_link;
-            nt.glinks       = r->glinks;
-            nt.assigned     = r->assigned;
-            task_db_task_apply_remote(db, &nt);
+            host->db->task_apply_remote(db, &nt);
+            gt_task_set(db, id, r->gid, r->etag, r->web_link, r->glinks,
+                        r->assigned);
+            gid_put(gids, id, r->gid);
             r->matched = TRUE;
             stats->pulled++;
             if (!is_child) {
                 /* Make the new row findable for pass 2's children.         */
-                Task *row = task_db_task_get(db, id);
+                Task *row = host->db->task_get(db, id);
                 if (row != NULL) {
-                    g_hash_table_insert(local_by_gid, row->gtasks_id, row);
+                    g_hash_table_insert(local_by_gid,
+                                        (gpointer)gid_of(gids, id), row);
                     g_ptr_array_add(local, row);   /* owned by `local`      */
                 }
             }
@@ -942,7 +1291,7 @@ sync_tasks_for_list(TaskDatabase *db, const gchar *token, gint64 list_id,
 
     g_hash_table_destroy(by_gid);
     g_hash_table_destroy(local_by_gid);
-    task_ptr_array_free_tasks(local);
+    host->db->tasks_free(local);
     for (guint i = 0; i < remote->len; i++)
         remote_task_free(g_ptr_array_index(remote, i));
     g_ptr_array_free(remote, TRUE);
@@ -972,7 +1321,7 @@ static gboolean
 status_idle(gpointer data)
 {
     StatusPost *sp = data;
-    task_app_status(sp->app, "%s", sp->msg);
+    gt_status(sp->app, "%s", sp->msg);
     g_free(sp->msg);
     g_free(sp);
     return G_SOURCE_REMOVE;
@@ -995,9 +1344,9 @@ static gboolean
 sync_apply(gpointer data)
 {
     SyncJob *job = data;
-    job->app->sync_running = FALSE;
-    task_app_notify_changed(job->app);
-    task_app_status(job->app, "%s", job->message);
+    gt_running = FALSE;
+    host->notify->notify_changed(job->app);
+    gt_status(job->app, "%s", job->message);
     if (job->done != NULL)
         job->done(job->app, job->ok, job->message, job->user_data);
     g_free(job->db_path);
@@ -1025,7 +1374,7 @@ sync_thread(gpointer data)
     }
 
     GError *gerr = NULL;
-    TaskDatabase *db = task_db_open(job->db_path, &gerr);
+    TaskDatabase *db = host->db->open(job->db_path, &gerr);
     if (db == NULL) {
         job->ok = FALSE;
         job->message = g_strdup_printf("Sync failed: %s",
@@ -1038,7 +1387,7 @@ sync_thread(gpointer data)
 
     /* last_sync gates the "locally dirty" test; the new value is the
      * time this pass STARTED, so mid-sync edits stay dirty for the next.   */
-    gchar *ls = task_db_state_get(db, "last_sync");
+    gchar *ls = host->db->state_get(db, "last_sync");
     gint64 last_sync = ls != NULL ? g_ascii_strtoll(ls, NULL, 10) : 0;
     g_free(ls);
     gint64 started = g_get_real_time() / G_USEC_PER_SEC;
@@ -1059,7 +1408,7 @@ sync_thread(gpointer data)
 
     if (ok) {
         gchar *stamp = g_strdup_printf("%lld", (long long)started);
-        task_db_state_set(db, "last_sync", stamp);
+        host->db->state_set(db, "last_sync", stamp);
         g_free(stamp);
         job->ok = TRUE;
         job->message = g_strdup_printf(
@@ -1071,7 +1420,7 @@ sync_thread(gpointer data)
                                        err != NULL ? err : "unknown error");
     }
     g_free(err);
-    task_db_close(db);
+    host->db->close(db);
     g_free(token);
     g_idle_add(sync_apply, job);
     return NULL;
@@ -1084,25 +1433,25 @@ void
 task_sync_start(TaskApp *app, const gchar *db_path,
                 TaskSyncDoneFn done, gpointer user_data)
 {
-    if (!task_app_config_get_bool("google_sync_enabled", TRUE)) {
-        task_app_status(app, "Google Tasks sync is disabled \xe2\x80\x94 "
+    if (!host->config->get_bool(self, "sync_enabled", TRUE)) {
+        gt_status(app, "Google Tasks sync is disabled \xe2\x80\x94 "
                         "enable it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
         if (done != NULL)
             done(app, FALSE, "sync disabled", user_data);
         return;
     }
-    if (app->sync_running) {
-        task_app_status(app, "Sync already running");
+    if (gt_running) {
+        gt_status(app, "Sync already running");
         return;
     }
     if (!task_oauth_authenticated()) {
-        task_app_status(app, "Not signed in to Google \xe2\x80\x94 use the "
+        gt_status(app, "Not signed in to Google \xe2\x80\x94 use the "
                         "Sync button or File \xe2\x86\x92 Settings\xe2\x80\xa6");
         if (done != NULL)
             done(app, FALSE, "not signed in", user_data);
         return;
     }
-    app->sync_running = TRUE;
+    gt_running = TRUE;
     SyncJob *job = g_new0(SyncJob, 1);
     job->app       = app;
     job->db_path   = g_strdup(db_path);
@@ -1123,7 +1472,7 @@ task_sync_signin_done(TaskApp *app, GtkWindow *parent, const gchar *db_path,
     if (ok) {
         task_sync_start(app, db_path, done, NULL);
     } else {
-        task_app_notice(parent, GTK_MESSAGE_ERROR,
+        gt_notice(parent, GTK_MESSAGE_ERROR,
                         "Tasks - Google Sign-In",
                         "Could not sign in: %s",
                         error != NULL ? error : "unknown error");
@@ -1171,19 +1520,19 @@ move_fallback(TaskApp *app, MoveJob *job)
 {
     if (job->task_gid == NULL)
         return;                      /* never synced: nothing to unlink     */
-    task_db_insert_remote_tombstone(app->db, job->src_list_id,
-                                    job->task_gid);
-    task_db_task_set_gtasks_id(app->db, job->task_id, NULL);
-    GPtrArray *subs = task_db_subtasks(app->db, job->task_id);
+    gt_remote_tombstone(app->db, job->src_list_id, job->task_gid);
+    gt_task_set(app->db, job->task_id, NULL, NULL, NULL, NULL, NULL);
+    GPtrArray *subs = host->db->subtasks(app->db, job->task_id);
     for (guint i = 0; i < subs->len; i++) {
         Task *s = g_ptr_array_index(subs, i);
-        if (s->gtasks_id != NULL) {
-            task_db_insert_remote_tombstone(app->db, job->src_list_id,
-                                            s->gtasks_id);
-            task_db_task_set_gtasks_id(app->db, s->id, NULL);
+        gchar *sgid = gt_task_gid(app->db, s->id);
+        if (sgid != NULL) {
+            gt_remote_tombstone(app->db, job->src_list_id, sgid);
+            gt_task_set(app->db, s->id, NULL, NULL, NULL, NULL, NULL);
+            g_free(sgid);
         }
     }
-    task_ptr_array_free_tasks(subs);
+    host->db->tasks_free(subs);
 }
 
 /* move_apply() — main-thread completion of the remote move.                */
@@ -1193,12 +1542,12 @@ move_apply(gpointer data)
     MoveJob *job = data;
     if (!job->ok) {
         move_fallback(job->app, job);
-        task_app_status(job->app, "Move will finish on the next sync (%s)",
+        gt_status(job->app, "Move will finish on the next sync (%s)",
                         job->error != NULL ? job->error : "remote move failed");
     } else {
-        task_app_status(job->app, "Moved in Google Tasks");
+        gt_status(job->app, "Moved in Google Tasks");
     }
-    task_app_notify_changed(job->app);
+    host->notify->notify_changed(job->app);
     move_job_free(job);
     return G_SOURCE_REMOVE;
 }
@@ -1266,31 +1615,32 @@ gtasks_task_moved(TaskApp *app, gint64 task_id, gint64 from_list,
                   gint64 to_list, gpointer user_data)
 {
     (void)user_data;
-    Task *t = task_db_task_get(app->db, task_id);
+    Task *t = host->db->task_get(app->db, task_id);
     if (t == NULL)
         return;                      /* deleted between the write and here  */
 
-    TaskList *src  = task_db_list_get(app->db, from_list);
-    TaskList *dest = task_db_list_get(app->db, to_list);
+    TaskList *src  = host->db->list_get(app->db, from_list);
+    TaskList *dest = host->db->list_get(app->db, to_list);
 
     MoveJob *job = g_new0(MoveJob, 1);
     job->app         = app;
     job->task_id     = task_id;
     job->src_list_id = from_list;
-    job->src_gid     = src != NULL ? g_strdup(src->gtasks_id) : NULL;
-    job->dest_gid    = dest != NULL ? g_strdup(dest->gtasks_id) : NULL;
-    job->task_gid    = g_strdup(t->gtasks_id);
+    job->src_gid     = src != NULL ? gt_list_gid(app->db, src->id) : NULL;
+    job->dest_gid    = dest != NULL ? gt_list_gid(app->db, dest->id) : NULL;
+    job->task_gid    = gt_task_gid(app->db, task_id);
     job->child_gids  = g_ptr_array_new();
-    GPtrArray *subs = task_db_subtasks(app->db, task_id);
+    GPtrArray *subs = host->db->subtasks(app->db, task_id);
     for (guint i = 0; i < subs->len; i++) {
         Task *s = g_ptr_array_index(subs, i);
-        if (s->gtasks_id != NULL)
-            g_ptr_array_add(job->child_gids, g_strdup(s->gtasks_id));
+        gchar *sgid = gt_task_gid(app->db, s->id);
+        if (sgid != NULL)
+            g_ptr_array_add(job->child_gids, sgid);  /* takes ownership   */
     }
-    task_ptr_array_free_tasks(subs);
-    task_list_free(src);
-    task_list_free(dest);
-    task_free(t);
+    host->db->tasks_free(subs);
+    host->db->list_free(src);
+    host->db->list_free(dest);
+    host->db->task_free(t);
 
     if (job->task_gid != NULL && job->src_gid != NULL &&
         job->dest_gid != NULL && task_oauth_authenticated()) {
@@ -1298,7 +1648,7 @@ gtasks_task_moved(TaskApp *app, gint64 task_id, gint64 from_list,
         g_thread_unref(th);
     } else {
         move_fallback(app, job);     /* offline / unsynced endpoints        */
-        task_app_notify_changed(app);
+        host->notify->notify_changed(app);
         move_job_free(job);
     }
 }
@@ -1334,15 +1684,15 @@ clear_apply(gpointer data)
     ClearJob *job = data;
     if (job->ok) {
         for (guint i = 0; i < job->ids->len; i++)
-            task_db_task_purge(job->app->db,
+            host->db->task_purge(job->app->db,
                                g_array_index(job->ids, gint64, i));
-        task_app_status(job->app, "Completed tasks cleared in Google Tasks");
+        gt_status(job->app, "Completed tasks cleared in Google Tasks");
     } else {
-        task_app_status(job->app, "Cleared locally; Google will catch up "
+        gt_status(job->app, "Cleared locally; Google will catch up "
                         "on the next sync (%s)",
                         job->error != NULL ? job->error : "clear failed");
     }
-    task_app_notify_changed(job->app);
+    host->notify->notify_changed(job->app);
     g_array_free(job->ids, TRUE);
     g_free(job->list_gid);
     g_free(job->error);
@@ -1395,14 +1745,15 @@ gtasks_completed_cleared(TaskApp *app, gint64 list_id, GArray *task_ids,
     if (task_ids->len == 0)
         return;                      /* nothing went; nothing to archive    */
 
-    TaskList *l = task_db_list_get(app->db, list_id);
+    TaskList *l = host->db->list_get(app->db, list_id);
     if (l == NULL)
         return;
-    if (l->gtasks_id != NULL && task_oauth_authenticated()) {
+    gchar *lgid = gt_list_gid(app->db, list_id);
+    if (lgid != NULL && task_oauth_authenticated()) {
         ClearJob *job = g_new0(ClearJob, 1);
         job->app      = app;
         job->list_id  = list_id;
-        job->list_gid = g_strdup(l->gtasks_id);
+        job->list_gid = g_strdup(lgid);
         /* Own copy: the event's array is borrowed for the call only.      */
         job->ids      = g_array_sized_new(FALSE, FALSE, sizeof(gint64),
                                           task_ids->len);
@@ -1410,7 +1761,7 @@ gtasks_completed_cleared(TaskApp *app, gint64 list_id, GArray *task_ids,
         GThread *th = g_thread_new("task-clear", clear_thread, job);
         g_thread_unref(th);
     }
-    task_list_free(l);
+    host->db->list_free(l);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1434,18 +1785,65 @@ sync_ready(TaskApp *app)
     return task_oauth_authenticated();
 }
 
+/* signin_then_sync() — completion of the browser flow started below.
+ * Re-resolves nothing: the app outlives the flow, and the window may
+ * not, so the dialog on failure is parented on whatever is there.       */
+typedef struct { TaskApp *app; gchar *db_path; } SigninJob;
+
+static void
+signin_then_sync(gboolean ok, const gchar *error, gpointer data)
+{
+    SigninJob *j = data;
+    task_sync_signin_done(j->app,
+                          j->app->library_window != NULL
+                            ? GTK_WINDOW(j->app->library_window) : NULL,
+                          j->db_path, ok, error, NULL);
+    g_free(j->db_path);
+    g_free(j);
+}
+
+/* task_sync_begin_signin() — start the browser flow and sync on success. */
+static void
+task_sync_begin_signin(TaskApp *app, const gchar *db_path)
+{
+    SigninJob *j = g_new0(SigninJob, 1);
+    j->app     = app;
+    j->db_path = g_strdup(db_path);
+    task_oauth_begin(app->library_window != NULL
+                       ? GTK_WINDOW(app->library_window) : NULL,
+                     signin_then_sync, j);
+}
+
+/* sync_blocked() — the user pressed Sync Now while signed out.
+ *
+ * Sign-in is per session: the in-memory access token is gone on every
+ * launch, so this is the ordinary path, not an error.  The browser flow
+ * is usually a silent redirect that comes straight back.                 */
+static void
+sync_blocked(TaskApp *app, const gchar *db_path)
+{
+    if (!task_oauth_have_client()) {
+        gt_status(app, "Google sync is not configured \xe2\x80\x94 "
+                        "see File \xe2\x86\x92 Settings\xe2\x80\xa6");
+        return;
+    }
+    gt_status(app, "Opening browser for Google sign-in\xe2\x80\xa6");
+    task_sync_begin_signin(app, db_path);
+}
+
 static const TaskWorkerDef sync_worker = {
     .id               = "gtasks",
-    .enabled_key      = "google_sync_enabled",
+    .enabled_key      = "gtasks_sync_enabled",
     .enabled_default  = TRUE,
-    .interval_key     = "sync_interval_min",
+    .interval_key     = "gtasks_interval_min",
     .interval_default = 5,
     .initial          = TASK_WORKER_INITIAL_ARMED,
-    .running          = NULL,        /* filled in by task_gtasks_init       */
+    .running          = NULL,        /* filled in by gtasks_init            */
     .timer            = NULL,
     .run              = sync_run,
     .ready            = sync_ready,
     .on_arm           = NULL,
+    .on_blocked       = sync_blocked,
 };
 
 /* The def carries POINTERS to the app's own flag and GSource id, which
@@ -1457,7 +1855,7 @@ static TaskWorkerDef sync_worker_live;
 void
 task_sync_auto_start(TaskApp *app, const gchar *db_path)
 {
-    task_worker_arm(app, &sync_worker_live, db_path);
+    host->worker->arm(app, &sync_worker_live, db_path);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1478,11 +1876,12 @@ gtasks_list_veto(TaskApp *app, const TaskList *list, gchar **why,
                  gpointer user_data)
 {
     (void)user_data;
-    if (list->gtasks_id == NULL)
+    gchar *lgid = gt_list_gid(app->db, list->id);
+    if (lgid == NULL)
         return TRUE;
-    gchar *default_gid = task_db_state_get(app->db, "default_list_gid");
-    gboolean ok = default_gid == NULL ||
-                  strcmp(list->gtasks_id, default_gid) != 0;
+    gchar *default_gid = host->db->state_get(app->db, "default_list_gid");
+    gboolean ok = default_gid == NULL || strcmp(lgid, default_gid) != 0;
+    g_free(lgid);
     if (!ok && why != NULL)
         *why = g_strdup_printf("\xe2\x80\x9c%s\xe2\x80\x9d is Google's "
                                "default list and cannot be deleted",
@@ -1491,18 +1890,519 @@ gtasks_list_veto(TaskApp *app, const TaskList *list, gchar **why,
     return ok;
 }
 
-/* ---------------------------------------------------------------------------
- * task_gtasks_init() — register the sync engine's hooks (see gtasks.h).
- * ------------------------------------------------------------------------- */
-void
-task_gtasks_init(TaskApp *app)
-{
-    sync_worker_live         = sync_worker;
-    sync_worker_live.running = &app->sync_running;
-    sync_worker_live.timer   = &app->sync_timer;
-    task_worker_register(&sync_worker_live);
+/* ===========================================================================
+ * The toolbar button.
+ *
+ * Google's own, contributed through the UI registry (see task_ui.h)
+ * rather than built into the window: it is this integration's control,
+ * so it belongs with this integration's code and travels with it.
+ *
+ * File -> Sync Now stays the CATCH-ALL — every registered worker, in one
+ * press.  This button is the specific one, which is why it can afford to
+ * grey itself out while its own pass runs: there is exactly one sync it
+ * can mean.
+ * =========================================================================== */
 
-    task_ops_add_moved_hook(gtasks_task_moved, NULL);
-    task_ops_add_cleared_hook(gtasks_completed_cleared, NULL);
-    task_ops_add_list_veto(gtasks_list_veto, NULL);
+/* toolbar_done() — the pass finished; give the button back.              */
+static void
+toolbar_done(TaskApp *app, gboolean ok, const gchar *message, gpointer d)
+{
+    (void)app; (void)ok; (void)message; (void)d;
+    host->ui->tool_set_sensitive("gtasks-sync", TRUE);
+}
+
+/* toolbar_clicked() — sync now, signing in first if the session has no
+ * token yet (which is every launch — the access token lives in memory
+ * only, so the browser round trip is the ordinary path, not an error). */
+static void
+toolbar_clicked(TaskApp *app, gpointer user_data)
+{
+    (void)user_data;
+    if (!host->config->get_bool(self, "sync_enabled", TRUE)) {
+        gt_status(app, "Google Tasks sync is disabled \xe2\x80\x94 "
+                        "enable it in File \xe2\x86\x92 Settings\xe2\x80\xa6");
+        return;
+    }
+    if (!task_oauth_have_client()) {
+        gt_status(app, "Google sync is not configured \xe2\x80\x94 "
+                        "see File \xe2\x86\x92 Settings\xe2\x80\xa6");
+        return;
+    }
+    host->ui->tool_set_sensitive("gtasks-sync", FALSE);
+    if (task_oauth_authenticated()) {
+        task_sync_start(app, app->db->path, toolbar_done, NULL);
+    } else {
+        /* The button comes back when the flow finishes either way: a
+         * cancelled sign-in must not leave it dead.                     */
+        gt_status(app,
+                        "Opening browser for Google sign-in\xe2\x80\xa6");
+        task_sync_begin_signin(app, app->db->path);
+        host->ui->tool_set_sensitive("gtasks-sync", TRUE);
+    }
+}
+
+/* Shown only when this integration is on AND the user wants the button.
+ * Re-asked on every full refresh, so flipping either setting is enough. */
+static gboolean
+toolbar_visible(TaskApp *app, gpointer user_data)
+{
+    (void)app;
+    (void)user_data;
+    return host->config->get_bool(self, "sync_enabled", TRUE) &&
+           host->config->get_bool(self, "toolbar_button", TRUE);
+}
+
+static const TaskUiToolDef sync_tool = {
+    .id              = "gtasks-sync",
+    .icon            = "google-symbol",
+    .fallback_markup = "\xe2\x9f\xb3",
+    .label           = "Sync",
+    .tooltip         = "Sync with Google Tasks now",
+    .sort            = 10,
+    .clicked         = toolbar_clicked,
+    .visible         = toolbar_visible,
+};
+
+/* ===========================================================================
+ * The "From Google" editor section.
+ *
+ * Read-only metadata the sync pulled: completion time, a Docs/Chat
+ * assignment origin, Google-attached links, and the deep link into
+ * Google's own UI.  Contributed through the editor-section registry
+ * (task_ui.h) rather than built into the editor, which is what lets the
+ * editor stop parsing Google's JSON.
+ *
+ * Returns NULL for a task with none of it — the common case, and the
+ * reason the editor's contributed area costs an ordinary task nothing.
+ * =========================================================================== */
+
+/* link_button() — a left-aligned GtkLinkButton row.                       */
+static void
+link_button(GtkWidget *box, const gchar *uri, const gchar *label)
+{
+    GtkWidget *btn = gtk_link_button_new_with_label(uri,
+        label != NULL && *label != '\0' ? label : uri);
+    gtk_widget_set_halign(btn, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(box), btn, FALSE, FALSE, 0);
+}
+
+static GtkWidget *
+editor_section_build(TaskApp *app, const Task *t, gpointer user_data)
+{
+    (void)user_data;
+    /* What Google knows about this task, from the side table.  One read
+     * per editor open, which is not a path worth batching.               */
+    gchar *web      = gt_text(app->db, "gtasks_task", "task_id",
+                              "web_link", t->id);
+    gchar *glinks   = gt_text(app->db, "gtasks_task", "task_id",
+                              "glinks", t->id);
+    gchar *assigned = gt_text(app->db, "gtasks_task", "task_id",
+                              "assigned", t->id);
+
+    GString *info = g_string_new(NULL);
+    if (t->status == TASK_STATUS_DONE && t->completed_at != 0) {
+        GDateTime *dt = g_date_time_new_from_unix_local(t->completed_at);
+        gchar *when = g_date_time_format(dt, "%b %-e, %Y at %H:%M");
+        g_string_append_printf(info, "Completed %s", when);
+        g_free(when);
+        g_date_time_unref(dt);
+    }
+    if (assigned != NULL) {
+        TaskJson *ai = task_json_parse(assigned, -1);
+        const gchar *surface = task_json_str(ai, "surfaceType");
+        if (info->len > 0)
+            g_string_append_c(info, '\n');
+        g_string_append_printf(info, "Assigned task (from %s)",
+            g_strcmp0(surface, "DOCUMENT") == 0 ? "Google Docs"
+            : g_strcmp0(surface, "SPACE") == 0  ? "Google Chat"
+                                                : "Google Workspace");
+        task_json_free(ai);
+    }
+
+    if (info->len == 0 && web == NULL && glinks == NULL) {
+        g_string_free(info, TRUE);
+        g_free(web);
+        g_free(glinks);
+        g_free(assigned);
+        return NULL;                 /* nothing Google knows about this   */
+    }
+
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *heading = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(heading), "<b>From Google</b>");
+    gtk_widget_set_halign(heading, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(box), heading, FALSE, FALSE, 0);
+
+    if (info->len > 0) {
+        GtkWidget *lbl = gtk_label_new(info->str);
+        gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+        gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+        host->ui->widget_add_css(lbl, "label { font-size: 85%; }");
+        gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
+    }
+    g_string_free(info, TRUE);
+
+    GtkWidget *links = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    if (glinks != NULL) {
+        TaskJson *arr = task_json_parse(glinks, -1);
+        for (guint i = 0; i < task_json_len(arr); i++) {
+            TaskJson *lk = task_json_at(arr, i);
+            const gchar *uri = task_json_str(lk, "link");
+            if (uri != NULL)
+                link_button(links, uri, task_json_str(lk, "description"));
+        }
+        task_json_free(arr);
+    }
+    if (web != NULL)
+        link_button(links, web, "Open in Google Tasks");
+    gtk_box_pack_start(GTK_BOX(box), links, FALSE, FALSE, 0);
+    g_free(web);
+    g_free(glinks);
+    g_free(assigned);
+    return box;
+}
+
+static const TaskUiEditorDef editor_section = {
+    .id    = "gtasks-from-google",
+    .sort  = 10,
+    .build = editor_section_build,
+};
+
+/* ---------------------------------------------------------------------------
+ * "Open in Google Tasks" — the task context-menu item.
+ *
+ * Single selection only, and only for a task that HAS a remote copy:
+ * there is no meaningful page to open for a task Google has never seen,
+ * and "open" over a multi-selection would mean N browser tabs.  Both
+ * cases grey the item rather than hiding it, so the menu keeps its shape.
+ * ------------------------------------------------------------------------- */
+static gboolean
+ctx_open_enabled(TaskApp *app, GArray *ids, gpointer user_data)
+{
+    (void)user_data;
+    if (ids->len != 1)
+        return FALSE;
+    gchar *web = gt_text(app->db, "gtasks_task", "task_id", "web_link",
+                         g_array_index(ids, gint64, 0));
+    gboolean ok = web != NULL;
+    g_free(web);
+    return ok;
+}
+
+static void
+ctx_open_activate(TaskApp *app, GArray *ids, gpointer user_data)
+{
+    (void)user_data;
+    gchar *web = gt_text(app->db, "gtasks_task", "task_id", "web_link",
+                         g_array_index(ids, gint64, 0));
+    if (web == NULL)
+        return;
+    GError *err = NULL;
+    if (!gtk_show_uri_on_window(app->library_window != NULL
+                                  ? GTK_WINDOW(app->library_window) : NULL,
+                                web, GDK_CURRENT_TIME, &err)) {
+        gt_status(app, "Cannot open browser: %s",
+                        err != NULL ? err->message : "?");
+        g_clear_error(&err);
+    }
+    g_free(web);
+}
+
+static const TaskUiTaskMenuDef ctx_open_item = {
+    .id       = "gtasks-open",
+    .label    = "Open in Google Tasks",
+    .sort     = 10,
+    .enabled  = ctx_open_enabled,
+    .activate = ctx_open_activate,
+};
+
+/* ===========================================================================
+ * The Settings section.
+ *
+ * Contributed through the settings registry (settings_window.h) like any
+ * other, which is what lets an integration keep its settings UI whether
+ * it is built in or shipped separately.
+ *
+ * The widgets are NOT cached: the Settings window is destroyed and
+ * rebuilt on every open, so a pointer kept between openings is a
+ * dangling one.  The three that need re-greying are carried on the
+ * section's own box as object data and found again from there.
+ * =========================================================================== */
+
+#define GT_SET_STATE   "gtasks-state-label"
+#define GT_SET_SIGNIN  "gtasks-signin"
+#define GT_SET_SIGNOUT "gtasks-signout"
+#define GT_SET_SPIN    "gtasks-interval"
+#define GT_SET_TOOLBAR "gtasks-toolbar-check"
+
+/* settings_state_refresh() — reflect the master switch and the sign-in
+ * state: with the switch off, Sign In / Sign Out / the interval and the
+ * toolbar preference all grey out, because none of them does anything.  */
+static void
+settings_state_refresh(GtkWidget *box)
+{
+    gboolean enabled = host->config->get_bool(self, "sync_enabled", TRUE);
+    gboolean in      = task_oauth_authenticated();
+    GtkWidget *state    = g_object_get_data(G_OBJECT(box), GT_SET_STATE);
+    GtkWidget *signin   = g_object_get_data(G_OBJECT(box), GT_SET_SIGNIN);
+    GtkWidget *signout  = g_object_get_data(G_OBJECT(box), GT_SET_SIGNOUT);
+    GtkWidget *spin     = g_object_get_data(G_OBJECT(box), GT_SET_SPIN);
+    GtkWidget *tb       = g_object_get_data(G_OBJECT(box), GT_SET_TOOLBAR);
+    if (state != NULL)
+        gtk_label_set_markup(GTK_LABEL(state),
+            !enabled ? "<span foreground=\"#888888\">Sync disabled</span>"
+            : in     ? "<span foreground=\"#26a269\">Signed in</span>"
+                     : "<span foreground=\"#888888\">Not signed in</span>");
+    if (signout != NULL)
+        gtk_widget_set_sensitive(signout, enabled && in);
+    if (signin != NULL)
+        gtk_widget_set_sensitive(signin,
+                                 enabled && task_oauth_have_client() && !in);
+    if (spin != NULL)
+        gtk_widget_set_sensitive(spin, enabled);
+    if (tb != NULL)
+        gtk_widget_set_sensitive(tb, enabled);
+}
+
+/* The section's box, so a handler can find its siblings.                  */
+#define GT_SET_BOX "gtasks-section-box"
+
+static void
+on_set_enabled(GtkWidget *w, gpointer data)
+{
+    TaskApp *app = data;
+    GtkWidget *box = g_object_get_data(G_OBJECT(w), GT_SET_BOX);
+    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    host->config->set(self, "sync_enabled", on ? "1" : "0");
+    settings_state_refresh(box);
+    task_sync_auto_start(app, app->db->path);
+    /* Full notify: the toolbar button's visibility follows this.         */
+    host->notify->notify_changed(app);
+    gt_status(app, on ? "Google Tasks sync enabled"
+                            : "Google Tasks sync disabled");
+}
+
+static void
+on_set_interval(GtkWidget *w, gpointer data)
+{
+    TaskApp *app = data;
+    gchar *v = g_strdup_printf("%d",
+        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(w)));
+    host->config->set(self, "interval_min", v);
+    g_free(v);
+    task_sync_auto_start(app, app->db->path);
+}
+
+static void
+on_set_toolbar(GtkWidget *w, gpointer data)
+{
+    TaskApp *app = data;
+    host->config->set(self, "toolbar_button",
+        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w)) ? "1" : "0");
+    host->notify->notify_changed(app);
+}
+
+/* settings_signin_done() — completion of the browser flow.
+ *
+ * The Settings window may have CLOSED mid-flow, taking the section's
+ * widgets with it; the box is held as a weak pointer so it reads NULL
+ * rather than dangling, and the refresh is simply skipped.              */
+typedef struct { TaskApp *app; GtkWidget *box; } SetSignin;
+
+static void
+settings_signin_done(gboolean ok, const gchar *error, gpointer data)
+{
+    SetSignin *j = data;
+    if (j->box != NULL)
+        settings_state_refresh(j->box);
+    if (ok)
+        gt_status(j->app, "Signed in to Google");
+    task_sync_signin_done(j->app,
+                          j->app->library_window != NULL
+                            ? GTK_WINDOW(j->app->library_window) : NULL,
+                          j->app->db->path, ok, error, NULL);
+    if (j->box != NULL)
+        g_object_remove_weak_pointer(G_OBJECT(j->box), (gpointer *)&j->box);
+    g_free(j);
+}
+
+static void
+on_set_signin(GtkWidget *w, gpointer data)
+{
+    TaskApp *app = data;
+    SetSignin *j = g_new0(SetSignin, 1);
+    j->app = app;
+    j->box = g_object_get_data(G_OBJECT(w), GT_SET_BOX);
+    if (j->box != NULL)
+        g_object_add_weak_pointer(G_OBJECT(j->box), (gpointer *)&j->box);
+    gt_status(app, "Opening browser for Google sign-in\xe2\x80\xa6");
+    task_oauth_begin(GTK_WINDOW(gtk_widget_get_toplevel(w)),
+                     settings_signin_done, j);
+}
+
+static void
+on_set_signout(GtkWidget *w, gpointer data)
+{
+    TaskApp *app = data;
+    task_oauth_signout();
+    settings_state_refresh(g_object_get_data(G_OBJECT(w), GT_SET_BOX));
+    gt_status(app, "Signed out \xe2\x80\x94 the stored sign-in "
+                    "was removed and syncing stopped");
+}
+
+static void
+gtasks_settings(TaskApp *app, GtkWidget *column, GtkWindow *window,
+                gpointer user_data)
+{
+    (void)window;
+    (void)user_data;
+
+    /* Everything goes in one box so the handlers can find each other
+     * through it; the column itself is shared with every other section. */
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_box_pack_start(GTK_BOX(column), box, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(box),
+                       host->settings->heading("Google Tasks"),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), host->settings->note(
+        "Two-way non-destructive sync with Google Tasks.  Sign in will "
+        "open a browser window for authentication; Sign out will remove "
+        "the local stored token."), FALSE, FALSE, 0);
+
+    GtkWidget *check = gtk_check_button_new_with_label(
+        "Enable Google Tasks sync");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(check),
+        host->config->get_bool(self, "sync_enabled", TRUE));
+    g_object_set_data(G_OBJECT(check), GT_SET_BOX, box);
+    g_signal_connect(check, "toggled", G_CALLBACK(on_set_enabled), app);
+    gtk_box_pack_start(GTK_BOX(box), check, FALSE, FALSE, 0);
+
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *signin = gtk_button_new_with_label(
+        "Sign In to Google\xe2\x80\xa6");
+    g_object_set_data(G_OBJECT(signin), GT_SET_BOX, box);
+    g_signal_connect(signin, "clicked", G_CALLBACK(on_set_signin), app);
+    gtk_box_pack_start(GTK_BOX(row), signin, FALSE, FALSE, 0);
+    GtkWidget *signout = gtk_button_new_with_label("Sign Out");
+    g_object_set_data(G_OBJECT(signout), GT_SET_BOX, box);
+    g_signal_connect(signout, "clicked", G_CALLBACK(on_set_signout), app);
+    gtk_box_pack_start(GTK_BOX(row), signout, FALSE, FALSE, 0);
+    GtkWidget *state = gtk_label_new("");
+    gtk_box_pack_end(GTK_BOX(row), state, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), row, FALSE, FALSE, 0);
+
+    GtkWidget *iv = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(iv), gtk_label_new("Auto-sync every"),
+                       FALSE, FALSE, 0);
+    GtkWidget *spin = gtk_spin_button_new_with_range(0, 720, 1);
+    gtk_widget_set_tooltip_text(spin,
+        "Minutes between automatic syncs while signed in; 0 disables "
+        "the timer (the Sync button always works)");
+    gchar *cur = host->config->get(self, "interval_min");
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin),
+                              cur != NULL ? g_ascii_strtod(cur, NULL) : 5);
+    g_free(cur);
+    g_signal_connect(spin, "value-changed", G_CALLBACK(on_set_interval),
+                     app);
+    gtk_box_pack_start(GTK_BOX(iv), spin, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(iv), gtk_label_new("minutes (0 = off)"),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), iv, FALSE, FALSE, 0);
+
+    GtkWidget *tb = gtk_check_button_new_with_label(
+        "Show Sync button in toolbar");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tb),
+        host->config->get_bool(self, "toolbar_button", TRUE));
+    g_object_set_data(G_OBJECT(tb), GT_SET_BOX, box);
+    g_signal_connect(tb, "toggled", G_CALLBACK(on_set_toolbar), app);
+    gtk_box_pack_start(GTK_BOX(box), tb, FALSE, FALSE, 0);
+
+    g_object_set_data(G_OBJECT(box), GT_SET_STATE,   state);
+    g_object_set_data(G_OBJECT(box), GT_SET_SIGNIN,  signin);
+    g_object_set_data(G_OBJECT(box), GT_SET_SIGNOUT, signout);
+    g_object_set_data(G_OBJECT(box), GT_SET_SPIN,    spin);
+    g_object_set_data(G_OBJECT(box), GT_SET_TOOLBAR, tb);
+    settings_state_refresh(box);
+}
+
+/* ---------------------------------------------------------------------------
+ * gtasks_init() — the plugin's init hook: register the worker, the UI
+ * contributions and the core-operation hooks.  Cheap by design; it runs
+ * before the window is shown (see plugin.h).
+ * ------------------------------------------------------------------------- */
+static gboolean
+gtasks_init(TaskApp *app, const TaskPlugin *me)
+{
+    (void)app;
+    (void)me;
+    /* Credentials are snapshotted before any worker thread can exist —
+     * the same ordering main() used to guarantee.                       */
+    task_oauth_init();
+    sync_worker_live         = sync_worker;
+    sync_worker_live.running = &gt_running;
+    sync_worker_live.timer   = &gt_timer;
+    host->worker->register_worker(&sync_worker_live);
+
+    host->ui->add_tool(&sync_tool);
+    host->ui->add_task_menu_item(&ctx_open_item);
+    host->ui->add_editor_section(&editor_section);
+    host->settings->add_section(gtasks_settings, NULL);
+    host->ops->add_moved_hook(gtasks_task_moved, NULL);
+    host->ops->add_cleared_hook(gtasks_completed_cleared, NULL);
+    host->ops->add_list_veto(gtasks_list_veto, NULL);
+    return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
+ * gtasks_db_open() — create this plugin's own tables.
+ *
+ * Called for the main connection at startup and again whenever the
+ * database changes identity.  IF NOT EXISTS because a database migrated
+ * from schema v7 already has them, and the worker's own connection opens
+ * the same file.
+ * ------------------------------------------------------------------------- */
+static void
+gtasks_db_open(TaskApp *app, TaskDatabase *db, const TaskPlugin *me)
+{
+    (void)app;
+    (void)me;
+    host->db->exec(db,
+        "CREATE TABLE IF NOT EXISTS gtasks_list ("
+        "  list_id   INTEGER PRIMARY KEY REFERENCES lists(id)"
+        "            ON DELETE CASCADE,"
+        "  gtasks_id TEXT)");
+    host->db->exec(db,
+        "CREATE TABLE IF NOT EXISTS gtasks_task ("
+        "  task_id   INTEGER PRIMARY KEY REFERENCES tasks(id)"
+        "            ON DELETE CASCADE,"
+        "  gtasks_id TEXT,"
+        "  etag      TEXT,"
+        "  web_link  TEXT,"
+        "  glinks    TEXT,"
+        "  assigned  TEXT)");
+}
+
+static const TaskPlugin gtasks_plugin = {
+    .abi_version     = TASK_PLUGIN_ABI_VERSION,
+    .abi_revision    = TASK_PLUGIN_ABI_REVISION,
+    .id              = "gtasks",
+    .name            = "Google Tasks",
+    .description     = "Two-way non-destructive sync with Google Tasks.",
+    .version         = "1.0.0",
+    .enabled_default = TRUE,
+    .init            = gtasks_init,
+    .db_open         = gtasks_db_open,
+};
+
+TASK_PLUGIN_EXPORT const TaskPlugin *
+task_plugin_entry(const TaskHostApi *api)
+{
+    host = api;
+    self = &gtasks_plugin;
+    /* libcurl's implicit global init is not thread-safe, and this plugin
+     * is the only thing in the process that uses it.  Doing it here, from
+     * the entry point, is before any worker of ours can exist.          */
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    return &gtasks_plugin;
 }

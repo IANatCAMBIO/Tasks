@@ -183,49 +183,9 @@ host_db_path(TaskApp *app)
     return app->db != NULL ? app->db->path : NULL;
 }
 
-/* host_exec() — statements with no result.  Returns FALSE and logs
- * sqlite's own message on failure; a plugin silently losing a write is
- * the outcome the app's error discipline exists to prevent.             */
-static gboolean
-host_exec(TaskDatabase *db, const gchar *sql)
-{
-    gchar *msg = NULL;
-    if (sqlite3_exec(db->sq, sql, NULL, NULL, &msg) != SQLITE_OK) {
-        g_warning("plugin sql: %s: %s", sql, msg != NULL ? msg : "?");
-        sqlite3_free(msg);
-        return FALSE;
-    }
-    return TRUE;
-}
-
-/* Trampoline: sqlite3_exec's callback shape without the sqlite3 types
- * reaching the plugin's header.                                          */
-typedef struct {
-    gint (*cb)(gpointer d, gint n_cols, gchar **values, gchar **names);
-    gpointer user_data;
-} QueryCtx;
-
-static int
-query_trampoline(void *data, int n_cols, char **values, char **names)
-{
-    QueryCtx *q = data;
-    return q->cb(q->user_data, n_cols, values, names);
-}
-
-static gboolean
-host_exec_query(TaskDatabase *db, const gchar *sql,
-                gint (*cb)(gpointer, gint, gchar **, gchar **),
-                gpointer user_data)
-{
-    QueryCtx q = { cb, user_data };
-    gchar *msg = NULL;
-    if (sqlite3_exec(db->sq, sql, query_trampoline, &q, &msg) != SQLITE_OK) {
-        g_warning("plugin sql: %s: %s", sql, msg != NULL ? msg : "?");
-        sqlite3_free(msg);
-        return FALSE;
-    }
-    return TRUE;
-}
+/* The exec/query pair is the app's own (db.h) — one implementation for
+ * in-tree callers and plugins alike, so a fix like the SQLITE_ABORT
+ * handling below cannot land on only one of them.                       */
 
 /* host_quote() — sqlite3_mprintf's %Q, re-homed onto g_free so a plugin
  * never needs sqlite3_free (and so never needs to link SQLite).          */
@@ -266,9 +226,17 @@ static const TaskHostDb host_db = {
     .state_get         = task_db_state_get,
     .state_set         = task_db_state_set,
 
-    .exec              = host_exec,
-    .exec_query        = host_exec_query,
+    .exec              = task_db_exec_sql,
+    .exec_query        = task_db_exec_query,
     .quote             = host_quote,
+
+    .list_apply_remote       = task_db_list_apply_remote,
+    .task_apply_remote       = task_db_task_apply_remote,
+    .list_restore            = task_db_list_restore,
+    .list_purge              = task_db_list_purge,
+    .list_emoji_if_empty     = task_db_list_emoji_if_empty,
+    .tasks_in_list_all       = task_db_tasks_in_list_all,
+    .insert_remote_tombstone = task_db_insert_remote_tombstone,
 };
 
 /* --- workers, views, ops -------------------------------------------------- */
@@ -306,12 +274,37 @@ static const TaskHostRows host_rows = {
     .stripe_color = task_rows_stripe_color,
     .bg_func      = task_rows_bg_func,
     .toggle_done  = task_rows_toggle_done,
+    .add_decoration = task_rows_add_decoration,
 };
 
+/* host_notice() — plugins pass a finished string, for the same reason
+ * host_status does: no varargs across the ABI boundary.               */
+static void
+host_notice(GtkWindow *parent, GtkMessageType type, const gchar *title,
+            const gchar *message)
+{
+    task_app_notice(parent, type, title, "%s", message);
+}
+
 static const TaskHostUi host_ui = {
-    .editor_open = task_editor_open,
-    .scroll_keep = task_library_scroll_keep,
-    .set_location = task_library_set_location,
+    .editor_open        = task_editor_open,
+    .scroll_keep        = task_library_scroll_keep,
+    .set_location       = task_library_set_location,
+    .notice             = host_notice,
+    .widget_add_css     = task_app_widget_add_css,
+    .exe_dir            = task_app_exe_dir,
+    .add_tool           = task_ui_add_tool,
+    .tool_set_sensitive = task_ui_tool_set_sensitive,
+    .add_task_menu_item = task_ui_add_task_menu_item,
+    .add_editor_section = task_ui_add_editor_section,
+    .add_menu_item      = task_ui_add_menu_item,
+};
+
+static const TaskHostUtil host_util = {
+    .status_apply_done = task_status_apply_done,
+    .due_from_ymd      = task_due_from_ymd,
+    .due_format_iso    = task_due_format_iso,
+    .day_bounds        = task_day_bounds,
 };
 
 static const TaskHostApi host_api = {
@@ -329,6 +322,7 @@ static const TaskHostApi host_api = {
     .settings         = &host_settings,
     .rows             = &host_rows,
     .ui               = &host_ui,
+    .util             = &host_util,
 };
 
 /* ===========================================================================

@@ -3,6 +3,7 @@
  * =========================================================================== */
 
 #include "oauth.h"
+#include "plugin_ctx.h"
 #include "http.h"
 #include "json.h"
 #include <gio/gio.h>
@@ -92,7 +93,7 @@ static gboolean
 load_client_file(gchar **id, gchar **secret)
 {
     /* Two candidates: beside the binary, then the config subdirectory.     */
-    const gchar *dirs[2]    = { task_app_exe_dir(), g_get_user_config_dir() };
+    const gchar *dirs[2]    = { host->ui->exe_dir(), g_get_user_config_dir() };
     const gchar *subdirs[2] = { NULL, TASK_APP_DIR };
     for (gsize i = 0; i < G_N_ELEMENTS(dirs); i++) {
         if (dirs[i] == NULL)
@@ -140,10 +141,10 @@ task_oauth_init(void)
     g_free(cred_refresh_token);
     cred_client_id     = file_id;
     cred_client_secret = file_secret;
-    cred_refresh_token = task_app_config_get("gtasks_refresh_token");
+    cred_refresh_token = host->config->get(self, "refresh_token");
     if (cred_client_id == NULL) {
-        cred_client_id     = task_app_config_get("google_client_id");
-        cred_client_secret = task_app_config_get("google_client_secret");
+        cred_client_id     = host->config->get(self, "client_id");
+        cred_client_secret = host->config->get(self, "client_secret");
     }
     if (cred_client_id == NULL && *TASK_GOOGLE_CLIENT_ID != '\0')
         cred_client_id = g_strdup(TASK_GOOGLE_CLIENT_ID);
@@ -179,7 +180,7 @@ task_oauth_authenticated(void)
 void
 task_oauth_signout(void)
 {
-    task_app_config_set("gtasks_refresh_token", NULL);
+    host->config->set(self, "refresh_token", NULL);
     g_mutex_lock(&cred_lock);
     g_clear_pointer(&session_access, g_free);
     g_clear_pointer(&cred_refresh_token, g_free);
@@ -415,7 +416,7 @@ exchange_apply(gpointer data)
     }
     if (job->error == NULL && job->access != NULL) {
         if (job->refresh != NULL)
-            task_app_config_set("gtasks_refresh_token", job->refresh);
+            host->config->set(self, "refresh_token", job->refresh);
         g_mutex_lock(&cred_lock);
         if (job->refresh != NULL) {
             g_free(cred_refresh_token);
@@ -552,7 +553,13 @@ redirect_read_done(GObject *src, GAsyncResult *res, gpointer data)
          * invalid_grant ("Bad Request") and revokes the grant the first
          * exchange just obtained, failing the whole sign-in.  Serve the
          * page again, exchange nothing.                                    */
-        g_printerr("task-oauth: duplicate redirect ignored\n");
+        /* g_debug, not stderr: this is the guard WORKING, not a fault.
+         * A browser that prefetches or retries the redirect hits the
+         * loopback listener twice on a perfectly good sign-in, and
+         * printing that unconditionally makes a successful sync look
+         * like it went wrong.                                            */
+        g_debug("oauth: duplicate redirect ignored (the code is already "
+                "being exchanged)");
         redirect_respond(conn, "Signed in \xe2\x9c\x93");
     } else {
         flow.exchanging = TRUE;

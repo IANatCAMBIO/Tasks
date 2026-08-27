@@ -3,7 +3,7 @@
  * =========================================================================== */
 
 #include "editor_window.h"
-#include "json.h"
+#include "task_ui.h"
 #include <string.h>
 
 /* Columns of the subtasks list store.                                      */
@@ -44,9 +44,7 @@ typedef struct {
                                       * editable dies under us)             */
     GtkListStore *att_store;
     GtkWidget    *att_view;
-    GtkWidget    *google_box;        /* "From Google" section, or NULL      */
-    GtkWidget    *google_info;       /* completed/assignment label          */
-    GtkWidget    *glinks_box;        /* link buttons container              */
+    GtkWidget    *ext_box;           /* contributed sections (task_ui.h)    */
     GtkWidget    *adv_box;           /* Subtasks + Attachments, folded away
                                       * behind the Advanced disclosure      */
     GtkWidget    *adv_label;         /* the "Advanced ▾" link's label       */
@@ -776,82 +774,35 @@ clear_children(GtkWidget *box)
     g_list_free(kids);
 }
 
-/* add_link_button() — a left-aligned GtkLinkButton row.                    */
-static void
-add_link_button(GtkWidget *box, const gchar *uri, const gchar *label)
-{
-    GtkWidget *btn = gtk_link_button_new_with_label(uri,
-        label != NULL && *label != '\0' ? label : uri);
-    gtk_widget_set_halign(btn, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(box), btn, FALSE, FALSE, 0);
-}
-
 /* ---------------------------------------------------------------------------
- * google_section_load() — fill the read-only "From Google" section from
- * the task's synced metadata; hidden when there is nothing to show.
- *   completed time · assignment origin (Docs/Chat) · Google-attached
- *   links[] · the webViewLink deep link.
+ * ext_sections_load() — rebuild the contributed sections for `t`.
+ *
+ * Rebuilt per load rather than built once and refilled: a section is
+ * whatever its owner returns for THIS task, and most tasks get nothing.
+ * Asking each contributor and packing what comes back is simpler than
+ * keeping a widget per contributor alive and hiding it, and it means a
+ * contributor cannot leak state between the tasks it is shown for.
+ *
+ * A contributor returning NULL is the normal case, not an error.
  * ------------------------------------------------------------------------- */
 static void
-google_section_load(TaskEditor *ed, const Task *t)
+ext_sections_load(TaskEditor *ed, const Task *t)
 {
-    if (ed->google_box == NULL)
-        return;
-    GString *info = g_string_new(NULL);
-    if (t->status == TASK_STATUS_DONE && t->completed_at != 0) {
-        GDateTime *dt = g_date_time_new_from_unix_local(t->completed_at);
-        gchar *when = g_date_time_format(dt, "%b %-e, %Y at %H:%M");
-        g_string_append_printf(info, "Completed %s", when);
-        g_free(when);
-        g_date_time_unref(dt);
+    clear_children(ed->ext_box);
+    gboolean any = FALSE;
+    for (guint i = 0; i < task_ui_editor_count(); i++) {
+        const TaskUiEditorDef *d = task_ui_editor_nth(i);
+        GtkWidget *w = d->build != NULL
+                     ? d->build(ed->app, t, d->user_data) : NULL;
+        if (w == NULL)
+            continue;
+        gtk_box_pack_start(GTK_BOX(ed->ext_box), w, FALSE, FALSE, 0);
+        any = TRUE;
     }
-    if (t->assigned != NULL) {
-        TaskJson *ai = task_json_parse(t->assigned, -1);
-        const gchar *surface = task_json_str(ai, "surfaceType");
-        if (info->len > 0)
-            g_string_append_c(info, '\n');
-        g_string_append_printf(info, "Assigned task (from %s)",
-            g_strcmp0(surface, "DOCUMENT") == 0 ? "Google Docs"
-            : g_strcmp0(surface, "SPACE") == 0  ? "Google Chat"
-                                                : "Google Workspace");
-        task_json_free(ai);
-    }
-    gtk_label_set_text(GTK_LABEL(ed->google_info), info->str);
-
-    clear_children(ed->glinks_box);
-    if (t->glinks != NULL) {
-        TaskJson *links = task_json_parse(t->glinks, -1);
-        for (guint i = 0; i < task_json_len(links); i++) {
-            TaskJson *lk = task_json_at(links, i);
-            const gchar *uri = task_json_str(lk, "link");
-            if (uri != NULL)
-                add_link_button(ed->glinks_box, uri,
-                                task_json_str(lk, "description"));
-        }
-        task_json_free(links);
-    }
-    if (t->web_link != NULL)
-        add_link_button(ed->glinks_box, t->web_link,
-                        "Open in Google Tasks");
-
-    gboolean any = info->len > 0 || t->web_link != NULL ||
-                   t->glinks != NULL;
-    g_string_free(info, TRUE);
-    if (any) {
-        /* The box carries no_show_all so the construction-time show_all
-         * cannot reveal an empty section — but that same flag makes
-         * gtk_widget_show_all(google_box) return EARLY (it tests the
-         * widget's own flag before recursing), so the section would never
-         * appear at all.  Lift the flag across the show.                   */
-        gtk_widget_set_no_show_all(ed->google_box, FALSE);
-        gtk_widget_show_all(ed->google_box);
-        gtk_widget_set_no_show_all(ed->google_box, TRUE);
-    } else {
-        gtk_widget_hide(ed->google_box);
-    }
-    gtk_widget_set_visible(ed->google_info,
-        gtk_widget_get_visible(ed->google_box) &&
-        *gtk_label_get_text(GTK_LABEL(ed->google_info)) != '\0');
+    if (any)
+        gtk_widget_show_all(ed->ext_box);
+    else
+        gtk_widget_hide(ed->ext_box);
 }
 
 /* ---------------------------------------------------------------------------
@@ -891,7 +842,7 @@ editor_load(TaskEditor *ed)
 
     sub_refresh(ed);
     att_refresh(ed);
-    google_section_load(ed, t);
+    ext_sections_load(ed, t);
     editor_title_refresh(ed);
     ed->loading = FALSE;
     task_free(t);
@@ -1304,25 +1255,12 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     gtk_box_pack_start(GTK_BOX(ed->adv_box), att_section, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), ed->adv_box, FALSE, FALSE, 0);
 
-    /* "From Google" — read-only metadata pulled by the sync (completed
-     * time, Docs/Chat assignment, Google-attached links, the deep link
-     * into Google Tasks).  Shown only when the sync actually filled it.    */
-    ed->google_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    GtkWidget *heading = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(heading), "<b>From Google</b>");
-    gtk_widget_set_halign(heading, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(ed->google_box), heading, FALSE, FALSE, 0);
-    ed->google_info = gtk_label_new("");
-    gtk_label_set_line_wrap(GTK_LABEL(ed->google_info), TRUE);
-    gtk_widget_set_halign(ed->google_info, GTK_ALIGN_START);
-    task_app_widget_add_css(ed->google_info, "label { font-size: 85%; }");
-    gtk_box_pack_start(GTK_BOX(ed->google_box), ed->google_info,
-                       FALSE, FALSE, 0);
-    ed->glinks_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_box_pack_start(GTK_BOX(ed->google_box), ed->glinks_box,
-                       FALSE, FALSE, 0);
-    gtk_widget_set_no_show_all(ed->google_box, TRUE);
-    gtk_box_pack_start(GTK_BOX(vbox), ed->google_box, FALSE, FALSE, 0);
+    /* Contributed sections (see task_ui.h) — an integration's read-only
+     * view of this task, such as what a sync knows about it.  Empty and
+     * zero-height for a task nothing contributes to, which is most of
+     * them, so it costs the editor's natural height nothing.              */
+    ed->ext_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_box_pack_start(GTK_BOX(vbox), ed->ext_box, FALSE, FALSE, 0);
 
     /* Bottom row: the Advanced disclosure link at the left, Save at the
      * right (every editor) and Cancel to ITS right in the New Task variant

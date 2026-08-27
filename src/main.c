@@ -8,12 +8,9 @@
  * =========================================================================== */
 
 #include <gtk/gtk.h>
-#include <curl/curl.h>
 #include <sqlite3.h>
 #include "app.h"
 #include "db.h"
-#include "oauth.h"
-#include "gtasks.h"
 #include "bnsync.h"
 #include "backup.h"
 #include "task_worker.h"
@@ -276,7 +273,6 @@ main(int argc, char **argv)
     /* libcurl's global init is NOT thread-safe when left to the first
      * curl_easy_init — and ours happen on sync/OAuth worker threads,
      * possibly concurrently.  Initialize once before any thread exists.    */
-    curl_global_init(CURL_GLOBAL_DEFAULT);
 
     gchar *db_dir  = task_app_config_get("db_dir");
     gchar *db_path = task_db_resolve_path(db_dir);
@@ -309,7 +305,6 @@ main(int argc, char **argv)
         return 1;
     }
 
-    task_oauth_init();                 /* snapshot Google credentials       */
 
     TaskApp *app = g_new0(TaskApp, 1);
     app->db     = db;
@@ -329,8 +324,8 @@ main(int argc, char **argv)
      * registries are unlocked (see task_worker.h and task_ops.h).  The
      * app has to be built first — a worker definition points at the
      * app's own in-flight flag and GSource id.                          */
+
     task_core_views_init();          /* the app's own sidebar views first  */
-    task_gtasks_init(app);
     task_bnsync_init(app);
     task_backup_init(app);
 
@@ -377,6 +372,5 @@ main(int argc, char **argv)
     g_free(app);
     g_free(db_dir);
     g_free(db_path);
-    curl_global_cleanup();
     return status;
 }

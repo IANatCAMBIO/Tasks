@@ -25,6 +25,41 @@ task_rows_store_new(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * Row decorations (see task_rows.h).  Registered once at startup; never
+ * removed, so the list needs no lock.
+ * ------------------------------------------------------------------------- */
+static GPtrArray *decorations = NULL;   /* const TaskRowDecorDef*, sorted   */
+
+static gint
+decor_cmp(gconstpointer a, gconstpointer b)
+{
+    const TaskRowDecorDef *da = *(const TaskRowDecorDef **)a;
+    const TaskRowDecorDef *db = *(const TaskRowDecorDef **)b;
+    return da->sort < db->sort ? -1 : (da->sort > db->sort ? 1 : 0);
+}
+
+void
+task_rows_add_decoration(const TaskRowDecorDef *def)
+{
+    if (def == NULL || def->prefix == NULL)
+        return;
+    if (decorations == NULL)
+        decorations = g_ptr_array_new();
+    g_ptr_array_add(decorations, (gpointer)def);
+    g_ptr_array_sort(decorations, decor_cmp);
+}
+
+/* decor_has() — is `task_id` in the set collected for decoration `i`?    */
+static gboolean
+decor_has(const TaskRowCtx *ctx, guint i, gint64 task_id)
+{
+    if (ctx == NULL || ctx->decor_sets == NULL || i >= ctx->decor_sets->len)
+        return FALSE;
+    GHashTable *set = g_ptr_array_index(ctx->decor_sets, i);
+    return set != NULL && g_hash_table_contains(set, &task_id);
+}
+
+/* ---------------------------------------------------------------------------
  * task_rows_stripe_color() / task_rows_bg_func() — see task_rows.h.
  * ------------------------------------------------------------------------- */
 const gchar *
@@ -115,8 +150,9 @@ markup_escape_db(const gchar *text)
  * ------------------------------------------------------------------------- */
 gchar *
 task_rows_desc_markup(const Task *t, const gchar *list_name, gint att_count,
-                      GPtrArray *subs, gboolean bold)
+                      GPtrArray *subs, const TaskRowCtx *ctx)
 {
+    gboolean bold = ctx != NULL && ctx->bold;
     GString *s = g_string_new(NULL);
     gchar *title = markup_escape_db(
         *t->title != '\0' ? t->title : "Untitled Task");
@@ -125,8 +161,14 @@ task_rows_desc_markup(const Task *t, const gchar *list_name, gint att_count,
     gchar *line = t->status == TASK_STATUS_DONE
         ? g_strdup_printf("%s<s>%s</s>%s", open, title, close)
         : g_strdup_printf("%s%s%s", open, title, close);
-    if (t->bn_uid != 0) {            /* mirrored Notes action item        */
-        gchar *p = g_strdup_printf("\xe2\x9d\x97  %s", line);
+    /* Contributed decorations, innermost first (see task_rows.h).  The ❗
+     * that used to be hard-coded here from t->bn_uid is now one of these,
+     * registered by whatever owns that meaning.                          */
+    for (guint i = 0; decorations != NULL && i < decorations->len; i++) {
+        const TaskRowDecorDef *d = g_ptr_array_index(decorations, i);
+        if (!decor_has(ctx, i, t->id))
+            continue;
+        gchar *p = g_strdup_printf("%s%s", d->prefix, line);
         g_free(line);
         line = p;
     }
@@ -299,6 +341,16 @@ task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx, gboolean virtual_view)
     }
     ctx->bold = task_app_config_get_bool("bold_task_titles", FALSE);
     ctx->show_done = task_app_config_get_bool("show_completed", TRUE);
+
+    /* Ask each decoration ONCE for the whole set it applies to — the
+     * batching that keeps a plugin out of the per-row path.             */
+    ctx->decor_sets = g_ptr_array_new();
+    for (guint i = 0; decorations != NULL && i < decorations->len; i++) {
+        const TaskRowDecorDef *d = g_ptr_array_index(decorations, i);
+        g_ptr_array_add(ctx->decor_sets,
+                        d->collect != NULL ? d->collect(app, d->user_data)
+                                           : NULL);
+    }
 }
 
 void
@@ -309,6 +361,15 @@ task_row_ctx_clear(TaskRowCtx *ctx)
     task_ptr_array_free_tasks(ctx->all_subs);
     if (ctx->list_names != NULL)
         g_hash_table_destroy(ctx->list_names);
+    if (ctx->decor_sets != NULL) {
+        for (guint i = 0; i < ctx->decor_sets->len; i++) {
+            GHashTable *set = g_ptr_array_index(ctx->decor_sets, i);
+            if (set != NULL)
+                g_hash_table_destroy(set);
+        }
+        g_ptr_array_free(ctx->decor_sets, TRUE);
+        ctx->decor_sets = NULL;
+    }
 }
 
 /* append_task_rows() — append `tasks` to `store` through the shared-
@@ -335,8 +396,8 @@ task_rows_append(GtkListStore *store, GPtrArray *tasks,
         gint att_count = GPOINTER_TO_INT(
             g_hash_table_lookup(ctx->att_counts,
                                 GINT_TO_POINTER(t->id)));
-        gchar *desc      = task_rows_desc_markup(t, list_name, att_count, subs,
-                                            ctx->bold);
+        gchar *desc      = task_rows_desc_markup(t, list_name, att_count,
+                                                 subs, ctx);
         gchar *due       = task_due_format(t->due);
         gchar *completed = task_due_format(t->completed_at);
         GtkTreeIter iter;

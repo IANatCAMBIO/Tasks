@@ -118,3 +118,43 @@ task_worker_arm_all(TaskApp *app, const gchar *db_path)
     for (GSList *n = workers; n != NULL; n = n->next)
         task_worker_arm(app, n->data, db_path);
 }
+
+/* enabled() — the worker's master switch, or TRUE when it has none.      */
+static gboolean
+enabled(const TaskWorkerDef *def)
+{
+    return def->enabled_key == NULL ||
+           task_app_config_get_bool(def->enabled_key, def->enabled_default);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_worker_run_all() — every enabled worker, now (see task_worker.h).
+ * ------------------------------------------------------------------------- */
+void
+task_worker_run_all(TaskApp *app, const gchar *db_path)
+{
+    for (GSList *n = workers; n != NULL; n = n->next) {
+        const TaskWorkerDef *def = n->data;
+        if (!enabled(def))
+            continue;
+        if (def->running != NULL && *def->running)
+            continue;                /* a pass is already in flight        */
+        if (def->ready != NULL && !def->ready(app)) {
+            /* Asked but not able.  Silence here is what made the Sync
+             * button look broken while signed out.                       */
+            if (def->on_blocked != NULL)
+                def->on_blocked(app, db_path);
+            continue;
+        }
+        def->run(app, db_path);
+    }
+}
+
+gboolean
+task_worker_any_enabled(void)
+{
+    for (GSList *n = workers; n != NULL; n = n->next)
+        if (enabled(n->data))
+            return TRUE;
+    return FALSE;
+}
