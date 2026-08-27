@@ -181,10 +181,14 @@ the database schema and the sync engine see [Internals](Internals.md).
   is progress, not a reason to reopen it. Unticking a subtask does not
   move the parent either — that is your call to make.
 - **Double-click a task** to open its editor window.
-- Menus: *File → New Task*, *New List…*, *Sync Now*, *Clear Completed
+- Menus: *File → New Task*, *New List…*, *Clear Completed
   Tasks*, *Open Database File…*, *Settings…*, *About*, and *Quit*. With
   gtk-mac-integration built in, the menu moves into the native macOS
   menu bar.
+- An installed integration may add a menu of its OWN, after *View* —
+  with Google Tasks switched on there is a *Google* menu holding
+  *Sync Now*. Syncing is each integration's own action rather than one
+  app-wide command, so the menu says which service a press will contact.
 
 ## Editor windows
 
@@ -346,8 +350,9 @@ Sign in once (see
 [the plugin's README](src/plugins/gtasks/README.md) for the OAuth
 client setup if you built the app yourself); after that a periodic
 auto-sync runs
-while signed in, and *File → Sync Now* or the toolbar button run one
-on demand. The GUI stays live throughout — sync happens on a worker
+while signed in, and *Google → Sync Now* or the toolbar button run one
+on demand (the menu item is always there; the toolbar button can be
+switched off in *Settings → Google Tasks*). The GUI stays live throughout — sync happens on a worker
 thread.
 
 What maps: tasklists ↔ lists, tasks ↔ tasks (with the same single

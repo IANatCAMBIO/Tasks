@@ -3800,37 +3800,20 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
- * on_sync() — the Sync button and File → Sync Now.
+ * There is no on_sync() here any more, and no File → Sync Now.
  *
- * "Sync" means EVERY registered background worker (see task_worker.h),
- * not a named list of them.  This used to start the Notes mirror and
- * then the Google sync by hand, which was wrong twice over: a third
- * integration would have had to be added here, and the button was gated
- * on Google's setting while also running Notes.
+ * SYNC IS ENTIRELY PLUGIN BUSINESS, and the window cannot describe it.
+ * That item ran every registered worker, which made its label a promise
+ * it could not keep: with no integration installed it did nothing, with
+ * two it did two different things, and either way "Sync Now" in File
+ * could not say WHAT was about to be synced.  Each integration now
+ * offers its own — Google's is Google → Sync Now (see task_ui.h's
+ * TASK_UI_MENU_OWN) — so the label names the thing it acts on.
  *
- * Sign-in is no longer this function's business either.  A worker that
- * cannot run right now says so itself, and the Google sync opens its
- * browser flow from its own `on_blocked` — which is why pressing this
- * while signed out still signs in, without the window knowing what
- * OAuth is.
- *
- * The button is NOT greyed while a pass runs.  With several workers
- * there is no single "the sync" to be busy; each already refuses to
- * start a second pass over itself, and a control that greys out for the
- * length of a network round trip is worse than one that is idempotent.
+ * task_worker_run_all() still exists as the run-everything call for
+ * whoever wants it; nothing in the core's chrome reaches for it, because
+ * the core is not the one who knows what "everything" is.
  * ------------------------------------------------------------------------- */
-static void
-on_sync(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskLibrary *lw = data;
-    if (!task_worker_any_enabled()) {
-        task_app_status(lw->app, "No sync is switched on \xe2\x80\x94 see "
-                        "File \xe2\x86\x92 Settings\xe2\x80\xa6");
-        return;
-    }
-    task_worker_run_all(lw->app, lw->app->db->path);
-}
 
 /* ===========================================================================
  * Menu actions.
@@ -4260,12 +4243,17 @@ on_ui_task_menu_activated(GtkWidget *item, gpointer data)
         d->activate(lw->app, ids, d->user_data);
 }
 
-/* ui_menu_items() — append every contributed item for `which`, followed
- * by a separator so the group reads as its own section.  Appends NOTHING
- * when there are none, which keeps an app with no plugins looking
- * exactly as it did.                                                     */
+/* ui_menu_items() — append every contributed item for `which`.
+ *
+ * `rule` adds a separator AFTER them so the group reads as its own
+ * section; pass FALSE where the caller's own grouping already says where
+ * the group ends (File puts them at the head of its second group, which
+ * a rule of their own would then split in two).  Either way this appends
+ * NOTHING when nothing is contributed — rule included — which keeps an
+ * app with no plugins looking exactly as it did.                         */
 static void
-ui_menu_items(TaskLibrary *lw, GtkWidget *menu, TaskUiMenu which)
+ui_menu_items(TaskLibrary *lw, GtkWidget *menu, TaskUiMenu which,
+              gboolean rule)
 {
     gboolean any = FALSE;
     for (guint i = 0; i < task_ui_menu_count(); i++) {
@@ -4277,9 +4265,50 @@ ui_menu_items(TaskLibrary *lw, GtkWidget *menu, TaskUiMenu which)
         g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
         any = TRUE;
     }
-    if (any)
+    if (any && rule)
         gtk_menu_shell_append(GTK_MENU_SHELL(menu),
                               gtk_separator_menu_item_new());
+}
+
+/* ---------------------------------------------------------------------------
+ * ui_own_menus() — build the TOP-LEVEL menus contributed items asked for
+ * (TASK_UI_MENU_OWN, see task_ui.h) and append them to the menu bar.
+ *
+ * One menu per distinct `menu_title`, created when its first item is
+ * reached — so the registry order (which is `sort` order) decides both
+ * the items within a menu and the menus among themselves, and an
+ * integration with two items gets one menu rather than two.  Titles are
+ * compared by CONTENT, not pointer: two plugins are two shared objects,
+ * so the same title is a different string in each.
+ *
+ * Appends nothing when nothing is contributed, which is what keeps the
+ * bar at File + View for an app with no plugins.
+ * ------------------------------------------------------------------------- */
+static void
+ui_own_menus(TaskLibrary *lw, GtkWidget *menubar)
+{
+    GHashTable *by_title = g_hash_table_new(g_str_hash, g_str_equal);
+    for (guint i = 0; i < task_ui_menu_count(); i++) {
+        const TaskUiMenuDef *d = task_ui_menu_nth(i);
+        if (d->menu != TASK_UI_MENU_OWN || d->label == NULL)
+            continue;
+        /* A menu with no name has nowhere to go — skip it rather than
+         * putting an untitled menu in the bar.                           */
+        if (d->menu_title == NULL || *d->menu_title == '\0')
+            continue;
+        GtkWidget *menu = g_hash_table_lookup(by_title, d->menu_title);
+        if (menu == NULL) {
+            menu = gtk_menu_new();
+            GtkWidget *top = gtk_menu_item_new_with_label(d->menu_title);
+            gtk_menu_item_set_submenu(GTK_MENU_ITEM(top), menu);
+            gtk_menu_shell_append(GTK_MENU_SHELL(menubar), top);
+            g_hash_table_insert(by_title, (gpointer)d->menu_title, menu);
+        }
+        GtkWidget *item = menu_item(menu, d->label,
+                                    G_CALLBACK(on_ui_menu_activated), lw);
+        g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
+    }
+    g_hash_table_destroy(by_title);
 }
 
 /* tool_button() — a style-aware toolbar button (local icon + label)
@@ -4890,27 +4919,30 @@ task_library_window_new(TaskApp *app)
     GtkWidget *file_menu = gtk_menu_new();
     GtkWidget *file_item = gtk_menu_item_new_with_label("File");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
+    /* ONE separator in this menu, and it goes after the group below.
+     * What acts on the TASKS is New Task, New List and Clear Completed;
+     * everything after the rule is about the app or the file it keeps —
+     * the database, Settings, About, Quit.  A rule between every pair of
+     * items (which is what this was) divides nothing, so it stopped
+     * reading as grouping at all.
+     *
+     * No Sync Now here either — an integration contributes its own, in a
+     * menu of its own (see the note where on_sync used to be, and
+     * task_ui.h).                                                        */
     menu_item(file_menu, "New Task", G_CALLBACK(on_new_task), lw);
     menu_item(file_menu, "New List\xe2\x80\xa6", G_CALLBACK(on_new_list), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
-    menu_item(file_menu, "Sync Now", G_CALLBACK(on_sync), lw);
     menu_item(file_menu, "Clear Completed Tasks",
               G_CALLBACK(on_menu_clear_completed), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
-    ui_menu_items(lw, file_menu, TASK_UI_MENU_FILE);
+    /* Contributed items lead the second group WITHOUT a rule of their
+     * own — one more rule is exactly what this menu is losing.           */
+    ui_menu_items(lw, file_menu, TASK_UI_MENU_FILE, FALSE);
     menu_item(file_menu, "Open Database File\xe2\x80\xa6",
               G_CALLBACK(on_open_db), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
     menu_item(file_menu, "Settings\xe2\x80\xa6",
               G_CALLBACK(on_menu_settings), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
     menu_item(file_menu, "About", G_CALLBACK(on_menu_about), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
     menu_item(file_menu, "Quit", G_CALLBACK(on_menu_quit), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), file_item);
 
@@ -4942,6 +4974,14 @@ task_library_window_new(TaskApp *app)
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           gtk_separator_menu_item_new());
 
+    /* Contributed View items, between the two groups: a plugin's way of
+     * LOOKING at the tasks belongs with the app's own.  This call was
+     * missing — TASK_UI_MENU_VIEW was a registry value the window never
+     * read, so anything registered for it went nowhere at all.  It
+     * appends nothing (not even its rule) when nothing is contributed,
+     * so the menu is unchanged for an app with no plugins.               */
+    ui_menu_items(lw, view_menu, TASK_UI_MENU_VIEW, TRUE);
+
     /* Below the divider: what the WINDOW looks like.  Show/Hide Sidebar
      * mirrors the toolbar's Sidebar button (both write `sidebar_visible`);
      * Compact / Full Controls swaps the toolbar for the floating
@@ -4969,6 +5009,13 @@ task_library_window_new(TaskApp *app)
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           lw->view_kanban_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), view_item);
+
+    /* Contributed top-level menus come after the app's own: File and View
+     * are the window's, and an integration's menu is about the
+     * integration.  Built here, once, like the rest of the bar — a plugin
+     * switched on while the app is running gets its menu at the next
+     * launch, the same as its File items always have.                     */
+    ui_own_menus(lw, menubar);
 
     /* Remembered so the menu can be moved into the native macOS menu
      * bar (see task_library_apply_native_menubar).                         */

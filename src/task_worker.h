@@ -97,7 +97,7 @@ typedef struct {
     void            (*run)(TaskApp *app, const gchar *db_path);
     gboolean        (*ready)(TaskApp *app);
     void            (*on_arm)(TaskApp *app);
-    /* The user explicitly asked for a pass (Sync Now) but `ready` said
+    /* The user explicitly asked for a pass (a Sync Now) but `ready` said
      * no.  A chance to do something about it rather than appear to do
      * nothing — the Google sync opens its sign-in flow here.  NULL means
      * stay silent, which is right for a worker whose "not now" is not
@@ -134,10 +134,13 @@ void task_worker_arm_all(TaskApp *app, const gchar *db_path);
 /* ---------------------------------------------------------------------------
  * task_worker_run_all() — run every enabled worker's pass NOW.
  *
- * This is what "Sync Now" means.  It used to be a handler that named the
- * Notes mirror and the Google sync in order, which was wrong twice over:
- * a third integration would have had to be added to it by hand, and the
- * button was gated on Google's setting while also running Notes.
+ * NOTHING IN THE CORE'S CHROME CALLS THIS ANY MORE, and that is the
+ * point: File → Sync Now used to, and a control that runs whatever
+ * happens to be installed cannot say what it does.  Each integration
+ * offers its own Sync Now instead (see task_ui.h's TASK_UI_MENU_OWN),
+ * naming the service it contacts.  This stays as the run-everything call
+ * for a caller who genuinely means everything — a headless pass, a
+ * future "sync all" a user asks for by name.
  *
  * Order is registration order, which is deliberate rather than
  * incidental: a cheap local pass registered first has its results in the
@@ -145,13 +148,13 @@ void task_worker_arm_all(TaskApp *app, const gchar *db_path);
  * one integration can reach another in a single press.
  *
  * A worker that is switched off, already running, or whose `ready` says
- * no is skipped silently — the button means "bring everything up to
+ * no is skipped silently — the call means "bring everything up to
  * date", and a worker with nothing to do has done that.
  * ------------------------------------------------------------------------- */
 void task_worker_run_all(TaskApp *app, const gchar *db_path);
 
-/* task_worker_any_enabled() — is there anything for "Sync Now" to do?
- * Drives whether the control is shown at all.                             */
+/* task_worker_any_enabled() — is there any enabled worker at all?  For a
+ * caller deciding whether a run-everything control is worth offering.     */
 gboolean task_worker_any_enabled(void);
 
 /* ---------------------------------------------------------------------------

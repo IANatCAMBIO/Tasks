@@ -102,7 +102,11 @@
  * measuring.
  * ------------------------------------------------------------------------- */
 #define TASK_PLUGIN_ABI_VERSION  1u
-#define TASK_PLUGIN_ABI_REVISION 6u
+/* 7: TaskUiMenuDef grew `menu_title` and TaskUiMenu grew
+ * TASK_UI_MENU_OWN — a plugin can put an item in a TOP-LEVEL menu of its
+ * own (see task_ui.h).  Additive in both directions: the new field is
+ * read only under the new enum value, which an older plugin cannot name. */
+#define TASK_PLUGIN_ABI_REVISION 7u
 
 /* The directory plugins are loaded from, relative to the executable.       */
 #define TASK_PLUGIN_DIR "plugins"

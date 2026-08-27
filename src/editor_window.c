@@ -6,6 +6,17 @@
 #include "task_ui.h"
 #include <string.h>
 
+/* The Advanced disclosure link's two faces.  The ARROW NAMES THE ACTION,
+ * like the View menu's items: ▾ offers to unfold, ▴ to fold away.  The
+ * FOLDED face is written where the label is BUILT as well as by the
+ * applier, because adv_box is constructed folded and the open path calls
+ * an applier only when it reveals — a link whose label was never written
+ * is a relief-less button with no text in it, i.e. invisible until the
+ * first blind click (reported 2026-08-27 against new tasks, which never
+ * have advanced content and so never reveal on open).                      */
+#define ADV_LABEL_TO_SHOW "<u>Advanced \xe2\x96\xbe</u>"
+#define ADV_LABEL_TO_FOLD "<u>Advanced \xe2\x96\xb4</u>"
+
 /* Columns of the subtasks list store.                                      */
 enum {
     SUB_ID = 0,                      /* gint64: subtask id                  */
@@ -926,8 +937,7 @@ static void
 editor_advanced_reveal(TaskEditor *ed)
 {
     ed->adv_shown = TRUE;
-    gtk_label_set_markup(GTK_LABEL(ed->adv_label),
-                         "<u>Advanced \xe2\x96\xb4</u>");
+    gtk_label_set_markup(GTK_LABEL(ed->adv_label), ADV_LABEL_TO_FOLD);
     /* Lift no_show_all across the show — with it set, show_all on the box
      * itself returns early and nothing would appear (gotcha 15).           */
     gtk_widget_set_no_show_all(ed->adv_box, FALSE);
@@ -958,8 +968,7 @@ editor_advanced_set(TaskEditor *ed, gboolean shown)
         gtk_window_resize(GTK_WINDOW(ed->window), w, h + ed->adv_height);
     } else {
         ed->adv_shown = FALSE;
-        gtk_label_set_markup(GTK_LABEL(ed->adv_label),
-                             "<u>Advanced \xe2\x96\xbe</u>");
+        gtk_label_set_markup(GTK_LABEL(ed->adv_label), ADV_LABEL_TO_SHOW);
         gtk_widget_hide(ed->adv_box);
         if (ed->adv_height > 0)
             gtk_window_resize(GTK_WINDOW(ed->window), w,
@@ -1271,9 +1280,14 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     GtkWidget *adv_btn = gtk_button_new();
     gtk_button_set_relief(GTK_BUTTON(adv_btn), GTK_RELIEF_NONE);
     ed->adv_label = gtk_label_new(NULL);
+    /* The folded face, matching the state adv_box is built in.  The open
+     * path calls an applier only when it REVEALS, so without this the link
+     * carries no text at all in the folded case — which is every new task
+     * and every empty one.                                                 */
+    gtk_label_set_markup(GTK_LABEL(ed->adv_label), ADV_LABEL_TO_SHOW);
     gtk_container_add(GTK_CONTAINER(adv_btn), ed->adv_label);
-    /* Link-blue + underlined (the markup comes from
-     * editor_advanced_set, which also owns the arrow direction).           */
+    /* Link-blue + underlined (the markup above and in editor_advanced_set,
+     * which owns the arrow direction from then on).                        */
     task_app_widget_add_css(adv_btn,
         "button { color: #1c71d8; padding: 2px 4px; }");
     gtk_widget_set_tooltip_text(adv_btn,

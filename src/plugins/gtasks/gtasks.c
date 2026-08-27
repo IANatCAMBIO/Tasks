@@ -1891,16 +1891,19 @@ gtasks_list_veto(TaskApp *app, const TaskList *list, gchar **why,
 }
 
 /* ===========================================================================
- * The toolbar button.
+ * The two ways to sync by hand: the toolbar button and Google -> Sync Now.
  *
- * Google's own, contributed through the UI registry (see task_ui.h)
- * rather than built into the window: it is this integration's control,
- * so it belongs with this integration's code and travels with it.
+ * Both are Google's own, contributed through the UI registry (see
+ * task_ui.h) rather than built into the window: they are this
+ * integration's controls, so they belong with this integration's code and
+ * travel with it.
  *
- * File -> Sync Now stays the CATCH-ALL — every registered worker, in one
- * press.  This button is the specific one, which is why it can afford to
- * grey itself out while its own pass runs: there is exactly one sync it
- * can mean.
+ * There is no catch-all "sync everything" control any more.  File -> Sync
+ * Now used to be one, and could not say what a press would do; each
+ * integration now offers its OWN, which is why this one can afford to
+ * grey itself out while its pass runs — there is exactly one sync it can
+ * mean.  ONE handler serves both controls (sync_now), so the menu item
+ * cannot come to mean something the button does not.
  * =========================================================================== */
 
 /* toolbar_done() — the pass finished; give the button back.              */
@@ -1911,11 +1914,18 @@ toolbar_done(TaskApp *app, gboolean ok, const gchar *message, gpointer d)
     host->ui->tool_set_sensitive("gtasks-sync", TRUE);
 }
 
-/* toolbar_clicked() — sync now, signing in first if the session has no
- * token yet (which is every launch — the access token lives in memory
- * only, so the browser round trip is the ordinary path, not an error). */
+/* sync_now() — sync, signing in first if the session has no token yet
+ * (which is every launch — the access token lives in memory only, so the
+ * browser round trip is the ordinary path, not an error).
+ *
+ * The toolbar button AND the Google menu's Sync Now both land here; the
+ * TaskUiToolDef and TaskUiMenuDef callbacks have the same signature,
+ * which is what lets one function be the single answer to "sync now"
+ * instead of two that can drift.  It greys the toolbar button either way
+ * — the menu started the same pass, and a button left live during it
+ * would invite a second press.                                          */
 static void
-toolbar_clicked(TaskApp *app, gpointer user_data)
+sync_now(TaskApp *app, gpointer user_data)
 {
     (void)user_data;
     if (!host->config->get_bool(self, "sync_enabled", TRUE)) {
@@ -1959,8 +1969,24 @@ static const TaskUiToolDef sync_tool = {
     .label           = "Sync",
     .tooltip         = "Sync with Google Tasks now",
     .sort            = 10,
-    .clicked         = toolbar_clicked,
+    .clicked         = sync_now,
     .visible         = toolbar_visible,
+};
+
+/* Google -> Sync Now: the menu twin of the button above, in a top-level
+ * menu of this plugin's own (TASK_UI_MENU_OWN, see task_ui.h).  It is NOT
+ * gated on `toolbar_button` the way the button is — that setting is about
+ * the TOOLBAR, and someone who turned the button off to reclaim the space
+ * still needs a way to sync by hand.  The menu is the one that always
+ * exists, which is also why the label can be the plain verb: the menu it
+ * sits in already says Google.                                           */
+static const TaskUiMenuDef sync_menu_item = {
+    .id         = "gtasks-sync-now",
+    .menu       = TASK_UI_MENU_OWN,
+    .menu_title = "Google",
+    .label      = "Sync Now",
+    .sort       = 10,
+    .activate   = sync_now,
 };
 
 /* ===========================================================================
@@ -2345,6 +2371,7 @@ gtasks_init(TaskApp *app, const TaskPlugin *me)
     host->worker->register_worker(&sync_worker_live);
 
     host->ui->add_tool(&sync_tool);
+    host->ui->add_menu_item(&sync_menu_item);
     host->ui->add_task_menu_item(&ctx_open_item);
     host->ui->add_editor_section(&editor_section);
     host->settings->add_section(gtasks_settings, NULL);

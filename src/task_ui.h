@@ -65,10 +65,32 @@ void task_ui_tool_set_sensitive(const gchar *id, gboolean sensitive);
 /* ---------------------------------------------------------------------------
  * Menu-bar items.  Contributed items land in their own section of the
  * chosen menu, between the app's own groups, separated by rules.
+ *
+ * TASK_UI_MENU_OWN is the third option: a TOP-LEVEL menu of the
+ * contributor's own, named by `menu_title`.  Every item naming the same
+ * title shares one menu, and the menus sit after the app's own — File,
+ * View, then whatever is contributed, in the order their FIRST item
+ * appears in the registry (so an item's `sort` positions its menu as well
+ * as itself).
+ *
+ * That option exists because the app can no longer answer for an
+ * integration's actions.  "Sync Now" was the last one it tried to: it
+ * lived in File and ran every registered worker, so its label could not
+ * say WHAT it would sync — and with sync entirely in plugin hands there
+ * is no honest core wording for it.  A Google menu holding Google's Sync
+ * Now says exactly what a press does, and the next integration adds its
+ * own rather than crowding into File.
+ *
+ * A plugin should put an item in File or View when it belongs to what
+ * those menus already mean (a database chore, a way of looking at the
+ * tasks) and take a menu of its own when the action is the plugin's
+ * subject rather than the app's.  One menu per integration, not one per
+ * action: five top-level menus is a menu bar nobody can scan.
  * ------------------------------------------------------------------------- */
 typedef enum {
     TASK_UI_MENU_FILE = 0,
     TASK_UI_MENU_VIEW,
+    TASK_UI_MENU_OWN,                /* since ABI 1.7 — see menu_title      */
 } TaskUiMenu;
 
 typedef struct {
@@ -78,6 +100,12 @@ typedef struct {
     gint         sort;
     void       (*activate)(TaskApp *app, gpointer user_data);
     gpointer     user_data;
+    /* --- since ABI 1.7 ---------------------------------------------------
+     * The top-level menu's title, e.g. "Google".  Read ONLY when `menu` is
+     * TASK_UI_MENU_OWN, which is what makes the field safe to have
+     * appended: a plugin built before it existed cannot name that enum
+     * value, so nothing ever reads past the struct it compiled with.      */
+    const gchar *menu_title;
 } TaskUiMenuDef;
 
 void task_ui_add_menu_item(const TaskUiMenuDef *def);

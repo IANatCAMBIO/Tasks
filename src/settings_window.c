@@ -609,6 +609,29 @@ on_plugin_dir_default(GtkWidget *btn, gpointer data)
                     "next time Tasks starts");
 }
 
+/* ---------------------------------------------------------------------------
+ * plugin_row_line() — one indented, left-aligned, wrapping markup line
+ * under a plugin's checkbox, packed into `row`.
+ *
+ * Both lines a row can carry go through this: the dimmed detail line and
+ * the README link below it.  Same indent (24 px, clearing the checkbox)
+ * and same left alignment from one place, which is what makes the link
+ * land in the SAME spot on every row.  "activate-link" is connected on
+ * both because it costs nothing and a line with no link never emits it.
+ * ------------------------------------------------------------------------- */
+static void
+plugin_row_line(GtkWidget *row, const gchar *markup, TaskApp *app)
+{
+    GtkWidget *lbl = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(lbl), markup);
+    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+    gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+    gtk_widget_set_margin_start(lbl, 24);
+    g_signal_connect(lbl, "activate-link", G_CALLBACK(on_readme_link), app);
+    gtk_box_pack_start(GTK_BOX(row), lbl, FALSE, FALSE, 0);
+}
+
 /* plugins_section() — the list of every plugin FOUND, running or not.    */
 static void
 plugins_section(TaskApp *app, GtkWidget *vbox, GtkWindow *window,
@@ -714,41 +737,48 @@ plugins_section(TaskApp *app, GtkWidget *vbox, GtkWindow *window,
                 g_string_append(sub, "  \xe2\x80\x94  ");
             g_string_append_printf(sub, "Not loaded: %s", pi->problem);
         }
-        if (sub->len > 0 || pi->readme != NULL) {
+        if (sub->len > 0) {
             /* The description is DB- and plugin-sourced text going into
-             * Pango markup, so it is escaped; the link is ours to build.
-             * A bad byte or a stray "&" in a plugin's description would
-             * otherwise make pango_parse_markup reject the whole label
-             * and the row would draw blank.                              */
+             * Pango markup, so it is escaped.  A bad byte or a stray "&"
+             * in a plugin's description would otherwise make
+             * pango_parse_markup reject the whole label and the row would
+             * draw blank.                                                */
             gchar *esc = g_markup_escape_text(sub->str, -1);
-            GString *m = g_string_new("<small><span alpha=\"65%\">");
-            g_string_append(m, esc);
-            if (pi->readme != NULL) {
-                gchar *uri = g_filename_to_uri(pi->readme, NULL, NULL);
-                if (uri != NULL) {
-                    gchar *uesc = g_markup_escape_text(uri, -1);
-                    if (sub->len > 0)
-                        g_string_append(m, "  \xe2\x80\x94  ");
-                    g_string_append_printf(m, "<a href=\"%s\">README</a>",
-                                           uesc);
-                    g_free(uesc);
-                    g_free(uri);
-                }
-            }
-            g_string_append(m, "</span></small>");
-
-            GtkWidget *lbl = gtk_label_new(NULL);
-            gtk_label_set_markup(GTK_LABEL(lbl), m->str);
-            gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
-            gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
-            gtk_widget_set_margin_start(lbl, 24);
-            g_signal_connect(lbl, "activate-link",
-                             G_CALLBACK(on_readme_link), app);
-            gtk_box_pack_start(GTK_BOX(row), lbl, FALSE, FALSE, 0);
-            g_string_free(m, TRUE);
+            gchar *m = g_strdup_printf(
+                "<small><span alpha=\"65%%\">%s</span></small>", esc);
+            plugin_row_line(row, m, app);
+            g_free(m);
             g_free(esc);
         }
         g_string_free(sub, TRUE);
+
+        /* README on a LINE OF ITS OWN, left-aligned at the same indent as
+         * the detail line above it — one fixed place per row, found
+         * without reading the description first.
+         *
+         * It used to be appended to the end of that line after an em
+         * dash, which put it wherever the description happened to stop:
+         * a different column on every row, and on a long description it
+         * wrapped to the next line and moved again with the window's
+         * width.  A link is a control, and a control that moves per row
+         * has to be hunted for.
+         *
+         * NOT inside the alpha span any more either.  Dimming was right
+         * for text that supports the name above it; a dimmed link on its
+         * own line reads as a disabled one.  It keeps <small>, so the
+         * block still sits below the name in scale.                     */
+        if (pi->readme != NULL) {
+            gchar *uri = g_filename_to_uri(pi->readme, NULL, NULL);
+            if (uri != NULL) {
+                gchar *uesc = g_markup_escape_text(uri, -1);
+                gchar *m = g_strdup_printf(
+                    "<small><a href=\"%s\">README</a></small>", uesc);
+                plugin_row_line(row, m, app);
+                g_free(m);
+                g_free(uesc);
+                g_free(uri);
+            }
+        }
         gtk_box_pack_start(GTK_BOX(vbox), row, FALSE, FALSE, 0);
     }
 }

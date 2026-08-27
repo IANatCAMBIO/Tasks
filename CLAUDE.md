@@ -248,8 +248,10 @@ with the resync removed the parent comes back as New ~600 ms later.
   fallback); registered with `task_app_register_toolbar` so the
   icons/both/text style applies live (Settings combo + right-click
   radio menu).  Layout (all left-packed): the Sidebar toggle, a drawn
-  divider, Sync, the completed-visibility toggle, the Manual Sort toggle,
-  the pane toggle, a second divider, then New Task and Delete Task.
+  divider, the completed-visibility toggle, the Manual Sort toggle,
+  the pane toggle, a second divider, then New Task and Delete Task —
+  and the CONTRIBUTED buttons behind their own rule, which is where the
+  Google Sync button lives (the plugin's, not the window's).
   The pane toggle sits WITH the sort toggle rather than with the task
   pair: both change how the tasks are PRESENTED instead of acting on a
   task, and the sort toggle is the control it pairs with (the board is
@@ -384,6 +386,43 @@ with the resync removed the parent comes back as New ~600 ms later.
   makes an open sidebar vanish.  It used to force-hide it, which read as
   compact silently overriding the toggle, with the Show Sidebar override
   as the only way back.
+- Menu bar: **File, View, then one top-level menu per contributing
+  integration**, built once in `task_library_window_new` (`ui_own_menus`
+  after the View menu).  A plugin asks for one with
+  `TASK_UI_MENU_OWN` + `menu_title` (task_ui.h, ABI revision 7) and every
+  item naming the same title shares that menu; the menus themselves order
+  by where their FIRST item lands in the registry, so an item's `sort`
+  places its menu too.  Titles compare by CONTENT, not pointer — two
+  plugins are two shared objects, so "Google" is a different string in
+  each.  Built at construction like the rest of the bar, so a plugin
+  switched on at runtime gets its menu at the NEXT LAUNCH, exactly as its
+  File items always have.
+  **There is no File → Sync Now** (removed 2026-08-27) and no `on_sync` in
+  library_window.c.  It ran every registered worker, which made its label
+  a promise it could not keep: nothing with no integration installed, two
+  different things with two, and either way it could not say WHAT it was
+  about to sync.  Google's is **Google → Sync Now**, contributed by the
+  plugin and wired to the SAME `sync_now` as its toolbar button, so the
+  two cannot drift.  Unlike the button it is not gated on
+  `toolbar_button` — that setting is about the toolbar, and someone who
+  reclaimed the space still needs a way to sync by hand.
+  `task_worker_run_all` survives as the run-everything call with NO
+  caller in the core's chrome; that is deliberate, not an oversight —
+  the core is not the one who knows what "everything" is.
+  `ui_menu_items(view_menu, TASK_UI_MENU_VIEW, …)` was also missing until
+  then: `TASK_UI_MENU_VIEW` was a registry value the window never read,
+  so anything registered for it went nowhere at all.
+  **The File menu has exactly ONE separator** (2026-08-27), after New
+  Task / New List… / Clear Completed Tasks: that group is what acts on the
+  TASKS, and everything below the rule — Open Database File…, Settings…,
+  About, Quit — is about the app or the file it keeps.  It previously
+  carried five, one between almost every pair of items, which divides
+  nothing and so reads as decoration rather than grouping.  Contributed
+  File items lead the second group and get NO rule of their own, which is
+  what `ui_menu_items`' `rule` argument is for — View passes TRUE (there
+  its rule is what separates the contributed group from the window group),
+  File passes FALSE.  Either way the helper appends nothing at all,
+  separator included, when no plugin contributed to that menu.
 - Thin `gtk_separator_new` rules under the toolbar and above the status
   bar.  Status bar: margins 8/8/3/3 (NOT border_width) and
   `label { font-size: 85%; }` on both labels — measured pixel-identical
@@ -582,6 +621,21 @@ with the resync removed the parent comes back as New ~600 ms later.
   The block's height still measures true before the show: a GtkBox counts
   only VISIBLE children and `adv_box` is visible by the time it is
   measured (gotcha 15), and a size request does not need realization.
+  **The LINK's folded label is written where the label is BUILT**, not only
+  by the appliers: the open path calls one solely when it REVEALS, so the
+  folded case — every new task and every empty one — otherwise leaves
+  `gtk_label_new(NULL)` standing, and the link is a relief-less button with
+  no text in it.  That is INVISIBLE AND STILL CLICKABLE, which is the worst
+  shape a control can have: it reads as "new tasks have no subtasks", and
+  the block appears (label and all) the moment someone clicks where the
+  link should be.  Reported 2026-08-27, introduced when the open path
+  stopped going through `editor_advanced_set` for the fold (the resize is
+  why it must not).  The two faces are the `ADV_LABEL_TO_SHOW` /
+  `ADV_LABEL_TO_FOLD` macros, ARROW NAMES THE ACTION (▾ unfolds, ▴ folds)
+  like the View menu's `*_LABEL_TO_*` pairs — one spelling each, so the
+  construction-time write and the appliers cannot drift.  General rule: a
+  widget built in a state no applier has run for must carry that state's
+  label itself.
 - Editor geometry: default size is **490 × -1** — the -1 means the
   layout's NATURAL height, which is only correct because `adv_box`
   carries `no_show_all` and so is absent from that measurement (gotcha
