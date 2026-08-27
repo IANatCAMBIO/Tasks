@@ -264,6 +264,7 @@ typedef struct {
     gint            n_removed;
     gint            n_pushed;
     gint            n_failed;        /* pushes Notes refused              */
+    gint            n_unreaped;      /* reap refused — see reap_missing()   */
 } BnJob;
 
 /* ---------------------------------------------------------------------------
@@ -445,12 +446,47 @@ sync_item(BnJob *job, TaskDatabase *db, const TaskNoteAction *it, gint64 target)
  * — Notes has no incremental form — so absence really does mean gone,
  * unlike the Google pass where a partial listing makes absence
  * meaningless.
+ *
+ * EXCEPT when the listing is EMPTY.  That is not a hypothetical: a CLI
+ * call is answered by whichever Notes instance owns the socket, not by
+ * the binary on disk (gotcha 17), and a stale one answers `action list`
+ * with NO ROWS AND EXIT 0 — indistinguishable, here, from "the user
+ * deleted every action item".  Believing it tombstones every mirrored
+ * task, and because a tombstone is what the Google sync pushes, those
+ * deletes then propagate off this machine.  So an empty listing that
+ * would reap ANYTHING is refused: the tasks are left exactly as they
+ * are and the pass says so.
+ *
+ * This is the app's own "ABSENCE NEVER DELETES" rule, which the Google
+ * sync already follows, and the same shape as the v8/v9 migrations —
+ * a copy that does not verify drops nothing and reports.  The cost is
+ * accepted deliberately: a Notes that HAS genuinely been emptied leaves
+ * its mirrored tasks behind, and the user deletes them in Tasks.  That
+ * direction is recoverable; the other is not.
+ *
+ * The suppression sweep is skipped too.  A listing not trusted to say
+ * what still exists cannot be trusted to say what is gone for good, and
+ * forgetting a suppression on a bad listing would let the next pass
+ * re-create the very task the user deleted here.
  * ------------------------------------------------------------------------- */
 static void
 reap_missing(BnJob *job, TaskDatabase *db, GHashTable *present,
              GHashTable *suppressed)
 {
     GPtrArray *mirror = bn_mirror_tasks(db);
+
+    if (g_hash_table_size(present) == 0 && mirror->len > 0) {
+        job->n_unreaped = (gint)mirror->len;
+        /* Logged as well as reported: the status-bar line fades after a
+         * few seconds, and "we declined to delete %u tasks" is the kind
+         * of thing someone needs to find afterwards.                    */
+        g_warning("notes: the listing was EMPTY \xe2\x80\x94 refusing to "
+                  "reap %u mirrored task%s; nothing was deleted",
+                  mirror->len, mirror->len == 1 ? "" : "s");
+        host->db->tasks_free(mirror);
+        return;
+    }
+
     for (guint i = 0; i < mirror->len; i++) {
         Task *t = g_ptr_array_index(mirror, i);
         if (g_hash_table_contains(present, GSIZE_TO_POINTER(bn_uid_of(db, t->id))))
@@ -557,9 +593,19 @@ bn_thread(gpointer data)
     host->db->state_set(db, "bn_last_sync", stamp);
     g_free(stamp);
 
-    job->ok = job->n_failed == 0;
-    if (job->n_created == 0 && job->n_updated == 0 && job->n_removed == 0 &&
-        job->n_pushed == 0 && job->n_failed == 0) {
+    job->ok = job->n_failed == 0 && job->n_unreaped == 0;
+    if (job->n_unreaped > 0) {
+        /* Its OWN message, not a count folded in with the others: this
+         * is the pass declining to do something, and it names the likely
+         * cause because the fix is a restart of the other Notes rather
+         * than anything in Tasks.                                        */
+        job->message = g_strdup_printf(
+            "Notes listed no action items \xe2\x80\x94 left %d mirrored "
+            "task%s alone.  Is an old Notes still running?",
+            job->n_unreaped, job->n_unreaped == 1 ? "" : "s");
+    } else if (job->n_created == 0 && job->n_updated == 0 &&
+               job->n_removed == 0 && job->n_pushed == 0 &&
+               job->n_failed == 0) {
         job->message = g_strdup("Action items up to date");
     } else {
         GString *s = g_string_new("Action items:");

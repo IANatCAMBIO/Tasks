@@ -1001,10 +1001,29 @@ happened to return.
   applied values.
 - Existence: Notes is authoritative, so an item that leaves it
   tombstones its task.  The reverse has no CLI verb, so deleting a
-  mirror task in Tasks parks its uid in `bn_deleted` (done inside
+  mirror task in Tasks parks its uid in `notes_deleted` (done inside
   `task_db_task_delete`'s transaction) — without that the very next pass
   would helpfully re-create what the user just deleted.  The
   suppression is dropped once the item is gone from Notes too.
+- **An EMPTY listing reaps NOTHING.**  `reap_missing` refuses when the
+  listing came back with no rows and there is anything to reap, leaves
+  every task alone, logs it and says so in the status bar.  This is not
+  defensive padding: a CLI call is answered by whichever Notes owns the
+  socket, not the binary on disk (gotcha 17), and a stale one answers
+  `action list` with NO ROWS AND EXIT 0 — which is indistinguishable
+  from "the user deleted every action item".  MEASURED on 2026-08-27
+  against a 32-task mirror: without the guard an empty listing
+  tombstoned all 32, and a tombstone is what the Google sync PUSHES, so
+  the deletes leave the machine.  It is the same "ABSENCE NEVER DELETES"
+  rule the Google pass follows and the same shape as the v8/v9
+  migrations, where a copy that does not verify drops nothing and
+  reports.  The suppression sweep is skipped on the same pass: a
+  listing not trusted to say what exists cannot be trusted to say what
+  is gone for good.  Accepted cost — a Notes genuinely emptied leaves
+  its mirrored tasks behind, and the user deletes them in Tasks.  That
+  direction is recoverable; the other is not.  A listing missing SOME
+  items still reaps them normally; only the all-or-nothing case is
+  refused.
 - The sidebar's "Action Items" row is a META VIEW (`SB_KIND_BN_ACTIONS`
   among Favorites / All Tasks / Due Today), not a list: it queries
   `bn_uid > 0` across every list, so an item filed anywhere still shows
