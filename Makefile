@@ -95,6 +95,7 @@ SRCS     := src/main.c \
             src/task_ops.c \
             src/task_worker.c \
             src/plugin_loader.c \
+            src/plugin_owner.c \
             src/task_view.c \
             src/task_rows.c \
             src/task_ui.c \

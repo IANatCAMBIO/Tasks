@@ -3,6 +3,7 @@
  * =========================================================================== */
 
 #include "task_rows.h"
+#include "plugin_owner.h"
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -45,8 +46,28 @@ task_rows_add_decoration(const TaskRowDecorDef *def)
         return;
     if (decorations == NULL)
         decorations = g_ptr_array_new();
+    task_plugin_owner_stamp((gpointer)def);
     g_ptr_array_add(decorations, (gpointer)def);
     g_ptr_array_sort(decorations, decor_cmp);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_rows_remove_owner() — drop `owner`'s decorations (see task_rows.h).
+ * ------------------------------------------------------------------------- */
+void
+task_rows_remove_owner(const gchar *owner)
+{
+    if (decorations == NULL || owner == NULL)
+        return;
+    for (guint i = decorations->len; i > 0; i--) {
+        gpointer def = g_ptr_array_index(decorations, i - 1);
+        if (!task_plugin_owner_is(def, owner))
+            continue;
+        task_plugin_owner_forget(def);
+        g_ptr_array_remove_index(decorations, i - 1);
+        /* NOT freed: a decoration is the plugin's own static struct, and
+         * the module stays mapped.                                       */
+    }
 }
 
 /* decor_has() — is `task_id` in the set collected for decoration `i`?    */

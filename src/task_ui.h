@@ -153,4 +153,11 @@ void task_ui_tools_apply_visibility(TaskApp *app);
  * contributed button hidden that is exactly what it would be.            */
 gboolean task_ui_any_tool_visible(TaskApp *app);
 
+/* ---------------------------------------------------------------------------
+ * task_ui_remove_owner() — remove everything plugin `owner`
+ * registered here.  Called when a plugin is switched off while the app is
+ * running; the app's OWN registrations are unowned and never match.
+ * ------------------------------------------------------------------------- */
+void task_ui_remove_owner(const gchar *owner);
+
 #endif /* TASK_UI_H */

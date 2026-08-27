@@ -3,6 +3,7 @@
  * =========================================================================== */
 
 #include "task_ui.h"
+#include "plugin_owner.h"
 
 /* One entry, whatever kind.  `seq` preserves registration order when two
  * items sort equal — g_ptr_array_sort is not documented as stable.       */
@@ -42,8 +43,42 @@ entry_add(GPtrArray **list, gconstpointer def, gint sort)
     e->def  = def;
     e->sort = sort;
     e->seq  = (*list)->len;
+    task_plugin_owner_stamp(e);
     g_ptr_array_add(*list, e);
     g_ptr_array_sort(*list, entry_cmp);
+}
+
+/* entry_remove_owner() — drop `owner`'s entries from one list.  Backwards
+ * so removing one cannot skip the next.                                   */
+static void
+entry_remove_owner(GPtrArray *list, const gchar *owner)
+{
+    if (list == NULL)
+        return;
+    for (guint i = list->len; i > 0; i--) {
+        Entry *e = g_ptr_array_index(list, i - 1);
+        if (!task_plugin_owner_is(e, owner))
+            continue;
+        task_plugin_owner_forget(e);
+        g_ptr_array_remove_index(list, i - 1);
+        g_free(e);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * task_ui_remove_owner() — every piece of window chrome `owner` added
+ * (see task_ui.h).  The WIDGETS these built are not touched: they belong
+ * to a window, and the window rebuilds itself from these lists.
+ * ------------------------------------------------------------------------- */
+void
+task_ui_remove_owner(const gchar *owner)
+{
+    if (owner == NULL)
+        return;
+    entry_remove_owner(tools,      owner);
+    entry_remove_owner(menus,      owner);
+    entry_remove_owner(task_menus, owner);
+    entry_remove_owner(editors,    owner);
 }
 
 static gconstpointer

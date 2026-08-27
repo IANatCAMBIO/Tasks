@@ -154,4 +154,19 @@ void task_worker_run_all(TaskApp *app, const gchar *db_path);
  * Drives whether the control is shown at all.                             */
 gboolean task_worker_any_enabled(void);
 
+/* ---------------------------------------------------------------------------
+ * task_worker_remove_owner() — remove everything plugin `owner`
+ * registered here.  Called when a plugin is switched off while the app is
+ * running; the app's OWN registrations are unowned and never match.
+ * ------------------------------------------------------------------------- */
+void task_worker_remove_owner(const gchar *owner);
+
+/* ---------------------------------------------------------------------------
+ * task_worker_arm_owner() — arm only the workers plugin `owner`
+ * registered.  For bringing one re-enabled plugin back without running
+ * every other worker's initial pass as a side effect.
+ * ------------------------------------------------------------------------- */
+void task_worker_arm_owner(TaskApp *app, const gchar *owner,
+                           const gchar *db_path);
+
 #endif /* TASK_WORKER_H */

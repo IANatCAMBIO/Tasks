@@ -19,11 +19,12 @@
  *   │ selection info                          latest event message │
  *   └──────────────────────────────────────────────────────────────┘
  *
- * The sidebar's top four rows are VIRTUAL lists — aggregates over every
- * real list (pinned flag / all / due today / the current week, Sunday
- * through Saturday, as seven day sections; hidden entirely while the
- * "weekly_forecast" setting is off).  Tasks cannot be created inside
- * them; New Task needs a real list selected.
+ * The sidebar's top rows are VIRTUAL lists — aggregates over every real
+ * list (pinned flag / all / due today), plus whatever the loaded PLUGINS
+ * contribute to the view registry: Overdue and the Weekly Forecast are
+ * both plugin views and are present exactly while their plugin is.
+ * Tasks cannot be created inside any of them; New Task needs a real list
+ * selected.
  * =========================================================================== */
 
 #ifndef TASK_LIBRARY_WINDOW_H

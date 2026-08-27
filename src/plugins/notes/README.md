@@ -1,9 +1,7 @@
-# Notes
+# Notes Action Items Sync
 
-Mirrors the action items from the companion **Notes** app as ordinary
-Tasks — each one with its own notes, subtasks, attachments, pin and
-priority. Because a mirrored item is a real task in a real list, it also
-syncs on to Google Tasks like anything else.
+Mirrors the companion Notes app's action items as ordinary tasks, with
+their own notes, subtasks, attachments, pin and priority.
 
 An action item is a `!` line in a note. Tasks lists them through the
 `notes` command-line program and keeps a task in step with each one.

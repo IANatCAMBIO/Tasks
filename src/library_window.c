@@ -69,8 +69,14 @@ typedef struct {
     GtkWidget    *task_view;
     GtkWidget    *task_scroll;       /* the regular task pane; swapped
                                       * with forecast_box (visibility)      */
-    GPtrArray    *panels;            /* GtkWidget* per view index, NULL
-                                      * for a query view (see task_view.h) */
+    /* Panel panes, keyed by the TaskView POINTER rather than by its
+     * registry index.  The index is not a stable identity: registering a
+     * view re-sorts the registry, so a plugin enabled at run time
+     * renumbers every view after it and an index-keyed table would hand
+     * back the wrong pane.  Built LAZILY — a view registered after this
+     * window was constructed has to be able to make its pane too.        */
+    GHashTable   *panels;            /* const TaskView* -> GtkWidget*      */
+    GtkWidget    *task_pane;         /* the box a new panel packs into     */
     /* Kanban board — the THIRD task-pane variant, one lane per
      * TaskStatus.  Lane INDEX IS the status value, which is what lets a
      * drop read its target status straight off the lane it landed on.      */
@@ -439,14 +445,58 @@ view_refuse(TaskLibrary *lw, const gchar *alternative)
     return TRUE;
 }
 
-/* panel_widget() — the widget a panel view built, or NULL (query view,
- * or the pane has not been constructed yet).                              */
+/* panel_widget() — the pane a panel view owns, building it on first use.
+ *
+ * NULL for a query view, and for a panel view before the window's own
+ * pane box exists.  Lazy because a view can arrive at ANY time: enabling
+ * a plugin registers its views immediately, and one registered after
+ * this window was built would otherwise have no pane and show an empty
+ * area for the rest of the session.                                      */
 static GtkWidget *
-panel_widget(TaskLibrary *lw, guint view_index)
+panel_widget(TaskLibrary *lw, const TaskView *v)
 {
-    if (lw->panels == NULL || view_index >= lw->panels->len)
+    if (lw->panels == NULL || v == NULL || !task_view_is_panel(v))
         return NULL;
-    return g_ptr_array_index(lw->panels, view_index);
+    GtkWidget *w = g_hash_table_lookup(lw->panels, v);
+    if (w != NULL)
+        return w;
+    if (lw->task_pane == NULL)
+        return NULL;                 /* too early: no box to pack into     */
+    w = v->panel_new(lw->app, v->user_data);
+    if (w == NULL)
+        return NULL;
+    g_hash_table_insert(lw->panels, (gpointer)v, w);
+    /* Packed BEFORE the Kanban box so the panes keep their construction
+     * order, and shown explicitly: the window's show_all has long since
+     * run, so a widget added now starts hidden.                          */
+    gtk_box_pack_start(GTK_BOX(lw->task_pane), w, TRUE, TRUE, 0);
+    gtk_box_reorder_child(GTK_BOX(lw->task_pane), w, 1);
+    gtk_widget_show_all(w);
+    return w;
+}
+
+/* panels_prune() — destroy panes whose view has left the registry.
+ *
+ * A plugin switched off takes its views with it, but the pane it built
+ * is a child of this window and would otherwise sit there for the rest
+ * of the session, hidden but alive, holding whatever it cached.         */
+static void
+panels_prune(TaskLibrary *lw)
+{
+    if (lw->panels == NULL)
+        return;
+    GHashTableIter it;
+    gpointer key, val;
+    g_hash_table_iter_init(&it, lw->panels);
+    while (g_hash_table_iter_next(&it, &key, &val)) {
+        gboolean live = FALSE;
+        for (guint i = 0; i < task_view_count() && !live; i++)
+            live = task_view_nth(i) == key;
+        if (!live) {
+            gtk_widget_destroy(val);
+            g_hash_table_iter_remove(&it);
+        }
+    }
 }
 
 /* view_visible() — whether a view's sidebar row should exist right now.   */
@@ -2107,11 +2157,18 @@ task_pane_mode_apply(TaskLibrary *lw)
     gboolean        kanban = !panel && lw->kanban;
     gtk_widget_set_visible(lw->task_scroll, !panel && !kanban);
     gtk_widget_set_visible(lw->kanban_box,   kanban);
-    /* Exactly one panel at most: show the selected view's, hide the rest. */
+    /* Exactly one panel at most: show the selected view's, hide the rest.
+     * Pruned first, so a pane belonging to a view that has just been
+     * unregistered is gone rather than merely hidden.                    */
+    panels_prune(lw);
     for (guint i = 0; i < task_view_count(); i++) {
-        GtkWidget *w = panel_widget(lw, i);
+        const TaskView *v = task_view_nth(i);
+        /* Only the SELECTED one is built: asking for the others would
+         * construct every panel view's pane just to hide it.             */
+        GtkWidget *w = (panel && v == view) ? panel_widget(lw, v)
+                                            : g_hash_table_lookup(lw->panels, v);
         if (w != NULL)
-            gtk_widget_set_visible(w, panel && task_view_nth(i) == view);
+            gtk_widget_set_visible(w, panel && v == view);
     }
 
     /* The sort toggle is INERT while Kanban View is on: the board is
@@ -2194,9 +2251,7 @@ refresh_tasks(TaskLibrary *lw)
         /* Drop the hidden regular pane's rows: a stale selection there
          * would still feed the toolbar's Delete Task.                      */
         gtk_list_store_clear(lw->task_store);
-        /* sel_id IS the registry index (see SB_KIND_VIEW), so there is
-         * nothing to look up.                                             */
-        GtkWidget *w = panel_widget(lw, (guint)lw->sel_id);
+        GtkWidget *w = panel_widget(lw, panel_view);
         if (w != NULL && panel_view->panel_refresh != NULL)
             panel_view->panel_refresh(lw->app, w, panel_view->user_data);
         return;
@@ -2541,7 +2596,7 @@ selected_task_ids(TaskLibrary *lw)
     const TaskView *view = sel_view(lw);
     if (task_view_is_panel(view)) {
         GArray *ids = NULL;
-        GtkWidget *w = panel_widget(lw, (guint)lw->sel_id);
+        GtkWidget *w = panel_widget(lw, view);
         if (w != NULL && view->panel_selection != NULL)
             ids = view->panel_selection(lw->app, w, view->user_data);
         return ids != NULL ? ids
@@ -4379,7 +4434,9 @@ on_library_destroy(GtkWidget *w, gpointer data)
      * holding freed windows.                                               */
     /* The widgets belong to the pane and die with it; only the index
      * array is ours.                                                       */
-    g_clear_pointer(&lw->panels, (GDestroyNotify)g_ptr_array_unref);
+    /* The panes themselves are children of the window and are destroyed
+     * with it; only the table goes here.                                 */
+    g_clear_pointer(&lw->panels, (GDestroyNotify)g_hash_table_destroy);
     task_ui_tool_forget_all();   /* the toolbar destroyed them */
     task_app_unlisten(lw->app, lw->listen_changed);
     task_app_unlisten(lw->app, lw->listen_tasks);
@@ -5321,17 +5378,11 @@ task_library_window_new(TaskApp *app)
                                    GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(lw->task_scroll), lw->task_view);
 
-    /* Every panel view builds its pane here (see task_view.h).  The
-     * Weekly Forecast is currently the only one, and the core still owns
-     * its implementation — but it goes through the same interface a
-     * plugin would, so moving it out is relocation, not redesign.         */
-    lw->panels = g_ptr_array_new();
-    for (guint i = 0; i < task_view_count(); i++) {
-        const TaskView *v = task_view_nth(i);
-        GtkWidget *w = task_view_is_panel(v)
-                     ? v->panel_new(lw->app, v->user_data) : NULL;
-        g_ptr_array_add(lw->panels, w);
-    }
+    /* Panel panes are built ON DEMAND by panel_widget(), not here: a view
+     * can be registered at any time (enabling a plugin does it), so there
+     * is no moment at which "every panel view" is a closed set.  The
+     * table is keyed by the view itself for the same reason.             */
+    lw->panels = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     /* The Kanban board: three equal lanes side by side, 6 px apart, in
      * one outer scroller — the forecast's construction with the sections
@@ -5353,13 +5404,9 @@ task_library_window_new(TaskApp *app)
     gtk_container_add(GTK_CONTAINER(lw->kanban_box), board);
 
     GtkWidget *task_pane = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    lw->task_pane = task_pane;       /* panel_widget() packs into this     */
     gtk_box_pack_start(GTK_BOX(task_pane), lw->task_scroll,
                        TRUE, TRUE, 0);
-    for (guint i = 0; i < lw->panels->len; i++) {
-        GtkWidget *w = g_ptr_array_index(lw->panels, i);
-        if (w != NULL)
-            gtk_box_pack_start(GTK_BOX(task_pane), w, TRUE, TRUE, 0);
-    }
     gtk_box_pack_start(GTK_BOX(task_pane), lw->kanban_box,
                        TRUE, TRUE, 0);
     gtk_paned_pack2(GTK_PANED(paned), task_pane, TRUE, FALSE);

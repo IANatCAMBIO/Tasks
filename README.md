@@ -12,41 +12,56 @@ Low resource usage, and runs on macOS and Linux.
 
 TLDR; Your tasks live in a single SQLite file you can take anywhere.
 You organize them in a Library window — lists in the sidebar, tasks in a listview. 
-Add subtasks and a color-coded due date to each item. Tasks also syncs both ways with
-Google Tasks and Notes action items. 
+Add subtasks and a color-coded due date to each item. Anything beyond that —
+syncing, extra views — is a plugin you switch on.
 
 Want more detail?
 
 - **[User Guide](User_Guide.md)** — everything in depth: the library,
-  the task editor, settings, storage, Google Tasks sync, and the
-  Notes integration.
+  the task editor, settings, storage, and the plugins.
 - **[Internals](Internals.md)** — for the curious: code layout, the
-  database schema, and how the sync engine thinks.
+  database schema, and how the plugin ABI works.
 
-## Syncing with Google Tasks
+## Plugins
 
-Open the Settings window to enable Google Tasks sync and login. Once authenticated,
-Tasks will automatically sync on the interval specified in settings. 
+Tasks keeps its core small: lists, tasks, subtasks, due dates. Everything
+else is a **plugin** — a separate module in the `plugins` folder beside
+the program, switched on or off in *File → Settings… → Plugins*, taking
+effect immediately.
 
-## Syncing with Notes
+That is not just tidiness. A plugin you have not enabled is never
+opened, so it costs nothing and can bring dependencies the app itself
+does not have: without the Google Tasks plugin, Tasks links no network
+library at all.
 
-You can also enable sync with Notes in the Settings window. Specify the path to your
-Notes binary and tell Tasks which list to file the Action Items into. Each `!` action
-item becomes an ordinary task — with notes, subtasks, attachments and Google Tasks sync
-like any other — while ticking it done or changing its due date is batched back to
-Notes on its own interval. The item's text belongs to the note, so edit that in
-Notes.
+These ship in the box:
 
+| Plugin | What it adds |
+|---|---|
+| **[Google Tasks Sync](src/plugins/gtasks/README.md)** | Two-way, non-destructive sync with your Google Tasks account. |
+| **[Notes Action Items Sync](src/plugins/notes/README.md)** | Mirrors the companion Notes app's `!` action items as ordinary tasks. |
+| **[Weekly Forecast](src/plugins/forecast.README.md)** | A sidebar panel of the week, day by day. |
+| **[Overdue](src/plugins/overdue.README.md)** | A sidebar view of everything past its due date. |
+
+Each one's README covers what it does, what it needs and every setting
+it has — and is reachable from inside the app too, next to the plugin in
+the Settings list.
+
+Writing your own is a single C file against the ABI in `src/plugin.h`;
+**[Overdue](src/plugins/overdue.README.md)** is the small worked example
+and **[Google Tasks Sync](src/plugins/gtasks/README.md)** the large one.
 
 ## Building
 
-You'll need a C compiler, the GTK3, SQLite3 and libcurl development
-files, and pkg-config.
+You'll need a C compiler, the GTK3 and SQLite3 development files, and
+pkg-config. libcurl too, but only for the Google Tasks plugin — the
+application itself does not link it.
 
 macOS (MacPorts):
 
 ```sh
-sudo port install pkgconf gtk3 +quartz curl
+sudo port install pkgconf gtk3 +quartz
+sudo port install curl                       # for the Google Tasks plugin
 sudo port install gtk-osx-application-gtk3   # optional: native menu bar
 make
 make run
@@ -55,8 +70,8 @@ make run
 Debian/Ubuntu:
 
 ```sh
-sudo apt install build-essential pkg-config libgtk-3-dev \
-                 libsqlite3-dev libcurl4-openssl-dev
+sudo apt install build-essential pkg-config libgtk-3-dev libsqlite3-dev
+sudo apt install libcurl4-openssl-dev        # for the Google Tasks plugin
 make
 make run
 ```
@@ -71,38 +86,15 @@ curl -L "https://github.com/samuelngs/apple-emoji-ttf/releases/download/macos-26
 sudo dpkg -i fonts-apple-color-emoji.deb
 ```
 
-The Makefile auto-detects `gtk-mac-integration-gtk3`; if you install
-it later, rebuild from clean (`make clean && make`) so every file sees
-it. On macOS, `make app` wraps the binary into
-`dist/Tasks.app` (it still links against the MacPorts GTK
-libraries, so the bundle runs on the machine that built it).
+`make` builds the `tasks` binary and every plugin, each into
+`plugins/<id>.so` alongside its README.
 
-One more step if you want Google sync: set up `client_credentials.mk`
-before you build, as described below. It is optional — without it the build still succeeds and everything except
-the Sync sign-in works; add the file and rebuild whenever you're
-ready (the Makefile tracks it, so a plain `make` picks up changes).
+The Makefile auto-detects `gtk-mac-integration-gtk3`; if you install it
+later, rebuild from clean (`make clean && make`) so every file sees it.
+On macOS, `make app` wraps the binary into `dist/Tasks.app` (it still
+links against the MacPorts GTK libraries, so the bundle runs on the
+machine that built it).
 
-### Setting up client_credentials.mk
-
-1. In the [Google Cloud console](https://console.cloud.google.com/),
-   create a project (any name) and enable the **Google Tasks API**
-   (*APIs & Services → Library*).
-2. Configure the OAuth consent screen (*APIs & Services → OAuth
-   consent screen*) — the app name you enter there is what the
-   browser's consent page will show.
-3. Create the client (*APIs & Services → Credentials → Create
-   Credentials → OAuth client ID*, application type **Desktop app**)
-   and note the client id and secret.
-4. In the source directory:
-   `cp client_credentials.mk.example client_credentials.mk`, fill in
-   the two values, then `make clean && make`.
-
-`client_credentials.mk` is gitignored, so your credentials never end
-up in a commit — and Desktop-app client secrets are, per Google's own
-docs, not confidential, so shipping them inside a binary you
-distribute is the standard pattern. (Alternatively, the app also
-accepts the console's downloaded `client_secret….json` placed next to
-the binary at runtime — also gitignored — and that file takes
-precedence over the baked-in client if both exist.) The
-[User Guide](User_Guide.md) covers what syncs, what stays local, and
-how conflicts resolve.
+If you want to sign in to Google with your own OAuth client rather than
+the one baked in, see
+[the Google Tasks plugin's README](src/plugins/gtasks/README.md).

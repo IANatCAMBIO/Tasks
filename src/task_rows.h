@@ -173,4 +173,11 @@ void task_rows_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
 void task_rows_toggle_done(TaskApp *app, GtkListStore *store,
                            GtkTreeIter *iter);
 
+/* ---------------------------------------------------------------------------
+ * task_rows_remove_owner() — remove everything plugin `owner`
+ * registered here.  Called when a plugin is switched off while the app is
+ * running; the app's OWN registrations are unowned and never match.
+ * ------------------------------------------------------------------------- */
+void task_rows_remove_owner(const gchar *owner);
+
 #endif /* TASK_ROWS_H */

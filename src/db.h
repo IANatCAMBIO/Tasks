@@ -1,7 +1,7 @@
 /* ===========================================================================
  * db.h — SQLite storage for Tasks
  *
- * Schema (PRAGMA user_version = 7 — see TASK_DB_SCHEMA_VERSION).  Every
+ * Schema (PRAGMA user_version = 9 — see TASK_DB_SCHEMA_VERSION).  Every
  * column is declared in task_db_open's CREATE block; there are no
  * ALTER-based migrations, so a fresh file and an existing one have
  * identical structure.
@@ -472,5 +472,12 @@ void      task_db_group_rename(TaskDatabase *db, gint64 id, const gchar *name);
 /* Move a list into a group (group_id 0 = ungrouped → sets NULL).           */
 void      task_db_list_set_group(TaskDatabase *db, gint64 list_id,
                                  gint64 group_id);
+
+/* ---------------------------------------------------------------------------
+ * task_db_remove_delete_hooks_owner() — remove everything plugin `owner`
+ * registered here.  Called when a plugin is switched off while the app is
+ * running; the app's OWN registrations are unowned and never match.
+ * ------------------------------------------------------------------------- */
+void task_db_remove_delete_hooks_owner(const gchar *owner);
 
 #endif /* TASK_DB_H */

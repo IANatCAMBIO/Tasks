@@ -65,10 +65,16 @@ const TaskPlugin  *task_plugins_nth(guint index);
  * with a way back: a list that showed only what loaded would make
  * disabling a plugin the last thing you could ever do to it.
  *
- * `name`/`description`/`version` come from the plugin itself when it
- * loaded, and fall back to the id when it did not — there is nowhere
- * else to read them from without opening the module, which is exactly
- * what a disabled plugin must not have done to it.
+ * `name` and `description` come from the plugin's README — its first
+ * heading and the paragraph under it — because that is readable whether
+ * or not the module is ever opened, and a disabled plugin must not be
+ * opened.  A row therefore reads the same before and after enabling
+ * rather than filling itself in once you switch it on.  A plugin
+ * shipped WITHOUT a README falls back to the module's own strings once
+ * it loads, and to its id before that.
+ *
+ * `version` is the module's alone, so it is blank until something has
+ * actually loaded — which is the honest answer to what is running.
  *
  * `problem` is NULL when all is well, else a short reason ("built for a
  * different version of Tasks").  Borrowed; valid for the process.
@@ -96,14 +102,37 @@ typedef struct {
 guint                  task_plugins_available(void);
 const TaskPluginInfo  *task_plugins_info(guint index);
 
-/* task_plugins_set_enabled() — write the enabled setting for `id`.
+/* task_plugins_set_enabled() — write the enabled setting for `id` and,
+ * where it can, make it TRUE NOW.
  *
- * Takes effect at the NEXT START, and deliberately so: a plugin may have
- * registered a GType, a CSS provider or an icon-theme path, none of
- * which can be undone, so unloading one in place is not something this
- * app can honestly offer.  The caller is expected to say so.
+ * Disabling sweeps everything the plugin registered — views, workers (its
+ * timer stopped), op and delete hooks, row decorations, window chrome,
+ * settings sections — and refreshes the windows, so the app stops
+ * offering the feature on the spot.
+ *
+ * Re-enabling one that is still mapped re-runs its init(), which is why
+ * a plugin's init() must be safe to call more than once (see plugin.h).
+ *
+ * The MODULE IS NEVER UNMAPPED.  That is the whole reason this is safe:
+ * a worker pass still in flight, or an idle callback already queued, is
+ * still valid code afterwards — it simply finds itself unregistered.
+ * dlclose() would turn each of those into a jump into freed memory.
+ *
+ * Enabling one that was NOT loaded at startup dlopens it there and then,
+ * running the same load-verify-init-db_open sequence startup runs, so a
+ * checkbox never costs a restart in either direction.
+ *
+ * What it CANNOT undo is a global side effect: a plugin that registered
+ * a GType, a screen-wide CSS provider or an icon-theme path has changed
+ * something with no owner to sweep.  Neither in-tree plugin does, but
+ * the ABI permits it — which is why a plugin is never unmapped, and why
+ * a badly-behaved one may still want a restart to be truly gone.
+ *
+ * Returns TRUE when the change took effect, FALSE when it could not (no
+ * such module, or it declined to load); the caller says which.
  * ------------------------------------------------------------------------- */
-void task_plugins_set_enabled(const gchar *id, gboolean enabled);
+gboolean task_plugins_set_enabled(TaskApp *app, const gchar *id,
+                                  gboolean enabled);
 
 /* ---------------------------------------------------------------------------
  * task_plugins_dir() — the absolute path plugins were loaded from THIS

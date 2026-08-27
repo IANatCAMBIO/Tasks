@@ -4,6 +4,7 @@
  * =========================================================================== */
 
 #include "plugin_loader.h"
+#include "plugin_owner.h"
 #include "app.h"
 #include "editor_window.h"
 #include "library_window.h"
@@ -31,6 +32,8 @@ typedef struct {
     gchar            *id;            /* owns info.id                        */
     gchar            *path;
     gchar            *readme;        /* owns info.readme, or NULL           */
+    gchar            *rd_name;       /* owns info.name from the README      */
+    gchar            *rd_desc;       /* owns info.description, ditto        */
 } Found;
 
 static GPtrArray *found = NULL;      /* Found*, in discovery order          */
@@ -333,6 +336,137 @@ static const TaskHostApi host_api = {
  * Loading.
  * =========================================================================== */
 
+/* ---------------------------------------------------------------------------
+ * Reading a plugin's identity from its README.
+ *
+ * A plugin's own name and description live inside the module, which is
+ * no use here: the Settings list has to show them for a plugin that is
+ * switched OFF, and a plugin that is switched off is never opened.  The
+ * README is already the answer to that problem for the documentation
+ * itself — found beside the module by convention — so it answers this
+ * one too, and a plugin's entry looks the same whether it is running or
+ * not rather than filling in once you enable it.
+ *
+ * THE CONVENTION, and it is part of the plugin format:
+ *
+ *     # <name>
+ *
+ *     <one-paragraph description>
+ *
+ * The name is the first level-1 heading.  The description is the first
+ * paragraph under it, collapsed onto one line — so it may wrap in the
+ * file — with the common inline Markdown removed, because the list draws
+ * it as plain text and a stray "**" reads as a typo.
+ *
+ * Everything here is bounded and validated: this is a file on disk that
+ * anyone can drop a plugin into, the result goes into Pango markup, and
+ * an over-long or invalid-UTF-8 description would otherwise be a blank
+ * row rather than a bad one.
+ * ------------------------------------------------------------------------- */
+#define README_SCAN_MAX  8192        /* bytes of README worth reading       */
+#define README_NAME_MAX  64          /* characters, not bytes               */
+#define README_DESC_MAX  160
+
+/* md_strip_inline() — drop the inline Markdown the list cannot render.
+ * Only the emphasis and code marks; anything else is left alone.         */
+static void
+md_strip_inline(GString *s)
+{
+    for (gsize i = 0; i < s->len; ) {
+        if (s->str[i] == '*' || s->str[i] == '`' || s->str[i] == '_')
+            g_string_erase(s, (gssize)i, 1);
+        else
+            i++;
+    }
+}
+
+/* truncate_chars() — cap at `max` CHARACTERS, on a UTF-8 boundary, with
+ * an ellipsis when anything was dropped.  Bytes would split a sequence,
+ * and a half sequence makes Pango reject the whole label.               */
+static gchar *
+truncate_chars(const gchar *s, glong max)
+{
+    if (g_utf8_strlen(s, -1) <= max)
+        return g_strdup(s);
+    const gchar *end = g_utf8_offset_to_pointer(s, max);
+    gchar *cut = g_strndup(s, (gsize)(end - s));
+    gchar *out = g_strconcat(cut, "\xe2\x80\xa6", NULL);
+    g_free(cut);
+    return out;
+}
+
+static void
+plugin_readme_meta(const gchar *path, gchar **name, gchar **desc)
+{
+    *name = NULL;
+    *desc = NULL;
+
+    gchar *text = NULL;
+    gsize  len  = 0;
+    if (!g_file_get_contents(path, &text, &len, NULL))
+        return;
+    if (len > README_SCAN_MAX)
+        text[README_SCAN_MAX] = '\0';   /* only the opening is of interest */
+
+    /* File contents, so they may be anything at all.  Made valid BEFORE
+     * any of it is looked at, because every step below assumes UTF-8. */
+    gchar *safe = g_utf8_make_valid(text, -1);
+    g_free(text);
+
+    gchar **lines = g_strsplit(safe, "\n", -1);
+    g_free(safe);
+
+    gint i = 0;
+    for (; lines[i] != NULL; i++) {  /* the "# " heading                   */
+        gchar *t = g_strstrip(g_strdup(lines[i]));
+        gboolean is_h1 = t[0] == '#' && t[1] == ' ';
+        if (is_h1) {
+            GString *n = g_string_new(g_strchug(t + 2));
+            md_strip_inline(n);
+            gchar *stripped = g_strstrip(g_strdup(n->str));
+            if (*stripped != '\0')
+                *name = truncate_chars(stripped, README_NAME_MAX);
+            g_free(stripped);
+            g_string_free(n, TRUE);
+            g_free(t);
+            i++;
+            break;
+        }
+        gboolean blank = *t == '\0';
+        g_free(t);
+        if (!blank)
+            break;                   /* content before any heading: give up */
+    }
+
+    /* The first paragraph under it, joined — a description may wrap in
+     * the file and must not arrive with newlines in it.                 */
+    GString *d = g_string_new(NULL);
+    for (; *name != NULL && lines[i] != NULL; i++) {
+        gchar *t = g_strstrip(g_strdup(lines[i]));
+        if (*t == '\0') {
+            g_free(t);
+            if (d->len > 0)
+                break;               /* paragraph ended                    */
+            continue;                /* still before it                    */
+        }
+        if (*t == '#') {             /* next heading, no paragraph at all  */
+            g_free(t);
+            break;
+        }
+        if (d->len > 0)
+            g_string_append_c(d, ' ');
+        g_string_append(d, t);
+        g_free(t);
+    }
+    md_strip_inline(d);
+    gchar *flat = g_strstrip(g_strdup(d->str));
+    if (*flat != '\0')
+        *desc = truncate_chars(flat, README_DESC_MAX);
+    g_free(flat);
+    g_string_free(d, TRUE);
+    g_strfreev(lines);
+}
+
 /* plugin_id_from_file() — "gtasks.so" -> "gtasks".  Used to consult the
  * enabled setting BEFORE dlopen, so a disabled plugin is never mapped
  * into the process at all.  New string.                                  */
@@ -452,14 +586,32 @@ load_one(TaskApp *app, Found *f)
         return;
     }
 
-    /* Everything Settings shows comes from the plugin itself, and is only
-     * available once it has loaded — which is why a disabled one falls
-     * back to its id.                                                     */
-    f->info.name        = p->name != NULL ? p->name : f->info.id;
-    f->info.description = p->description;
+    /* The README already supplied the name and description at discovery,
+     * and it KEEPS them: it is the one source readable in both states, so
+     * letting the module override here is how a row comes to say one
+     * thing while disabled and another while enabled.  The module's own
+     * strings are the fallback for a plugin shipped without a README.
+     *
+     * A disagreement is worth saying out loud — it means the two will
+     * differ for anyone who has the README and anyone who does not.     */
+    if (f->rd_name == NULL)
+        f->info.name = p->name != NULL ? p->name : f->info.id;
+    else if (p->name != NULL && g_strcmp0(p->name, f->rd_name) != 0)
+        g_message("plugin \"%s\": its README says \"%s\" where the module "
+                  "says \"%s\" \xe2\x80\x94 the README is shown", p->id,
+                  f->rd_name, p->name);
+    if (f->rd_desc == NULL)
+        f->info.description = p->description;
     f->info.version     = p->version;
 
-    if (p->init != NULL && !p->init(app, p)) {
+    /* Everything the plugin registers from here is stamped as ITS own,
+     * so switching it off later can take exactly its registrations back
+     * out and nothing else (see plugin_owner.h).  Cleared either way —
+     * a decline must not leave the stamp set for the next plugin.       */
+    task_plugin_owner_set(p->id);
+    gboolean started = p->init == NULL || p->init(app, p);
+    task_plugin_owner_set(NULL);
+    if (!started) {
         g_message("plugin \"%s\" declined to start", p->id);
         f->info.problem = "declined to start";
         return;
@@ -521,6 +673,16 @@ task_plugins_load(TaskApp *app)
         if (g_file_test(rpath, G_FILE_TEST_IS_REGULAR)) {
             f->readme      = rpath;
             f->info.readme = rpath;
+            /* Name and description come from the README's opening, which
+             * is readable whether or not the module is ever opened — so
+             * the row reads the same before and after enabling.  They
+             * are filled in HERE, before the enable check below, for
+             * exactly that reason.                                      */
+            plugin_readme_meta(rpath, &f->rd_name, &f->rd_desc);
+            if (f->rd_name != NULL)
+                f->info.name = f->rd_name;
+            if (f->rd_desc != NULL)
+                f->info.description = f->rd_desc;
         } else {
             g_free(rpath);
         }
@@ -613,17 +775,86 @@ task_plugins_info(guint index)
     return &((const Found *)g_ptr_array_index(found, index))->info;
 }
 
-void
-task_plugins_set_enabled(const gchar *id, gboolean enabled)
+/* plugin_unregister() — take back everything `id` registered.
+ *
+ * One call per registry, and that is the complete list: if a registry is
+ * ever added and not swept here, a disabled plugin keeps contributing
+ * through it, which is the failure this function exists to prevent.     */
+static void
+plugin_unregister(const gchar *id)
+{
+    task_worker_remove_owner(id);    /* stops its timer as well            */
+    task_view_remove_owner(id);
+    task_rows_remove_owner(id);
+    task_ui_remove_owner(id);
+    task_ops_remove_owner(id);
+    task_db_remove_delete_hooks_owner(id);
+    task_settings_remove_owner(id);
+}
+
+gboolean
+task_plugins_set_enabled(TaskApp *app, const gchar *id, gboolean enabled)
 {
     gchar *key = g_strdup_printf("%s_plugin_enabled", id);
     task_app_config_set(key, enabled ? "1" : "0");
     g_free(key);
-    /* Keep the in-memory record in step so the Settings list reflects the
-     * click immediately, even though nothing loads until a restart.      */
+
+    Found *f = NULL;
     for (guint i = 0; i < task_plugins_available(); i++) {
-        Found *f = g_ptr_array_index(found, i);
-        if (g_strcmp0(f->id, id) == 0)
-            f->info.enabled = enabled;
+        Found *c = g_ptr_array_index(found, i);
+        if (g_strcmp0(c->id, id) == 0)
+            f = c;
     }
+    if (f != NULL)
+        f->info.enabled = enabled;
+
+    if (f == NULL)
+        return FALSE;                /* no such module on disk             */
+
+    /* Not mapped yet — it was switched off when the app started.  Load it
+     * NOW rather than making the user restart for a checkbox: load_one
+     * runs exactly the sequence startup runs, and db_open follows because
+     * a plugin's own tables have to exist before its first pass.  Only on
+     * the way ON; disabling never unmaps (see the header).              */
+    if (f->plugin == NULL) {
+        if (!enabled)
+            return TRUE;             /* already not running — nothing to do */
+        load_one(app, f);
+        if (f->plugin == NULL)
+            return FALSE;            /* failed; f->info.problem says why    */
+        if (f->plugin->db_open != NULL && app->db != NULL)
+            f->plugin->db_open(app, app->db, f->plugin);
+        if (app->db != NULL)
+            task_worker_arm_owner(app, id, app->db->path);
+        task_app_notify_changed(app);
+        return TRUE;
+    }
+
+    if (!enabled) {
+        plugin_unregister(id);
+    } else {
+        /* Swept first: init() is being called a SECOND time, and without
+         * this every registration it makes would be a duplicate.        */
+        plugin_unregister(id);
+        task_plugin_owner_set(id);
+        gboolean ok = f->plugin->init == NULL ||
+                      f->plugin->init(app, f->plugin);
+        task_plugin_owner_set(NULL);
+        if (!ok) {
+            plugin_unregister(id);
+            f->info.problem = "declined to start";
+            return FALSE;
+        }
+        f->info.problem = NULL;
+        /* Its worker was registered with no timer running; arm it the
+         * way startup would, or a re-enabled plugin does nothing until
+         * the next launch.  ONLY its own — see task_worker_arm_owner.  */
+        if (app->db != NULL)
+            task_worker_arm_owner(app, id, app->db->path);
+    }
+
+    /* Structural: the sidebar, the toolbar and the menus are all built
+     * from the registries that just changed.                            */
+    task_app_notify_changed(app);
+    return TRUE;
 }

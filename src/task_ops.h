@@ -103,4 +103,11 @@ guint task_ops_clear_completed(TaskApp *app, gint64 list_id);
 gboolean task_ops_list_can_delete(TaskApp *app, const TaskList *list,
                                   gchar **why);
 
+/* ---------------------------------------------------------------------------
+ * task_ops_remove_owner() — remove everything plugin `owner`
+ * registered here.  Called when a plugin is switched off while the app is
+ * running; the app's OWN registrations are unowned and never match.
+ * ------------------------------------------------------------------------- */
+void task_ops_remove_owner(const gchar *owner);
+
 #endif /* TASK_OPS_H */

@@ -3,6 +3,7 @@
  * =========================================================================== */
 
 #include "task_ops.h"
+#include "plugin_owner.h"
 
 /* ---------------------------------------------------------------------------
  * The three registries.  Entries are never removed and registration
@@ -27,7 +28,38 @@ hook_add(GSList **list, gpointer fn, gpointer user_data)
     Hook *h = g_new0(Hook, 1);
     h->fn        = fn;
     h->user_data = user_data;
+    task_plugin_owner_stamp(h);
     *list = g_slist_append(*list, h);
+}
+
+/* hook_remove_owner() — drop `owner`'s hooks from one list.               */
+static void
+hook_remove_owner(GSList **list, const gchar *owner)
+{
+    GSList *n = *list;
+    while (n != NULL) {
+        GSList *next = n->next;
+        Hook   *h    = n->data;
+        if (task_plugin_owner_is(h, owner)) {
+            task_plugin_owner_forget(h);
+            *list = g_slist_delete_link(*list, n);
+            g_free(h);
+        }
+        n = next;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * task_ops_remove_owner() — every op hook `owner` added (see task_ops.h).
+ * ------------------------------------------------------------------------- */
+void
+task_ops_remove_owner(const gchar *owner)
+{
+    if (owner == NULL)
+        return;
+    hook_remove_owner(&moved_hooks,   owner);
+    hook_remove_owner(&cleared_hooks, owner);
+    hook_remove_owner(&list_vetoes,   owner);
 }
 
 void

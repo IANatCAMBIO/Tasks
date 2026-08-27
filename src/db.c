@@ -3,6 +3,7 @@
  * =========================================================================== */
 
 #include "db.h"
+#include "plugin_owner.h"
 #include <glib/gstdio.h>             /* g_unlink, g_stat                    */
 #include <string.h>
 
@@ -1398,7 +1399,31 @@ task_db_add_delete_hook(TaskDbDeleteSqlFn fn, gpointer user_data)
     DeleteHook *h = g_new0(DeleteHook, 1);
     h->fn        = fn;
     h->user_data = user_data;
+    task_plugin_owner_stamp(h);
     delete_hooks = g_slist_append(delete_hooks, h);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_db_remove_delete_hooks_owner() — drop `owner`'s delete hooks
+ * (see db.h).  A disabled plugin must stop contributing SQL to a delete:
+ * its statements name ITS tables, and it is no longer keeping them.
+ * ------------------------------------------------------------------------- */
+void
+task_db_remove_delete_hooks_owner(const gchar *owner)
+{
+    if (owner == NULL)
+        return;
+    GSList *n = delete_hooks;
+    while (n != NULL) {
+        GSList *next = n->next;
+        DeleteHook *h = n->data;
+        if (task_plugin_owner_is(h, owner)) {
+            task_plugin_owner_forget(h);
+            delete_hooks = g_slist_delete_link(delete_hooks, n);
+            g_free(h);
+        }
+        n = next;
+    }
 }
 
 /* ---------------------------------------------------------------------------

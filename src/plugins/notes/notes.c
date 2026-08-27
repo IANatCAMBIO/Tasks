@@ -1117,7 +1117,7 @@ static const TaskPlugin notes_plugin = {
     .abi_version     = TASK_PLUGIN_ABI_VERSION,
     .abi_revision    = TASK_PLUGIN_ABI_REVISION,
     .id              = "notes",
-    .name            = "Notes",
+    .name            = "Notes Action Items Sync",
     .description     = "Mirror the companion Notes app's action items as "
                        "ordinary tasks.",
     .version         = "1.0.0",

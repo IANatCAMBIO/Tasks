@@ -1,7 +1,7 @@
 # Overdue
 
-Adds an **Overdue** view to the Tasks sidebar, listing every task whose
-due date has already passed — across every list, soonest deadline first.
+A sidebar view of every task past its due date, across every list,
+soonest deadline first.
 
 ## What it shows
 
@@ -18,14 +18,18 @@ The row sits between **Due Today** and **Weekly Forecast**.
 
 ## Settings
 
+One, and it is the plugin's own checkbox in **File → Settings… →
+Plugins**:
+
 | Key | Default | Meaning |
 |---|---|---|
-| `overdue_plugin_enabled` | `1` | Load the plugin at all. Turning this off means it is never opened — not merely hidden. |
-| `overdue_show_row` | `1` | Keep the plugin loaded but hide its sidebar row. |
+| `overdue_plugin_enabled` | `1` | Load the plugin. Off means it is never opened — not merely hidden — and its sidebar row goes with it, immediately. |
 
-Both live in `tasks.ini`, and both have a checkbox in
-**File → Settings…** — the first in the **Plugins** list, the second in
-this plugin's own **Overdue** section just below it.
+There is deliberately **no settings section** for this plugin. It used to
+carry an `overdue_show_row` key with a section of its own, which did the
+same thing as the checkbox above; that key is no longer read. A plugin
+contributes a settings section only if it has something to configure
+beyond being switched on.
 
 ## Installing
 

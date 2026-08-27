@@ -3,6 +3,7 @@
  * =========================================================================== */
 
 #include "task_view.h"
+#include "plugin_owner.h"
 
 static GPtrArray *views = NULL;      /* const TaskView*, in display order   */
 
@@ -43,8 +44,28 @@ task_view_register(const TaskView *v)
     Entry *e = g_new0(Entry, 1);
     e->view = v;
     e->seq  = views->len;
+    task_plugin_owner_stamp(e);
     g_ptr_array_add(views, e);
     g_ptr_array_sort(views, view_cmp);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_view_remove_owner() — drop every view registered by `owner`
+ * (see task_view.h).  Walks backwards so removal cannot skip an entry.
+ * ------------------------------------------------------------------------- */
+void
+task_view_remove_owner(const gchar *owner)
+{
+    if (views == NULL || owner == NULL)
+        return;
+    for (guint i = views->len; i > 0; i--) {
+        Entry *e = g_ptr_array_index(views, i - 1);
+        if (!task_plugin_owner_is(e, owner))
+            continue;
+        task_plugin_owner_forget(e);
+        g_ptr_array_remove_index(views, i - 1);
+        g_free(e);
+    }
 }
 
 guint

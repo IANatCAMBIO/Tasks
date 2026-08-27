@@ -140,4 +140,11 @@ gboolean         task_view_is_panel(const TaskView *v);
  * ------------------------------------------------------------------------- */
 gchar *task_view_order_key(const TaskView *v, const gchar *family);
 
+/* ---------------------------------------------------------------------------
+ * task_view_remove_owner() — remove everything plugin `owner`
+ * registered here.  Called when a plugin is switched off while the app is
+ * running; the app's OWN registrations are unowned and never match.
+ * ------------------------------------------------------------------------- */
+void task_view_remove_owner(const gchar *owner);
+
 #endif /* TASK_VIEW_H */

@@ -5,6 +5,7 @@
 #include "settings_window.h"
 #include "db.h"
 #include "plugin_loader.h"
+#include "plugin_owner.h"
 #include "backup.h"
 #include "library_window.h"
 #include <string.h>
@@ -16,6 +17,8 @@ typedef struct {
     TaskApp     *app;
     gchar     *db_path;
     GtkWidget *window;
+    GtkWidget *scroller;             /* kept so a rebuild can restore the
+                                      * scroll position                     */
     gboolean   loading;              /* suppress write-through on load      */
 } TaskSettings;
 
@@ -366,7 +369,33 @@ task_settings_add_section(TaskSettingsSectionFn fn, gpointer user_data)
     Section *s = g_new0(Section, 1);
     s->fn        = fn;
     s->user_data = user_data;
+    task_plugin_owner_stamp(s);
     sections = g_slist_append(sections, s);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_settings_remove_owner() — drop `owner`'s sections (see header).
+ *
+ * Only the REGISTRATION goes.  Any widgets a previous opening built are
+ * already owned by that window, and the window rebuilds its column from
+ * this list — so a section removed here is simply not built next time.
+ * ------------------------------------------------------------------------- */
+void
+task_settings_remove_owner(const gchar *owner)
+{
+    if (owner == NULL)
+        return;
+    GSList *n = sections;
+    while (n != NULL) {
+        GSList *next = n->next;
+        Section *sec = n->data;
+        if (task_plugin_owner_is(sec, owner)) {
+            task_plugin_owner_forget(sec);
+            sections = g_slist_delete_link(sections, n);
+            g_free(sec);
+        }
+        n = next;
+    }
 }
 
 /* wrapped_label() — a wrapping, left-aligned explanatory label.            */
@@ -401,23 +430,115 @@ task_settings_section_note(const gchar *text)
  * good enough for a plugin's.
  * =========================================================================== */
 
-/* on_plugin_toggled() — write the enabled setting and say what it means.
+/* ---------------------------------------------------------------------------
+ * Rebuilding the window after the section list changes.
  *
- * The change takes effect at the NEXT START, and the message says so
- * rather than pretending otherwise: a plugin may have registered a
- * GType, a CSS provider or an icon-theme path, and none of those can be
- * undone, so unloading one in place is not something this app can
- * honestly offer.                                                        */
+ * The window is built in ONE pass and has no incremental path, so a
+ * changed section list is applied by closing and reopening it.  That is
+ * the only route that is already correct for every section, in order,
+ * with its separator — patching the column by hand would be a second
+ * implementation of the build, and the two would drift.
+ *
+ * Geometry and scroll offset are carried across, because the click that
+ * triggers this is a checkbox in the Plugins list — a long way down the
+ * column — and a window that jumps back to the top reads as having lost
+ * the user's place rather than as having refreshed.
+ * ------------------------------------------------------------------------- */
+static gdouble settings_scroll_keep = 0.0;
+
+/* settings_scroll_restore() — put the offset back once the rebuilt column
+ * has been laid out.  Idle-deferred for the reason every scroll restore
+ * in this app is: the adjustment's upper bound is not final until the
+ * new content has been sized, and setting a value against a stale upper
+ * is silently clamped to it.                                             */
+static gboolean
+settings_scroll_restore(gpointer data)
+{
+    (void)data;
+    if (settings == NULL || settings->scroller == NULL)
+        return G_SOURCE_REMOVE;
+    GtkAdjustment *va = gtk_scrolled_window_get_vadjustment(
+        GTK_SCROLLED_WINDOW(settings->scroller));
+    if (va != NULL)
+        gtk_adjustment_set_value(va, settings_scroll_keep);
+    return G_SOURCE_REMOVE;
+}
+
+/* settings_reopen() — close and rebuild the settings window.  An idle
+ * callback: it destroys the window that owns the widget whose handler
+ * asked for it, so it must not run inside that handler.                  */
+static gboolean
+settings_reopen(gpointer data)
+{
+    TaskApp *app = data;
+    if (settings == NULL)
+        return G_SOURCE_REMOVE;      /* closed while this waited            */
+
+    GtkWindow *parent =
+        gtk_window_get_transient_for(GTK_WINDOW(settings->window));
+    gchar *db_path = g_strdup(settings->db_path);
+    gint x = 0, y = 0, w = 0, h = 0;
+    gtk_window_get_position(GTK_WINDOW(settings->window), &x, &y);
+    gtk_window_get_size(GTK_WINDOW(settings->window), &w, &h);
+
+    settings_scroll_keep = 0.0;
+    if (settings->scroller != NULL) {
+        GtkAdjustment *va = gtk_scrolled_window_get_vadjustment(
+            GTK_SCROLLED_WINDOW(settings->scroller));
+        if (va != NULL)
+            settings_scroll_keep = gtk_adjustment_get_value(va);
+    }
+
+    /* on_settings_destroy clears the singleton, which is what lets the
+     * open below build a new one instead of presenting the dead one.    */
+    gtk_widget_destroy(settings->window);
+    task_settings_window_open(app, parent, db_path);
+    g_free(db_path);
+
+    if (settings != NULL) {
+        gtk_window_move(GTK_WINDOW(settings->window), x, y);
+        gtk_window_resize(GTK_WINDOW(settings->window), w, h);
+        g_idle_add(settings_scroll_restore, NULL);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+/* on_plugin_toggled() — write the enabled setting and apply it now.
+ *
+ * Switching off sweeps everything the plugin registered; switching on
+ * loads it if it is not already mapped, then initialises it.  Either way
+ * the change is live, and the status line says so rather than promising
+ * a restart — a note that says "restart" after the section has visibly
+ * gone reads as the app not knowing what it just did.  The failure
+ * message is kept for the case where applying it now did not work.
+ *
+ * The window is REBUILT afterwards, not patched: the section list is what
+ * just changed, and rebuilding is the one path that is already correct
+ * for every section, in order, with its separator.                       */
 static void
 on_plugin_toggled(GtkWidget *check, gpointer data)
 {
     const gchar *id = data;
     gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(check));
-    task_plugins_set_enabled(id, on);
-
     TaskApp *app = g_object_get_data(G_OBJECT(check), "task-app");
-    task_app_status(app, "%s will be %s the next time Tasks starts",
-                    id, on ? "loaded" : "left unloaded");
+
+    gboolean now = task_plugins_set_enabled(app, id, on);
+    if (now)
+        task_app_status(app, "%s %s", id, on ? "enabled" : "disabled");
+    else
+        /* The setting is written either way, so it WILL apply next
+         * launch; what failed is applying it now.                      */
+        task_app_status(app, "%s could not be %s now \xe2\x80\x94 it will "
+                        "be %s the next time Tasks starts", id,
+                        on ? "loaded" : "unloaded",
+                        on ? "loaded" : "left unloaded");
+
+    /* Reopen so the contributed sections match the registry again.  Done
+     * from an idle: this runs inside the checkbox's own "toggled", and
+     * destroying the window that holds it from underneath would return
+     * into a dead widget.                                                */
+    if (now)
+        g_idle_add(settings_reopen, app);
 }
 
 /* on_readme_link() — open a plugin's README in whatever the desktop uses
@@ -499,15 +620,37 @@ plugins_section(TaskApp *app, GtkWidget *vbox, GtkWindow *window,
     gtk_box_pack_start(GTK_BOX(vbox), section_label("Plugins"),
                        FALSE, FALSE, 0);
 
+    /* Counted up here because the restart note below is gated on it and
+     * now sits ABOVE the folder buttons — the empty-case early return is
+     * still further down, after those buttons, since someone with no
+     * plugins yet is exactly who needs them.                            */
+    guint n = task_plugins_available();
+
     /* Where they come from and how to add one.  Shown even when none are
      * installed — that is precisely when someone needs to be told where
      * to put the first.                                                  */
-    gchar *where = g_strdup_printf(
-        "Plugins are loaded from\n%s\n\nTo add one, copy it into that "
-        "folder and restart Tasks.", task_plugins_dir());
-    gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(where),
-                       FALSE, FALSE, 0);
+    /* <small>, matching the Database section's "Current database:" line —
+     * both are the same thing: a path and what to do about it, under the
+     * controls that act on it.  g_markup_printf_escaped because the path
+     * is interpolated INTO markup, and a folder name may hold an "&".   */
+    GtkWidget *where_label = wrapped_label(NULL);
+    gchar *where = g_markup_printf_escaped(
+        "<small>Plugins are loaded from\n%s\nTo add one, copy it into "
+        "that folder and restart Tasks.</small>", task_plugins_dir());
+    gtk_label_set_markup(GTK_LABEL(where_label), where);
     g_free(where);
+    gtk_box_pack_start(GTK_BOX(vbox), where_label, FALSE, FALSE, 0);
+
+    /* What a click below actually does, said in the same breath and the
+     * same size as the sentence above it.  No markup arguments, so a
+     * literal is safe.                                                  */
+    if (n > 0) {
+        GtkWidget *restart_label = wrapped_label(NULL);
+        gtk_label_set_markup(GTK_LABEL(restart_label),
+            "<small>Switching a plugin on or off takes effect "
+            "immediately \xe2\x80\x94 no restart needed.</small>");
+        gtk_box_pack_start(GTK_BOX(vbox), restart_label, FALSE, FALSE, 0);
+    }
 
     GtkWidget *dir_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *choose  = gtk_button_new_with_label(
@@ -524,16 +667,11 @@ plugins_section(TaskApp *app, GtkWidget *vbox, GtkWindow *window,
     gtk_box_pack_start(GTK_BOX(dir_row), reset, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), dir_row, FALSE, FALSE, 0);
 
-    guint n = task_plugins_available();
     if (n == 0) {
         gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
             "No plugins are installed."), FALSE, FALSE, 0);
         return;
     }
-
-    gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
-        "Enabling or Disabling a plugin requires a restart of the "
-        "application."), FALSE, FALSE, 0);
 
     for (guint i = 0; i < n; i++) {
         const TaskPluginInfo *pi = task_plugins_info(i);
@@ -552,7 +690,17 @@ plugins_section(TaskApp *app, GtkWidget *vbox, GtkWindow *window,
         /* One dimmed line under the name: what it does, its version, and
          * — the part that matters — why it is not running when it should
          * be.  A plugin that failed silently is a plugin that looks
-         * broken for no reason.                                          */
+         * broken for no reason.
+         *
+         * There is no "will load on restart" case any more: enabling a
+         * plugin loads it on the spot, so a row that still said so would
+         * be describing the old behaviour.
+         *
+         * The description reads the same whether the plugin is running
+         * or not — it comes from the README, not the module.  The
+         * version does NOT: it is the module's, so it is blank until
+         * something is actually loaded, which is the honest answer to
+         * "what version is running?".                                    */
         GString *sub = g_string_new(NULL);
         if (pi->description != NULL)
             g_string_append(sub, pi->description);
@@ -565,10 +713,6 @@ plugins_section(TaskApp *app, GtkWidget *vbox, GtkWindow *window,
             if (sub->len > 0)
                 g_string_append(sub, "  \xe2\x80\x94  ");
             g_string_append_printf(sub, "Not loaded: %s", pi->problem);
-        } else if (pi->enabled && !pi->loaded) {
-            if (sub->len > 0)
-                g_string_append(sub, "  \xe2\x80\x94  ");
-            g_string_append(sub, "Will load on restart");
         }
         if (sub->len > 0 || pi->readme != NULL) {
             /* The description is DB- and plugin-sourced text going into
@@ -704,8 +848,8 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 14);
-    gtk_container_add(GTK_CONTAINER(sw->window),
-                      settings_scroller_new(vbox, parent));
+    sw->scroller = settings_scroller_new(vbox, parent);
+    gtk_container_add(GTK_CONTAINER(sw->window), sw->scroller);
 
     /* --- Appearance --------------------------------------------------------- */
     gtk_box_pack_start(GTK_BOX(vbox), section_label("Appearance"),

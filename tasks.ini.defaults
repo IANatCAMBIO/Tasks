@@ -55,9 +55,11 @@ sidebar_visible=0
 # the task area instead.  It leaves the sidebar alone — that stays under
 # sidebar_visible above, in compact mode just the same.
 compact_layout=0
-# Show the Weekly Forecast view in the sidebar (1|0, default 1;
-# Settings → Appearance).
-weekly_forecast=1
+# NOTE there is no key here for showing the Weekly Forecast or Overdue
+# views.  Both are PLUGINS, and a plugin's presence is its own switch:
+# the checkbox in Settings → Plugins loads or unloads it, taking its
+# sidebar row with it either way.  A second key meaning the same thing
+# is what "weekly_forecast" and "<id>_show_row" used to be.
 # Let the Due Today view also list everything already past due
 # (1|0, default 0; Settings → Appearance).
 due_today_show_overdue=0

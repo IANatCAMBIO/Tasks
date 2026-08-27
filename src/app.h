@@ -263,7 +263,7 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
  *                its id (see task_app_config_get_ns).
  *   UI         — toolbar_style, bold_task_titles, native_menubar,
  *                show_completed, sidebar_visible, compact_layout,
- *                weekly_forecast, due_today_show_overdue,
+ *                due_today_show_overdue,
  *                task_list_manual_sort, kanban_view,
  *                col_done_visible, col_status_visible, col_due_visible,
  *                col_completed_visible, win_w, win_h

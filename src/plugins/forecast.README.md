@@ -1,8 +1,9 @@
 # Weekly Forecast
 
-This week at a glance: seven day sections, Sunday through Saturday, each
-listing everything due on that day. Today's heading carries a blue dot
-and a *— Today* tag.
+This week at a glance, day by day: seven sections, Sunday through
+Saturday, each listing everything due on that day.
+
+Today's heading carries a blue dot and a *— Today* tag.
 
 The whole week scrolls as one page — the day sections are never
 individually scrolled, so nothing is hidden inside a small box. A day
@@ -27,17 +28,19 @@ Two consequences worth knowing:
 
 ## Settings
 
+One, and it is the plugin's own checkbox in **File → Settings… →
+Plugins**:
+
 | Key | Default | Meaning |
 |---|---|---|
-| `forecast_plugin_enabled` | `1` | Load the plugin at all. Off means it is never opened, not merely hidden. |
-| `forecast_show_row` | `1` | Keep it loaded but hide its sidebar row. |
+| `forecast_plugin_enabled` | `1` | Load the plugin. Off means it is never opened — not merely hidden — and its sidebar row goes with it, immediately. |
 
-The second has a checkbox in **File → Settings… → Weekly Forecast**; the
-first is in the **Plugins** list just above it.
-
-> Before this shipped as a plugin the setting was called
-> `weekly_forecast`. That key is no longer read. Both default to on, so
-> there is nothing to do unless you had deliberately turned the view off.
+There is deliberately **no settings section** for this plugin. It used to
+carry a `forecast_show_row` key with a section of its own, which did the
+same thing as the checkbox above; that key is no longer read, and neither
+is `weekly_forecast`, the core setting this had before it became a
+plugin. A plugin contributes a settings section only if it has something
+to configure beyond being switched on.
 
 ## Installing
 

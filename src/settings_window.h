@@ -75,4 +75,11 @@ GtkWidget *task_settings_section_heading(const gchar *text);
  * sits under a heading, in the same style.                                */
 GtkWidget *task_settings_section_note(const gchar *text);
 
+/* ---------------------------------------------------------------------------
+ * task_settings_remove_owner() — remove everything plugin `owner`
+ * registered here.  Called when a plugin is switched off while the app is
+ * running; the app's OWN registrations are unowned and never match.
+ * ------------------------------------------------------------------------- */
+void task_settings_remove_owner(const gchar *owner);
+
 #endif /* TASK_SETTINGS_WINDOW_H */

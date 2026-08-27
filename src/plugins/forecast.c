@@ -261,20 +261,17 @@ forecast_panel_new(TaskApp *app, gpointer user_data)
     return f->scroller;
 }
 
-static gboolean
-forecast_visible(TaskApp *app, gpointer user_data)
-{
-    (void)app;
-    (void)user_data;
-    return host->config->get_bool(self, "show_row", TRUE);
-}
+/* The row has NO visibility condition: while the plugin is loaded its
+ * view exists, and switching the plugin off in Settings takes the view
+ * away on the spot.  It used to be gated on a "forecast_show_row" key
+ * whose only effect was the same one — two controls for one behaviour,
+ * which is worse than one.                                                */
 
 static const TaskView forecast_view = {
     .id            = "forecast",
     .label         = "\xf0\x9f\x8c\xa4\xef\xb8\x8f  Weekly Forecast",
     .name          = "Weekly Forecast",
     .sort          = 50,
-    .visible       = forecast_visible,
     .panel_new     = forecast_panel_new,
     .panel_refresh = forecast_refresh,
     /* No panel_selection: the day views keep no selection, so "nothing"
@@ -284,48 +281,14 @@ static const TaskView forecast_view = {
                      "edit the list each task lives in",
 };
 
-/* --------------------------------------------------------------------------
- * Settings.
- * ------------------------------------------------------------------------- */
-static void
-on_show_row_toggled(GtkWidget *check, gpointer data)
-{
-    TaskApp *app = data;
-    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(check));
-    host->config->set(self, "show_row", on ? "1" : "0");
-    host->notify->notify_changed(app);
-}
-
-static void
-forecast_settings(TaskApp *app, GtkWidget *column, GtkWindow *window,
-                  gpointer user_data)
-{
-    (void)window;
-    (void)user_data;
-    gtk_box_pack_start(GTK_BOX(column),
-                       host->settings->heading("Weekly Forecast"),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(column), host->settings->note(
-        "This week at a glance, day by day, with everything due on each."),
-        FALSE, FALSE, 0);
-
-    GtkWidget *check = gtk_check_button_new_with_label(
-        "Show the Weekly Forecast view in the sidebar");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(check),
-                                 host->config->get_bool(self, "show_row",
-                                                        TRUE));
-    g_signal_connect(check, "toggled",
-                     G_CALLBACK(on_show_row_toggled), app);
-    gtk_box_pack_start(GTK_BOX(column), check, FALSE, FALSE, 0);
-}
-
 static gboolean
 forecast_init(TaskApp *app, const TaskPlugin *me)
 {
     (void)app;
     (void)me;
+    /* NO settings section.  Contributing one is optional, and this plugin
+     * has nothing to put in it — see the note above the view.           */
     host->views->register_view(&forecast_view);
-    host->settings->add_section(forecast_settings, NULL);
     return TRUE;
 }
 

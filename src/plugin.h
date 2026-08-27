@@ -279,6 +279,33 @@ typedef struct {
 } TaskHostDb;
 
 /* ---------------------------------------------------------------------------
+ * REGISTRATION AND OWNERSHIP (all the registries below).
+ *
+ * Everything a plugin registers FROM init() is recorded as belonging to
+ * that plugin, so switching it off in Settings can take exactly its
+ * registrations back out and nothing else — its views leave the sidebar,
+ * its worker's timer is stopped, its hooks leave the op chains, its
+ * settings section leaves the window, all without a restart.
+ *
+ * Two consequences worth knowing:
+ *
+ *   - Register from init(), not later.  A registration made outside it
+ *     is owned by nobody and will NOT be removed when the plugin is
+ *     disabled, which leaves a switched-off plugin still contributing.
+ *
+ *   - A DISABLED PLUGIN IS NEVER UNMAPPED.  Its code stays resident for
+ *     the life of the process, so a worker pass still in flight and an
+ *     idle callback already queued both remain valid; they simply find
+ *     the plugin unregistered.  Static state inside the module survives
+ *     a disable/enable cycle — do not treat init() as a fresh process.
+ *
+ * What the app CANNOT take back is a global side effect: a GType, a
+ * screen-wide CSS provider, an icon-theme path.  If a plugin needs one,
+ * it is stuck with it until the app restarts, so prefer per-widget CSS
+ * (ui->widget_add_css) to a screen-wide provider.
+ * ------------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------------
  * Background work.  A plugin's periodic pass goes through the app's one
  * scheduler (see task_worker.h), which owns the timer, the db path and
  * the re-arm on a database switch — so a plugin cannot be left pointing
@@ -322,6 +349,16 @@ typedef struct {
  * code was never loaded.  Its enable checkbox in the Plugins list is the
  * only control it has in that state, which is exactly why enable/disable
  * lives there and not in the plugin's own section.
+ *
+ * CONTRIBUTING A SECTION IS OPTIONAL, and most plugins should not.  A
+ * plugin whose only setting would be "show my view" must not add one:
+ * the Plugins checkbox already switches the plugin off and takes its
+ * view away on the spot, so a section holding the same control is two
+ * ways to do one thing — the user has to work out whether they differ,
+ * and they do not.  Add a section when there is something to configure
+ * BEYOND being switched on: an account to sign into, an interval, a
+ * path, a destination list.  Both in-tree view plugins (overdue,
+ * forecast) deliberately have none.
  * ------------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------------
  * Task rows — the app's own row renderer (see task_rows.h).  ABI 1.2.
@@ -467,9 +504,28 @@ struct TaskHostApi {
 /* ---------------------------------------------------------------------------
  * What a plugin IS.
  *
- * `id` is the plugin's identity: its config namespace, the name in the
- * Settings list, and how the loader reports it.  It is part of the ini
- * format once shipped — do not rename it.
+ * `id` is the plugin's identity: its config namespace, and how the
+ * loader reports it.  It is part of the ini format once shipped — do not
+ * rename it.
+ *
+ * SHIP A README.  The Settings list takes the plugin's displayed NAME
+ * and DESCRIPTION from "<id>.README.md" beside the module, not from the
+ * `name`/`description` below:
+ *
+ *     # <name>
+ *
+ *     <one-paragraph description>
+ *
+ * That is not a stylistic preference.  A disabled plugin is never
+ * opened, so nothing inside the module can be read for it, and a list
+ * that used these fields would show a bare id until you enabled the
+ * plugin — filling in the description only once you had committed to
+ * the thing the description was meant to help you decide about.  The
+ * README is the one file readable in both states.
+ *
+ * `name` and `description` here are the fallback for a plugin shipped
+ * without a README, and are used only once it has loaded.  Keep them in
+ * step with the README: the loader logs a message when they disagree.
  *
  * LIFECYCLE
  *   init      — the app is built, no window yet.  Register views,
@@ -477,6 +533,18 @@ struct TaskHostApi {
  *               performance rules above).  Return FALSE to decline
  *               loading, e.g. a dependency is missing; the app carries
  *               on without the plugin and says so.
+ *
+ *               MAY BE CALLED MORE THAN ONCE — since ABI 1.6.  Switching
+ *               a plugin off in Settings takes back everything it
+ *               registered and switching it on again calls init() afresh,
+ *               so it must be safe to re-run: register the same things,
+ *               and do not assume a one-shot global setup has not
+ *               happened yet.  The app sweeps the registries BEFORE
+ *               re-calling, so registering again is correct rather than
+ *               a duplicate.  Anything genuinely once-per-process
+ *               (curl_global_init is the example in tree) belongs in
+ *               task_plugin_entry, which is called exactly once because
+ *               the module is never unmapped.
  *   db_open   — a database has been opened.  Create the plugin's own
  *               tables here (CREATE TABLE IF NOT EXISTS).  Called for
  *               the main connection at startup and again after a

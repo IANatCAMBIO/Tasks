@@ -1,8 +1,6 @@
-# Google Tasks
+# Google Tasks Sync
 
-Two-way, non-destructive sync between Tasks and your Google Tasks
-account. Lists become task lists; tasks, subtasks, due dates and
-completion travel in both directions.
+Two-way, non-destructive sync between Tasks and your Google Tasks account.
 
 ## Non-destructive means non-destructive
 
@@ -54,9 +52,38 @@ application. That is the point of it being a plugin: an installation
 without it links no network library at all, which you can check with
 `ldd tasks` (or `otool -L tasks` on macOS).
 
-It also needs an OAuth client for the Google Tasks API. The app ships
-with one baked in; developers can supply their own — see the Makefile's
-`client_credentials.mk` block.
+It also needs an OAuth client for the Google Tasks API. Builds from this
+repository ship with one baked in, so signing in just works. If you are
+building it yourself and want your own client, set one up as below.
+
+### Setting up `client_credentials.mk`
+
+Optional. Without it the build still succeeds and everything except the
+Sync sign-in works; add the file and rebuild whenever you are ready — the
+Makefile tracks it, so a plain `make` picks up changes.
+
+1. In the [Google Cloud console](https://console.cloud.google.com/),
+   create a project (any name) and enable the **Google Tasks API**
+   (*APIs & Services → Library*).
+2. Configure the OAuth consent screen (*APIs & Services → OAuth consent
+   screen*) — the app name you enter there is what the browser's consent
+   page will show.
+3. Create the client (*APIs & Services → Credentials → Create Credentials
+   → OAuth client ID*, application type **Desktop app**) and note the
+   client id and secret.
+4. In the source directory:
+   `cp client_credentials.mk.example client_credentials.mk`, fill in the
+   two values, then `make clean && make`.
+
+`client_credentials.mk` is gitignored, so your credentials never end up
+in a commit — and Desktop-app client secrets are, per Google's own docs,
+not confidential, so shipping them inside a binary you distribute is the
+standard pattern.
+
+Alternatively the app accepts the console's downloaded
+`client_secret….json` placed next to the binary at runtime — also
+gitignored — and that file takes precedence over the baked-in client if
+both exist.
 
 ## Installing
 

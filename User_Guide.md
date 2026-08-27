@@ -8,15 +8,18 @@ the database schema and the sync engine see [Internals](Internals.md).
 ## Library window
 
 - **Sidebar** — bold rolled-up views at the top: **⭐️ Favorites**
-  (present only while something is favorited), **🔮 All Tasks**,
+  (present only while something is favorited), **🔮 All Tasks** and
   **☀️ Due Today** (rolling over at local midnight; Settings can widen
-  it to include everything past due) and **🌤️ Weekly Forecast** —
-  the current week, Sunday through Saturday, as seven day lists
-  stacked down the page, each headed by its day and date (today is
-  marked) and showing the tasks due that day; check off tasks in
-  place or double-click to edit. The Weekly Forecast view can be
-  switched off in Settings → Appearance, which removes it from the
-  sidebar entirely. Your
+  it to include everything past due).
+
+  Plugins add more of these. **⏰ Overdue** lists everything past its
+  due date; **🌤️ Weekly Forecast** shows the current week, Sunday
+  through Saturday, as seven day lists stacked down the page, each
+  headed by its day and date (today is marked) and showing the tasks
+  due that day — check off tasks in place or double-click to edit.
+  Either row is present exactly while its plugin is switched on in
+  *Settings → Plugins*, and switching one off removes the row
+  immediately. Your
   real lists nest under a collapsible **Lists** header, each shown
   with its emoji when one is set. Lists sort alphabetically until you
   drag one into place — from then on your custom order sticks (it is
@@ -227,23 +230,35 @@ window per task: opening it again focuses the one you already have.
 ## Settings (*File → Settings…*)
 
 - **Appearance** — toolbar button style (icons / icons + text /
-  text), bold task titles in the list, show/hide the Weekly Forecast
-  sidebar row, whether **Due Today** also includes everything past due,
-  and — when built with gtk-mac-integration — a native macOS menu bar
-  option.
+  text), bold task titles in the list, whether **Due Today** also
+  includes everything past due, and — when built with
+  gtk-mac-integration — a native macOS menu bar option.
 - **Database** — shows the current database file path and lets you
   move it to a different folder. Switching always removes the old
   file: if the target folder is empty the current database is copied
   there; if it already contains a database you choose whether to use
   the existing one or overwrite it with your current data.
-- **Notes** — mirror its action items as ordinary tasks, point the
-  app at the `notes` command (a path or a name on PATH), choose which
-  list new items are filed into, set how often changes are sent back,
-  and show or hide the sidebar's Action Items view.
+- **Plugins** — every plugin found, with a checkbox each. Ticking one
+  switches it on and unticking switches it off, both taking effect
+  immediately — no restart. Each row shows what the plugin does and
+  links to its README, whether or not it is switched on. Below the
+  list are the folder plugins load from and a button to change it.
+
+The sections that follow the Plugins list belong to the plugins
+themselves, and are present only while that plugin is on:
+
 - **Google Tasks** — the sync master switch, Sign In / Sign Out, the
   auto-sync interval in minutes (default 5; 0 turns the timer off while
   the toolbar Sync button always works), and whether the Sync button
   appears in the toolbar at all.
+- **Notes** — mirror its action items as ordinary tasks, point the
+  app at the `notes` command (a path or a name on PATH), choose which
+  list new items are filed into, set how often changes are sent back,
+  and show or hide the sidebar's Action Items view.
+
+Overdue and Weekly Forecast have no section of their own: their only
+setting would be whether to show their row, which is what their
+checkbox in the Plugins list already does.
 
 All changes apply live and persist (in `tasks.ini` next to the
 binary). Toolbar icons are PNGs bundled in `icons/` — replaceable by
@@ -296,10 +311,41 @@ Every backup is a complete, ordinary SQLite database. To restore one,
 quit the app, and either copy it over your `tasks.db` or point *Settings
 → Database* at a folder containing it renamed to `tasks.db`.
 
+## Plugins
+
+Tasks keeps its core small — lists, tasks, subtasks, due dates. Anything
+beyond that is a **plugin**: a separate module in the `plugins` folder
+beside the program, switched on or off in *File → Settings… → Plugins*.
+
+Four ship with the app: **Google Tasks Sync**, **Notes Action Items
+Sync**, **Weekly Forecast** and **Overdue**. The first two are described
+in full below; each has its own README, reachable from its row in the
+Settings list.
+
+Two things follow from a feature being a plugin:
+
+- **Switching one off takes effect immediately.** Its sidebar rows,
+  toolbar buttons, editor sections, background syncing and settings all
+  go at once. Switching it back on is just as immediate.
+- **A plugin you have not switched on is never even opened.** It costs
+  nothing at all, and can need things the app itself does not: with the
+  Google Tasks plugin off, Tasks loads no network code whatsoever.
+
+To add a plugin someone else wrote, copy its `.so` file — and its
+`.README.md`, if you want the link to work — into the plugins folder,
+then restart Tasks. The folder's location is shown in Settings, and can
+be changed there.
+
 ## Google Tasks sync
 
-Sign in once (see the [README](README.md) for the OAuth client setup
-if you built the app yourself); after that a periodic auto-sync runs
+> Provided by the **Google Tasks Sync** plugin. Switch it on in
+> *Settings → Plugins* first; see
+> [its README](src/plugins/gtasks/README.md) for the full reference.
+
+Sign in once (see
+[the plugin's README](src/plugins/gtasks/README.md) for the OAuth
+client setup if you built the app yourself); after that a periodic
+auto-sync runs
 while signed in, and *File → Sync Now* or the toolbar button run one
 on demand. The GUI stays live throughout — sync happens on a worker
 thread.
@@ -344,10 +390,14 @@ myaccount.google.com/permissions at any time.
 
 ## Notes action items
 
+> Provided by the **Notes Action Items Sync** plugin. Switch it on in
+> *Settings → Plugins* first; see
+> [its README](src/plugins/notes/README.md) for the full reference.
+
 If you keep meeting notes in
 [Notes](https://github.com/IANatCAMBIO/Records), its `!`
-action items can live here as **ordinary tasks**. Enable the
-integration in Settings and Tasks mirrors each item into a real list —
+action items can live here as **ordinary tasks**. Enable the mirror in
+Settings → Notes and Tasks files each item into a real list —
 the managed **Action Items** list by default, or any list you pick
 under "Mirror action items into".
 
