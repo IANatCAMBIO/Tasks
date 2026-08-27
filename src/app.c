@@ -5,7 +5,6 @@
 #include "app.h"
 #include "db.h"
 #include "editor_window.h"
-#include "bnsync.h"
 #include "backup.h"
 #include "task_worker.h"
 #include "plugin_loader.h"

@@ -27,7 +27,7 @@
  *   db             — open tasks database (owned; closed at shutdown).
  *   editors        — map of open editor windows keyed by task id
  *                    (gint64* keys, GtkWindow* values).  Notes action
- *                    items are ordinary tasks (see bnsync.h), so they
+ *                    items are ordinary tasks (the Notes plugin), so they
  *                    live in this map like everything else.
  *   library_window — the (single) library window, or NULL before startup.
  *   changed_l      — listeners for a FULL refresh (sidebar + task pane +
@@ -48,9 +48,6 @@
  *   sync_running   — TRUE while the Google Tasks sync worker is running
  *                    (main-thread flag; blocks a second concurrent sync).
  *   sync_timer     — the periodic auto-sync GSource id, or 0.
- *   bn_sync_running— the same guard for the Notes mirror pass, which
- *                    is a separate worker on its own schedule.
- *   bn_sync_timer  — the periodic Notes-mirror GSource id, or 0.
  *   backup_running — the same guard again for the optional rotating
  *                    backup (backup.h), a third worker on its own
  *                    schedule.
@@ -84,8 +81,6 @@ typedef struct TaskApp {
     guint            listener_next;      /* next subscription id            */
     gboolean         sync_running;
     guint            sync_timer;
-    gboolean         bn_sync_running;
-    guint            bn_sync_timer;
     gboolean         backup_running;     /* rotating-backup worker in flight */
     guint            backup_timer;       /* its periodic GSource, or 0      */
     GtkToolbarStyle  toolbar_style;

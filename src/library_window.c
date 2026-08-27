@@ -3,7 +3,6 @@
  * =========================================================================== */
 
 #include "library_window.h"
-#include "bnsync.h"
 #include "editor_window.h"
 #include "task_ops.h"
 #include "backup.h"

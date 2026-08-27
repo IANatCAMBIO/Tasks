@@ -228,6 +228,7 @@ static const TaskHostDb host_db = {
 
     .exec              = task_db_exec_sql,
     .exec_query        = task_db_exec_query,
+    .scalar            = task_db_scalar,
     .quote             = host_quote,
 
     .list_apply_remote       = task_db_list_apply_remote,
@@ -237,6 +238,8 @@ static const TaskHostDb host_db = {
     .list_emoji_if_empty     = task_db_list_emoji_if_empty,
     .tasks_in_list_all       = task_db_tasks_in_list_all,
     .insert_remote_tombstone = task_db_insert_remote_tombstone,
+
+    .task_apply_done_source  = task_db_task_apply_done_source,
 };
 
 /* --- workers, views, ops -------------------------------------------------- */
@@ -304,6 +307,7 @@ static const TaskHostUtil host_util = {
     .status_apply_done = task_status_apply_done,
     .due_from_ymd      = task_due_from_ymd,
     .due_format_iso    = task_due_format_iso,
+    .due_parse         = task_due_parse,
     .day_bounds        = task_day_bounds,
 };
 

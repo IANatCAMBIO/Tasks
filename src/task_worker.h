@@ -55,6 +55,15 @@ typedef enum {
  * literal and a file-static struct, in practice).
  *
  *   id               — short name, for diagnostics only.
+ *   sort             — run ORDER: lower goes first, and equal values keep
+ *                      registration order.  0 is the default and means
+ *                      "no preference", which is right for almost every
+ *                      worker.  It exists because one ordering is load-
+ *                      bearing and must not depend on which plugin the
+ *                      loader happened to open first: the Notes mirror
+ *                      runs BEFORE the Google sync, so a new action item
+ *                      is mirrored and then pushed on to Google by a
+ *                      single press of Sync rather than taking two.
  *   enabled_key      — config master switch; NULL means always enabled.
  *   enabled_default  — its default when the key is unset.
  *   interval_key     — config key holding the period in MINUTES; <= 0
@@ -77,6 +86,7 @@ typedef enum {
  * ------------------------------------------------------------------------- */
 typedef struct {
     const gchar      *id;
+    gint              sort;
     const gchar      *enabled_key;
     gboolean          enabled_default;
     const gchar      *interval_key;

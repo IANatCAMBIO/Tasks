@@ -102,7 +102,7 @@
  * measuring.
  * ------------------------------------------------------------------------- */
 #define TASK_PLUGIN_ABI_VERSION  1u
-#define TASK_PLUGIN_ABI_REVISION 5u
+#define TASK_PLUGIN_ABI_REVISION 6u
 
 /* The directory plugins are loaded from, relative to the executable.       */
 #define TASK_PLUGIN_DIR "plugins"
@@ -232,6 +232,11 @@ typedef struct {
                              gint (*cb)(gpointer d, gint n_cols,
                                         gchar **values, gchar **names),
                              gpointer user_data);
+    /* A one-value SELECT — since ABI 1.6.  Returns -1 when the statement
+     * could not run AT ALL, which is NOT the same as a count of zero: a
+     * plugin checking "how many rows still need pushing?" must be able
+     * to tell "none" from "the check never ran".                       */
+    gint64     (*scalar)(TaskDatabase *db, const gchar *sql);
     /* Quote a string as a SQL literal — sqlite3_mprintf's %Q, so a
      * plugin never hand-rolls escaping.  g_free the result.            */
     gchar      *(*quote)(const gchar *s);
@@ -256,6 +261,21 @@ typedef struct {
     /* A bare tombstone; the caller attaches its own identity to the id
      * this returns.                                                     */
     gint64      (*insert_remote_tombstone)(TaskDatabase *db, gint64 list_id);
+
+    /* --- since ABI 1.6: what a DONE-ONLY source needs ------------------
+     * Apply what a source with no third state reports about a task — its
+     * title, its due date, and whether it is done.  The status
+     * transition is the app's own rule (see util->status_apply_done),
+     * spelled as a CASE over the row's CURRENT status, so a New task
+     * survives a round trip through such a system instead of being
+     * promoted.  Stamps updated_at, so the change propagates on to
+     * anything else watching the row.
+     *
+     * The source's own bookkeeping — what it last knew, for diffing —
+     * is NOT here.  That belongs to the plugin, in its own table.      */
+    void        (*task_apply_done_source)(TaskDatabase *db, gint64 id,
+                                          const gchar *title, gboolean done,
+                                          gint64 due);
 } TaskHostDb;
 
 /* ---------------------------------------------------------------------------
@@ -403,6 +423,10 @@ typedef struct {
     /* Dates, in the app's spellings.                                  */
     gint64  (*due_from_ymd)(gint y, gint m, gint d);
     gchar  *(*due_format_iso)(gint64 due);
+    /* The inverse — since ABI 1.6.  Parses the app's accepted spellings
+     * (an ISO date among them); 0 for anything it cannot read, which is
+     * also what "no date" is.                                          */
+    gint64  (*due_parse)(const gchar *text);
     void    (*day_bounds)(gint offset_days, gint64 *lo, gint64 *hi);
 } TaskHostUtil;
 

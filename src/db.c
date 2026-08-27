@@ -420,8 +420,7 @@ task_db_open(const gchar *path, GError **err)
         "  position     INTEGER NOT NULL DEFAULT 0,"
         "  updated_at   INTEGER NOT NULL DEFAULT 0,"
         "  deleted      INTEGER NOT NULL DEFAULT 0,"
-        "  completed_at INTEGER NOT NULL DEFAULT 0,"
-        "  status       INTEGER NOT NULL DEFAULT 0)");
+        "  completed_at INTEGER NOT NULL DEFAULT 0)");
     exec(db,
         "CREATE TABLE IF NOT EXISTS attachments ("
         "  id         INTEGER PRIMARY KEY,"
@@ -433,27 +432,13 @@ task_db_open(const gchar *path, GError **err)
         "CREATE TABLE IF NOT EXISTS sync_state ("
         "  key   TEXT PRIMARY KEY,"
         "  value TEXT)");
-    exec(db,
-        /* Integration-owned side tables, keyed by the row they describe.
-         * They live here rather than in the sync's own code ONLY because
-         * the v8 migration below has to have somewhere to copy into; when
-         * the Google sync becomes a plugin it creates these from its
-         * db_open hook and this block goes.
-         *
-         * ON DELETE CASCADE so purging a task cannot leave its remote
-         * identity behind to be matched against later.                   */
-        "CREATE TABLE IF NOT EXISTS gtasks_list ("
-        "  list_id   INTEGER PRIMARY KEY REFERENCES lists(id)"
-        "            ON DELETE CASCADE,"
-        "  gtasks_id TEXT);"
-        "CREATE TABLE IF NOT EXISTS gtasks_task ("
-        "  task_id   INTEGER PRIMARY KEY REFERENCES tasks(id)"
-        "            ON DELETE CASCADE,"
-        "  gtasks_id TEXT,"
-        "  etag      TEXT,"
-        "  web_link  TEXT,"
-        "  glinks    TEXT,"
-        "  assigned  TEXT)");
+    /* NO integration-owned tables here.  A side table belongs to whatever
+     * owns the integration, and every one of them is now a plugin that
+     * creates its own from its db_open hook (see plugin.h).  The two
+     * MIGRATIONS below still name those tables — they have to, because a
+     * migration moves data that already exists whether or not the plugin
+     * that will read it is installed — so each one creates what it needs
+     * itself rather than relying on a block up here.                     */
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
              "ON tasks(list_id, parent_id, position)");
 
@@ -524,6 +509,23 @@ task_db_open(const gchar *path, GError **err)
      * ----------------------------------------------------------------- */
     if (uv > 0 && uv < 8) {
         gboolean copied =
+            /* The destinations are created HERE rather than in the schema
+             * block above: the Google sync is a plugin and owns them, and
+             * this migration must still run on a database whose owner is
+             * not installed.  IF NOT EXISTS because the plugin's own
+             * db_open may have created them already.                     */
+            exec(db, "CREATE TABLE IF NOT EXISTS gtasks_list ("
+                     "  list_id   INTEGER PRIMARY KEY REFERENCES lists(id)"
+                     "            ON DELETE CASCADE,"
+                     "  gtasks_id TEXT)") &&
+            exec(db, "CREATE TABLE IF NOT EXISTS gtasks_task ("
+                     "  task_id   INTEGER PRIMARY KEY REFERENCES tasks(id)"
+                     "            ON DELETE CASCADE,"
+                     "  gtasks_id TEXT,"
+                     "  etag      TEXT,"
+                     "  web_link  TEXT,"
+                     "  glinks    TEXT,"
+                     "  assigned  TEXT)") &&
             exec(db, "INSERT OR REPLACE INTO gtasks_list (list_id, gtasks_id)"
                      "  SELECT id, gtasks_id FROM lists"
                      "   WHERE gtasks_id IS NOT NULL") &&

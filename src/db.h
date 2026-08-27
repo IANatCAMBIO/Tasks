@@ -8,26 +8,23 @@
  *
  *   list_groups  id, name, position              (local-only; never synced)
  *   lists        id, name, emoji, position, group_id (FK → list_groups.id;
- *                NULL = ungrouped), gtasks_id, updated_at, deleted
+ *                NULL = ungrouped), updated_at, deleted
  *   tasks        id, list_id, parent_id (NULL = top-level; ONE level of
  *                nesting only — a subtask can never be a parent),
  *                title, notes, due (unix local midnight; 0 = none),
  *                status (TaskStatus), pinned, priority (local-only;
- *                sorts first in every view), position, gtasks_id,
- *                updated_at, deleted, completed_at, etag, web_link,
- *                glinks, assigned,
- *                bn_uid (Notes action-item identity; 0 = ordinary
- *                task), bn_done, bn_due (the last state Notes held —
- *                the baseline the bulk push diffs against)
+ *                sorts first in every view), position, updated_at,
+ *                deleted, completed_at
  *   attachments  id, task_id, path, added_at   (local-only; never synced)
  *   sync_state   key, value                    (e.g. "last_sync")
- *   bn_deleted   uid                           (mirror tasks deleted in
- *                                               Tasks; suppresses the
- *                                               re-create.  Written by
- *                                               the Notes mirror's own
- *                                               delete hook, not by
- *                                               task_db_task_delete —
- *                                               see task_db_add_delete_hook)
+ *
+ * NOTHING belonging to a particular INTEGRATION is here.  A sync's
+ * per-row state — a remote id, an etag, the baseline a done-only source
+ * was last known to hold — lives in a SIDE TABLE keyed by row id, owned
+ * and created by whichever plugin the integration is (v8 moved the
+ * Google columns out, v9 the Notes ones).  The plugin registers a delete
+ * hook when its own bookkeeping has to ride inside task_db_task_delete's
+ * transaction — see task_db_add_delete_hook.
  *
  * Deletion is a SOFT flag everywhere (`deleted` = tombstone): the Google
  * Tasks sync needs to see "this existed and was deleted locally" to

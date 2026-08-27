@@ -5,7 +5,6 @@
 #include "settings_window.h"
 #include "db.h"
 #include "plugin_loader.h"
-#include "bnsync.h"
 #include "backup.h"
 #include "library_window.h"
 #include <string.h>
@@ -17,12 +16,6 @@ typedef struct {
     TaskApp     *app;
     gchar     *db_path;
     GtkWidget *window;
-    GtkWidget *bn_check;             /* Notes mirror master switch        */
-    GtkWidget *bn_cli_entry;         /* Notes command path                */
-    GtkWidget *bn_embed_combo;       /* list mirrored items are filed into  */
-    GArray    *bn_embed_ids;         /* combo index → list id (0 = managed) */
-    GtkWidget *bn_interval_spin;     /* mirror pass interval, minutes       */
-    GtkWidget *bn_meta_check;        /* sidebar Action Items view toggle    */
     gboolean   loading;              /* suppress write-through on load      */
 } TaskSettings;
 
@@ -30,118 +23,6 @@ static TaskSettings *settings = NULL;  /* the singleton, or NULL            */
 
 #define SETTINGS_WIDTH 470           /* window width AND the width the      */
                                      /* column's height is measured at      */
-
-/* on_bn_toggled() — the Notes enable checkbox: persist, then re-arm
- * the mirror timer (switching ON runs a pass immediately, which is what
- * populates the mirror; switching OFF stops the timer).                    */
-static void
-on_bn_toggled(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    gboolean on = gtk_toggle_button_get_active(
-        GTK_TOGGLE_BUTTON(sw->bn_check));
-    task_app_config_set("notes_sync", on ? "1" : "0");
-    task_bnsync_auto_start(sw->app, sw->db_path);
-    task_app_notify_changed(sw->app);
-}
-
-/* on_bn_interval_changed() — write-through + re-arm the mirror timer.      */
-static void
-on_bn_interval_changed(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    gchar *v = g_strdup_printf("%d", gtk_spin_button_get_value_as_int(
-        GTK_SPIN_BUTTON(sw->bn_interval_spin)));
-    task_app_config_set("notes_sync_interval_min", v);
-    g_free(v);
-    task_bnsync_auto_start(sw->app, sw->db_path);
-}
-
-/* on_bn_meta_toggled() — show/hide the sidebar's Action Items view.        */
-static void
-on_bn_meta_toggled(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    task_app_config_set("notes_meta_row",
-        gtk_toggle_button_get_active(
-            GTK_TOGGLE_BUTTON(sw->bn_meta_check)) ? "1" : "0");
-    task_app_notify_changed(sw->app);
-}
-
-/* on_bn_embed_changed() — which list mirrored action items live in.
- * Persists the choice, MOVES the existing items there (the setting
- * names where they live, not merely where the next one lands), and
- * runs a pass so the change is visible immediately.  A per-task move
- * made by hand still sticks until this setting is touched again.           */
-static void
-on_bn_embed_changed(GtkComboBox *combo, gpointer data)
-{
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    gint active = gtk_combo_box_get_active(combo);
-    if (active < 0 || active >= (gint)sw->bn_embed_ids->len)
-        return;
-    gint64 id = g_array_index(sw->bn_embed_ids, gint64, active);
-    if (id == 0) {
-        task_app_config_set("notes_embed_list", NULL);
-    } else {
-        gchar *v = g_strdup_printf("%" G_GINT64_FORMAT, id);
-        task_app_config_set("notes_embed_list", v);
-        g_free(v);
-    }
-    task_bnsync_reconcile_target(sw->app);
-    if (task_app_config_get_bool("notes_sync", FALSE))
-        task_bnsync_start(sw->app, sw->db_path, NULL, NULL);
-    task_app_notify_changed(sw->app);
-}
-
-/* on_bn_cli_changed() — the CLI path entry: persist ONLY.  The mirror
- * pass happens on commit (focus-out/Enter) — running it per keystroke
- * would spawn the half-typed command over and over.                        */
-static void
-on_bn_cli_changed(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    const gchar *cli = gtk_entry_get_text(GTK_ENTRY(sw->bn_cli_entry));
-    task_app_config_set("notes_cli", *cli != '\0' ? cli : NULL);
-}
-
-/* on_bn_cli_commit() — Enter in the CLI path entry: run a mirror pass
- * against the newly named binary so a wrong path reports itself now
- * rather than at the next tick.                                            */
-static void
-on_bn_cli_commit(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    if (task_app_config_get_bool("notes_sync", FALSE))
-        task_bnsync_start(sw->app, sw->db_path, NULL, NULL);
-    task_app_notify_changed(sw->app);
-}
-
-/* on_bn_cli_focus_out() — leaving the CLI path entry: commit now.          */
-static gboolean
-on_bn_cli_focus_out(GtkWidget *w, GdkEventFocus *event, gpointer data)
-{
-    (void)event;
-    on_bn_cli_commit(w, data);
-    return FALSE;                    /* propagate                           */
-}
 
 /* on_bold_titles_toggled() — Appearance: bold task titles on/off,
  * applied live (the task pane re-renders its markup).                      */
@@ -450,8 +331,6 @@ on_settings_destroy(GtkWidget *w, gpointer data)
     TaskSettings *sw = data;
     if (settings == sw)
         settings = NULL;
-    if (sw->bn_embed_ids != NULL)
-        g_array_free(sw->bn_embed_ids, TRUE);
     g_free(sw->db_path);
     g_free(sw);
 }
@@ -1013,118 +892,11 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
                      G_CALLBACK(on_integrity_check_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), integrity_check, FALSE, FALSE, 0);
 
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 2);
-
-    /* --- Notes ------------------------------------------------------------ */
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Notes"),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
-        "Mirror the action items from Notes as ordinary tasks, with "
-        "their own notes, subtasks and attachments. Ticking one off or "
-        "changing its due date is sent back to Notes on the interval "
-        "below; the item's text belongs to the note it lives in, so "
-        "edit that in Notes."),
-        FALSE, FALSE, 0);
-    sw->bn_check = gtk_check_button_new_with_label(
-        "Mirror Notes action items");
-    g_signal_connect(sw->bn_check, "toggled",
-                     G_CALLBACK(on_bn_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), sw->bn_check, FALSE, FALSE, 0);
-
-    GtkWidget *bn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_box_pack_start(GTK_BOX(bn_row),
-                       gtk_label_new("Notes command:"),
-                       FALSE, FALSE, 0);
-    sw->bn_cli_entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(sw->bn_cli_entry),
-                                   "notes (searched on PATH)");
-    gtk_widget_set_hexpand(sw->bn_cli_entry, TRUE);
-    g_signal_connect(sw->bn_cli_entry, "changed",
-                     G_CALLBACK(on_bn_cli_changed), sw);
-    g_signal_connect(sw->bn_cli_entry, "activate",
-                     G_CALLBACK(on_bn_cli_commit), sw);
-    g_signal_connect(sw->bn_cli_entry, "focus-out-event",
-                     G_CALLBACK(on_bn_cli_focus_out), sw);
-    gtk_box_pack_start(GTK_BOX(bn_row), sw->bn_cli_entry, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), bn_row, FALSE, FALSE, 0);
-
-    /* Which real list the mirrored tasks are filed into.  0 = let the
-     * mirror manage its own "Action Items" list, created on first use.     */
-    GtkWidget *embed_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_box_pack_start(GTK_BOX(embed_row),
-                       gtk_label_new("Mirror action items into:"),
-                       FALSE, FALSE, 0);
-    sw->bn_embed_combo = gtk_combo_box_text_new();
-    sw->bn_embed_ids = g_array_new(FALSE, FALSE, sizeof(gint64));
-    gint64 own = 0;
-    g_array_append_val(sw->bn_embed_ids, own);
-    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(sw->bn_embed_combo),
-                                   "Action Items (managed list)");
-    gchar *embed_v = task_app_config_get("notes_embed_list");
-    gint64 embed_id = embed_v != NULL
-                      ? g_ascii_strtoll(embed_v, NULL, 10) : 0;
-    g_free(embed_v);
-    gint embed_active = 0;           /* combo index to preselect            */
-    GPtrArray *lists = task_db_lists(app->db, FALSE);
-    for (guint i = 0; i < lists->len; i++) {
-        TaskList *l = g_ptr_array_index(lists, i);
-        gchar *label = *l->emoji != '\0'
-            ? g_strdup_printf("%s  %s", l->emoji, l->name)
-            : g_strdup(l->name);
-        gtk_combo_box_text_append_text(
-            GTK_COMBO_BOX_TEXT(sw->bn_embed_combo), label);
-        g_free(label);
-        g_array_append_val(sw->bn_embed_ids, l->id);
-        if (l->id == embed_id)
-            embed_active = (gint)sw->bn_embed_ids->len - 1;
-    }
-    task_ptr_array_free_lists(lists);
-    gtk_combo_box_set_active(GTK_COMBO_BOX(sw->bn_embed_combo),
-                             embed_active);
-    gtk_widget_set_tooltip_text(sw->bn_embed_combo,
-        "Action items live here \xe2\x80\x94 changing this moves the "
-        "existing ones too");
-    g_signal_connect(sw->bn_embed_combo, "changed",
-                     G_CALLBACK(on_bn_embed_changed), sw);
-    gtk_box_pack_start(GTK_BOX(embed_row), sw->bn_embed_combo,
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), embed_row, FALSE, FALSE, 0);
-
-    /* How often the mirror runs — the same shape the Google sync's own
-     * (0 = only when Sync is pressed).                                     */
-    GtkWidget *bn_iv_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    gtk_box_pack_start(GTK_BOX(bn_iv_row),
-                       gtk_label_new("Sync action items every"),
-                       FALSE, FALSE, 0);
-    sw->bn_interval_spin = gtk_spin_button_new_with_range(0, 720, 1);
-    gtk_widget_set_tooltip_text(sw->bn_interval_spin,
-        "0 = only when you press Sync");
-    g_signal_connect(sw->bn_interval_spin, "value-changed",
-                     G_CALLBACK(on_bn_interval_changed), sw);
-    gtk_box_pack_start(GTK_BOX(bn_iv_row), sw->bn_interval_spin,
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(bn_iv_row), gtk_label_new("minutes"),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), bn_iv_row, FALSE, FALSE, 0);
-
-    sw->bn_meta_check = gtk_check_button_new_with_label(
-        "Show the Action Items view in the sidebar");
-    gtk_widget_set_tooltip_text(sw->bn_meta_check,
-        "Lists every mirrored action item in one place, whichever list "
-        "each one lives in");
-    g_signal_connect(sw->bn_meta_check, "toggled",
-                     G_CALLBACK(on_bn_meta_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), sw->bn_meta_check, FALSE, FALSE, 0);
-
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 2);
-
     /* --- Contributed sections ----------------------------------------------- */
-    /* After the app's own, in registration order, each separated from the
-     * last exactly as the built-in sections are.                          */
+    /* After the app's own, in registration order.  The rule is packed by
+     * the LOOP, not before it: each section then gets exactly one, and
+     * none dangles under the last built-in section when nothing has
+     * registered.                                                        */
     for (GSList *n = sections; n != NULL; n = n->next) {
         Section *sec = n->data;
         gtk_box_pack_start(GTK_BOX(vbox),
@@ -1133,19 +905,6 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
         sec->fn(app, vbox, GTK_WINDOW(sw->window), sec->user_data);
     }
 
-    /* --- Load current values ------------------------------------------------ */
-    gchar *bnc = task_app_config_get("notes_cli");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_check),
-        task_app_config_get_bool("notes_sync", FALSE));
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sw->bn_meta_check),
-        task_app_config_get_bool("notes_meta_row", TRUE));
-    gchar *bniv = task_app_config_get("notes_sync_interval_min");
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->bn_interval_spin),
-                              bniv != NULL ? g_ascii_strtod(bniv, NULL) : 5);
-    g_free(bniv);
-    if (bnc != NULL)
-        gtk_entry_set_text(GTK_ENTRY(sw->bn_cli_entry), bnc);
-    g_free(bnc);
     sw->loading = FALSE;
 
     g_signal_connect(sw->window, "destroy",

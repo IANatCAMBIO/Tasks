@@ -12,7 +12,27 @@ task_worker_register(const TaskWorkerDef *def)
 {
     if (def == NULL || def->run == NULL || def->timer == NULL)
         return;
-    workers = g_slist_append(workers, (gpointer)def);
+    /* Insert by `sort`, keeping registration order among equals: walk
+     * PAST every worker that sorts the same, so the common sort == 0
+     * case still appends and reads as the order the calls were made in.
+     * g_slist_insert_sorted would not do — it stops at the first EQUAL
+     * element and inserts before it, silently reversing same-sort
+     * workers.                                                          */
+    GSList *prev = NULL;
+    for (GSList *n = workers; n != NULL; n = n->next) {
+        if (((const TaskWorkerDef *)n->data)->sort > def->sort)
+            break;
+        prev = n;
+    }
+    if (prev == NULL)
+        workers = g_slist_prepend(workers, (gpointer)def);
+    else
+        /* prev is not the head, so the list head cannot change here —
+         * but take the return value anyway: g_slist_insert_before is
+         * warn_unused_result, and discarding it is exactly the mistake
+         * the attribute is there to catch.                             */
+        workers = g_slist_insert_before(workers, prev->next,
+                                        (gpointer)def);
 }
 
 /* ---------------------------------------------------------------------------

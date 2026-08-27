@@ -3,7 +3,7 @@
  * =========================================================================== */
 
 #include "bnotes.h"
-#include "app.h"
+#include "plugin_ctx.h"
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@
 static gchar *
 task_bnotes_cli_path(void)
 {
-    gchar *configured = task_app_config_get("notes_cli");
+    gchar *configured = host->config->get(self, "cli");
     if (configured != NULL) {
         if (g_file_test(configured, G_FILE_TEST_IS_EXECUTABLE))
             return configured;
@@ -130,7 +130,7 @@ task_bnotes_actions(gchar **err)
             TaskNoteAction *na = g_new0(TaskNoteAction, 1);
             na->uid  = uid;
             na->done = strcmp(f[2], "[x]") == 0;
-            na->due  = task_due_parse(f[3]);     /* "-" parses to 0         */
+            na->due  = host->util->due_parse(f[3]);  /* "-" parses to 0      */
             na->text = g_strdup(f[4]);
             g_ptr_array_add(items, na);
         }
@@ -177,7 +177,8 @@ task_bnotes_action_set_due(gint64 uid, gint64 due, gchar **err)
     *err = NULL;
     gchar *tok  = g_strdup_printf("%" G_GINT64_FORMAT, uid);
     /* ISO date, or "-" to clear.                                           */
-    gchar *date = due == 0 ? g_strdup("-") : task_due_format_iso(due);
+    gchar *date = due == 0 ? g_strdup("-")
+                           : host->util->due_format_iso(due);
     gboolean ok = run_cli("action", "due", tok, date, NULL, err);
     g_free(date);
     g_free(tok);

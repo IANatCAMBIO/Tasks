@@ -120,7 +120,7 @@ editor_status_get(TaskEditor *ed)
  *
  * A mirrored Notes item saves exactly like any other task: its status
  * and due land in the database, and the next mirror pass carries them
- * to Notes in bulk (bnsync.h) — flattened there to the done flag Notes
+ * to Notes in bulk (the Notes plugin) — flattened there to the done flag Notes
  * understands.  The editor no longer shells the CLI per
  * keystroke-debounce, which is what made every autosave wait on a
  * process spawn.

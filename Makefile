@@ -99,8 +99,6 @@ SRCS     := src/main.c \
             src/task_rows.c \
             src/task_ui.c \
             src/core_views.c \
-            src/bnotes.c \
-            src/bnsync.c \
             src/db.c \
             src/backup.c \
             src/library_window.c \

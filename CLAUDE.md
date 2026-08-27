@@ -107,19 +107,25 @@ the user).  A logic test harness lives in the session scratchpad
 
 | File | Purpose |
 |---|---|
-| `src/main.c` | GtkApplication entry; config → curl_global_init → db → oauth snapshot → window → auto-sync; icon-theme path for HiDPI expanders |
+| `src/main.c` | GtkApplication entry; config → db → registries → plugins → window; icon-theme path for HiDPI expanders |
 | `src/app.[ch]` | Shared `TaskApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
 | `src/backup.[ch]` | OPTIONAL rotating db backups: own worker + connection, VACUUM INTO + verify, bounded rotation; off by default |
-| `src/db.[ch]` | SQLite schema (user_version 7) + CRUD; `TaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
+| `src/db.[ch]` | SQLite schema (user_version 9) + CRUD; `TaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, Kanban board, multi-select context menu, status bar |
-| `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); Status dropdown; read-only "From Google" section |
-| `src/settings_window.[ch]` | Singleton settings: sync master switch, sign in/out, auto-sync interval, Notes integration, toolbar style, native menubar |
-| `src/oauth.[ch]` | OAuth 2.0 installed-app flow: PKCE + loopback listener; refresh token in ini; access tokens in memory |
-| `src/gtasks.[ch]` | Two-way sync engine + move/clear worker jobs |
-| `src/bnotes.[ch]` | Notes CLI wrapper — CLI ONLY, never its database; parses `action list --uid` |
-| `src/bnsync.[ch]` | Notes action-item mirror: worker-thread pass, bulk write-back, uid identity |
-| `src/http.[ch]` | libcurl wrapper (blocking; worker threads only) |
-| `src/json.[ch]` | Minimal JSON parser/serializer (no external JSON dep) |
+| `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); Status dropdown; plugin-contributed sections |
+| `src/settings_window.[ch]` | Singleton settings: appearance, database, Plugins list; contributed sections |
+| `src/plugin.[h]` / `src/plugin_loader.[ch]` | The plugin ABI and the loader: the `TaskHostApi` table, `dlopen`, enable keys |
+| `src/task_view.[ch]`, `src/task_ops.[ch]`, `src/task_worker.[ch]`, `src/task_rows.[ch]`, `src/task_ui.[ch]` | The registries a plugin contributes through: sidebar views, core ops + hooks, the one scheduler, row rendering + decorations, window chrome |
+| `src/core_views.c` | The app's OWN sidebar views (Favorites, All Tasks, Due Today) — registered through the same registry a plugin uses |
+
+### Plugins (`src/plugins/<id>/` or `src/plugins/<id>.c` → `plugins/<id>.so`)
+
+| Plugin | Purpose |
+|---|---|
+| `gtasks/` | Google Tasks: two-way sync engine, OAuth (PKCE + loopback), libcurl HTTP wrapper, minimal JSON parser.  Owns `gtasks_list` / `gtasks_task`.  Brings its OWN libcurl (`deps.mk`) |
+| `notes/` | Notes action-item mirror: worker-thread pass, bulk write-back, uid identity, `notes.c` + the `bnotes.c` CLI wrapper.  Owns `notes_task` / `notes_deleted` |
+| `forecast.c` | Weekly Forecast panel |
+| `overdue.c` | Overdue sidebar view — the small worked example |
 | `icons/` | Curated toolbar images directly in icons/ (icon names are extension-less basenames — the loader tries `.png` then `.svg`, case-exact for Linux; spares live in `icons/Unused/`) |
 | `icons/theme/hicolor/` | Bundled SVG `pan-*-symbolic` arrows → crisp HiDPI tree expanders (needs librsvg loader) |
 
@@ -858,10 +864,21 @@ are the post-mortem; none of them is optional.
 
 ## Sync architecture (Google Tasks)
 
+**This is a PLUGIN** — `src/plugins/gtasks/`, built to `plugins/gtasks.so`
+and reaching the app only through the `TaskHostApi` table.  The core does
+not name it, and does not link libcurl for it: the plugin asks for that
+itself in its own `deps.mk`, which is checkable with `ldd tasks` /
+`otool -L tasks`.  Everything below is how the sync BEHAVES; none of it
+is core code any more.
+
 - Worker thread with its OWN SQLite connection (a connection never
-  crosses threads); status/completion marshalled with g_idle_add;
-  `curl_global_init` happens in main() BEFORE any thread exists.
-- Identity: rows carry `gtasks_id` + `etag` + `updated_at`; deletes are
+  crosses threads); status/completion marshalled through
+  `host->notify->invoke_main`; `curl_global_init` happens in the
+  plugin's `task_plugin_entry` BEFORE any worker of its own exists.
+- Identity: `gtasks_task` / `gtasks_list` (schema v8) carry `gtasks_id` +
+  `etag` against the row id, and the row's own `updated_at` says when it
+  changed.  The tables are the PLUGIN's, created from its `db_open`
+  hook; nothing about Google is on a core row.  Deletes are
   tombstones until pushed, then purged.  `sync_state.last_sync` = the
   START time of the last successful pass.
 - Incremental: after the first full pass, task fetches use
@@ -931,11 +948,22 @@ are the post-mortem; none of them is optional.
 
 ## Notes integration (the action-item MIRROR)
 
+**This is a PLUGIN** — `src/plugins/notes/`, built to `plugins/notes.so`.
+`notes.c` is the mirror, `bnotes.c` the CLI wrapper; they share one host
+table and one identity through `plugin_ctx.h`.  It owns `notes_task`
+(uid + the done/due BASELINE) and `notes_deleted`, created from its
+`db_open` hook — schema v9 moved them off the task row.
+
 Rewritten 2026-08-05: action items are no longer a special row type.
 Each one is MIRRORED as an ordinary task, so it carries notes,
 subtasks, attachments, a pin and a priority like anything else — and,
-living in a real list, it syncs on to Google Tasks too.  `bnotes.[ch]`
-is now just the CLI wrapper; `bnsync.[ch]` is the sync.
+living in a real list, it syncs on to Google Tasks too.
+
+The mirror's worker declares `sort = -10` so it runs BEFORE the Google
+sync: one press of Sync then carries a new action item all the way to
+Google rather than taking two.  Registration order would otherwise
+decide it, and that is whatever order the plugin loader's directory read
+happened to return.
 
 - ALL access via the `notes` CLI (`action list --uid`, `action
   done/undone/due`), NEVER its database file — Notes' GUI/CLI
@@ -1127,3 +1155,28 @@ is now just the CLI wrapper; `bnsync.[ch]` is the sync.
     `CAIRO_OPERATOR_SOURCE` before `cairo_paint_with_alpha`.  Guard the
     clear on `gdk_screen_is_composited` — without a compositor it lands
     as BLACK, so paint opaque there instead.
+21. **TEST A FRESH DATABASE, not just the one on this machine.**  The
+    `CREATE TABLE tasks` in `task_db_open` declared `status` TWICE (the
+    v7 column plus a leftover appended copy).  SQLite rejects the whole
+    statement on `duplicate column name`, so **every brand-new database
+    came up with no `tasks` table at all** — found 2026-08-26 while
+    verifying the plugin port, having survived several commits.  It was
+    invisible for the exact reason gotcha 16 is invisible in reverse:
+    `IF NOT EXISTS` on an EXISTING file is a no-op, so every developer
+    machine and every real user database sailed past it, and only a
+    first run could ever hit it.  The error discipline did its job —
+    `exec()` logged sqlite's own message and the follow-on `CREATE INDEX`
+    logged "no such table: main.tasks" — but nobody was running a fresh
+    file to read them.  When touching the schema block, make an empty
+    database and open it (a zero-byte `tasks.db` skips the first-run
+    dialog and exercises the create path), then check
+    `PRAGMA table_info(tasks)` and the log for warnings.  "It opened" is
+    not "it is intact" applies to a NEW file just as much as to a copy.
+22. A plugin's SIDE TABLE is created twice on purpose, and both are
+    right.  The plugin's `db_open` hook creates it because a database
+    that never had the old columns still needs it; the MIGRATION in
+    db.c creates it because it must move existing data whether or not
+    that plugin is installed.  `IF NOT EXISTS` makes the pair harmless.
+    What must NOT happen is the core schema block creating it — that is
+    the app declaring a table it knows nothing about, and it was
+    removed when Google Tasks became a plugin.

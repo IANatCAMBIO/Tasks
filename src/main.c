@@ -3,15 +3,17 @@
  *
  * A GTK3 + SQLite task-list application in plain C — the companion app to
  * Notes.  Boot order: config (needs argv[0] for the portable ini) →
- * database → OAuth credential snapshot → GtkApplication → library window
- * → periodic Google Tasks auto-sync.
+ * database → the app's own registries → plugins (which register their
+ * views, workers and settings) → GtkApplication → library window → the
+ * shared scheduler arms every registered worker.
+ *
+ * Nothing here knows about Google Tasks or Notes.  Both are plugins.
  * =========================================================================== */
 
 #include <gtk/gtk.h>
 #include <sqlite3.h>
 #include "app.h"
 #include "db.h"
-#include "bnsync.h"
 #include "backup.h"
 #include "task_worker.h"
 #include "core_views.h"
@@ -270,9 +272,11 @@ main(int argc, char **argv)
     /* Config first: everything else may read it.                           */
     task_app_config_init(argc > 0 ? argv[0] : NULL);
 
-    /* libcurl's global init is NOT thread-safe when left to the first
-     * curl_easy_init — and ours happen on sync/OAuth worker threads,
-     * possibly concurrently.  Initialize once before any thread exists.    */
+    /* NOTE there is no curl_global_init here any more, and no other
+     * library's either.  A dependency belongs to whatever needs it: the
+     * Google Tasks plugin does its own from `task_plugin_entry`, which
+     * is before any worker of its own can exist — the same guarantee
+     * this spot used to give, made by the code that actually cares.     */
 
     gchar *db_dir  = task_app_config_get("db_dir");
     gchar *db_path = task_db_resolve_path(db_dir);
@@ -326,7 +330,6 @@ main(int argc, char **argv)
      * app's own in-flight flag and GSource id.                          */
 
     task_core_views_init();          /* the app's own sidebar views first  */
-    task_bnsync_init(app);
     task_backup_init(app);
 
     /* Plugins load LAST of the registrants but still before the window:

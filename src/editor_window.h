@@ -16,7 +16,7 @@
  * editor autosave): every change lands in the database within ~600 ms
  * and the library refreshes.  Closing the window flushes a pending save.
  * A task mirroring a Notes action item is no different here — its
- * status and due reach Notes with the next mirror pass (bnsync.h),
+ * status and due reach Notes with the next mirror pass (the Notes plugin),
  * never from this window, and Notes sees only whether the status is
  * Done.
  *
