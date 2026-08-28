@@ -110,9 +110,10 @@ the user).  A logic test harness lives in the session scratchpad
 | `src/main.c` | GtkApplication entry; config → db → registries → plugins → window; icon-theme path for HiDPI expanders |
 | `src/app.[ch]` | Shared `TaskApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
 | `src/backup.[ch]` | OPTIONAL rotating db backups: own worker + connection, VACUUM INTO + verify, bounded rotation; off by default |
-| `src/db.[ch]` | SQLite schema (user_version 9) + CRUD; `TaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
+| `src/db.[ch]` | SQLite schema (user_version 10) + CRUD; `TaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
+| `src/recur.[ch]` | Recurring tasks: presets, GDateTime schedule arithmetic, and the periodic pass — the ONE core worker that runs on the main thread |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, Kanban board, multi-select context menu, status bar |
-| `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); Status dropdown; plugin-contributed sections |
+| `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); Status dropdown; the Recurrence block; plugin-contributed sections |
 | `src/settings_window.[ch]` | Singleton settings: appearance, database, Plugins list; contributed sections |
 | `src/plugin.[h]` / `src/plugin_loader.[ch]` | The plugin ABI and the loader: the `TaskHostApi` table, `dlopen`, enable keys |
 | `src/task_view.[ch]`, `src/task_ops.[ch]`, `src/task_worker.[ch]`, `src/task_rows.[ch]`, `src/task_ui.[ch]` | The registries a plugin contributes through: sidebar views, core ops + hooks, the one scheduler, row rendering + decorations, window chrome |
@@ -141,7 +142,14 @@ the user).  A logic test harness lives in the session scratchpad
   `~/.config/tasks/` when unwritable; seeded from
   `tasks.ini.defaults`; loaded ONCE, written through on change,
   never re-read.  Everything except the OAuth client keys and the
-  window geometry is editable in File → Settings….
+  window geometry is editable in File → Settings… — which is why the
+  recurrence pass has a Settings → Recurring Tasks section of its own
+  (`recur_enabled`, `recur_check_min`) even though the schedules
+  themselves live on the task row and are edited in the editor.  Both
+  handlers RE-ARM the worker rather than only writing the key: a timer
+  already installed carries the old interval, so writing the setting
+  alone would leave it taking effect at the NEXT LAUNCH, which reads as
+  "the setting does nothing".
   The ini GROUP NAME is `[tasks]` and it is part of the file format —
   the app reads only that group.  There are no config migrations: this
   build has never shipped, so no other spelling exists in the wild.
@@ -216,8 +224,28 @@ already there.  On a FULL listing nothing is sent, because `differs`
 compares done-ness and finds none.  Don't "optimize" this back into a
 conditional bump.
 
-`completed_at` is stamped on ENTERING Done and cleared on leaving; an
-already-Done task keeps its first stamp.
+**`completed_at` is stamped on ENTERING Done and NOTHING ever clears
+it** — it answers "when was this LAST completed?", and that stays true
+after someone reopens the task.  An already-Done task keeps its stamp;
+re-completing moves it forward.  The stamp is therefore MONOTONIC, and
+that one sentence is the whole rule across all five writers:
+`task_db_task_update` and `task_db_task_set_status` share a CASE that
+stamps only on the transition IN; `task_db_task_apply_done_source`
+(Notes) does the same; `task_db_task_recur_apply` does not name the
+column at all, because reopening a task for its next repeat does not
+un-complete the last one; and `task_db_task_apply_remote` MERGES with
+`MAX(completed_at, ?)` instead of assigning.  That last one is the
+subtle path: every remote source reports 0 for anything it does not
+currently consider done, so a plain assignment let a Google un-tick
+erase local history Google never knew about — a newer remote completion
+still wins, which is the only case where the remote knows better.
+Two consequences: the editor shows the stamp for ANY task that has one,
+reading "Completed <date>" while Done and "Last completed <date>" once
+reopened (`COMPLETED_LABEL_DONE`/`_PAST` — say what is true of the
+CURRENT state, the same rule the View menu's labels follow), and the
+task list's Completion Date column now shows a date on reopened rows
+too.  It was cleared on leaving Done until 2026-08-27; history erased
+before that is gone and cannot be recovered.
 
 **A completed SUBTASK starts its parent**: `parent_started()` in db.c
 moves the parent New → In Progress, and every write path that can
@@ -575,7 +603,24 @@ with the resync removed the parent comes back as New ~600 ms later.
   own — TWO rows, because the window asks for 490 px and takes its
   NATURAL height, so an over-wide row would silently widen every editor
   while an extra row costs one row of height (measured 307 → 335
-  folded).  The combo's rows are the `TaskStatus` values IN ORDER, so
+  folded).  That second row also carries the read-only **completion
+  date** at its right end (`editor_completed_refresh`, dimmed with Pango
+  alpha): the space beside two checkboxes was doing nothing, and a label
+  there costs NO height at all.  It is EMPTY rather than hidden when it
+  does not apply — an empty label takes no width, so there is no
+  `show_all` to fight (gotcha 15) and no window height to keep honest,
+  unlike the recurrence block's custom row.  It is shown only while the
+  task is actually Done, because `completed_at` is stamped on entering
+  Done and cleared on leaving, so a stamp on a task that is not Done is
+  a leftover and not a fact; a Done task whose stamp is 0 (an older row,
+  or one completed by another writer) shows nothing rather than
+  "Completed Jan 1, 1970".  The DATE only, not the time — see the width
+  rule above.  Refreshed from `editor_load`, and from `editor_save_now`
+  ONLY when the status actually moved (`status_saved`): the stamping
+  rule is an SQL `CASE` over the old row and must not be spelled a
+  second time in C, so the row is re-read — but never on the keystroke
+  path, where every 600 ms save would otherwise buy a query.
+  The combo's rows are the `TaskStatus` values IN ORDER, so
   the active index IS the enum value (`editor_status_get`, which clamps
   an out-of-range value off disk to New rather than leaving the combo
   blank).  NEVER rewrite the due entry while it has focus, and a
@@ -597,10 +642,15 @@ with the resync removed the parent comes back as New ~600 ms later.
   would otherwise flush a save into the row being tombstoned.  It then
   notifies through `notify_changed` (a vanishing task is structural), and
   `ed` is dead by then, so it captures app/task_id first.
-- Advanced disclosure: Subtasks + Attachments live in `adv_box`, folded by
-  default and expanded on open when the task already HAS either
-  (`editor_has_advanced_content`, read off the loaded stores, so it runs
-  after `editor_load`).  TWO entry points, and the difference matters:
+- Advanced disclosure: Subtasks + Attachments + Recurrence live in
+  `adv_box`, IN THAT ORDER, folded by default and expanded on open when
+  the task already HAS any of the three
+  (`editor_has_advanced_content`, read off the loaded stores and the
+  preset combo, so it runs after `editor_load`).  Recurrence is LAST —
+  at the foot of the window's content, right above the Advanced link —
+  because Subtasks and Attachments are what the task CONTAINS and are
+  what someone opening the block is usually after, where a schedule is
+  set once and then left alone.  TWO entry points, and the difference matters:
   `editor_advanced_reveal` shows the block and records `adv_height`;
   `editor_advanced_set` is the applier for a window ALREADY ON SCREEN and
   adds the window resize, so a collapse gives back exactly the pixels the
@@ -864,6 +914,120 @@ and only ever grows downwards.
   re-resolves them itself on a light/dark switch.  That staleness problem
   only exists in the per-widget helper because it bakes a resolved
   literal into its CSS from C.
+
+## Recurring tasks (schema v10)
+
+A recurring task is an ORDINARY task carrying a schedule — the five
+`recur_*` columns on its own row.  There is NO template row, no
+generated series and no second row type, and that is what makes
+recurrence compose with everything else for free: a recurring task has
+notes, subtasks, attachments, a pin, a priority and a place in a list
+like anything else.  If something reads like a series of generated
+occurrences, it is wrong.
+
+**THE RULE, in one sentence**: a set interval BEFORE each occurrence, a
+task that has been COMPLETED is reset to New and its due date is moved
+to that occurrence.  `src/recur.[ch]` owns it; the editor's Advanced
+block is the only place it is set.
+
+- `recur_interval` + `recur_unit` are "every N units"
+  (`TaskRecurUnit`: 0 minute, 1 hour, 2 day, 3 week, 4 month, 5 year —
+  the values are the on-disk encoding and are in ASCENDING DURATION
+  ORDER, which is what makes `recur_dated()` one comparison; do not
+  renumber).  `recur_interval = 0` means "does not recur" and is every
+  task until someone says otherwise.
+- The PRESETS (Hourly, Daily, Weekly, Every 2 weeks, Monthly) are
+  nothing but named (interval, unit) pairs in `recur_presets[]`, and
+  **Custom is the ABSENCE of one**: `task_recur_preset_spec` returns
+  FALSE for it and LEAVES THE OUTPUTS UNTOUCHED, which is exactly the
+  branch the editor needs.  `task_recur_preset_of` is the inverse, so a
+  schedule saved as custom "every 1 week" reopens reading Weekly —
+  because that is what it IS.
+- `recur_time` is minutes past local midnight, **480 (08:00)** by
+  default, and applies to the DAY-or-longer units only.  "Every 3 hours
+  at 8am" is not a thing anyone can mean, so the editor greys that entry
+  out for minutes and hours and `recur_step` passes -1.
+- The Recurrence block's first row reads `Repeat: [combo] at [HH:MM]`,
+  all of it PACK_START.  The time entry was pack_end'd to line up with
+  the Due entry two rows above, which put ~300 px of nothing in the
+  middle of what is ONE SENTENCE — a column that splits a phrase in half
+  is not worth the column.
+- **The custom "Every N …" row is HIDDEN, not greyed, until Custom… is
+  picked** — it is a whole control that would otherwise sit there doing
+  nothing.  Everything else in the block greys instead, because a greyed
+  control still SHOWS the value in force and only stops being editable.
+  Hiding costs height bookkeeping and `editor_recur_custom_set` is where
+  it lives: `no_show_all` on the row keeps it out of BOTH show_all
+  passes (the window's and `adv_box`'s) and so out of the folded natural
+  height, the flag is lifted across its own `show_all` (gotcha 15), and
+  the window is grown or shrunk by exactly the row's measured height.
+  `adv_height` is adjusted by the same amount, or a later collapse of
+  the Advanced block gives back the wrong pixels — measured round trip
+  733 → 771 → 733.  The RESIZE half runs only for a window already on
+  screen, the same split `editor_advanced_reveal` /
+  `editor_advanced_set` makes and for the same reason: on the open path
+  the row's visibility is settled before the window is presented, so it
+  is already in the natural height.
+- `recur_lead` is minutes, **7200 (5 days)** by default, and is CLAMPED
+  by `task_recur_lead_seconds` to a minute short of one period.  That
+  clamp is load-bearing, not tidiness: a lead as long as the period puts
+  the task permanently inside its own lead window, so every pass fires
+  and the schedule runs off into next year.  The editor SAYS SO when the
+  clamp bites ("lead shortened to fit the repeat") rather than quietly
+  printing a reset date the user's own number does not explain.
+- `recur_next` is BOOKKEEPING, not a setting.  0 means "not computed
+  yet"; the pass seeds it, the editor reseeds it on every edit, and both
+  go through `task_recur_seed` so the date the editor promises is the
+  date the pass acts on.  It is written by
+  `task_db_task_recur_set_next`, which stamps **no** `updated_at` — the
+  same local-only rule `pinned` and `priority` follow.  A real
+  roll-forward (`task_db_task_recur_apply`) DOES stamp, because `due`
+  and `status` are synced fields and a roll-forward the sync cannot see
+  never reaches Google or Notes.
+- **Occurrences are SKIPPED, never replayed.**  `recur_catch_up` finds
+  the LAST occurrence already due, not the first: a fortnight away owes
+  a daily task ONE roll-forward, to today, and thirty would be thirty
+  pointless `updated_at` bumps and thirty PATCHes.  The fixed-length
+  units (minutes, hours) skip with ONE DIVISION — a per-minute schedule
+  and a month of absence is otherwise 43200 GDateTime allocations —
+  while the calendar units step, because only GDateTime knows where the
+  31st of the next month is.
+- ALL the date arithmetic is GDateTime (`task_recur_advance`).  Nothing
+  adds 86400 to a timestamp and calls it a day: months keep their
+  day-of-month and clamp to the last (Jan 31 + 1 month = Feb 28), weeks
+  keep their weekday, and a day step across a DST boundary keeps its
+  wall clock.  All three are in the test harness.  Known and accepted:
+  a month clamp is STICKY, because each step starts from the previous
+  occurrence — a monthly task anchored on the 31st runs Jan 31, Feb 28,
+  Mar 28.  Fixing it means storing the original day-of-month as a
+  separate anchor, which is a column and a rule for a case nobody has
+  asked for; do not "fix" it by reaching back through the calendar.
+- A task that is NOT Done keeps its status when its occurrence comes
+  round — the due date still rolls forward, but New stays New and In
+  Progress stays In Progress.  Only Done is reset, because only Done is
+  the state that would otherwise hide the task for good.  The rule is
+  ONE `UPDATE` whose two `CASE`s both read the OLD status (gotcha 8), so
+  "was it Done?" is asked once.
+- `due` gets local MIDNIGHT of the occurrence's day (`recur_due_of`,
+  through `task_due_from_ymd`), because `tasks.due` is date-only and so
+  is Google's.  The time of day lives in the schedule and never in the
+  due date.
+- The pass is registered with the shared scheduler (`task_worker.h`,
+  `sort = -20` so it runs before the Notes mirror at -10 and the Google
+  sync at 0 — a task it reopens reaches both in ONE press of Sync).  It
+  is the ONE worker that runs ON THE MAIN THREAD against the app's own
+  connection, and its `run` ignores `db_path` entirely: no network, no
+  process spawn, a handful of statements over one small query.  A thread
+  plus a second connection would buy latency nobody can perceive.
+  `INITIAL_ALWAYS`, because repeats that came round while the app was
+  closed must be applied at launch even at interval 0.
+- Recurrence is LOCAL-ONLY and neither integration is told any of it.
+  What they see is the ordinary due date and status the pass produces —
+  which for a mirrored Notes item means the mirror pushes the reopen and
+  the new due back to Notes, as it would for any other local edit.
+- The schedule rides `task_db_task_update` (the editor's own debounced
+  save), which is why it does not need a bump of its own: that statement
+  is never the only thing being written.
 
 ## Data safety (read this before touching the database file)
 
@@ -1253,3 +1417,26 @@ happened to return.
     What must NOT happen is the core schema block creating it — that is
     the app declaring a table it knows nothing about, and it was
     removed when Google Tasks became a plugin.
+23. GLib's `g_date_time_format("%l")` — the 1-to-12 hour that would
+    save you stripping a leading zero — pads with **U+2007 FIGURE
+    SPACE** (`e2 80 87`), not an ASCII one.  `g_strstrip` is
+    ASCII-only, so it leaves the pad in place and a sentence built
+    from it reads "at  8:00 AM" with a stray gap that looks like a
+    printf bug.  Measured against GLib 2.84 in `recur_stamp`, which
+    uses `%I` and drops the zero itself.  Same trap for `%e`.
+24. A CORE column added after the fact needs BOTH halves, and they are
+    not the same statement: the declaration in `task_db_open`'s
+    `CREATE TABLE` (which is all a FRESH file ever runs) and a guarded
+    `ALTER TABLE … ADD COLUMN` after the migrations (which is all an
+    EXISTING file ever runs).  Neither one alone is testable on this
+    machine — gotcha 21 in one direction, gotcha 16 in the other — so
+    exercise both: an empty file and a synthetic old-version one.  The
+    v10 recurrence columns guard the ALTER on `table_has_column`
+    rather than on the version number, which makes it idempotent: the
+    version stamp has been seen not to stick on a database in a sync
+    folder, and an ALTER re-run on a healthy file logs "duplicate
+    column name" on every launch — a warning that fires on the
+    ordinary path is a warning nobody reads.  Also: a `DEFAULT` in
+    both halves is TWO spellings of one value, so build the SQL from
+    the macro (`g_strdup_printf`) rather than writing the number
+    twice.

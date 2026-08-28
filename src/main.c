@@ -15,6 +15,7 @@
 #include "app.h"
 #include "db.h"
 #include "backup.h"
+#include "recur.h"
 #include "task_worker.h"
 #include "core_views.h"
 #include "plugin_loader.h"
@@ -330,6 +331,7 @@ main(int argc, char **argv)
      * app's own in-flight flag and GSource id.                          */
 
     task_core_views_init();          /* the app's own sidebar views first  */
+    task_recur_init(app);            /* recurring tasks: earliest worker   */
     task_backup_init(app);
 
     /* Plugins load LAST of the registrants but still before the window:

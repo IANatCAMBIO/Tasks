@@ -7,6 +7,7 @@
 #include "plugin_loader.h"
 #include "plugin_owner.h"
 #include "backup.h"
+#include "recur.h"
 #include "library_window.h"
 #include <string.h>
 
@@ -93,6 +94,60 @@ on_integrity_check_toggled(GtkWidget *w, gpointer data)
     gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
     task_app_config_set("db_integrity_check", on ? "1" : "0");
     sw->app->db_integrity_check = on;
+}
+
+/* ===========================================================================
+ * Recurring Tasks (recur.h).
+ *
+ * Two widgets and two keys, and the section exists at all because the
+ * feature is a background pass: without it the only evidence a schedule is
+ * being honored is that things happen, and the only way to stop it would
+ * be to hand-edit the ini.
+ *
+ * Both handlers RE-ARM the worker rather than only writing the key.  A
+ * timer already installed carries the old interval — and an enabled_key
+ * turned off does not disarm anything by itself — so writing the setting
+ * alone would leave it taking effect at the next launch, which is exactly
+ * the "the setting does nothing" reading these controls must not have.
+ * =========================================================================== */
+
+/* RecurSection — the two widgets, so the interval can follow the switch.
+ * No db_path of its own: the re-arm reads app->db->path, which is the
+ * LIVE one.  A captured copy would be the path as it was when Settings
+ * opened, and File → Open Database can move the file underneath an open
+ * window — the same trap the worker scheduler exists to close.            */
+typedef struct {
+    TaskApp   *app;
+    GtkWidget *check;
+    GtkWidget *interval_spin;
+} RecurSection;
+
+static void
+recur_section_refresh(RecurSection *s)
+{
+    gtk_widget_set_sensitive(s->interval_spin,
+        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(s->check)));
+}
+
+static void
+on_recur_enabled_toggled(GtkToggleButton *check, gpointer user_data)
+{
+    RecurSection *s = user_data;
+    task_app_config_set("recur_enabled",
+                        gtk_toggle_button_get_active(check) ? "1" : "0");
+    recur_section_refresh(s);
+    task_recur_auto_start(s->app, s->app->db->path);
+}
+
+static void
+on_recur_interval_changed(GtkSpinButton *spin, gpointer user_data)
+{
+    RecurSection *s = user_data;
+    gchar *v = g_strdup_printf("%d",
+                               gtk_spin_button_get_value_as_int(spin));
+    task_app_config_set("recur_check_min", v);
+    g_free(v);
+    task_recur_auto_start(s->app, s->app->db->path);
 }
 
 /* ---------------------------------------------------------------------------
@@ -940,6 +995,55 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
 #endif
     gtk_box_pack_start(GTK_BOX(vbox), mac_check, FALSE, FALSE, 0);
 #endif /* __APPLE__ */
+    gtk_box_pack_start(GTK_BOX(vbox),
+                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 2);
+
+    /* --- Recurring tasks ---------------------------------------------------- */
+    gtk_box_pack_start(GTK_BOX(vbox), section_label("Recurring Tasks"),
+                       FALSE, FALSE, 0);
+
+    RecurSection *rec = g_new0(RecurSection, 1);
+    rec->app = app;
+    g_object_set_data_full(G_OBJECT(sw->window), "task-recur-section",
+                           rec, g_free);
+
+    rec->check = gtk_check_button_new_with_label(
+        "Roll recurring tasks forward automatically");
+    gtk_widget_set_margin_start(rec->check, 12);
+    gtk_widget_set_tooltip_text(rec->check,
+        "A task with a repeat set in its editor's Advanced section is "
+        "reopened and re-dated as each repeat comes round.  Switching "
+        "this off leaves those schedules stored but never acted on.");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(rec->check),
+        task_app_config_get_bool("recur_enabled", TRUE));
+    gtk_box_pack_start(GTK_BOX(vbox), rec->check, FALSE, FALSE, 0);
+
+    GtkWidget *rec_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_start(rec_row, 12);
+    gtk_box_pack_start(GTK_BOX(rec_row), gtk_label_new("Check every"),
+                       FALSE, FALSE, 0);
+    rec->interval_spin = gtk_spin_button_new_with_range(0, 1440, 5);
+    gtk_widget_set_tooltip_text(rec->interval_spin,
+        "Minutes between checks.  0 checks only at launch \xe2\x80\x94 which "
+        "always happens, so repeats that came round while Tasks was "
+        "closed are never missed.");
+    gchar *reciv = task_app_config_get("recur_check_min");
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(rec->interval_spin),
+        reciv != NULL ? atoi(reciv) : TASK_RECUR_CHECK_DEFAULT);
+    g_free(reciv);
+    gtk_box_pack_start(GTK_BOX(rec_row), rec->interval_spin,
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(rec_row), gtk_label_new("minutes"),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), rec_row, FALSE, FALSE, 0);
+
+    recur_section_refresh(rec);
+    g_signal_connect(rec->check, "toggled",
+                     G_CALLBACK(on_recur_enabled_toggled), rec);
+    g_signal_connect(rec->interval_spin, "value-changed",
+                     G_CALLBACK(on_recur_interval_changed), rec);
+
     gtk_box_pack_start(GTK_BOX(vbox),
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                        FALSE, FALSE, 2);

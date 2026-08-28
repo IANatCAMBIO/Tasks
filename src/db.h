@@ -1,10 +1,10 @@
 /* ===========================================================================
  * db.h — SQLite storage for Tasks
  *
- * Schema (PRAGMA user_version = 9 — see TASK_DB_SCHEMA_VERSION).  Every
- * column is declared in task_db_open's CREATE block; there are no
- * ALTER-based migrations, so a fresh file and an existing one have
- * identical structure.
+ * Schema (PRAGMA user_version = 10 — see TASK_DB_SCHEMA_VERSION).  Every
+ * column is declared in task_db_open's CREATE block, so a FRESH file needs
+ * no migration at all; an EXISTING one reaches the same shape through the
+ * guarded ALTERs at the end of task_db_open.
  *
  *   list_groups  id, name, position              (local-only; never synced)
  *   lists        id, name, emoji, position, group_id (FK → list_groups.id;
@@ -14,7 +14,9 @@
  *                title, notes, due (unix local midnight; 0 = none),
  *                status (TaskStatus), pinned, priority (local-only;
  *                sorts first in every view), position, updated_at,
- *                deleted, completed_at
+ *                deleted, completed_at,
+ *                recur_interval / recur_unit / recur_time / recur_lead /
+ *                recur_next (the recurrence schedule — local-only, v10)
  *   attachments  id, task_id, path, added_at   (local-only; never synced)
  *   sync_state   key, value                    (e.g. "last_sync")
  *
@@ -52,7 +54,7 @@
 /* The schema version this build writes.  Kept here rather than spelled as
  * a literal in task_db_open so the pre-migration backup and the version
  * stamp cannot drift apart.                                               */
-#define TASK_DB_SCHEMA_VERSION 9
+#define TASK_DB_SCHEMA_VERSION 10
 
 /* ---------------------------------------------------------------------------
  * TaskDatabase — one open connection.  A connection must not cross threads:
@@ -104,6 +106,39 @@ const gchar *task_status_label(TaskStatus status);
  * ------------------------------------------------------------------------- */
 TaskStatus task_status_apply_done(TaskStatus cur, gboolean done);
 
+/* ---------------------------------------------------------------------------
+ * TaskRecurUnit — the unit of a task's repeat interval.  Like TaskStatus
+ * these values ARE the on-disk encoding of tasks.recur_unit, so they must
+ * not be renumbered; MINUTE is 0 so a row that has never been given a
+ * recurrence needs no explicit value (it is inert either way, because
+ * recur_interval = 0 is what means "does not recur").
+ *
+ * They are in ASCENDING duration order, which the editor's unit combo
+ * relies on (its active index is the enum value) and which recur.c's
+ * period arithmetic reads as a switch.
+ * ------------------------------------------------------------------------- */
+typedef enum {
+    TASK_RECUR_MINUTE = 0,
+    TASK_RECUR_HOUR   = 1,
+    TASK_RECUR_DAY    = 2,
+    TASK_RECUR_WEEK   = 3,
+    TASK_RECUR_MONTH  = 4,
+    TASK_RECUR_YEAR   = 5
+} TaskRecurUnit;
+
+/* Number of values, for the editor's combo and bounds checks.              */
+#define TASK_RECUR_N_UNITS 6
+
+/* The time of day a dated recurrence lands on, in minutes past local
+ * midnight: 08:00.  Every preset (Daily, Weekly, Biweekly, Monthly) uses
+ * it, and the editor seeds a custom schedule with it too.                  */
+#define TASK_RECUR_TIME_DEFAULT (8 * 60)
+
+/* How long BEFORE an occurrence a completed task is reset to New, in
+ * minutes: five days.  recur.c clamps it to shorter than the repeat
+ * period, so an hourly schedule is not permanently inside its own lead.    */
+#define TASK_RECUR_LEAD_DEFAULT (5 * 24 * 60)
+
 /* One task list.  Strings are owned by the struct.                         */
 typedef struct {
     gint64    id;
@@ -145,7 +180,26 @@ typedef struct {
     gint      position;
     gint64    updated_at;
     gboolean  deleted;
-    gint64    completed_at;          /* unix; 0 = never / not done         */
+    gint64    completed_at;          /* unix; when the task was LAST
+                                      * completed.  0 = never.  Nothing
+                                      * clears it, so it outlives someone
+                                      * reopening the task               */
+
+    /* The recurrence schedule (v10) — LOCAL-ONLY, like pinned and
+     * priority: neither Google Tasks nor Notes is told any of it, and what
+     * they DO see is the ordinary due date and status the pass writes.
+     * See recur.h for the rule these five spell out together.             */
+    gint      recur_interval;        /* repeat every N units; 0 = never     */
+    TaskRecurUnit recur_unit;        /* the unit of that N                  */
+    gint      recur_time;            /* minutes past local midnight; the
+                                      * time of day a dated occurrence
+                                      * lands on (ignored by the minute
+                                      * and hour units)                    */
+    gint      recur_lead;            /* minutes BEFORE an occurrence that a
+                                      * completed task is reset to New     */
+    gint64    recur_next;            /* unix time of the next occurrence;
+                                      * 0 = not computed yet (the pass
+                                      * seeds it)                          */
 } Task;
 
 /* One file attachment on a task.                                           */
@@ -297,8 +351,9 @@ GPtrArray *task_db_tasks_in_list_all(TaskDatabase *db, gint64 list_id);
 gint64 task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
                            const gchar *title);
 
-/* Write the editable fields (title/notes/due/status/pinned/priority) from
- * `t` back to its row and stamp updated_at.                                */
+/* Write the editable fields (title/notes/due/status/pinned/priority, and
+ * the whole recurrence schedule) from `t` back to its row and stamp
+ * updated_at.                                                              */
 void task_db_task_update(TaskDatabase *db, const Task *t);
 
 /* Field setters used by the list-view toggles.  `status` is the
@@ -309,6 +364,33 @@ void task_db_task_update(TaskDatabase *db, const Task *t);
 void task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status);
 void task_db_task_set_pinned(TaskDatabase *db, gint64 id, gboolean pinned);
 void task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority);
+
+/* ---------------------------------------------------------------------------
+ * The recurrence pass's two write paths (see recur.h for the rule; these
+ * are only the SQL).  Both are called from the main thread.
+ *
+ * task_db_tasks_recurring() — every visible task whose recur_interval is
+ * set, in id order.  The candidate set of one pass; a few thousand rows
+ * scanned every few minutes needs no index of its own.
+ *
+ * task_db_task_recur_apply() — an occurrence has come due: write `due`,
+ * reset a DONE task to New, store the FOLLOWING occurrence in recur_next,
+ * and stamp updated_at.  The status CASE reads the OLD row (gotcha 8), so
+ * "was it Done?" is asked once.  completed_at is left ALONE — reopening a
+ * task for its next repeat does not un-complete the last one.
+ * updated_at IS stamped here —
+ * due and status are synced fields, and a roll-forward the sync cannot see
+ * is a roll-forward that never reaches Google or Notes.
+ *
+ * task_db_task_recur_set_next() — store recur_next ALONE, with NO
+ * updated_at bump.  The next-occurrence stamp is local bookkeeping (the
+ * same rule pinned and priority follow): seeding it, or advancing past an
+ * occurrence that changed nothing, must not dirty the row for sync.
+ * ------------------------------------------------------------------------- */
+GPtrArray *task_db_tasks_recurring(TaskDatabase *db);
+void task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
+                              gint64 next);
+void task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next);
 
 /* Tombstone the task and its subtasks.  Every registered delete hook
  * contributes its own statements to the SAME transaction — see
@@ -392,8 +474,12 @@ void task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists);
  * means work resumed), otherwise unchanged, so a New task survives a
  * round trip through a system that has no third state.
  *
- * `completed_at` is stamped on ENTERING Done and cleared on leaving; an
- * already-Done task keeps its first stamp.
+ * `completed_at` is stamped on ENTERING Done and NOTHING clears it: it
+ * answers "when was this last completed?", which stays true after
+ * someone reopens the task.  An already-Done task keeps its stamp, and
+ * re-completing moves it forward.  The remote path merges with `MAX`
+ * rather than assigning, so a source that reports 0 for "not done" (every
+ * one of them) cannot erase it.
  *
  * The source's own bookkeeping — what it last knew, for diffing — is
  * NOT here.  That belongs to the integration, in its own table.

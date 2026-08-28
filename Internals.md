@@ -17,8 +17,9 @@ does not know they exist.
 | `src/app.[ch]`             | Shared `TaskApp` context: ini config, dialogs, toolbar styles, icon loading, date helpers |
 | `src/backup.[ch]`          | Optional rotating database backups: worker thread, VACUUM INTO + verify, bounded rotation |
 | `src/db.[ch]`              | SQLite layer: lists, tasks, subtasks, attachments; tombstones and `updated_at` for sync |
+| `src/recur.[ch]`           | Recurring tasks: the preset table, GDateTime schedule arithmetic, and the periodic pass that rolls due repeats forward |
 | `src/library_window.[ch]`  | Sidebar (virtual views, list groups), tall task rows, toolbar, compact controls + floating button bar, Kanban board, context menus, status bar |
-| `src/editor_window.[ch]`   | Per-task editor; debounced write-through saves; Advanced fold for Subtasks/Attachments |
+| `src/editor_window.[ch]`   | Per-task editor; debounced write-through saves; Advanced fold for Recurrence/Subtasks/Attachments |
 | `src/settings_window.[ch]` | The Settings window, including the Plugins list |
 | `src/plugin.h`             | The plugin ABI: the `TaskHostApi` table a plugin sees, and what a `TaskPlugin` is |
 | `src/plugin_loader.[ch]`   | Discovery, `dlopen`, ABI checks, enable/disable at run time |
@@ -118,7 +119,26 @@ CREATE TABLE tasks (
   position     INTEGER NOT NULL DEFAULT 0,
   updated_at   INTEGER NOT NULL DEFAULT 0,    -- UNIX seconds
   deleted      INTEGER NOT NULL DEFAULT 0,    -- tombstone until pushed
-  completed_at INTEGER NOT NULL DEFAULT 0
+  completed_at INTEGER NOT NULL DEFAULT 0,     -- UNIX; when LAST completed.
+                                                -- Monotonic: nothing clears
+                                                -- it, so it outlives a
+                                                -- reopen.  0 = never.
+
+  -- The recurrence schedule (v10) -- ALL local-only, never synced.
+  recur_interval INTEGER NOT NULL DEFAULT 0,    -- repeat every N units;
+                                                -- 0 = does not recur
+  recur_unit     INTEGER NOT NULL DEFAULT 0,    -- 0 min, 1 hour, 2 day,
+                                                -- 3 week, 4 month, 5 year
+  recur_time     INTEGER NOT NULL DEFAULT 480,  -- minutes past local
+                                                -- midnight (08:00); the
+                                                -- day/week/month/year
+                                                -- units only
+  recur_lead     INTEGER NOT NULL DEFAULT 7200, -- minutes before an
+                                                -- occurrence that a DONE
+                                                -- task is reset (5 days)
+  recur_next     INTEGER NOT NULL DEFAULT 0     -- UNIX; the next
+                                                -- occurrence, 0 = not
+                                                -- computed yet
 );
 
 CREATE TABLE attachments (
@@ -165,15 +185,27 @@ last known to hold — each lives in a SIDE TABLE keyed by row id, owned
 and created by whichever plugin the integration is. `ON DELETE CASCADE`
 so purging a task cannot leave its remote identity behind to be matched
 against later. Schema **v8** moved the Google columns out of `tasks` and
-`lists`; **v9** moved the Notes ones.
+`lists`; **v9** moved the Notes ones; **v10** added the five `recur_*`
+columns.
 
 Those two migrations still name the side tables, and must: a migration
 moves data that already exists whether or not the plugin that will read
 it is installed. Each creates what it needs itself, with
 `IF NOT EXISTS`, so it agrees with the plugin's own `db_open`.
 
-The schema version rides in `PRAGMA user_version` (currently **9**, from
+The schema version rides in `PRAGMA user_version` (currently **10**, from
 `TASK_DB_SCHEMA_VERSION`).
+
+**v10** is the cheap end of the migration spectrum and worth contrasting
+with v8/v9: `ALTER TABLE ... ADD COLUMN` only, so nothing is copied,
+nothing is dropped and the table is not rewritten. It is guarded on the
+COLUMN not existing rather than on the version alone, which makes it
+idempotent — the version stamp has been seen not to stick on a database
+in a sync folder, and an `ALTER` re-run on a healthy file would log
+"duplicate column name" on every launch. No index is created on those
+columns: an index over an `ALTER`-added column would have to be created
+after the migrations rather than in the schema block, and the recurrence
+pass scans a few thousand rows every few minutes, which wants none.
 
 Before a migration runs, `task_db_open` backs the file up to
 `<db>.pre-v<N>.bak` via `VACUUM INTO` — one per from-version, never
@@ -218,9 +250,30 @@ Semantics worth knowing when querying directly:
   gets an etag-guarded PATCH whose body matches what the remote already
   holds; on a full listing nothing is sent, since the content compare
   finds no difference.
-- `completed_at` is stamped when a row enters status `2` and cleared
-  when it leaves; re-marking an already-Done row keeps its first stamp.
-  That rule is written as an SQL `CASE` over the OLD row values.
+- `completed_at` is **monotonic**: stamped when a row enters status `2`,
+  and never cleared by anything. It means "when was this last
+  completed?", so it survives the task being reopened — a row can be
+  `status = 1` and still carry a stamp, and both the editor and the
+  list's Completion Date column show it. Re-completing moves it forward.
+  The rule is an SQL `CASE` over the OLD row values in the local write
+  paths, and a `MAX(completed_at, ?)` merge in `task_db_task_apply_remote`
+  — every remote source reports `0` for "not currently done", so
+  assigning there would let a Google or Notes un-tick erase local history
+  that source never knew about. (Before 2026-08-27 leaving status `2` did
+  clear it; history erased then is not recoverable.)
+- The `recur_*` columns are the whole recurrence feature: there is no
+  template row and no generated series, so a recurring task is an
+  ordinary task that comes back round. `src/recur.c` walks
+  `recur_interval > 0 AND deleted = 0` every few minutes on the main
+  thread; when an occurrence is within `recur_lead` of now it writes
+  `due` and resets a status-`2` row to `0`, both in one statement whose
+  `CASE`s read the OLD status. Missed occurrences are **skipped**, not
+  replayed. `recur_next` is bookkeeping and is written alone, with **no**
+  `updated_at` bump, exactly like `pinned` and `priority`; a real
+  roll-forward does stamp it, because `due` and `status` are synced
+  fields. `recur_lead` is clamped at read time to shorter than one
+  repeat period, so an hourly schedule cannot sit permanently inside its
+  own lead window.
 - `sync_state` is a key/value scratchpad shared by the app and the
   plugins, and its keys are NOT namespaced — a plugin prefixes its own.
   `lists_custom_order` is the app's (set once the user drag-reorders

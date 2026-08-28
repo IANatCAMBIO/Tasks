@@ -202,15 +202,22 @@ window per task: opening it again focuses the one you already have.
   due date you can type (`YYYY-MM-DD`) or pick from the calendar button.
   The entry is forgiving: while it holds a partial or invalid date
   nothing is clobbered — the stored date only changes once the text
-  parses.
+  parses. A task you have completed also shows **when**, at the right of
+  the checkbox row — "Completed Aug 27, 2026" while it is Done, and
+  "Last completed Aug 27, 2026" once you put it back to *New* or *In
+  Progress*. The date is kept for good: reopening a task does not
+  un-complete it, and completing it again simply moves the date on. The
+  optional **Completion Date** column in the task list shows the same
+  thing.
 - **Notes** — free multiline text below the field row, eight lines tall
   to start with; it scrolls past that, and grows if you enlarge the
   window.
-- **Advanced** — Subtasks and Attachments start folded away behind the
-  **Advanced ▾** link at the bottom-left; clicking it drops the window
-  open to show both, and clicking again folds it back to the size it
-  was. A task that already has subtasks or attachments opens expanded,
-  so you never have to click to see what is already there.
+- **Advanced** — Subtasks, Attachments and Recurrence start folded away
+  behind the **Advanced ▾** link at the bottom-left; clicking it drops
+  the window open to show all three, and clicking again folds it back to
+  the size it was. A task that already has subtasks, attachments or a
+  repeat opens expanded, so you never have to click to see what is
+  already there.
 - **Save** sits under the notes box, at its right edge, in every editor:
   it closes the window (your edits are already saved as you type, so it
   is a "done here" button, not the only way to persist). Closing the
@@ -219,6 +226,35 @@ window per task: opening it again focuses the one you already have.
   closes the window and deletes the task again** — the "never mind"
   button for a task you just created. Only new tasks get it; nothing in
   an existing task's editor can delete it.
+- **Recurrence** — the last section, at the foot of the window: make the
+  task come back round. **Repeat** offers *Hourly*, *Daily*, *Weekly*,
+  *Every 2 weeks*, *Monthly* and *Custom…*. Picking **Custom…** adds an
+  **Every N minutes/hours/days/weeks/months/years** row underneath —
+  it is not there at all until you ask for it, and it opens showing the
+  schedule already in force rather than an arbitrary one. The **at** box
+  beside the dropdown is the time of day a
+  daily, weekly or monthly repeat lands on — **08:00** unless you change
+  it (a repeat measured in minutes or hours has no time of day, and the
+  box greys out).
+
+  **Reset to New … beforehand** is how the repeat actually reaches you:
+  that long before each repeat, a task you have already **completed** is
+  put back to *New* and its due date moves to the repeat. Five days by
+  default. A task you have *not* finished keeps whatever status it has —
+  the due date still rolls forward, but *New* stays *New* and *In
+  Progress* stays *In Progress*.
+
+  The dimmed line underneath always says what will happen and when
+  ("Next Sep 3, 2026 at 8:00 AM — resets to New Aug 29, 2026 at 8:00
+  AM"). If the head start will not fit inside the repeat — five days
+  ahead of a repeat that comes every three — it is shortened to fit and
+  the line says so.
+
+  Repeats stay on this machine: neither Google Tasks nor Notes is told
+  about them, and what they see is the ordinary due date and status the
+  repeat produces. Missed repeats are caught up, not replayed — coming
+  back to Tasks after a fortnight away rolls a daily task forward once,
+  to today, rather than fourteen times.
 - **Subtasks** — add, rename, toggle and remove; exactly one level
   (subtasks cannot have subtasks, and Google Tasks agrees).
 - **Attachments** — file references (add/remove/open); the files stay
@@ -237,6 +273,11 @@ window per task: opening it again focuses the one you already have.
   text), bold task titles in the list, whether **Due Today** also
   includes everything past due, and — when built with
   gtk-mac-integration — a native macOS menu bar option.
+- **Recurring Tasks** — whether repeats are acted on at all, and how
+  often the check runs (default every 5 minutes; 0 checks only at
+  launch, which always happens, so a repeat that came round while Tasks
+  was closed is never missed either way). Switching it off leaves every
+  schedule stored but inert.
 - **Database** — shows the current database file path and lets you
   move it to a different folder. Switching always removes the old
   file: if the target folder is empty the current database is copied

@@ -102,6 +102,7 @@ SRCS     := src/main.c \
             src/core_views.c \
             src/db.c \
             src/backup.c \
+            src/recur.c \
             src/library_window.c \
             src/editor_window.c \
             src/settings_window.c

@@ -280,6 +280,37 @@ task_db_resolve_path(const gchar *dir)
     return task_db_default_path();     /* also creates the directory        */
 }
 
+/*
+ * table_has_column — does `table` already carry a column called `column`?
+ *
+ * Inputs:
+ *   db     — open connection
+ *   table  — table name (a literal here; NOT interpolated from user data)
+ *   column — column name to look for
+ *
+ * Output:
+ *   TRUE when PRAGMA table_info names it.  FALSE when it does not — AND
+ *   also when the PRAGMA could not run at all, which is the conservative
+ *   answer for the only caller: a migration that then tries the ALTER and
+ *   reports sqlite's own message through exec(), rather than one that
+ *   silently decides the column is already there and moves on.
+ */
+static gboolean
+table_has_column(TaskDatabase *db, const gchar *table, const gchar *column)
+{
+    gchar *sql = sqlite3_mprintf("PRAGMA table_info(%Q)", table);
+    sqlite3_stmt *st = NULL;
+    gboolean found = FALSE;
+    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK)
+        while (!found && sqlite3_step(st) == SQLITE_ROW) {
+            const guchar *n = sqlite3_column_text(st, 1);   /* 1 = name     */
+            found = n != NULL && g_strcmp0((const gchar *)n, column) == 0;
+        }
+    sqlite3_finalize(st);
+    sqlite3_free(sql);
+    return found;
+}
+
 /* ---------------------------------------------------------------------------
  * task_db_verify_file() — integrity_check + foreign_key_check on a separate
  * read-only connection (see db.h).
@@ -407,21 +438,38 @@ task_db_open(const gchar *path, GError **err)
         "  group_id   INTEGER REFERENCES list_groups(id),"
         "  updated_at INTEGER NOT NULL DEFAULT 0,"
         "  deleted    INTEGER NOT NULL DEFAULT 0)");
-    exec(db,
-        "CREATE TABLE IF NOT EXISTS tasks ("
-        "  id           INTEGER PRIMARY KEY,"
-        "  list_id      INTEGER NOT NULL REFERENCES lists(id),"
-        "  parent_id    INTEGER REFERENCES tasks(id),"
-        "  title        TEXT    NOT NULL DEFAULT '',"
-        "  notes        TEXT    NOT NULL DEFAULT '',"
-        "  due          INTEGER NOT NULL DEFAULT 0,"
-        "  status       INTEGER NOT NULL DEFAULT 0,"
-        "  pinned       INTEGER NOT NULL DEFAULT 0,"
-        "  priority     INTEGER NOT NULL DEFAULT 0,"
-        "  position     INTEGER NOT NULL DEFAULT 0,"
-        "  updated_at   INTEGER NOT NULL DEFAULT 0,"
-        "  deleted      INTEGER NOT NULL DEFAULT 0,"
-        "  completed_at INTEGER NOT NULL DEFAULT 0)");
+    /* The recurrence columns' DEFAULTs come from the macros rather than
+     * from literals, and so does the v10 ALTER block below: two spellings
+     * of "8am, five days ahead" is how a fresh file and a migrated one
+     * come to disagree about what an untouched row means.                  */
+    {
+        gchar *tasks_sql = g_strdup_printf(
+            "CREATE TABLE IF NOT EXISTS tasks ("
+            "  id           INTEGER PRIMARY KEY,"
+            "  list_id      INTEGER NOT NULL REFERENCES lists(id),"
+            "  parent_id    INTEGER REFERENCES tasks(id),"
+            "  title        TEXT    NOT NULL DEFAULT '',"
+            "  notes        TEXT    NOT NULL DEFAULT '',"
+            "  due          INTEGER NOT NULL DEFAULT 0,"
+            "  status       INTEGER NOT NULL DEFAULT 0,"
+            "  pinned       INTEGER NOT NULL DEFAULT 0,"
+            "  priority     INTEGER NOT NULL DEFAULT 0,"
+            "  position     INTEGER NOT NULL DEFAULT 0,"
+            "  updated_at   INTEGER NOT NULL DEFAULT 0,"
+            "  deleted      INTEGER NOT NULL DEFAULT 0,"
+            "  completed_at INTEGER NOT NULL DEFAULT 0,"
+            /* The recurrence schedule (v10).  Declared HERE so a fresh
+             * file needs no migration at all; the v10 block below ADDs
+             * the same five to a file that predates them.               */
+            "  recur_interval INTEGER NOT NULL DEFAULT 0,"
+            "  recur_unit     INTEGER NOT NULL DEFAULT 0,"
+            "  recur_time     INTEGER NOT NULL DEFAULT %d,"
+            "  recur_lead     INTEGER NOT NULL DEFAULT %d,"
+            "  recur_next     INTEGER NOT NULL DEFAULT 0)",
+            TASK_RECUR_TIME_DEFAULT, TASK_RECUR_LEAD_DEFAULT);
+        exec(db, tasks_sql);
+        g_free(tasks_sql);
+    }
     exec(db,
         "CREATE TABLE IF NOT EXISTS attachments ("
         "  id         INTEGER PRIMARY KEY,"
@@ -650,6 +698,52 @@ task_db_open(const gchar *path, GError **err)
                       "were LEFT IN PLACE", path,
                       (long long)wrong, (long long)lost);
         }
+    }
+
+    /* -----------------------------------------------------------------
+     * v10 — the recurrence schedule joins the task row.
+     *
+     * ADD COLUMN only: nothing is copied, nothing is dropped, and the
+     * whole table is not rewritten, so this is the cheap and safe end of
+     * the migration spectrum — the opposite of v7's DROP COLUMN.  Five
+     * columns whose defaults mean "does not recur", which is what every
+     * existing task is.
+     *
+     * Guarded on the COLUMN not existing rather than on the version
+     * alone, so it is idempotent: the version stamp has been seen not to
+     * stick on a database living in a sync folder (see below), and an
+     * ALTER re-run on a healthy file would log "duplicate column name"
+     * on every launch.  A warning that fires on the ordinary path is a
+     * warning nobody reads.
+     *
+     * NO INDEX is created on these.  That is deliberate — an index on an
+     * ALTER-added column must be created after the migrations rather
+     * than in the schema block (gotcha 16), and the recurrence pass
+     * scans a few thousand rows every few minutes, which wants no index
+     * at all.
+     * ----------------------------------------------------------------- */
+    {
+        static const struct { const gchar *name; gint def; } recur_cols[] = {
+            { "recur_interval", 0 },
+            { "recur_unit",     0 },
+            { "recur_time",     TASK_RECUR_TIME_DEFAULT },
+            { "recur_lead",     TASK_RECUR_LEAD_DEFAULT },
+            { "recur_next",     0 },
+        };
+        gint added = 0;
+        for (gsize i = 0; i < G_N_ELEMENTS(recur_cols); i++) {
+            if (table_has_column(db, "tasks", recur_cols[i].name))
+                continue;
+            gchar *sql = g_strdup_printf(
+                "ALTER TABLE tasks ADD COLUMN %s INTEGER NOT NULL "
+                "DEFAULT %d", recur_cols[i].name, recur_cols[i].def);
+            if (exec(db, sql))
+                added++;
+            g_free(sql);
+        }
+        if (added > 0)
+            g_message("Migrated %s to schema v10: added %d recurrence "
+                      "column(s) to tasks", path, added);
     }
 
     {   /* Stamped from the CONSTANT for the same reason.               */
@@ -979,7 +1073,9 @@ task_db_list_emoji_if_empty(TaskDatabase *db, gint64 list_id,
  * ------------------------------------------------------------------------- */
 #define TASK_COLS "id, list_id, COALESCE(parent_id, 0), title, notes, due, " \
                   "status, pinned, position, updated_at, deleted, "\
-                  "completed_at, priority"
+                  "completed_at, priority, "\
+                  "recur_interval, recur_unit, recur_time, recur_lead, "\
+                  "recur_next"
 
 static Task *
 read_task(sqlite3_stmt *st)
@@ -998,6 +1094,20 @@ read_task(sqlite3_stmt *st)
     t->deleted      = sqlite3_column_int(st, 10) != 0;
     t->completed_at = sqlite3_column_int64(st, 11);
     t->priority     = sqlite3_column_int(st, 12) != 0;
+    t->recur_interval = sqlite3_column_int(st, 13);
+    /* Clamped on the way IN rather than at every reader: recur_unit is an
+     * enum index into the unit tables in recur.c and the editor's combo,
+     * and a hand-edited or future-version value must not index off the end
+     * of either.  Minutes is the safe floor for the same reason New is
+     * TaskStatus's (see editor_status_get).                                */
+    {
+        gint u = sqlite3_column_int(st, 14);
+        t->recur_unit = (u >= 0 && u < TASK_RECUR_N_UNITS)
+                        ? (TaskRecurUnit)u : TASK_RECUR_MINUTE;
+    }
+    t->recur_time   = sqlite3_column_int(st, 15);
+    t->recur_lead   = sqlite3_column_int(st, 16);
+    t->recur_next   = sqlite3_column_int64(st, 17);
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
     return t;
@@ -1223,19 +1333,30 @@ parent_started(TaskDatabase *db, gint64 child_id)
 void
 task_db_task_update(TaskDatabase *db, const Task *t)
 {
-    /* completed_at follows the DONE status: stamped when the row enters
-     * it (the CASE reads the OLD row values, gotcha 8), cleared when it
-     * leaves.  An already-done task keeps its original stamp, so a New →
-     * Done → In Progress → Done round trip re-stamps only on the way
-     * back in.  updated_at is stamped unconditionally here — this path
-     * also writes title/notes/due, which Google does want.                 */
+    /* completed_at is stamped when the row ENTERS Done (the CASE reads
+     * the OLD row values, gotcha 8) and is otherwise left exactly as it
+     * is — leaving Done does NOT clear it.  It answers "when was this
+     * last completed?", which stays a fact about the task after someone
+     * reopens it, and a New → Done → In Progress → Done round trip
+     * re-stamps only on the way back in.  updated_at is stamped
+     * unconditionally here — this path
+     * also writes title/notes/due, which Google does want.
+     *
+     * The recurrence schedule rides along because it is EDITED in the same
+     * place (the editor's Advanced block) and saved by the same debounce.
+     * It is local-only, so it does not by itself justify the bump — but
+     * this statement is never the only thing being written, so there is no
+     * "recurrence alone" path here to dirty a row needlessly.  Advancing
+     * recur_next between edits goes through task_db_task_recur_set_next
+     * instead, which stamps nothing.                                       */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
             "UPDATE tasks SET title = ?1, notes = ?2, due = ?3, "
             "completed_at = CASE WHEN ?4 = 2 AND status <> 2 THEN ?6 "
-            "                    WHEN ?4 <> 2 THEN 0 "
             "                    ELSE completed_at END, "
-            "status = ?4, pinned = ?5, updated_at = ?6, priority = ?8 "
+            "status = ?4, pinned = ?5, updated_at = ?6, priority = ?8, "
+            "recur_interval = ?9, recur_unit = ?10, recur_time = ?11, "
+            "recur_lead = ?12, recur_next = ?13 "
             "WHERE id = ?7", -1,
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
@@ -1246,6 +1367,11 @@ task_db_task_update(TaskDatabase *db, const Task *t)
         sqlite3_bind_int64(st, 6, now());
         sqlite3_bind_int64(st, 7, t->id);
         sqlite3_bind_int(st, 8, t->priority ? 1 : 0);
+        sqlite3_bind_int(st,  9, t->recur_interval);
+        sqlite3_bind_int(st, 10, (gint)t->recur_unit);
+        sqlite3_bind_int(st, 11, t->recur_time);
+        sqlite3_bind_int(st, 12, t->recur_lead);
+        sqlite3_bind_int64(st, 13, t->recur_next);
         step_done(db, st, "task update");
     } else {
         step_done(db, NULL, "task update");
@@ -1257,10 +1383,10 @@ task_db_task_update(TaskDatabase *db, const Task *t)
 
 
 /* ---------------------------------------------------------------------------
- * task_db_task_set_status() — write the status, stamping/clearing
- * completed_at (see db.h).  Same completed_at CASE as task_db_task_update,
- * so both paths agree: an already-done task keeps its original stamp.
- * It reads the OLD row (gotcha 8).
+ * task_db_task_set_status() — write the status, stamping completed_at on
+ * the way into Done (see db.h).  Same CASE as task_db_task_update, so
+ * both paths agree: entering Done stamps, and every other move leaves the
+ * stamp alone — including leaving Done.  It reads the OLD row (gotcha 8).
  *
  * updated_at is stamped for EVERY status change, including New ↔ In
  * Progress.  That is deliberate and costs something: neither Google
@@ -1281,7 +1407,6 @@ task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status)
     if (sqlite3_prepare_v2(db->sq,
             "UPDATE tasks SET completed_at = CASE "
             "                    WHEN ?1 = 2 AND status <> 2 THEN ?2 "
-            "                    WHEN ?1 <> 2 THEN 0 "
             "                    ELSE completed_at END, "
             "updated_at = ?2, status = ?1 WHERE id = ?3", -1,
             &st, NULL) == SQLITE_OK) {
@@ -1321,6 +1446,80 @@ task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority)
         priority ? 1 : 0, (long long)id);
     exec(db, sql);
     g_free(sql);
+}
+
+/* ---------------------------------------------------------------------------
+ * The recurrence pass's SQL (see db.h and recur.h).
+ * ------------------------------------------------------------------------- */
+
+/* task_db_tasks_recurring() — one pass's candidate set.  Tombstones are
+ * excluded: a deleted task's schedule is over, and rolling one forward
+ * would resurrect it in every view the moment the tombstone is purged.     */
+GPtrArray *
+task_db_tasks_recurring(TaskDatabase *db)
+{
+    return task_query(db,
+        "SELECT " TASK_COLS " FROM tasks WHERE recur_interval > 0 AND "
+        "deleted = 0 ORDER BY id", 0, 0, 0);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_db_task_recur_apply() — an occurrence came due (see db.h).
+ *
+ * ONE statement, so the three halves of a roll-forward cannot come apart:
+ * the new due date, the reset of a COMPLETED task back to New, and the
+ * stamp of the occurrence AFTER this one.  The status CASE reads the OLD
+ * status (gotcha 8), which is what lets "was it Done?" be asked once here
+ * rather than read back in a second statement.
+ *
+ * completed_at is deliberately NOT in this statement.  Reopening a task
+ * for its next repeat does not un-complete the last one, and the stamp is
+ * how the editor still says when that was — which is most of the point of
+ * keeping it on a recurring task.
+ *
+ * A task that was NOT Done keeps whichever status it had: New stays New
+ * and In Progress stays In Progress.  Resetting work already under way
+ * would throw away the only thing that distinguishes them.
+ * ------------------------------------------------------------------------- */
+void
+task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
+                         gint64 next)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq,
+            "UPDATE tasks SET due = ?1, "
+            "status       = CASE WHEN status = 2 THEN 0 ELSE status END, "
+            "recur_next = ?2, updated_at = ?3 WHERE id = ?4", -1,
+            &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, due);
+        sqlite3_bind_int64(st, 2, next);
+        sqlite3_bind_int64(st, 3, now());
+        sqlite3_bind_int64(st, 4, id);
+        step_done(db, st, "task recur apply");
+    } else {
+        step_done(db, NULL, "task recur apply");
+    }
+    sqlite3_finalize(st);
+}
+
+/* task_db_task_recur_set_next() — store the next-occurrence stamp alone
+ * (see db.h).  Deliberately NO updated_at bump, the same rule
+ * set_pinned/set_priority follow: this is local bookkeeping, and seeding
+ * or advancing it must not dirty the row for sync.                          */
+void
+task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq,
+            "UPDATE tasks SET recur_next = ?1 WHERE id = ?2", -1,
+            &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, next);
+        sqlite3_bind_int64(st, 2, id);
+        step_done(db, st, "task recur set next");
+    } else {
+        step_done(db, NULL, "task recur set next");
+    }
+    sqlite3_finalize(st);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1623,6 +1822,15 @@ task_db_list_apply_remote(TaskDatabase *db, gint64 id, const gchar *name,
  * clean rather than immediately dirty again.  pinned and priority are
  * local-only and untouched.
  *
+ * completed_at is the ONE field here that is MERGED rather than
+ * overwritten: `MAX(completed_at, ?)`, reading the OLD row (gotcha 8).
+ * The stamp only ever moves FORWARD — it answers "when was this last
+ * completed?" — and a remote source reports 0 for anything it does not
+ * currently consider done, so a plain assignment would let an un-tick on
+ * Google erase local history Google never knew about.  A remote
+ * completion NEWER than ours still wins, which is the only case where
+ * the remote genuinely knows better.
+ *
  * `t->status` is written VERBATIM.  A done-only source has already
  * folded its flag through task_status_apply_done against the row it
  * read, which is what stops a round trip promoting a New task.
@@ -1636,7 +1844,8 @@ task_db_task_apply_remote(TaskDatabase *db, const Task *t)
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
             "UPDATE tasks SET title = ?, notes = ?, due = ?, status = ?, "
-            "updated_at = ?, completed_at = ? WHERE id = ?", -1, &st, NULL)
+            "updated_at = ?, completed_at = MAX(completed_at, ?) "
+            "WHERE id = ?", -1, &st, NULL)
         == SQLITE_OK) {
         sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(st, 2, t->notes, -1, SQLITE_TRANSIENT);
@@ -1700,7 +1909,6 @@ task_db_task_apply_done_source(TaskDatabase *db, gint64 id,
     if (sqlite3_prepare_v2(db->sq,
             "UPDATE tasks SET completed_at = CASE "
             "                     WHEN ?1 = 1 AND status <> 2 THEN ?2 "
-            "                     WHEN ?1 = 0 THEN 0 "
             "                     ELSE completed_at END, "
             "title = ?3, due = ?4, "
             "status = CASE WHEN ?1 = 1   THEN 2 "     /* → Done            */

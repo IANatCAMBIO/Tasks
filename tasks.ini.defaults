@@ -63,6 +63,22 @@ compact_layout=0
 # Let the Due Today view also list everything already past due
 # (1|0, default 0; Settings → Appearance).
 due_today_show_overdue=0
+# Recurring tasks (Settings → Recurring Tasks).  A repeat is set per
+# task, in the editor's Advanced section: how often (hourly, daily,
+# weekly, every 2 weeks, monthly, or a custom "every N minutes/hours/
+# days/weeks/months/years"), the time of day the dated ones land on
+# (08:00 by default), and how long BEFORE each repeat a COMPLETED task
+# is put back to New and re-dated (five days by default, shortened
+# automatically when it would not fit inside the repeat itself).
+# Those live on the task row, not here.
+#
+# recur_enabled (1|0, default 1) is the master switch for the pass that
+# acts on them; switching it off leaves the schedules stored but inert.
+recur_enabled=1
+# Minutes between checks.  0 checks only at launch — which always
+# happens, so repeats that came round while Tasks was closed are applied
+# either way rather than being missed.
+recur_check_min=5
 # Kanban View (1|0, default 0; View → Kanban View): show the selected
 # view's tasks as a three-lane board (New / In Progress / Done) instead
 # of a list, with cards you drag between lanes to change their status —
