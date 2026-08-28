@@ -218,13 +218,20 @@ task_recur_lead_seconds(const Task *t)
                                               t->recur_interval);
     if (lead < 0)
         lead = 0;
-    /* One minute short of a full period at most.  A lead >= the period
-     * would mean the task is ALWAYS inside its own lead window: every
-     * pass would fire, roll the due date forward and advance the
-     * schedule, so an hourly task with the five-day default would run
-     * off into next year within a few minutes.                            */
-    if (period > 60 && lead > period - 60)
-        lead = period - 60;
+    /* A lead >= the period means the task is ALWAYS inside its own lead
+     * window: every pass fires, rolls the due date forward and advances
+     * the schedule, so an hourly task with the five-day default would run
+     * off into next year within a few minutes.  So: one minute short of a
+     * period, and NEVER negative.
+     *
+     * The test is `lead >= period`, not `period > 60 && lead > period-60`.
+     * That earlier form left the shortest period of all — every ONE
+     * minute, period exactly 60 — unclamped, so the default five-day lead
+     * survived and the very first pass fast-forwarded the schedule five
+     * days ahead in one step.  One minute is reachable straight from the
+     * editor's custom row, so it is an ordinary case and not a corner.    */
+    if (lead >= period)
+        lead = MAX(period - 60, 0);
     return lead;
 }
 

@@ -301,8 +301,11 @@ with the resync removed the parent comes back as New ~600 ms later.
   **automatic.png** (a gear selector) while manual sorting is in force.  It wore menu.png until the
   pane button existed, and two buttons in one toolbar wearing the same
   picture read as one control.  `interactive.png` and `slide.png` are the
-  images this button used to carry and are now unreferenced (as is
-  kanban.png, see below).
+  images this button used to carry; they and `kanban.png` have been
+  DELETED — they are not in `icons/` and not in `icons/Unused/` either, so
+  do not go looking for them as spares (checked in the 2026-08-27
+  pre-release audit, which found this text still calling them merely
+  "unreferenced").
   Every image the loader builds carries its icon name as `"task-icon-name"`
   object data and its turn as `"task-icon-rotation"` — the images are
   surface-backed, so `gtk_image_get_pixbuf` answers NULL and there is
@@ -602,8 +605,8 @@ with the resync removed the parent comes back as New ~600 ms later.
   and the Favorite / High Priority checkboxes moved to a row of their
   own — TWO rows, because the window asks for 490 px and takes its
   NATURAL height, so an over-wide row would silently widen every editor
-  while an extra row costs one row of height (measured 307 → 335
-  folded).  That second row also carries the read-only **completion
+  while an extra row costs one row of height (307 → 335 folded when the
+  split was made; the folded editor is 343 today).  That second row also carries the read-only **completion
   date** at its right end (`editor_completed_refresh`, dimmed with Pango
   alpha): the space beside two checkboxes was doing nothing, and a label
   there costs NO height at all.  It is EMPTY rather than hidden when it
@@ -654,7 +657,8 @@ with the resync removed the parent comes back as New ~600 ms later.
   `editor_advanced_reveal` shows the block and records `adv_height`;
   `editor_advanced_set` is the applier for a window ALREADY ON SCREEN and
   adds the window resize, so a collapse gives back exactly the pixels the
-  expand took — measured round trip 307 → 581 → 307.
+  expand took — measured round trip 343 → 735 → 343 (the numbers move
+  with the block's contents; the EXACTNESS is the property to keep).
   **The OPEN path reveals BEFORE `show_all` and never resizes**, so the
   window is presented once, at its final size.  It used to show_all and
   then grow, which asks the window manager to present a folded window and
@@ -969,10 +973,17 @@ block is the only place it is set.
   the row's visibility is settled before the window is presented, so it
   is already in the natural height.
 - `recur_lead` is minutes, **7200 (5 days)** by default, and is CLAMPED
-  by `task_recur_lead_seconds` to a minute short of one period.  That
-  clamp is load-bearing, not tidiness: a lead as long as the period puts
-  the task permanently inside its own lead window, so every pass fires
-  and the schedule runs off into next year.  The editor SAYS SO when the
+  by `task_recur_lead_seconds` to a minute short of one period, floored
+  at 0.  That clamp is load-bearing, not tidiness: a lead as long as the
+  period puts the task permanently inside its own lead window, so every
+  pass fires and the schedule runs off into next year.  The test is
+  `lead >= period`, and it must not be written as
+  `period > 60 && lead > period - 60` — that form leaves the SHORTEST
+  period of all (every ONE minute, period exactly 60) unclamped, so the
+  five-day default survived and the first pass fast-forwarded the whole
+  schedule five days ahead.  Found in the pre-release review, 2026-08-27;
+  every 1 minute is reachable straight from the editor's custom row, so
+  it is an ordinary case and not a corner.  The editor SAYS SO when the
   clamp bites ("lead shortened to fit the repeat") rather than quietly
   printing a reset date the user's own number does not explain.
 - `recur_next` is BOOKKEEPING, not a setting.  0 means "not computed

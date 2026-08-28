@@ -420,10 +420,12 @@ task_db_open(const gchar *path, GError **err)
     exec(db, "PRAGMA foreign_keys = ON");
 
     /* The schema, in full.  CREATE IF NOT EXISTS keeps reopen cheap, and
-     * every column is declared HERE — there are no ALTER-based migrations
-     * to reach the current shape, so a fresh file and an existing one have
-     * identical structure.  list_groups comes first: lists.group_id
-     * references it.                                                       */
+     * every column is declared HERE, so a FRESH file is complete the
+     * moment this block has run and needs no migration at all.  An
+     * EXISTING file reaches the same shape through the guarded ALTERs
+     * below — v10 added the recurrence columns, and CREATE IF NOT EXISTS
+     * is a no-op on a file that already has the table (gotcha 24).
+     * list_groups comes first: lists.group_id references it.              */
     exec(db,
         "CREATE TABLE IF NOT EXISTS list_groups ("
         "  id       INTEGER PRIMARY KEY,"
@@ -499,13 +501,12 @@ task_db_open(const gchar *path, GError **err)
     sqlite3_finalize(vst);
 
     /* ---------------------------------------------------------------------
-     * IF A MIGRATION IS EVER ADDED, back the file up before it runs.
+     * BACK THE FILE UP BEFORE ANY MIGRATION RUNS.
      *
-     * There are no migrations today — every column is declared in the
-     * schema block above — so this is INERT and deliberately kept that
-     * way: it is the guard the next schema change inherits for free.
-     * Whoever adds that change must bump TASK_DB_SCHEMA_VERSION and add the
-     * ALTERs below this block, and they get a backup automatically.
+     * This is live, not a placeholder: it fires for every file older than
+     * TASK_DB_SCHEMA_VERSION, and v8, v9 and v10 have all used it.  A
+     * later schema change inherits it for free — bump the constant and
+     * add the migration below this block, and the backup happens.
      *
      * Not paranoia.  A table-rewriting migration (`ALTER TABLE … DROP
      * COLUMN`) running with no backup, against a database in a sync

@@ -135,18 +135,21 @@ editor_due_entry_parse(TaskEditor *ed, gint64 current)
  * both sides call task_recur_seed.
  * =========================================================================== */
 
-/* The lead's unit menu, in the order the combo appends them — its active
- * index is an index INTO THIS TABLE.  It is not TaskRecurUnit: a lead of
- * "3 months" is meaningless (the clamp would cut it to under one period
- * anyway), so the menu stops at weeks and the value is stored in the
- * MINUTES the column holds.                                               */
-static const struct { const gchar *label; gint minutes; } recur_lead_units[] = {
-    { "minutes",     1 },
-    { "hours",      60 },
-    { "days",     1440 },
-    { "weeks",   10080 },
+/* The lead's unit menu is the first FOUR TaskRecurUnit values — minutes,
+ * hours, days, weeks — so its active index IS the enum value and the
+ * LABELS come from task_recur_unit_label, the same table the custom row's
+ * combo uses.  Only the minutes-per-unit multipliers are local, because
+ * only this menu needs them (the column stores minutes).
+ *
+ * It stops at weeks on purpose: a lead of "3 months" says nothing the
+ * clamp would not immediately cut back to under one period.  That the
+ * first four enum values are exactly the four wanted is not luck — the
+ * units are in ascending duration order (db.h), which several things
+ * here rely on.                                                           */
+#define RECUR_LEAD_N_UNITS 4
+static const gint recur_lead_minutes[RECUR_LEAD_N_UNITS] = {
+    1, 60, 1440, 10080
 };
-#define RECUR_LEAD_UNIT_DAYS 2       /* the fallback, matching the default  */
 
 /* editor_recur_time_parse() — the "HH:MM" entry as minutes past midnight,
  * with the same mid-typing guard the due entry has (editor_due_entry_parse):
@@ -190,9 +193,9 @@ editor_recur_lead_minutes(TaskEditor *ed)
     gint n = gtk_spin_button_get_value_as_int(
                  GTK_SPIN_BUTTON(ed->recur_lead_spin));
     gint u = gtk_combo_box_get_active(GTK_COMBO_BOX(ed->recur_lead_unit));
-    if (u < 0 || u >= (gint)G_N_ELEMENTS(recur_lead_units))
-        u = RECUR_LEAD_UNIT_DAYS;
-    return n * recur_lead_units[u].minutes;
+    if (u < 0 || u >= RECUR_LEAD_N_UNITS)
+        u = (gint)TASK_RECUR_DAY;    /* the fallback, matching the default */
+    return n * recur_lead_minutes[u];
 }
 
 /* editor_recur_lead_set() — the inverse: show `minutes` in the LARGEST
@@ -204,14 +207,14 @@ editor_recur_lead_set(TaskEditor *ed, gint minutes)
     if (minutes <= 0)
         minutes = TASK_RECUR_LEAD_DEFAULT;
     gint u = 0;
-    for (gint i = (gint)G_N_ELEMENTS(recur_lead_units) - 1; i >= 0; i--)
-        if (minutes % recur_lead_units[i].minutes == 0) {
+    for (gint i = RECUR_LEAD_N_UNITS - 1; i >= 0; i--)
+        if (minutes % recur_lead_minutes[i] == 0) {
             u = i;
             break;
         }
     gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_lead_unit), u);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(ed->recur_lead_spin),
-                              minutes / recur_lead_units[u].minutes);
+                              minutes / recur_lead_minutes[u]);
 }
 
 /* ---------------------------------------------------------------------------
@@ -327,9 +330,14 @@ editor_status_get(TaskEditor *ed)
 static void
 editor_completed_refresh(TaskEditor *ed, const Task *t)
 {
+    /* ONE condition carrying the NULL guard and the has-a-stamp test, so
+     * the branch that reads t->status is visibly the branch that proved t
+     * is non-NULL.  Splitting them left the dereference unreachable but
+     * unprovably so — clang's analyzer flagged it, and a reader has to do
+     * the same reasoning it could not.                                    */
     gchar *when = t != NULL ? task_due_format(t->completed_at)
                             : g_strdup("");
-    gchar *markup = *when != '\0'
+    gchar *markup = (t != NULL && *when != '\0')
         ? g_markup_printf_escaped(
               "<small><span alpha=\"65%%\">%s %s</span></small>",
               t->status == TASK_STATUS_DONE ? COMPLETED_LABEL_DONE
@@ -1740,12 +1748,12 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
         gtk_box_pack_start(GTK_BOX(r3), ed->recur_lead_spin,
                            FALSE, FALSE, 0);
         ed->recur_lead_unit = gtk_combo_box_text_new();
-        for (gsize i = 0; i < G_N_ELEMENTS(recur_lead_units); i++)
+        for (gint i = 0; i < RECUR_LEAD_N_UNITS; i++)
             gtk_combo_box_text_append_text(
                 GTK_COMBO_BOX_TEXT(ed->recur_lead_unit),
-                recur_lead_units[i].label);
+                task_recur_unit_label((TaskRecurUnit)i));
         gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_lead_unit),
-                                 RECUR_LEAD_UNIT_DAYS);
+                                 (gint)TASK_RECUR_DAY);
         gtk_box_pack_start(GTK_BOX(r3), ed->recur_lead_unit,
                            FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(r3), gtk_label_new("beforehand"),

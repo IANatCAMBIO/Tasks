@@ -65,6 +65,11 @@
 
 #include "app.h"
 
+/* The default check cadence, shared with the Settings spin button so the
+ * UI and the timer cannot disagree about what an unset key means (the
+ * same arrangement backup.h makes).                                       */
+#define TASK_RECUR_CHECK_DEFAULT 5
+
 /* ---------------------------------------------------------------------------
  * The presets the editor offers, in menu order.  A preset is nothing but a
  * named (interval, unit) pair — CUSTOM is the absence of one, so the user's
@@ -207,8 +212,13 @@ gchar *task_recur_describe(const Task *t, gint64 now_ts);
  * pane and every open editor need to see it).  Zero changes are silent —
  * this runs every few minutes and has nothing to say most times.
  *
- * Public because the periodic worker is not the only caller that makes
- * sense: a "check now" belongs to the user, and the pass is cheap.
+ * Two callers: recur_run, the scheduler's tick, and the scratchpad test
+ * harness — which is also why the pure helpers above (advance, seed,
+ * lead_seconds, period_seconds) are declared here rather than left static.
+ * They have no in-tree caller outside recur.c and are NOT dead: the
+ * harness links against build/recur.o and drives them directly, the same
+ * arrangement CLAUDE.md describes for the older test_bt.c.  Deleting one
+ * because "nothing calls it" breaks the tests, not the app.
  * ------------------------------------------------------------------------- */
 gint task_recur_pass(TaskApp *app);
 
@@ -222,9 +232,5 @@ void task_recur_init(TaskApp *app);
 /* task_recur_auto_start() — (re)arm just this worker, for a Settings
  * change to its own interval.  Everything else re-arms all of them.        */
 void task_recur_auto_start(TaskApp *app, const gchar *db_path);
-
-/* Defaults shared with the Settings spin button, so the UI and the timer
- * cannot disagree about what an unset key means.                           */
-#define TASK_RECUR_CHECK_DEFAULT 5
 
 #endif /* TASK_RECUR_H */

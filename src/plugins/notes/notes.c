@@ -272,7 +272,7 @@ typedef struct {
  * filed into: the configured list when it names a LIVE one, else the
  * managed "Action Items" list, created on first use.
  * ------------------------------------------------------------------------- */
-gint64
+static gint64
 bn_target_list(TaskDatabase *db, gint64 configured)
 {
     if (configured > 0) {
@@ -304,7 +304,7 @@ bn_target_list(TaskDatabase *db, gint64 configured)
  * bn_reconcile_target() — apply a changed target list to the
  * items already mirrored.
  * ------------------------------------------------------------------------- */
-void
+static void
 bn_reconcile_target(TaskApp *app)
 {
     if (!host->config->get_bool(self, "sync", FALSE))
@@ -489,13 +489,21 @@ reap_missing(BnJob *job, TaskDatabase *db, GHashTable *present,
 
     for (guint i = 0; i < mirror->len; i++) {
         Task *t = g_ptr_array_index(mirror, i);
-        if (g_hash_table_contains(present, GSIZE_TO_POINTER(bn_uid_of(db, t->id))))
+        /* Read ONCE.  This queried the uid twice — here, and again after
+         * the delete — which is two round trips for one answer.  It was
+         * safe either way (task_delete only TOMBSTONES, and the delete
+         * hook merely INSERTs into notes_deleted, so the notes_task row
+         * survives and the second read returned the same uid), but
+         * reading a value back out of a row the line above has just
+         * written is a habit worth not having.                          */
+        gint64 uid = bn_uid_of(db, t->id);
+        if (g_hash_table_contains(present, GSIZE_TO_POINTER(uid)))
             continue;
         host->db->task_delete(db, t->id);
         /* task_delete parks the uid in bn_deleted so a live item is not
          * re-created after a local delete; here the item is gone from
          * Notes, so that suppression has nothing left to suppress.       */
-        bn_forget(db, bn_uid_of(db, t->id));
+        bn_forget(db, uid);
         job->n_removed++;
     }
     host->db->tasks_free(mirror);
@@ -713,7 +721,7 @@ static TaskWorkerDef bn_worker_live;
  * bn_auto_start() — (re)arm the mirror timer from the interval setting
  * (default 5 minutes; 0 = only when Sync is pressed).
  * ------------------------------------------------------------------------- */
-void
+static void
 bn_auto_start(TaskApp *app, const gchar *db_path)
 {
     host->worker->arm(app, &bn_worker_live, db_path);

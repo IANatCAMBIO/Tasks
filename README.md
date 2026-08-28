@@ -12,8 +12,11 @@ Low resource usage, and runs on macOS and Linux.
 
 TLDR; Your tasks live in a single SQLite file you can take anywhere.
 You organize them in a Library window — lists in the sidebar, tasks in a listview. 
-Add subtasks and a color-coded due date to each item. Anything beyond that —
-syncing, extra views — is a plugin you switch on.
+Add subtasks and a color-coded due date to each item, and set a repeat on
+the ones that come back round — daily, weekly, monthly or an interval of
+your own — and Tasks reopens them and moves the due date on as each one
+falls due. Anything beyond that — syncing, extra views — is a plugin you
+switch on.
 
 Want more detail?
 
@@ -24,7 +27,8 @@ Want more detail?
 
 ## Plugins
 
-Tasks keeps its core small: lists, tasks, subtasks, due dates. Everything
+Tasks keeps its core small: lists, tasks, subtasks, due dates,
+recurrence. Everything
 else is a **plugin** — a separate module in the `plugins` folder beside
 the program, switched on or off in *File → Settings… → Plugins*, taking
 effect immediately.

@@ -4461,8 +4461,6 @@ on_library_destroy(GtkWidget *w, gpointer data)
      * can destroy sibling editors mid-teardown (a failing Notes CLI
      * closes its editors on reload) and leave close_all's snapshot list
      * holding freed windows.                                               */
-    /* The widgets belong to the pane and die with it; only the index
-     * array is ours.                                                       */
     /* The panes themselves are children of the window and are destroyed
      * with it; only the table goes here.                                 */
     g_clear_pointer(&lw->panels, (GDestroyNotify)g_hash_table_destroy);
