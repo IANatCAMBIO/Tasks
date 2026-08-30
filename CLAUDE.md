@@ -303,13 +303,15 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   Printing it always would put a clock on every row and distinguish
   nothing — the same judgement `editor_recur_lead_set` makes when it shows
   "5 days" rather than "7200 minutes".
-- The editor's first row is now `Due: [YYYY-MM-DD] at [HH:MM] 📅`.  The time
+- The editor's first row is now `Due: [YYYY-MM-DD] at [HH:MM]`.  The time
   entry is **5 chars wide, not 6**: this row is the editor's widest, and at
   6 it measured 4 px past the 490 the window asks for and silently grew
   every editor to fit.  Measured — keep it under, not near.  It fits at all
   only because the row's middle was empty (Status is pack_start, the due
   controls pack_end), the same slack the completion label found on the
-  flags row.  `editor_time_entry_parse` / `_set` are shared with the
+  flags row.  That middle stays empty on purpose, and the time entry is the
+  row's LAST pack_end child with no padding, so it ends flush with the
+  title box above it.  `editor_time_entry_parse` / `_set` are shared with the
   recurrence block's time entry (they take the WIDGET, and each caller
   names its own default), so the mid-typing guard exists once.
 - **The recurrence pass writes it**, and that is the point of the column:
@@ -661,8 +663,19 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   rides on menu items as `g_array_ref`'d id arrays with destroy
   notifies.
 - Editor: 600 ms debounced write-through saves; status/pinned save
-  immediately.  The first row is `Status: [combo]` … `Due: [entry] 📅`
-  and the Favorite / High Priority checkboxes moved to a row of their
+  immediately.  The first row is `Status: [combo]` … `Due: [entry] at
+  [HH:MM]` — **the due entry IS its own date picker** (a left click opens
+  the calendar, `on_due_entry_press`), so there is no 📅 button beside it
+  and there must not be one again: the button and the entry were two
+  controls for one field, and the click a user tries first is the one on
+  the field.  Only BUTTON 1 is taken; every other button falls through, so
+  the right-click menu and keyboard focus still reach the entry — which is
+  why the mid-typing guards in `editor_due_entry_parse` and
+  `due_entry_refresh` are still load-bearing.  The Recurrence block's
+  `Starting:` entry works the SAME way (`on_recur_start_press`), and it
+  has no button either — one rule for both date fields in this window.
+  `editor_pick_date` is still the shared dialog behind both.
+  The Favorite / High Priority checkboxes moved to a row of their
   own — TWO rows, because the window asks for 490 px and takes its
   NATURAL height, so an over-wide row would silently widen every editor
   while an extra row costs one row of height (307 → 335 folded when the
@@ -1014,8 +1027,9 @@ block is the only place it is set.
 - **`recur_start` (v11) is the schedule's ANCHOR DAY** — the "Monday" of
   "every Monday at 9:00 AM", where `recur_time` is the "9:00".  It is a
   DATE and never a time: unix local midnight, like `due`, and the editor
-  writes it from a `Starting:` entry with the same 📅 picker the Due row
-  has (`editor_pick_date`, now shared by both buttons).  **0 = unset, and
+  writes it from a `Starting:` entry that opens `editor_pick_date` on a
+  click, the same way the Due entry does — neither has a 📅 button.
+  **0 = unset, and
   unset is the ordinary case**: the anchor then falls back to the task's
   own due date and finally to today, which is exactly what every schedule
   set before v11 was built on — so the migration changes no existing
@@ -1027,14 +1041,29 @@ block is the only place it is set.
   phase-locks the stride (`task_recur_seed` fast-forwards to it with ONE
   DIVISION — a per-minute schedule and a month-old start is otherwise
   43200 GDateTime allocations, the same trick `recur_catch_up` uses).
-- The Recurrence block's first row reads `Repeat: [combo] at [HH:MM]`,
-  all of it PACK_START.  The time entry was pack_end'd to line up with
-  the Due entry two rows above, which put ~300 px of nothing in the
+- The Recurrence block's rows run **`Starting:` FIRST, then
+  `Repeat: [combo] at [HH:MM]`, then the custom row**, and that order is
+  the SENTENCE: "starting on this date, repeat every N units".  Starting
+  led the Repeat row on 2026-08-30 for exactly that reason — it used to
+  sit below the custom row, which made the block read back to front.
+  The Repeat row is all PACK_START.  The time entry was pack_end'd to
+  line up with the Due entry above, which put ~300 px of nothing in the
   middle of what is ONE SENTENCE — a column that splits a phrase in half
-  is not worth the column.  The start date gets a ROW OF ITS OWN below
-  the custom row: three controls and their labels on one line would take
-  the editor past the 490 px it asks for, and widening the window is the
-  one cost this layout does not pay.
+  is not worth the column.  The start date keeps a ROW OF ITS OWN: three
+  controls and their labels on one line would take the editor past the
+  490 px it asks for, and widening the window is the one cost this
+  layout does not pay.  The custom row stays DIRECTLY under Repeat,
+  since it is that combo's Custom… expanding, and
+  `editor_recur_custom_set`'s grow/shrink arithmetic (`nat + 4`, the
+  box's spacing) assumes nothing else between them.
+- **The `Reset to New … beforehand` row is SET APART** from the two
+  above it by an 8 px top margin: those two say WHEN the task repeats,
+  that one says what happens to a completed task beforehand — a
+  different question about the same schedule.  A margin on the row, not
+  a separator and not a second box: the block is a plain GtkBox at 4 px
+  spacing, GTK folds a child's margin into the preferred height, and
+  `adv_height` is read after the block is built, so nothing else needs
+  to know about it.
 - A dimmed, wrapped DESCRIPTION sits directly under the block's heading,
   saying what recurrence does to the due date and what the lead is for.
   Static markup, set where the label is built and never touched again —

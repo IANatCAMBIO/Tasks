@@ -77,7 +77,6 @@ typedef struct {
     GtkWidget    *recur_start_entry; /* "YYYY-MM-DD" — the anchor DAY; the
                                       * "Monday" of "every Monday at 9",
                                       * empty = anchor on the due date     */
-    GtkWidget    *recur_start_btn;   /* its 📅 picker (greyed with it)      */
     GtkWidget    *recur_lead_spin;   /* reset this long before it …         */
     GtkWidget    *recur_lead_unit;   /* … in these units                    */
     GtkWidget    *recur_summary;     /* "Every Monday at 9:00 AM / Next …"  */
@@ -592,10 +591,10 @@ editor_recur_refresh(TaskEditor *ed)
     /* The start date applies to EVERY unit — it anchors the minute and
      * hour strides as well as naming the weekday of a weekly repeat — so
      * it greys with the schedule as a whole and not with the time entry
-     * beside it.  The picker button greys with its entry: a button that
-     * writes into a dead field is worse than no button.                    */
+     * below it.  That also disarms its click-to-pick: an insensitive entry
+     * gets no button press, so on_recur_start_press cannot open a calendar
+     * that would write into a dead field.                                  */
     gtk_widget_set_sensitive(ed->recur_start_entry, on);
-    gtk_widget_set_sensitive(ed->recur_start_btn, on);
     gtk_widget_set_sensitive(ed->recur_lead_spin, on);
     gtk_widget_set_sensitive(ed->recur_lead_unit, on);
 
@@ -799,29 +798,55 @@ editor_pick_date(TaskEditor *ed, GtkWidget *entry, const gchar *title)
     return changed;
 }
 
-/* on_due_calendar() — the due row's 📅 button.  The write-through save is
- * immediate rather than debounced: a pick from a modal dialog is a
- * deliberate act, like a dropdown choice.                                  */
-static void
-on_due_calendar(GtkWidget *w, gpointer data)
+/* on_due_entry_press() — the due ENTRY is the picker: a left click in it
+ * opens the calendar instead of placing a caret, so the row needs no 📅
+ * button of its own.  TRUE stops the entry's own handler, which is what
+ * keeps the click from taking focus and leaving a caret blinking behind
+ * the modal dialog.  Any OTHER button falls through untouched, so the
+ * right-click context menu (and with it paste, and keyboard focus) still
+ * reaches the entry — the mid-typing guards in editor_due_entry_parse and
+ * due_entry_refresh are still load-bearing because of that path.
+ *
+ * The write-through save is immediate rather than debounced: a pick from a
+ * modal dialog is a deliberate act, like a dropdown choice.               */
+static gboolean
+on_due_entry_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
 {
     (void)w;
     TaskEditor *ed = data;
+
+    if (ev->type != GDK_BUTTON_PRESS || ev->button != GDK_BUTTON_PRIMARY)
+        return FALSE;
+
     if (editor_pick_date(ed, ed->due_entry, "Due Date"))
         editor_save_now(ed);
+    return TRUE;
 }
 
-/* on_recur_start_calendar() — the Recurrence block's 📅 button.  Setting
- * the entry's text emits "changed", so on_recur_changed reseeds the next
- * occurrence and re-labels the summary on its own; only the immediate save
- * is left to do here, for the same reason the due picker does one.         */
-static void
-on_recur_start_calendar(GtkWidget *w, gpointer data)
+/* on_recur_start_press() — the Starting entry is its own picker, exactly
+ * as the due entry is (on_due_entry_press): a left click opens the
+ * calendar, every other button falls through, and the block needs no 📅
+ * button of its own.  The entry greys with the schedule as a whole
+ * (editor_recur_refresh), and an insensitive GtkEntry is never handed a
+ * button press, so the click stops offering a picker for a dead field
+ * without a check of its own here.
+ *
+ * Setting the entry's text emits "changed", so on_recur_changed reseeds
+ * the next occurrence and re-labels the summary on its own; only the
+ * immediate save is left to do here, for the same reason the due picker
+ * does one.                                                               */
+static gboolean
+on_recur_start_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
 {
     (void)w;
     TaskEditor *ed = data;
+
+    if (ev->type != GDK_BUTTON_PRESS || ev->button != GDK_BUTTON_PRIMARY)
+        return FALSE;
+
     if (editor_pick_date(ed, ed->recur_start_entry, "Start Date"))
         editor_save_now(ed);
+    return TRUE;
 }
 
 /* ===========================================================================
@@ -1571,19 +1596,23 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                      G_CALLBACK(on_toggle_changed), ed);
     gtk_box_pack_start(GTK_BOX(row), ed->status_combo, FALSE, FALSE, 0);
 
-    GtkWidget *due_btn = small_button("\xf0\x9f\x93\x85",
-                                      G_CALLBACK(on_due_calendar), ed);
-    gtk_widget_set_tooltip_text(due_btn, "Pick a due date");
-    gtk_box_pack_end(GTK_BOX(row), due_btn, FALSE, FALSE, 0);
     /* The time of day that due date means.  pack_end puts the FIRST-packed
-     * child rightmost, so the reading order here is bottom-up: the button,
-     * then this entry, then "at", then the date, then the "Due:" label —
-     * which comes out as `Due: [date] at [HH:MM] [📅]`.
+     * child rightmost, so the reading order here is bottom-up: this entry,
+     * then "at", then the date, then the "Due:" label — which comes out as
+     * `Due: [date] at [HH:MM]`.  The time entry is therefore the row's
+     * last child and, packed with no padding like the title entry above
+     * it, ends flush with the title box's right edge.
      *
-     * It fits WITHOUT widening the editor because this row was mostly
-     * empty in the middle (Status is pack_start, the due controls
-     * pack_end), which is the same slack the completion label found on
-     * the flags row below.                                                 */
+     * There is NO 📅 button any more (2026-08-30): the due entry opens the
+     * picker itself (on_due_entry_press), which is one control where there
+     * were two and gives the row back the button's width.  The Recurrence
+     * block's Starting: entry keeps its button — it is a plain date field
+     * that is also typed into, and the two rows are not the same case.
+     *
+     * The middle of the row is left EMPTY on purpose: Status is
+     * pack_start, the due controls pack_end, and that slack is what let
+     * the time entry fit without widening the editor (the same slack the
+     * completion label found on the flags row below).                      */
     ed->due_time_entry = gtk_entry_new();
     /* FIVE chars, not the recurrence entry's six: "HH:MM" is exactly five
      * and this row is the editor's widest.  At six it came out 4 px past
@@ -1605,6 +1634,12 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     gtk_entry_set_width_chars(GTK_ENTRY(ed->due_entry), 12);
     gtk_entry_set_placeholder_text(GTK_ENTRY(ed->due_entry),
                                    "YYYY-MM-DD");
+    gtk_widget_set_tooltip_text(ed->due_entry,
+        "Click to pick a due date.");
+    /* The entry IS the picker — it needs the button-press event, which a
+     * GtkEntry's own window gets by default, so no add_events call.        */
+    g_signal_connect(ed->due_entry, "button-press-event",
+                     G_CALLBACK(on_due_entry_press), ed);
     g_signal_connect(ed->due_entry, "changed",
                      G_CALLBACK(on_field_changed), ed);
     gtk_box_pack_end(GTK_BOX(row), ed->due_entry, FALSE, FALSE, 0);
@@ -1819,7 +1854,50 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
         gtk_label_set_max_width_chars(GTK_LABEL(desc), 52);
         gtk_box_pack_start(GTK_BOX(rec), desc, FALSE, FALSE, 0);
 
-        /* Row 1 — the preset.  One row per TaskRecurPreset, appended IN
+        /* Row 1 — the START date: the day the schedule is anchored on.
+         * FIRST, above the repeat, because that is the order the sentence
+         * runs in — "starting on this date, repeat every N units".  The
+         * schedule then reads top to bottom the way someone would say it
+         * out loud, and the two rows that describe WHEN it repeats sit
+         * together, apart from the reset row further down.
+         *
+         * A row of its own rather than more of the Repeat row: three
+         * controls and their labels on one line would take the editor
+         * past the 490 px it asks for, and widening the window is the one
+         * cost this layout does not pay (the notes box and every other
+         * row are sized against that width).
+         *
+         * The entry IS the picker (on_recur_start_press) — there is no
+         * 📅 button beside it, for the reason the due row has none:
+         * two controls for one field, where the click a user tries first
+         * is the one on the field itself.
+         *
+         * EMPTY is a real and ordinary value — it means "anchor on the
+         * due date", which is what every schedule did before this row
+         * existed and what most tasks still want.  So the entry starts
+         * blank rather than being seeded with today: a date filled in
+         * here is a date the user chose.                                 */
+        GtkWidget *r_start = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_box_pack_start(GTK_BOX(r_start), gtk_label_new("Starting:"),
+                           FALSE, FALSE, 0);
+        ed->recur_start_entry = gtk_entry_new();
+        gtk_entry_set_width_chars(GTK_ENTRY(ed->recur_start_entry), 12);
+        gtk_entry_set_max_width_chars(GTK_ENTRY(ed->recur_start_entry), 12);
+        gtk_entry_set_placeholder_text(GTK_ENTRY(ed->recur_start_entry),
+                                       "YYYY-MM-DD");
+        gtk_widget_set_tooltip_text(ed->recur_start_entry,
+            "Click to pick the day this schedule is anchored on "
+            "\xe2\x80\x94 the \"Monday\" of \"every Monday at 9:00 AM\".  A "
+            "start still in the future is the FIRST repeat, not a week "
+            "after it.  Leave it empty to anchor on the task's own due "
+            "date.");
+        g_signal_connect(ed->recur_start_entry, "button-press-event",
+                         G_CALLBACK(on_recur_start_press), ed);
+        gtk_box_pack_start(GTK_BOX(r_start), ed->recur_start_entry,
+                           FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(rec), r_start, FALSE, FALSE, 0);
+
+        /* Row 2 — the preset.  One row per TaskRecurPreset, appended IN
          * ENUM ORDER, so the active index IS the preset value (the same
          * arrangement the Status combo has).                              */
         GtkWidget *r1 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -1843,7 +1921,7 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
          * natural height where a row of its own would cost real pixels.
          *
          * pack_START, immediately after the combo.  It was pack_end'd to
-         * line the entry up with the Due entry two rows above, and that
+         * line the entry up with the Due entry further above, and that
          * put ~300 px of nothing in the middle of what is ONE SENTENCE —
          * "repeat weekly at 08:00".  A column that splits a phrase in
          * half is not worth the column.                                 */
@@ -1862,7 +1940,7 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                            FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(rec), r1, FALSE, FALSE, 0);
 
-        /* Row 2 — the custom schedule, PRESENT only while the preset
+        /* Row 3 — the custom schedule, PRESENT only while the preset
          * above is Custom….  no_show_all keeps it out of both show_all
          * passes (the window's and adv_box's), which is what makes it
          * absent from the folded natural height and leaves
@@ -1888,48 +1966,19 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                            FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(rec), r2, FALSE, FALSE, 0);
 
-        /* Row 3 — the START date: the day the schedule is anchored on.
-         * Together with the time entry above it, this is what makes the
-         * whole schedule sayable in one sentence — "every Monday at
-         * 9:00 AM" is this row's Monday and that row's 9:00.
-         *
-         * A row of its own rather than more of row 1: three controls and
-         * their labels on one line would take the editor past the 490 px
-         * it asks for, and widening the window is the one cost this
-         * layout does not pay (the notes box and every other row are
-         * sized against that width).
-         *
-         * EMPTY is a real and ordinary value — it means "anchor on the
-         * due date", which is what every schedule did before this row
-         * existed and what most tasks still want.  So the entry starts
-         * blank rather than being seeded with today: a date filled in
-         * here is a date the user chose.                                 */
-        GtkWidget *r_start = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_box_pack_start(GTK_BOX(r_start), gtk_label_new("Starting:"),
-                           FALSE, FALSE, 0);
-        ed->recur_start_entry = gtk_entry_new();
-        gtk_entry_set_width_chars(GTK_ENTRY(ed->recur_start_entry), 12);
-        gtk_entry_set_max_width_chars(GTK_ENTRY(ed->recur_start_entry), 12);
-        gtk_entry_set_placeholder_text(GTK_ENTRY(ed->recur_start_entry),
-                                       "YYYY-MM-DD");
-        gtk_widget_set_tooltip_text(ed->recur_start_entry,
-            "The day this schedule is anchored on \xe2\x80\x94 the "
-            "\"Monday\" of \"every Monday at 9:00 AM\".  A start still in "
-            "the future is the FIRST repeat, not a week after it.  Leave "
-            "it empty to anchor on the task's own due date.");
-        gtk_box_pack_start(GTK_BOX(r_start), ed->recur_start_entry,
-                           FALSE, FALSE, 0);
-        ed->recur_start_btn = small_button("\xf0\x9f\x93\x85",
-                                  G_CALLBACK(on_recur_start_calendar), ed);
-        gtk_widget_set_tooltip_text(ed->recur_start_btn,
-                                    "Pick the day the repeats start on");
-        gtk_box_pack_start(GTK_BOX(r_start), ed->recur_start_btn,
-                           FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(rec), r_start, FALSE, FALSE, 0);
-
         /* Row 4 — the lead: how long before each repeat a completed task
-         * is reset to New.  Five days by default.                         */
+         * is reset to New.  Five days by default.
+         *
+         * SET APART from the two rows above by a top margin: those say
+         * WHEN the task repeats, this says what happens to a completed
+         * one beforehand, which is a different question about the same
+         * schedule.  A margin on the row rather than a separator or a
+         * second box — the block is a plain GtkBox at 4 px spacing, and
+         * one child's margin is the whole of the change; GTK folds it
+         * into the preferred height, so adv_height still measures true
+         * (it is read AFTER the block is built).                          */
         GtkWidget *r3 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_widget_set_margin_top(r3, 8);
         gtk_box_pack_start(GTK_BOX(r3), gtk_label_new("Reset to New"),
                            FALSE, FALSE, 0);
         ed->recur_lead_spin = gtk_spin_button_new_with_range(0, 999, 1);
