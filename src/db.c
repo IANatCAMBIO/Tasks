@@ -460,15 +460,22 @@ task_db_open(const gchar *path, GError **err)
             "  updated_at   INTEGER NOT NULL DEFAULT 0,"
             "  deleted      INTEGER NOT NULL DEFAULT 0,"
             "  completed_at INTEGER NOT NULL DEFAULT 0,"
-            /* The recurrence schedule (v10).  Declared HERE so a fresh
-             * file needs no migration at all; the v10 block below ADDs
-             * the same five to a file that predates them.               */
+            /* The recurrence schedule (v10, plus recur_start at v11).
+             * Declared HERE so a fresh file needs no migration at all;
+             * the v10 and v11 blocks below ADD the same columns to a
+             * file that predates them.                                 */
             "  recur_interval INTEGER NOT NULL DEFAULT 0,"
             "  recur_unit     INTEGER NOT NULL DEFAULT 0,"
             "  recur_time     INTEGER NOT NULL DEFAULT %d,"
             "  recur_lead     INTEGER NOT NULL DEFAULT %d,"
-            "  recur_next     INTEGER NOT NULL DEFAULT 0)",
-            TASK_RECUR_TIME_DEFAULT, TASK_RECUR_LEAD_DEFAULT);
+            "  recur_next     INTEGER NOT NULL DEFAULT 0,"
+            "  recur_start    INTEGER NOT NULL DEFAULT 0,"
+            /* The due date's time of day (v12).  Its DEFAULT is the whole
+             * migration for existing rows: every due date that nobody has
+             * timed by hand means 08:00, here and in the ALTER below.   */
+            "  due_time       INTEGER NOT NULL DEFAULT %d)",
+            TASK_RECUR_TIME_DEFAULT, TASK_RECUR_LEAD_DEFAULT,
+            TASK_DUE_TIME_DEFAULT);
         exec(db, tasks_sql);
         g_free(tasks_sql);
     }
@@ -745,6 +752,48 @@ task_db_open(const gchar *path, GError **err)
         if (added > 0)
             g_message("Migrated %s to schema v10: added %d recurrence "
                       "column(s) to tasks", path, added);
+    }
+
+    /* -----------------------------------------------------------------
+     * v11 — recur_start, the schedule's own anchor date.
+     *
+     * A block of its own rather than a sixth row in the v10 table above,
+     * so the log message keeps saying which version added what.  Same
+     * shape and same guard: ADD COLUMN, keyed on the column not existing
+     * so it is idempotent (gotcha 24).
+     *
+     * DEFAULT 0 means "unset", and unset is exactly what every existing
+     * recurring task wants: the anchor then falls back to the due date,
+     * which is the rule those tasks were created under.
+     * ----------------------------------------------------------------- */
+    if (!table_has_column(db, "tasks", "recur_start")) {
+        if (exec(db, "ALTER TABLE tasks ADD COLUMN recur_start INTEGER "
+                     "NOT NULL DEFAULT 0"))
+            g_message("Migrated %s to schema v11: added tasks.recur_start",
+                      path);
+    }
+
+    /* -----------------------------------------------------------------
+     * v12 — due_time, the time of day a due DATE means.
+     *
+     * ADD COLUMN, guarded on the column (gotcha 24), and the DEFAULT does
+     * the whole data migration: every existing due date comes back
+     * meaning 08:00, which is what "all due dates default to 8am" asks
+     * for.  Nothing is rewritten and no row is touched.
+     *
+     * The value is built from TASK_DUE_TIME_DEFAULT rather than written
+     * as a literal, because the CREATE above spells the same default and
+     * two spellings is how a fresh file and a migrated one come to
+     * disagree about what an untouched row means (gotcha 24 again).
+     * ----------------------------------------------------------------- */
+    if (!table_has_column(db, "tasks", "due_time")) {
+        gchar *sql = g_strdup_printf(
+            "ALTER TABLE tasks ADD COLUMN due_time INTEGER NOT NULL "
+            "DEFAULT %d", TASK_DUE_TIME_DEFAULT);
+        if (exec(db, sql))
+            g_message("Migrated %s to schema v12: added tasks.due_time",
+                      path);
+        g_free(sql);
     }
 
     {   /* Stamped from the CONSTANT for the same reason.               */
@@ -1076,7 +1125,7 @@ task_db_list_emoji_if_empty(TaskDatabase *db, gint64 list_id,
                   "status, pinned, position, updated_at, deleted, "\
                   "completed_at, priority, "\
                   "recur_interval, recur_unit, recur_time, recur_lead, "\
-                  "recur_next"
+                  "recur_next, recur_start, due_time"
 
 static Task *
 read_task(sqlite3_stmt *st)
@@ -1109,6 +1158,15 @@ read_task(sqlite3_stmt *st)
     t->recur_time   = sqlite3_column_int(st, 15);
     t->recur_lead   = sqlite3_column_int(st, 16);
     t->recur_next   = sqlite3_column_int64(st, 17);
+    t->recur_start  = sqlite3_column_int64(st, 18);
+    /* Clamped on the way IN, like recur_unit above: a hand-edited or
+     * out-of-range value would otherwise format as a nonsense clock time
+     * on every row that shows one.                                       */
+    {
+        gint m = sqlite3_column_int(st, 19);
+        t->due_time = (m >= 0 && m <= 23 * 60 + 59) ? m
+                                                    : TASK_DUE_TIME_DEFAULT;
+    }
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
     return t;
@@ -1227,8 +1285,13 @@ GPtrArray *
 task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi)
 {
     return task_query(db,
+        /* due_time joins the sort so a day's tasks read in the order they
+         * actually come due — `due` alone is midnight for every row in
+         * the bucket and so cannot separate them (the Weekly Forecast's
+         * day sections are the visible case).                            */
         "SELECT " TASK_COLS " FROM tasks WHERE due >= ? AND due < ? AND "
-        "deleted = 0 ORDER BY priority DESC, due, list_id, position",
+        "deleted = 0 ORDER BY priority DESC, due, due_time, list_id, "
+        "position",
         2, lo, hi);
 }
 
@@ -1357,7 +1420,8 @@ task_db_task_update(TaskDatabase *db, const Task *t)
             "                    ELSE completed_at END, "
             "status = ?4, pinned = ?5, updated_at = ?6, priority = ?8, "
             "recur_interval = ?9, recur_unit = ?10, recur_time = ?11, "
-            "recur_lead = ?12, recur_next = ?13 "
+            "recur_lead = ?12, recur_next = ?13, recur_start = ?14, "
+            "due_time = ?15 "
             "WHERE id = ?7", -1,
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
@@ -1373,6 +1437,8 @@ task_db_task_update(TaskDatabase *db, const Task *t)
         sqlite3_bind_int(st, 11, t->recur_time);
         sqlite3_bind_int(st, 12, t->recur_lead);
         sqlite3_bind_int64(st, 13, t->recur_next);
+        sqlite3_bind_int64(st, 14, t->recur_start);
+        sqlite3_bind_int(st, 15, t->due_time);
         step_done(db, st, "task update");
     } else {
         step_done(db, NULL, "task update");
@@ -1467,9 +1533,12 @@ task_db_tasks_recurring(TaskDatabase *db)
 /* ---------------------------------------------------------------------------
  * task_db_task_recur_apply() — an occurrence came due (see db.h).
  *
- * ONE statement, so the three halves of a roll-forward cannot come apart:
- * the new due date, the reset of a COMPLETED task back to New, and the
- * stamp of the occurrence AFTER this one.  The status CASE reads the OLD
+ * ONE statement, so the halves of a roll-forward cannot come apart: the
+ * new due date AND its time of day, the reset of a COMPLETED task back to
+ * New, and the stamp of the occurrence AFTER this one.  due_time is what
+ * makes "every Monday at 9:00 AM" land a due date that actually says 9:00
+ * — the schedule's time of day reaching the task rather than staying
+ * locked in the schedule.  The status CASE reads the OLD
  * status (gotcha 8), which is what lets "was it Done?" be asked once here
  * rather than read back in a second statement.
  *
@@ -1484,11 +1553,11 @@ task_db_tasks_recurring(TaskDatabase *db)
  * ------------------------------------------------------------------------- */
 void
 task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
-                         gint64 next)
+                         gint due_time, gint64 next)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq,
-            "UPDATE tasks SET due = ?1, "
+            "UPDATE tasks SET due = ?1, due_time = ?5, "
             "status       = CASE WHEN status = 2 THEN 0 ELSE status END, "
             "recur_next = ?2, updated_at = ?3 WHERE id = ?4", -1,
             &st, NULL) == SQLITE_OK) {
@@ -1496,6 +1565,7 @@ task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
         sqlite3_bind_int64(st, 2, next);
         sqlite3_bind_int64(st, 3, now());
         sqlite3_bind_int64(st, 4, id);
+        sqlite3_bind_int(st, 5, due_time);
         step_done(db, st, "task recur apply");
     } else {
         step_done(db, NULL, "task recur apply");

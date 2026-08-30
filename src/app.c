@@ -831,6 +831,71 @@ task_due_format(gint64 due)
 }
 
 /* ---------------------------------------------------------------------------
+ * task_clock_format() — "8:00 AM" for minutes past local midnight.
+ *
+ * "%I:%M %p" with the leading zero dropped BY HAND, and that is
+ * deliberate: GLib's "%l" (the 1–12 hour that would do it for us) pads
+ * with U+2007 FIGURE SPACE, not an ASCII one, so g_strstrip leaves it in
+ * place and the sentence reads "at  8:00 AM" with a stray gap (gotcha 23).
+ * Measured against GLib 2.84 — don't "simplify" this back to %l.  A locale
+ * whose %p is empty leaves a trailing space, which g_strchomp does remove.
+ *
+ * The DATE the formatting runs against is arbitrary — only the wall clock
+ * is being rendered — but has to be a real one, so it goes through the
+ * local calendar like every other date here.
+ * ------------------------------------------------------------------------- */
+gchar *
+task_clock_format(gint minutes)
+{
+    if (minutes < 0)
+        minutes = 0;
+    if (minutes > 23 * 60 + 59)
+        minutes = 23 * 60 + 59;
+    GDateTime *dt = g_date_time_new_local(2000, 1, 1,
+                                          minutes / 60, minutes % 60, 0.0);
+    if (dt == NULL)
+        return g_strdup("");
+    gchar *clock = g_date_time_format(dt, "%I:%M %p");
+    g_date_time_unref(dt);
+    if (clock == NULL)
+        return g_strdup("");
+    g_strchomp(clock);
+    if (clock[0] == '0')             /* "08:00 AM" reads as a timestamp     */
+        memmove(clock, clock + 1, strlen(clock));
+    return clock;
+}
+
+/* ---------------------------------------------------------------------------
+ * task_due_instant() — the MOMENT a task is due (see app.h).
+ * ------------------------------------------------------------------------- */
+gint64
+task_due_instant(gint64 due, gint due_time)
+{
+    if (due == 0)
+        return 0;                    /* no date, so no moment               */
+    if (due_time < 0 || due_time > 23 * 60 + 59)
+        due_time = TASK_DUE_TIME_DEFAULT;
+    return due + (gint64)due_time * 60;
+}
+
+/* ---------------------------------------------------------------------------
+ * task_due_format_at() — the due date, with its time of day only when
+ * that time is not the default (see app.h).
+ * ------------------------------------------------------------------------- */
+gchar *
+task_due_format_at(gint64 due, gint due_time)
+{
+    gchar *date = task_due_format(due);
+    if (due == 0 || due_time == TASK_DUE_TIME_DEFAULT)
+        return date;
+    gchar *clock = task_clock_format(due_time);
+    gchar *out   = g_strdup_printf("%s %s", date, clock);
+    g_free(clock);
+    g_free(date);
+    return out;
+}
+
+/* ---------------------------------------------------------------------------
  * task_due_format_iso() — canonical "YYYY-MM-DD" spelling ("" for none).
  * ------------------------------------------------------------------------- */
 gchar *

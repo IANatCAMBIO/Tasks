@@ -19,6 +19,15 @@
  *   - `recur_interval` + `recur_unit` say how often ("every 2 weeks").
  *     0 interval means the task does not recur at all, which is every
  *     task until someone says otherwise.
+ *   - `recur_start` (v11) is the DAY the schedule is anchored on, as a
+ *     unix local midnight — the "Monday" half of "every Monday at
+ *     9:00 AM".  It is a DATE and never a time: the time of day is
+ *     `recur_time`, so the two together are the whole sentence.  0 means
+ *     unset, and the anchor then falls back to the task's due date and
+ *     finally to today, which is what every schedule set before v11 was
+ *     built on.  A start in the FUTURE is honored as the first
+ *     occurrence, so "every Monday starting the 7th" first fires on the
+ *     7th rather than a week later.
  *   - `recur_time` is the time of day a DATED occurrence lands on, in
  *     minutes past local midnight, default 08:00 — so Daily, Weekly,
  *     Biweekly and Monthly all mean "at 8am".  The minute and hour units
@@ -176,12 +185,17 @@ gint64 task_recur_advance(gint64 from, TaskRecurUnit unit, gint interval,
                           gint at_minute);
 
 /* ---------------------------------------------------------------------------
- * task_recur_seed() — the first occurrence STRICTLY AFTER `now_ts`.
+ * task_recur_seed() — the first occurrence AT OR AFTER `now_ts`.
  *
- * Anchored on the task's existing due date when it has one, so "make this
- * weekly" keeps the weekday the user already chose, and on `now_ts` when
- * it does not.  Dated units land the anchor on recur_time first; the
- * minute and hour units simply step from now.
+ * The anchor is `recur_start` when the user set one, else the task's
+ * existing due date (so "make this weekly" keeps the weekday already
+ * chosen), else `now_ts`.  Dated units land the anchor on recur_time
+ * first; the minute and hour units phase-lock their stride to an explicit
+ * start and otherwise simply step from now.
+ *
+ * An anchor still AHEAD of `now_ts` is itself the answer, which is what
+ * makes "starting next Monday" start next Monday; a past anchor is
+ * stepped forward until it passes now.
  *
  * Returns 0 when `t` does not recur.  Called by the pass whenever
  * recur_next is 0, and by the editor whenever the schedule is edited —
@@ -190,8 +204,30 @@ gint64 task_recur_advance(gint64 from, TaskRecurUnit unit, gint interval,
 gint64 task_recur_seed(const Task *t, gint64 now_ts);
 
 /* ---------------------------------------------------------------------------
- * task_recur_describe() — the editor's one-line summary of `t`'s schedule,
- * e.g. "Next Sep 3, 2026 at 8:00 AM \xe2\x80\x94 resets to New on Aug 29".
+ * task_recur_phrase() — the schedule in words: "Every Monday at 9:00 AM",
+ * "Every 2 weeks on Thursday", "Every 3 hours".
+ *
+ * `next_ts` is an occurrence of the schedule, and is what names the
+ * weekday — the weekday is a property of where the schedule LANDS, not of
+ * the (interval, unit) pair, so it cannot be derived from `t` alone.  Pass
+ * the same occurrence the summary is about.
+ *
+ * Returns a new string (g_free it); "" when `t` does not recur.  Plain
+ * text, NOT markup.
+ * ------------------------------------------------------------------------- */
+gchar *task_recur_phrase(const Task *t, gint64 next_ts);
+
+/* ---------------------------------------------------------------------------
+ * task_recur_describe() — the editor's summary of `t`'s schedule: the
+ * phrase above, a newline, then where the schedule lands next.  E.g.
+ *
+ *   Every Monday at 9:00 AM
+ *   Next Sep 7, 2026 \xe2\x80\x94 resets to New Sep 2, 2026 at 9:00 AM
+ *
+ * The "Next" stamp drops its clock time for the DATED units, because the
+ * phrase on the line above has just given it; the RESET stamp always
+ * carries one, since an occurrence minus the lead can land at any time of
+ * day and nothing else states it.
  *
  * Built from the SAME functions the pass uses, which is the point: the
  * sentence cannot promise a date the pass would not produce.  `now_ts` is

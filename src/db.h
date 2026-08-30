@@ -1,7 +1,7 @@
 /* ===========================================================================
  * db.h — SQLite storage for Tasks
  *
- * Schema (PRAGMA user_version = 10 — see TASK_DB_SCHEMA_VERSION).  Every
+ * Schema (PRAGMA user_version = 12 — see TASK_DB_SCHEMA_VERSION).  Every
  * column is declared in task_db_open's CREATE block, so a FRESH file needs
  * no migration at all; an EXISTING one reaches the same shape through the
  * guarded ALTERs at the end of task_db_open.
@@ -12,11 +12,14 @@
  *   tasks        id, list_id, parent_id (NULL = top-level; ONE level of
  *                nesting only — a subtask can never be a parent),
  *                title, notes, due (unix local midnight; 0 = none),
+ *                due_time (the time of day that date means, minutes past
+ *                local midnight, default 08:00 — local-only, v12),
  *                status (TaskStatus), pinned, priority (local-only;
  *                sorts first in every view), position, updated_at,
  *                deleted, completed_at,
  *                recur_interval / recur_unit / recur_time / recur_lead /
  *                recur_next (the recurrence schedule — local-only, v10)
+ *                and recur_start (the schedule's anchor date, v11)
  *   attachments  id, task_id, path, added_at   (local-only; never synced)
  *   sync_state   key, value                    (e.g. "last_sync")
  *
@@ -54,7 +57,7 @@
 /* The schema version this build writes.  Kept here rather than spelled as
  * a literal in task_db_open so the pre-migration backup and the version
  * stamp cannot drift apart.                                               */
-#define TASK_DB_SCHEMA_VERSION 10
+#define TASK_DB_SCHEMA_VERSION 12
 
 /* ---------------------------------------------------------------------------
  * TaskDatabase — one open connection.  A connection must not cross threads:
@@ -134,6 +137,14 @@ typedef enum {
  * it, and the editor seeds a custom schedule with it too.                  */
 #define TASK_RECUR_TIME_DEFAULT (8 * 60)
 
+/* The time of day a DUE DATE means, in minutes past local midnight: 08:00
+ * (v12, tasks.due_time).  Every due date has one — the column's DEFAULT is
+ * what gives it to a task nobody has timed by hand, existing rows
+ * included — so there is no "timed or not" flag to keep honest.  It is a
+ * separate macro from TASK_RECUR_TIME_DEFAULT rather than a shared one:
+ * the two mean different things and only happen to agree.                  */
+#define TASK_DUE_TIME_DEFAULT (8 * 60)
+
 /* How long BEFORE an occurrence a completed task is reset to New, in
  * minutes: five days.  recur.c clamps it to shorter than the repeat
  * period, so an hourly schedule is not permanently inside its own lead.    */
@@ -169,7 +180,21 @@ typedef struct {
     gint64    parent_id;             /* 0 = top-level task                  */
     gchar    *title;
     gchar    *notes;
-    gint64    due;                   /* unix local midnight; 0 = no date    */
+    gint64    due;                   /* unix local midnight; 0 = no date.
+                                      * The DATE only — always midnight,
+                                      * because Google's due is date-only
+                                      * and every day-bucketing view
+                                      * (Due Today, the forecast) compares
+                                      * against it                          */
+    gint      due_time;              /* v12: the time of day that date
+                                      * means, minutes past local midnight,
+                                      * default 08:00.  LOCAL-ONLY, like
+                                      * pinned and priority — Google
+                                      * discards a due time and Notes has
+                                      * no verb for one, so keeping it OFF
+                                      * `due` is what stops a remote pull
+                                      * (which writes `due` alone) from
+                                      * erasing it                          */
     TaskStatus status;             /* New / In Progress / Done — DONE is
                                       * what every "is it complete?" test
                                       * asks for                            */
@@ -200,6 +225,15 @@ typedef struct {
     gint64    recur_next;            /* unix time of the next occurrence;
                                       * 0 = not computed yet (the pass
                                       * seeds it)                          */
+    gint64    recur_start;           /* v11: unix LOCAL MIDNIGHT of the day
+                                      * the schedule is anchored on — the
+                                      * "starting Monday" half of "every
+                                      * Monday at 9:00 AM".  The time of
+                                      * day is recur_time, never this.
+                                      * 0 = unset, and the anchor falls
+                                      * back to the due date and then to
+                                      * today, which is what every task
+                                      * predating v11 does               */
 } Task;
 
 /* One file attachment on a task.                                           */
@@ -373,9 +407,9 @@ void task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority);
  * set, in id order.  The candidate set of one pass; a few thousand rows
  * scanned every few minutes needs no index of its own.
  *
- * task_db_task_recur_apply() — an occurrence has come due: write `due`,
- * reset a DONE task to New, store the FOLLOWING occurrence in recur_next,
- * and stamp updated_at.  The status CASE reads the OLD row (gotcha 8), so
+ * task_db_task_recur_apply() — an occurrence has come due: write `due`
+ * and the `due_time` it lands at, reset a DONE task to New, store the
+ * FOLLOWING occurrence in recur_next, and stamp updated_at.  The status CASE reads the OLD row (gotcha 8), so
  * "was it Done?" is asked once.  completed_at is left ALONE — reopening a
  * task for its next repeat does not un-complete the last one.
  * updated_at IS stamped here —
@@ -389,7 +423,7 @@ void task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority);
  * ------------------------------------------------------------------------- */
 GPtrArray *task_db_tasks_recurring(TaskDatabase *db);
 void task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
-                              gint64 next);
+                              gint due_time, gint64 next);
 void task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next);
 
 /* Tombstone the task and its subtasks.  Every registered delete hook

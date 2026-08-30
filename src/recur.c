@@ -298,18 +298,35 @@ task_recur_seed(const Task *t, gint64 now_ts)
     if (t == NULL || t->recur_interval <= 0)
         return 0;
 
-    /* Minutes and hours have no time of day and no meaningful anchor in
-     * the past: the next one is simply one stride from now.                */
-    if (!recur_dated(t->recur_unit))
-        return task_recur_advance(now_ts, t->recur_unit, t->recur_interval,
-                                  -1);
+    /* Minutes and hours have no time of day.  With no explicit start they
+     * have no meaningful anchor either, so the next one is simply one
+     * stride from now.  A start date PHASE-LOCKS the stride to it instead
+     * — "every 3 hours" then means midnight, 3am, 6am rather than
+     * "three hours from whenever I happened to save this".
+     *
+     * The catch-up is ONE DIVISION, the same trick recur_catch_up uses and
+     * for the same reason: a per-minute schedule started a month ago is
+     * otherwise 43200 GDateTime allocations to walk.                       */
+    if (!recur_dated(t->recur_unit)) {
+        gint64 period = task_recur_period_seconds(t->recur_unit,
+                                                  t->recur_interval);
+        if (t->recur_start <= 0 || period <= 0)
+            return task_recur_advance(now_ts, t->recur_unit,
+                                      t->recur_interval, -1);
+        gint64 occ = t->recur_start;
+        if (occ <= now_ts)
+            occ += ((now_ts - occ) / period + 1) * period;
+        return occ;
+    }
 
-    /* Dated units anchor on the due date the user already chose, so
-     * "make this weekly" keeps its weekday and "monthly" its day of the
-     * month.  The anchor itself counts when it is still ahead of now —
-     * a task due next Tuesday that is made weekly recurs NEXT TUESDAY,
-     * not the one after.                                                   */
-    gint64 anchor = t->due > 0 ? t->due : now_ts;
+    /* Dated units anchor on the start date when the user set one, and
+     * otherwise on the due date they already chose — so "make this
+     * weekly" keeps its weekday and "monthly" its day of the month
+     * without anybody having to name a start.  The anchor itself counts
+     * when it is still ahead of now: a task starting next Tuesday recurs
+     * NEXT TUESDAY, not the one after.                                     */
+    gint64 anchor = t->recur_start > 0 ? t->recur_start
+                                       : (t->due > 0 ? t->due : now_ts);
     gint64 occ    = recur_at_minute(anchor, t->recur_time);
     for (gint i = 0; occ <= now_ts && i < RECUR_MAX_STEPS; i++)
         occ = recur_step(t, occ);
@@ -330,37 +347,109 @@ task_recur_seed(const Task *t, gint64 now_ts)
  * The editor's summary line.
  * =========================================================================== */
 
+/* recur_minute_of() — a unix time's minutes past LOCAL midnight, or -1 if
+ * it cannot be read.  The bridge between an occurrence (an instant) and
+ * everything here that speaks in minutes-past-midnight.                    */
+static gint
+recur_minute_of(gint64 ts)
+{
+    GDateTime *dt = g_date_time_new_from_unix_local(ts);
+    if (dt == NULL)
+        return -1;
+    gint m = g_date_time_get_hour(dt) * 60 + g_date_time_get_minute(dt);
+    g_date_time_unref(dt);
+    return m;
+}
+
 /* ---------------------------------------------------------------------------
- * recur_stamp() — "Sep 3, 2026 at 8:00 AM" for a unix time.  Returns a new
- * string (g_free).
+ * recur_stamp() — "Sep 3, 2026 at 8:00 AM" for a unix time, or just
+ * "Sep 3, 2026" when `with_time` is FALSE.  Returns a new string (g_free).
  *
  * The DATE goes through task_due_format, so it reads exactly like every
- * other date in the app.  The TIME is "%I:%M %p" with a leading zero
- * dropped by hand, and that is deliberate: GLib's "%l" (the 1–12 hour that
- * would do it for us) pads with U+2007 FIGURE SPACE, not an ASCII one, so
- * g_strstrip leaves it in place and the sentence reads "at  8:00 AM" with
- * a stray gap.  Measured against GLib 2.84 — don't "simplify" this back to
- * %l.  A locale whose %p is empty leaves a trailing space, which
- * g_strchomp does remove.
+ * other date in the app.
  * ------------------------------------------------------------------------- */
 static gchar *
-recur_stamp(gint64 ts)
+recur_stamp(gint64 ts, gboolean with_time)
 {
     gchar *date = task_due_format(ts);
-    GDateTime *dt = g_date_time_new_from_unix_local(ts);
-    gchar *clock = dt != NULL ? g_date_time_format(dt, "%I:%M %p") : NULL;
-    if (dt != NULL)
-        g_date_time_unref(dt);
-    if (clock != NULL) {
-        g_strchomp(clock);
-        if (clock[0] == '0')         /* "08:00 AM" reads as a timestamp     */
-            memmove(clock, clock + 1, strlen(clock));
-    }
-    gchar *out = clock != NULL
-        ? g_strdup_printf("%s at %s", date, clock)
-        : g_strdup(date);
+    if (!with_time)
+        return date;
+    gint m = recur_minute_of(ts);
+    if (m < 0)
+        return date;
+    gchar *clock = task_clock_format(m);
+    gchar *out   = g_strdup_printf("%s at %s", date, clock);
     g_free(clock);
     g_free(date);
+    return out;
+}
+
+/* task_recur_phrase() — see recur.h.
+ *
+ * The WEEKDAY comes off the occurrence rather than out of the schedule,
+ * because the schedule does not hold one: "every week" anchored on the 7th
+ * IS "every Monday", and the only place that fact lives is the date the
+ * seeder produced.  Same reason nothing here names a day of the month —
+ * "Every month" plus the Next line below it says it without an ordinal
+ * suffix table.                                                            */
+gchar *
+task_recur_phrase(const Task *t, gint64 next_ts)
+{
+    if (t == NULL || t->recur_interval <= 0)
+        return g_strdup("");
+
+    gint   n    = t->recur_interval;
+    gchar *body = NULL;
+
+    switch (t->recur_unit) {
+    case TASK_RECUR_MINUTE:
+        body = n == 1 ? g_strdup("Every minute")
+                      : g_strdup_printf("Every %d minutes", n);
+        break;
+    case TASK_RECUR_HOUR:
+        body = n == 1 ? g_strdup("Every hour")
+                      : g_strdup_printf("Every %d hours", n);
+        break;
+    case TASK_RECUR_DAY:
+        body = n == 1 ? g_strdup("Every day")
+                      : g_strdup_printf("Every %d days", n);
+        break;
+    case TASK_RECUR_WEEK: {
+        GDateTime *dt  = g_date_time_new_from_unix_local(next_ts);
+        gchar     *day = dt != NULL ? g_date_time_format(dt, "%A") : NULL;
+        if (dt != NULL)
+            g_date_time_unref(dt);
+        if (day == NULL)             /* no weekday to name — say the unit  */
+            body = n == 1 ? g_strdup("Every week")
+                          : g_strdup_printf("Every %d weeks", n);
+        else
+            body = n == 1 ? g_strdup_printf("Every %s", day)
+                          : g_strdup_printf("Every %d weeks on %s", n, day);
+        g_free(day);
+        break;
+    }
+    case TASK_RECUR_MONTH:
+        body = n == 1 ? g_strdup("Every month")
+                      : g_strdup_printf("Every %d months", n);
+        break;
+    case TASK_RECUR_YEAR:
+        body = n == 1 ? g_strdup("Every year")
+                      : g_strdup_printf("Every %d years", n);
+        break;
+    default:
+        body = g_strdup("");
+        break;
+    }
+
+    /* Only the dated units have a time of day to state — "every 3 hours at
+     * 8am" is not a thing anyone can mean, which is the same rule
+     * recur_step and the editor's greying follow.                          */
+    if (!recur_dated(t->recur_unit))
+        return body;
+    gchar *clock = task_clock_format(t->recur_time);
+    gchar *out   = g_strdup_printf("%s at %s", body, clock);
+    g_free(clock);
+    g_free(body);
     return out;
 }
 
@@ -377,15 +466,22 @@ task_recur_describe(const Task *t, gint64 now_ts)
         return g_strdup("");
     gint64 lead = task_recur_lead_seconds(t);
 
-    gchar *when  = recur_stamp(next);
-    gchar *reset = recur_stamp(next - lead);
+    gchar *phrase = task_recur_phrase(t, next);
+    /* The phrase has already given the time of day for the dated units, so
+     * the Next stamp drops it rather than saying it twice on two adjacent
+     * lines.  The reset stamp keeps its own: an occurrence minus the lead
+     * lands at whatever time the arithmetic leaves it, and nothing else in
+     * the sentence states that.                                            */
+    gchar *when  = recur_stamp(next, !recur_dated(t->recur_unit));
+    gchar *reset = recur_stamp(next - lead, TRUE);
     /* Say so when the clamp shortened the lead, rather than printing a
      * reset date the user's own number does not explain.  Silence there
      * is how a control comes to look broken.                               */
     gboolean clamped = lead != (gint64)t->recur_lead * 60;
     gchar *out = g_strdup_printf(
-        "Next %s \xe2\x80\x94 resets to New %s%s", when, reset,
+        "%s\nNext %s \xe2\x80\x94 resets to New %s%s", phrase, when, reset,
         clamped ? " (lead shortened to fit the repeat)" : "");
+    g_free(phrase);
     g_free(when);
     g_free(reset);
     return out;
@@ -395,13 +491,31 @@ task_recur_describe(const Task *t, gint64 now_ts)
  * The pass.
  * =========================================================================== */
 
-/* recur_due_of() — the `due` value for an occurrence: local midnight of
- * the day it falls on.  tasks.due is DATE-ONLY (db.h), and so is Google's,
- * so the time of day lives in the schedule and never in the due date.
- * Goes through task_due_from_ymd, the app's one answer to "midnight of
- * this date".                                                              */
+/*
+ * recur_due_of — split an occurrence into the two columns a due date is.
+ *
+ * Inputs:
+ *   ts       — the occurrence, as a unix time
+ *
+ * Outputs:
+ *   *due_min — the occurrence's minutes past LOCAL midnight, for
+ *              tasks.due_time; left alone when `ts` cannot be read
+ *   returns    tasks.due: local midnight of the day it falls on, or 0
+ *
+ * tasks.due is DATE-ONLY (db.h) and so is Google's, which is why the day
+ * and the clock go to two different columns rather than into one
+ * timestamp.  Since v12 the clock DOES reach the task, in due_time — that
+ * is what makes "every Monday at 9:00 AM" produce a due date that says
+ * 9:00 AM instead of leaving the time locked inside the schedule.
+ *
+ * The minutes come off `ts` ITSELF rather than from recur_time, and that
+ * is deliberate: for the dated units recur_step has already applied
+ * recur_time, so the two agree, while for the minute and hour units —
+ * which have no recur_time at all — `ts` is the only thing that knows
+ * what o'clock the occurrence is.  One rule, no branch.
+ */
 static gint64
-recur_due_of(gint64 ts)
+recur_due_of(gint64 ts, gint *due_min)
 {
     GDateTime *dt = g_date_time_new_from_unix_local(ts);
     if (dt == NULL)
@@ -409,6 +523,9 @@ recur_due_of(gint64 ts)
     gint64 due = task_due_from_ymd(g_date_time_get_year(dt),
                                    g_date_time_get_month(dt),
                                    g_date_time_get_day_of_month(dt));
+    if (due_min != NULL)
+        *due_min = g_date_time_get_hour(dt) * 60 +
+                   g_date_time_get_minute(dt);
     g_date_time_unref(dt);
     return due;
 }
@@ -435,16 +552,24 @@ task_recur_pass(TaskApp *app)
         gint64 lead = task_recur_lead_seconds(t);
         gint64 fire = 0, after = 0;
         if (recur_catch_up(t, next, nowts + lead, &fire, &after)) {
-            gint64 due = recur_due_of(fire);
+            gint due_min = TASK_DUE_TIME_DEFAULT;
+            gint64 due   = recur_due_of(fire, &due_min);
             /* TWO independent halves, and either may be a no-op — the same
              * division the Kanban drop makes.  A completed task must be
              * reopened; a due date that is already the occurrence's needs
              * no write.  When NEITHER applies (an hourly schedule firing
              * repeatedly inside one day, say) only the local stamp moves,
              * so an idle recurring task does not dirty itself for sync
-             * every few minutes.                                          */
-            if (t->status == TASK_STATUS_DONE || due != t->due) {
-                task_db_task_recur_apply(app->db, t->id, due, after);
+             * every few minutes.
+             *
+             * due_time joins the "has it changed?" test rather than riding
+             * along silently: an hourly schedule keeps the same DAY for
+             * hours at a stretch, and the o'clock is then the only thing
+             * about the due date that moved.                             */
+            if (t->status == TASK_STATUS_DONE || due != t->due ||
+                due_min != t->due_time) {
+                task_db_task_recur_apply(app->db, t->id, due, due_min,
+                                         after);
                 changed++;
                 if (t->status == TASK_STATUS_DONE)
                     reopened++;

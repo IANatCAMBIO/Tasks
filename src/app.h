@@ -318,6 +318,39 @@ void task_day_bounds(gint offset_days, gint64 *lo, gint64 *hi);
  * new string (g_free it).                                                  */
 gchar *task_due_format(gint64 due);
 
+/* ---------------------------------------------------------------------------
+ * task_clock_format() — "8:00 AM" for minutes past local midnight.
+ * Returns a new string (g_free); "" if the clock cannot be built.  Out of
+ * range clamps into the day rather than failing.  It is here rather than
+ * in recur.c because both the due date's time and the recurrence
+ * schedule's render one, and gotcha 23 is not worth learning twice.
+ * ------------------------------------------------------------------------- */
+gchar *task_clock_format(gint minutes);
+
+/* ---------------------------------------------------------------------------
+ * task_due_instant() — the MOMENT a task is due: its date plus its time of
+ * day.  0 when `due` is 0 (no date means no moment).
+ *
+ * `due` is DATE-ONLY on disk — always local midnight, because Google's due
+ * is date-only and every day-bucketing view compares against it — so this
+ * is the one place that folds the two columns back together.  Use it for
+ * SORTING and for anything that means "when is this actually due"; use
+ * `due` alone for anything that buckets by calendar day.
+ * ------------------------------------------------------------------------- */
+gint64 task_due_instant(gint64 due, gint due_time);
+
+/* ---------------------------------------------------------------------------
+ * task_due_format_at() — "Jul 13, 2026", plus " 2:30 PM" when `due_time`
+ * is NOT the 08:00 default.  Returns a new string (g_free); "" for no date.
+ *
+ * The default is left unsaid on purpose: every task has a due time now, so
+ * printing it always would add a clock to every row in the list and say
+ * nothing — the same reason the editor's lead spin shows "5 days" rather
+ * than "7200 minutes".  A time somebody actually chose is the thing worth
+ * showing, and it stands out precisely because its neighbours are bare.
+ * ------------------------------------------------------------------------- */
+gchar *task_due_format_at(gint64 due, gint due_time);
+
 /* task_due_format_iso() — "" for no date, else the canonical "YYYY-MM-DD"
  * spelling (local calendar day).  Returns a new string (g_free it).        */
 gchar *task_due_format_iso(gint64 due);

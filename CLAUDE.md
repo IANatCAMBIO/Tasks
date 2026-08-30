@@ -110,7 +110,7 @@ the user).  A logic test harness lives in the session scratchpad
 | `src/main.c` | GtkApplication entry; config → db → registries → plugins → window; icon-theme path for HiDPI expanders |
 | `src/app.[ch]` | Shared `TaskApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
 | `src/backup.[ch]` | OPTIONAL rotating db backups: own worker + connection, VACUUM INTO + verify, bounded rotation; off by default |
-| `src/db.[ch]` | SQLite schema (user_version 10) + CRUD; `TaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
+| `src/db.[ch]` | SQLite schema (user_version 12) + CRUD; `TaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
 | `src/recur.[ch]` | Recurring tasks: presets, GDateTime schedule arithmetic, and the periodic pass — the ONE core worker that runs on the main thread |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, Kanban board, multi-select context menu, status bar |
 | `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); Status dropdown; the Recurrence block; plugin-contributed sections |
@@ -268,6 +268,66 @@ its own subtask list ticks something — `editor_save_now` reads the status
 combo and writes it back, so a combo left reading New silently undoes the
 promotion on the next debounced save.  That was measured, not assumed:
 with the resync removed the parent comes back as New ~600 ms later.
+
+## Due dates carry a time (schema v12)
+
+`tasks.due` is still **DATE-ONLY** — always local midnight — and that is
+not going to change: Google's `due` is date-only (the API discards a
+time), Notes speaks `YYYY-MM-DD`, and every day-bucketing view (Due Today,
+the Weekly Forecast, `task_due_color`'s tint) compares against it.  The
+time of day lives in a SECOND column, **`due_time`** (minutes past local
+midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
+
+- **The split is what makes it safe.**  Every remote write path
+  (`task_db_task_apply_remote`, `task_db_task_apply_done_source`) sets
+  `due` and does not name `due_time`, so a Google pull or a Notes listing
+  moves the DATE and leaves a hand-set time exactly where it was.  Folding
+  the time into `due` would have had every sync erase it.  It is LOCAL-ONLY
+  in the same sense `pinned` and `priority` are, and for the same reason —
+  nothing off this machine can hold it.
+- **There is no "has a time" flag**, and there must not be one: every due
+  date has a time, and the column's `DEFAULT` is the whole migration —
+  existing rows come back meaning 08:00 without a single row being
+  rewritten.  A flag would be a second thing to keep true.
+- `task_due_instant(due, due_time)` folds the two back into the MOMENT a
+  task is due.  Use it for sorting and for "when is this actually due";
+  use `due` alone for anything bucketing by calendar day.  `TL_DUE_RAW`
+  takes the instant, which is what orders two tasks sharing a day; the
+  urgency tint reads the same value and is unaffected, since a time inside
+  a day cannot change which day it is.  `task_db_tasks_due_between` sorts
+  by `due, due_time` for the same reason — `due` alone is midnight for
+  every row in the bucket and separates nothing.
+- **The default is left UNSAID in the list.**  `task_due_format_at` prints
+  the time only when it is not 08:00, so a task nobody has timed reads
+  exactly as it did before v12 and a time someone chose stands out.
+  Printing it always would put a clock on every row and distinguish
+  nothing — the same judgement `editor_recur_lead_set` makes when it shows
+  "5 days" rather than "7200 minutes".
+- The editor's first row is now `Due: [YYYY-MM-DD] at [HH:MM] 📅`.  The time
+  entry is **5 chars wide, not 6**: this row is the editor's widest, and at
+  6 it measured 4 px past the 490 the window asks for and silently grew
+  every editor to fit.  Measured — keep it under, not near.  It fits at all
+  only because the row's middle was empty (Status is pack_start, the due
+  controls pack_end), the same slack the completion label found on the
+  flags row.  `editor_time_entry_parse` / `_set` are shared with the
+  recurrence block's time entry (they take the WIDGET, and each caller
+  names its own default), so the mid-typing guard exists once.
+- **The recurrence pass writes it**, and that is the point of the column:
+  `recur_due_of` splits an occurrence into `due` + `due_time`, so "every
+  Monday at 9:00 AM" produces a due date that SAYS 9:00 AM instead of
+  leaving the time locked in the schedule.  The minutes come off the
+  occurrence itself, not from `recur_time` — for the dated units
+  `recur_step` has already applied `recur_time` so they agree, and for the
+  minute/hour units the occurrence is the only thing that knows what
+  o'clock it is.  One rule, no branch.  `due_time` joins the pass's
+  "has anything changed?" test, because an hourly schedule keeps the same
+  DAY for hours and the o'clock is then the only thing that moved.
+- Known and accepted, exactly like the New ↔ In Progress case above:
+  changing ONLY the due time goes through `task_db_task_update`, which
+  stamps `updated_at` and so dirties the row for sync.  On a full listing
+  nothing is sent (`differs` compares `due`, which did not move); on the
+  incremental path it buys one etag-guarded PATCH with an identical body.
+  Don't "optimize" it into a conditional bump.
 
 ## GUI rules (visual parity with Notes)
 
@@ -919,9 +979,9 @@ and only ever grows downwards.
   only exists in the per-widget helper because it bakes a resolved
   literal into its CSS from C.
 
-## Recurring tasks (schema v10)
+## Recurring tasks (schema v10, `recur_start` at v11)
 
-A recurring task is an ORDINARY task carrying a schedule — the five
+A recurring task is an ORDINARY task carrying a schedule — the six
 `recur_*` columns on its own row.  There is NO template row, no
 generated series and no second row type, and that is what makes
 recurrence compose with everything else for free: a recurring task has
@@ -951,11 +1011,52 @@ block is the only place it is set.
   default, and applies to the DAY-or-longer units only.  "Every 3 hours
   at 8am" is not a thing anyone can mean, so the editor greys that entry
   out for minutes and hours and `recur_step` passes -1.
+- **`recur_start` (v11) is the schedule's ANCHOR DAY** — the "Monday" of
+  "every Monday at 9:00 AM", where `recur_time` is the "9:00".  It is a
+  DATE and never a time: unix local midnight, like `due`, and the editor
+  writes it from a `Starting:` entry with the same 📅 picker the Due row
+  has (`editor_pick_date`, now shared by both buttons).  **0 = unset, and
+  unset is the ordinary case**: the anchor then falls back to the task's
+  own due date and finally to today, which is exactly what every schedule
+  set before v11 was built on — so the migration changes no existing
+  task's behavior and the entry opens BLANK rather than seeded with
+  today.  An anchor still in the FUTURE is itself the first occurrence
+  ("starting next Monday" starts next Monday, not the one after).  It
+  greys with the schedule as a whole rather than with the time entry
+  beside it, because it applies to EVERY unit: for minutes and hours it
+  phase-locks the stride (`task_recur_seed` fast-forwards to it with ONE
+  DIVISION — a per-minute schedule and a month-old start is otherwise
+  43200 GDateTime allocations, the same trick `recur_catch_up` uses).
 - The Recurrence block's first row reads `Repeat: [combo] at [HH:MM]`,
   all of it PACK_START.  The time entry was pack_end'd to line up with
   the Due entry two rows above, which put ~300 px of nothing in the
   middle of what is ONE SENTENCE — a column that splits a phrase in half
-  is not worth the column.
+  is not worth the column.  The start date gets a ROW OF ITS OWN below
+  the custom row: three controls and their labels on one line would take
+  the editor past the 490 px it asks for, and widening the window is the
+  one cost this layout does not pay.
+- A dimmed, wrapped DESCRIPTION sits directly under the block's heading,
+  saying what recurrence does to the due date and what the lead is for.
+  Static markup, set where the label is built and never touched again —
+  the controls below say what each of them sets and the summary at the
+  foot says where this schedule lands, but neither explains the rule.
+  It says "X (defaults to 5) days", the user's own wording: the live
+  number is immediately below it on the lead row.  Its "date and time" is
+  accurate as of v12 — `tasks.due` is still date-only, but `due_time`
+  carries the occurrence's clock time and the pass writes both.
+- The summary is now TWO LINES: `task_recur_phrase` ("Every Monday at
+  9:00 AM", "Every 2 weeks on Thursday", "Every 3 hours") and then the
+  familiar "Next … — resets to New …".  The WEEKDAY comes off the
+  occurrence, not the (interval, unit) pair — a weekly schedule does not
+  store one, and the only place that fact exists is the date the seeder
+  produced.  The Next stamp DROPS its clock time for the dated units
+  because the phrase above just gave it; the reset stamp keeps its own,
+  since occurrence-minus-lead lands at whatever time the arithmetic
+  leaves it and nothing else states that.  Nothing names a day of the
+  MONTH ("Every month", not "Every month on the 15th") — an ordinal
+  suffix table for a fact the Next line already carries.
+- All three additions live inside `adv_box`, so the FOLDED editor is
+  still 343 px (measured); unfolded it went 735 → 827.
 - **The custom "Every N …" row is HIDDEN, not greyed, until Custom… is
   picked** — it is a whole control that would otherwise sit there doing
   nothing.  Everything else in the block greys instead, because a greyed
@@ -987,7 +1088,9 @@ block is the only place it is set.
   clamp bites ("lead shortened to fit the repeat") rather than quietly
   printing a reset date the user's own number does not explain.
 - `recur_next` is BOOKKEEPING, not a setting.  0 means "not computed
-  yet"; the pass seeds it, the editor reseeds it on every edit, and both
+  yet"; the pass seeds it, the editor reseeds it on every edit (the
+  `Starting:` entry is wired to `on_recur_changed` like every other
+  control in the block, so a new anchor reseeds at once), and both
   go through `task_recur_seed` so the date the editor promises is the
   date the pass acts on.  It is written by
   `task_db_task_recur_set_next`, which stamps **no** `updated_at` — the
@@ -1021,8 +1124,10 @@ block is the only place it is set.
   "was it Done?" is asked once.
 - `due` gets local MIDNIGHT of the occurrence's day (`recur_due_of`,
   through `task_due_from_ymd`), because `tasks.due` is date-only and so
-  is Google's.  The time of day lives in the schedule and never in the
-  due date.
+  is Google's — but since v12 the occurrence's CLOCK TIME goes to
+  `due_time` alongside it, so the schedule's "at 9:00 AM" does reach the
+  task.  See "Due dates carry a time" above; that column is the only
+  place a time of day is allowed to land, never `due` itself.
 - The pass is registered with the shared scheduler (`task_worker.h`,
   `sort = -20` so it runs before the Notes mirror at -10 and the Google
   sync at 0 — a task it reopens reaches both in ONE press of Sync).  It

@@ -419,7 +419,15 @@ task_rows_append(GtkListStore *store, GPtrArray *tasks,
                                 GINT_TO_POINTER(t->id)));
         gchar *desc      = task_rows_desc_markup(t, list_name, att_count,
                                                  subs, ctx);
-        gchar *due       = task_due_format(t->due);
+        /* The due cell carries its time of day only when that time is not
+         * the 08:00 default (task_due_format_at) — every task has one now,
+         * so printing it always would put a clock on every row and
+         * distinguish nothing.  TL_DUE_RAW takes the full INSTANT, since
+         * it is what the column sorts on and `due` alone is midnight for
+         * every row of a given day; the urgency tint reads the same value
+         * and is unaffected, because task_due_color compares calendar
+         * days and a time inside the day cannot change which one it is.  */
+        gchar *due       = task_due_format_at(t->due, t->due_time);
         gchar *completed = task_due_format(t->completed_at);
         GtkTreeIter iter;
         gtk_list_store_append(store, &iter);
@@ -428,7 +436,8 @@ task_rows_append(GtkListStore *store, GPtrArray *tasks,
                            TL_DONE,          done,
                            TL_DESC,          desc,
                            TL_DUE,           due,
-                           TL_DUE_RAW,       t->due,
+                           TL_DUE_RAW,       task_due_instant(t->due,
+                                                              t->due_time),
                            TL_TITLE,         t->title,
                            TL_COMPLETED,     completed,
                            TL_COMPLETED_RAW, t->completed_at,

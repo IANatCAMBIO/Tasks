@@ -51,6 +51,9 @@ typedef struct {
     GtkWidget    *completed_label;   /* "Completed <date>" while the task
                                       * is Done, else empty               */
     GtkWidget    *due_entry;
+    GtkWidget    *due_time_entry;    /* "HH:MM" — the time of day that due
+                                      * date means; 08:00 unless someone
+                                      * says otherwise                     */
     GtkTextBuffer *notes_buf;
     GtkListStore *sub_store;         /* NULL for subtask editors            */
     GtkWidget    *sub_view;
@@ -71,9 +74,13 @@ typedef struct {
     GtkWidget    *recur_every_spin;  /* custom: repeat every N …            */
     GtkWidget    *recur_unit_combo;  /* … of THIS unit                      */
     GtkWidget    *recur_time_entry;  /* "HH:MM" — the dated units' time     */
+    GtkWidget    *recur_start_entry; /* "YYYY-MM-DD" — the anchor DAY; the
+                                      * "Monday" of "every Monday at 9",
+                                      * empty = anchor on the due date     */
+    GtkWidget    *recur_start_btn;   /* its 📅 picker (greyed with it)      */
     GtkWidget    *recur_lead_spin;   /* reset this long before it …         */
     GtkWidget    *recur_lead_unit;   /* … in these units                    */
-    GtkWidget    *recur_summary;     /* "Next … — resets to New …"          */
+    GtkWidget    *recur_summary;     /* "Every Monday at 9:00 AM / Next …"  */
     gint64        recur_next;        /* the next occurrence, reseeded on
                                       * every edit to the schedule         */
     gboolean      recur_custom_shown; /* is that row on screen?             */
@@ -151,15 +158,19 @@ static const gint recur_lead_minutes[RECUR_LEAD_N_UNITS] = {
     1, 60, 1440, 10080
 };
 
-/* editor_recur_time_parse() — the "HH:MM" entry as minutes past midnight,
+/* editor_time_entry_parse() — an "HH:MM" entry as minutes past midnight,
  * with the same mid-typing guard the due entry has (editor_due_entry_parse):
  * partial or invalid text keeps `current`, because a debounced save firing
  * while the user is still typing "8:3" must not store 8:03 and move the
- * caret's meaning underneath them.                                         */
+ * caret's meaning underneath them.
+ *
+ * Takes the WIDGET rather than the editor: two entries want exactly this
+ * (the due date's time of day and the recurrence schedule's), and a second
+ * copy of the guard is a second place for it to be got wrong.              */
 static gint
-editor_recur_time_parse(TaskEditor *ed, gint current)
+editor_time_entry_parse(GtkWidget *entry, gint current)
 {
-    const gchar *txt   = gtk_entry_get_text(GTK_ENTRY(ed->recur_time_entry));
+    const gchar *txt   = gtk_entry_get_text(GTK_ENTRY(entry));
     const gchar *colon = strchr(txt, ':');
     if (colon == NULL)
         return current;
@@ -174,15 +185,61 @@ editor_recur_time_parse(TaskEditor *ed, gint current)
     return (gint)(h * 60 + m);
 }
 
-/* editor_recur_time_set() — write `minutes` into that entry as "HH:MM".    */
+/* editor_time_entry_set() — write `minutes` into an "HH:MM" entry, unless
+ * it has focus: rewriting under the caret would replace half-typed text,
+ * the rule due_entry_refresh follows.  `fallback` is what an out-of-range
+ * value shows, so each caller names its OWN default rather than this
+ * function picking one for both.                                           */
 static void
-editor_recur_time_set(TaskEditor *ed, gint minutes)
+editor_time_entry_set(GtkWidget *entry, gint minutes, gint fallback)
 {
+    if (gtk_widget_has_focus(entry))
+        return;
     if (minutes < 0 || minutes > 23 * 60 + 59)
-        minutes = TASK_RECUR_TIME_DEFAULT;
+        minutes = fallback;
     gchar *txt = g_strdup_printf("%02d:%02d", minutes / 60, minutes % 60);
-    gtk_entry_set_text(GTK_ENTRY(ed->recur_time_entry), txt);
+    if (strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), txt) != 0)
+        gtk_entry_set_text(GTK_ENTRY(entry), txt);
     g_free(txt);
+}
+
+/* editor_recur_start_parse() — the start entry's text as a local-midnight
+ * timestamp, with the SAME mid-typing guard the due entry has: blank means
+ * "no anchor" (0, so the schedule falls back to the due date), a valid
+ * date parses, and anything half-typed keeps `current` rather than letting
+ * a debounced save store a date the user is still in the middle of.        */
+static gint64
+editor_recur_start_parse(TaskEditor *ed, gint64 current)
+{
+    gchar *trim = g_strstrip(
+        g_strdup(gtk_entry_get_text(GTK_ENTRY(ed->recur_start_entry))));
+    gint64 start;
+    if (*trim == '\0')
+        start = 0;
+    else {
+        gint64 parsed = task_due_parse(trim);
+        start = parsed != 0 ? parsed : current;
+    }
+    g_free(trim);
+    return start;
+}
+
+/* editor_recur_start_set() — show a stored anchor date in that entry,
+ * unless it has focus (rewriting under the caret moves the meaning of the
+ * user's own typing — the rule due_entry_refresh follows).                 */
+static void
+editor_recur_start_set(TaskEditor *ed, gint64 start)
+{
+    if (gtk_widget_has_focus(ed->recur_start_entry))
+        return;
+    gchar *text = task_due_format_iso(start);
+    /* Only when it really differs, so a refresh never moves the caret —
+     * set_entry_if_differs itself lives further down the file than this
+     * block does.                                                          */
+    if (strcmp(gtk_entry_get_text(GTK_ENTRY(ed->recur_start_entry)),
+               text) != 0)
+        gtk_entry_set_text(GTK_ENTRY(ed->recur_start_entry), text);
+    g_free(text);
 }
 
 /* editor_recur_lead_minutes() — the lead spin and its unit combo, folded
@@ -240,8 +297,10 @@ editor_recur_read(TaskEditor *ed, Task *t)
         t->recur_unit = (u >= 0 && u < TASK_RECUR_N_UNITS)
                         ? (TaskRecurUnit)u : TASK_RECUR_DAY;
     }
-    t->recur_time = editor_recur_time_parse(ed, TASK_RECUR_TIME_DEFAULT);
-    t->recur_lead = editor_recur_lead_minutes(ed);
+    t->recur_time  = editor_time_entry_parse(ed->recur_time_entry,
+                                            TASK_RECUR_TIME_DEFAULT);
+    t->recur_start = editor_recur_start_parse(ed, t->recur_start);
+    t->recur_lead  = editor_recur_lead_minutes(ed);
 }
 
 /* editor_recur_task() — the schedule the widgets currently describe, as a
@@ -380,7 +439,8 @@ editor_save_now(TaskEditor *ed)
                     GTK_TOGGLE_BUTTON(ed->pinned_check));
     t->priority = gtk_toggle_button_get_active(
                     GTK_TOGGLE_BUTTON(ed->priority_check));
-    t->due    = editor_due_entry_parse(ed, t->due);
+    t->due      = editor_due_entry_parse(ed, t->due);
+    t->due_time = editor_time_entry_parse(ed->due_time_entry, t->due_time);
     /* The recurrence schedule rides the same write-through save.
      * recur_next comes off `ed` rather than out of a widget: it is not a
      * setting, and it is reseeded by editor_recur_reseed whenever the
@@ -529,6 +589,13 @@ editor_recur_refresh(TaskEditor *ed)
      * 3 hours at 8am" is not a thing anyone can mean.                     */
     gtk_widget_set_sensitive(ed->recur_time_entry,
                              on && t.recur_unit >= TASK_RECUR_DAY);
+    /* The start date applies to EVERY unit — it anchors the minute and
+     * hour strides as well as naming the weekday of a weekly repeat — so
+     * it greys with the schedule as a whole and not with the time entry
+     * beside it.  The picker button greys with its entry: a button that
+     * writes into a dead field is worse than no button.                    */
+    gtk_widget_set_sensitive(ed->recur_start_entry, on);
+    gtk_widget_set_sensitive(ed->recur_start_btn, on);
     gtk_widget_set_sensitive(ed->recur_lead_spin, on);
     gtk_widget_set_sensitive(ed->recur_lead_unit, on);
 
@@ -676,25 +743,33 @@ on_editor_cancel(GtkWidget *w, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
- * on_due_calendar() — the 📅 button: modal GtkCalendar dialog writing an
- * ISO date into the due entry (Clear empties it).
+ * editor_pick_date() — the 📅 buttons' modal GtkCalendar dialog, writing an
+ * ISO date into `entry` (Clear empties it).
+ *
+ * Inputs:
+ *   ed    — the editor the dialog is transient for
+ *   entry — the date entry to preselect from and write back into
+ *   title — the dialog's window title ("Due Date", "Start Date")
+ *
+ * Output:
+ *   TRUE when the entry's text was written (a pick or a clear), FALSE when
+ *   the dialog was cancelled.  The caller decides what a change means —
+ *   the two entries this serves are saved by different paths.
  * ------------------------------------------------------------------------- */
-static void
-on_due_calendar(GtkWidget *w, gpointer data)
+static gboolean
+editor_pick_date(TaskEditor *ed, GtkWidget *entry, const gchar *title)
 {
-    (void)w;
-    TaskEditor *ed = data;
-    GtkWidget *dlg = gtk_dialog_new_with_buttons("Due Date",
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(title,
         GTK_WINDOW(ed->window),
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
         "_Clear", GTK_RESPONSE_REJECT, "_Cancel", GTK_RESPONSE_CANCEL,
         "_OK", GTK_RESPONSE_OK, NULL);
     GtkWidget *cal = gtk_calendar_new();
 
-    /* Preselect the current due date, if any.                              */
-    gint64 due = task_due_parse(gtk_entry_get_text(GTK_ENTRY(ed->due_entry)));
-    if (due != 0) {
-        GDateTime *dt = g_date_time_new_from_unix_local(due);
+    /* Preselect what the entry already holds, if anything.                 */
+    gint64 cur = task_due_parse(gtk_entry_get_text(GTK_ENTRY(entry)));
+    if (cur != 0) {
+        GDateTime *dt = g_date_time_new_from_unix_local(cur);
         gtk_calendar_select_month(GTK_CALENDAR(cal),
                                   (guint)g_date_time_get_month(dt) - 1,
                                   (guint)g_date_time_get_year(dt));
@@ -708,18 +783,45 @@ on_due_calendar(GtkWidget *w, gpointer data)
     gtk_widget_show_all(dlg);
 
     gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    gboolean changed = TRUE;
     if (resp == GTK_RESPONSE_OK) {
         guint y, m, d;               /* the picked date                     */
         gtk_calendar_get_date(GTK_CALENDAR(cal), &y, &m, &d);
         gchar *iso = g_strdup_printf("%04u-%02u-%02u", y, m + 1, d);
-        gtk_entry_set_text(GTK_ENTRY(ed->due_entry), iso);
+        gtk_entry_set_text(GTK_ENTRY(entry), iso);
         g_free(iso);
-        editor_save_now(ed);
     } else if (resp == GTK_RESPONSE_REJECT) {
-        gtk_entry_set_text(GTK_ENTRY(ed->due_entry), "");
-        editor_save_now(ed);
+        gtk_entry_set_text(GTK_ENTRY(entry), "");
+    } else {
+        changed = FALSE;
     }
     gtk_widget_destroy(dlg);
+    return changed;
+}
+
+/* on_due_calendar() — the due row's 📅 button.  The write-through save is
+ * immediate rather than debounced: a pick from a modal dialog is a
+ * deliberate act, like a dropdown choice.                                  */
+static void
+on_due_calendar(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    TaskEditor *ed = data;
+    if (editor_pick_date(ed, ed->due_entry, "Due Date"))
+        editor_save_now(ed);
+}
+
+/* on_recur_start_calendar() — the Recurrence block's 📅 button.  Setting
+ * the entry's text emits "changed", so on_recur_changed reseeds the next
+ * occurrence and re-labels the summary on its own; only the immediate save
+ * is left to do here, for the same reason the due picker does one.         */
+static void
+on_recur_start_calendar(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    TaskEditor *ed = data;
+    if (editor_pick_date(ed, ed->recur_start_entry, "Start Date"))
+        editor_save_now(ed);
 }
 
 /* ===========================================================================
@@ -1202,6 +1304,8 @@ editor_load(TaskEditor *ed)
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->priority_check),
                                  t->priority);
     due_entry_refresh(ed, t->due);
+    editor_time_entry_set(ed->due_time_entry, t->due_time,
+                          TASK_DUE_TIME_DEFAULT);
     ed->status_saved = t->status;
     editor_completed_refresh(ed, t);
 
@@ -1221,7 +1325,9 @@ editor_load(TaskEditor *ed)
     gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_unit_combo),
                              t->recur_interval > 0 ? (gint)t->recur_unit
                                                    : (gint)TASK_RECUR_DAY);
-    editor_recur_time_set(ed, t->recur_time);
+    editor_time_entry_set(ed->recur_time_entry, t->recur_time,
+                          TASK_RECUR_TIME_DEFAULT);
+    editor_recur_start_set(ed, t->recur_start);
     editor_recur_lead_set(ed, t->recur_lead);
     ed->recur_next = t->recur_next;
     editor_recur_refresh(ed);
@@ -1469,6 +1575,32 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                                       G_CALLBACK(on_due_calendar), ed);
     gtk_widget_set_tooltip_text(due_btn, "Pick a due date");
     gtk_box_pack_end(GTK_BOX(row), due_btn, FALSE, FALSE, 0);
+    /* The time of day that due date means.  pack_end puts the FIRST-packed
+     * child rightmost, so the reading order here is bottom-up: the button,
+     * then this entry, then "at", then the date, then the "Due:" label —
+     * which comes out as `Due: [date] at [HH:MM] [📅]`.
+     *
+     * It fits WITHOUT widening the editor because this row was mostly
+     * empty in the middle (Status is pack_start, the due controls
+     * pack_end), which is the same slack the completion label found on
+     * the flags row below.                                                 */
+    ed->due_time_entry = gtk_entry_new();
+    /* FIVE chars, not the recurrence entry's six: "HH:MM" is exactly five
+     * and this row is the editor's widest.  At six it came out 4 px past
+     * the 490 the window asks for, and the window silently grew to fit —
+     * the row must stay under that width, not merely near it.           */
+    gtk_entry_set_width_chars(GTK_ENTRY(ed->due_time_entry), 5);
+    gtk_entry_set_max_width_chars(GTK_ENTRY(ed->due_time_entry), 5);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(ed->due_time_entry), "HH:MM");
+    gtk_widget_set_tooltip_text(ed->due_time_entry,
+        "The time of day this task is due (24-hour), 08:00 unless you "
+        "change it.  It is kept on this machine only \xe2\x80\x94 Google "
+        "Tasks stores a due DATE and discards any time, so a sync will "
+        "not carry it or overwrite it.");
+    g_signal_connect(ed->due_time_entry, "changed",
+                     G_CALLBACK(on_field_changed), ed);
+    gtk_box_pack_end(GTK_BOX(row), ed->due_time_entry, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(row), gtk_label_new("at"), FALSE, FALSE, 0);
     ed->due_entry = gtk_entry_new();
     gtk_entry_set_width_chars(GTK_ENTRY(ed->due_entry), 12);
     gtk_entry_set_placeholder_text(GTK_ENTRY(ed->due_entry),
@@ -1666,6 +1798,27 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
         gtk_widget_set_halign(heading, GTK_ALIGN_START);
         gtk_box_pack_start(GTK_BOX(rec), heading, FALSE, FALSE, 0);
 
+        /* What the block DOES, said once under its heading — the controls
+         * below say what each of them sets, and the summary at the foot
+         * says where this particular schedule lands, but neither of those
+         * explains the rule itself.  Static, so the markup is set here and
+         * never touched again; dimmed with Pango alpha and wrapped at the
+         * summary's width for the same two reasons that label is (a fixed
+         * gray is unreadable on a dark theme, and the editor takes its
+         * natural width from its widest child).                            */
+        GtkWidget *desc = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(desc),
+            "<small><span alpha=\"65%\">"
+            "Recurrence will change the Due Date of your task to the next "
+            "specified iteration date and time.  Additionally, completed "
+            "tasks will be set to New X (defaults to 5) days before that "
+            "Due Date to give you lead time."
+            "</span></small>");
+        gtk_label_set_xalign(GTK_LABEL(desc), 0.0);
+        gtk_label_set_line_wrap(GTK_LABEL(desc), TRUE);
+        gtk_label_set_max_width_chars(GTK_LABEL(desc), 52);
+        gtk_box_pack_start(GTK_BOX(rec), desc, FALSE, FALSE, 0);
+
         /* Row 1 — the preset.  One row per TaskRecurPreset, appended IN
          * ENUM ORDER, so the active index IS the preset value (the same
          * arrangement the Status combo has).                              */
@@ -1735,7 +1888,46 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                            FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(rec), r2, FALSE, FALSE, 0);
 
-        /* Row 3 — the lead: how long before each repeat a completed task
+        /* Row 3 — the START date: the day the schedule is anchored on.
+         * Together with the time entry above it, this is what makes the
+         * whole schedule sayable in one sentence — "every Monday at
+         * 9:00 AM" is this row's Monday and that row's 9:00.
+         *
+         * A row of its own rather than more of row 1: three controls and
+         * their labels on one line would take the editor past the 490 px
+         * it asks for, and widening the window is the one cost this
+         * layout does not pay (the notes box and every other row are
+         * sized against that width).
+         *
+         * EMPTY is a real and ordinary value — it means "anchor on the
+         * due date", which is what every schedule did before this row
+         * existed and what most tasks still want.  So the entry starts
+         * blank rather than being seeded with today: a date filled in
+         * here is a date the user chose.                                 */
+        GtkWidget *r_start = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_box_pack_start(GTK_BOX(r_start), gtk_label_new("Starting:"),
+                           FALSE, FALSE, 0);
+        ed->recur_start_entry = gtk_entry_new();
+        gtk_entry_set_width_chars(GTK_ENTRY(ed->recur_start_entry), 12);
+        gtk_entry_set_max_width_chars(GTK_ENTRY(ed->recur_start_entry), 12);
+        gtk_entry_set_placeholder_text(GTK_ENTRY(ed->recur_start_entry),
+                                       "YYYY-MM-DD");
+        gtk_widget_set_tooltip_text(ed->recur_start_entry,
+            "The day this schedule is anchored on \xe2\x80\x94 the "
+            "\"Monday\" of \"every Monday at 9:00 AM\".  A start still in "
+            "the future is the FIRST repeat, not a week after it.  Leave "
+            "it empty to anchor on the task's own due date.");
+        gtk_box_pack_start(GTK_BOX(r_start), ed->recur_start_entry,
+                           FALSE, FALSE, 0);
+        ed->recur_start_btn = small_button("\xf0\x9f\x93\x85",
+                                  G_CALLBACK(on_recur_start_calendar), ed);
+        gtk_widget_set_tooltip_text(ed->recur_start_btn,
+                                    "Pick the day the repeats start on");
+        gtk_box_pack_start(GTK_BOX(r_start), ed->recur_start_btn,
+                           FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(rec), r_start, FALSE, FALSE, 0);
+
+        /* Row 4 — the lead: how long before each repeat a completed task
          * is reset to New.  Five days by default.                         */
         GtkWidget *r3 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         gtk_box_pack_start(GTK_BOX(r3), gtk_label_new("Reset to New"),
@@ -1780,6 +1972,8 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
         g_signal_connect(ed->recur_unit_combo, "changed",
                          G_CALLBACK(on_recur_changed), ed);
         g_signal_connect(ed->recur_time_entry, "changed",
+                         G_CALLBACK(on_recur_changed), ed);
+        g_signal_connect(ed->recur_start_entry, "changed",
                          G_CALLBACK(on_recur_changed), ed);
         g_signal_connect(ed->recur_lead_spin, "value-changed",
                          G_CALLBACK(on_recur_changed), ed);
