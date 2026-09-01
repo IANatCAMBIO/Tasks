@@ -11,6 +11,7 @@
 #include "task_view.h"
 #include "task_rows.h"
 #include "task_ui.h"
+#include "search.h"
 #include "settings_window.h"
 #include <stdlib.h>
 #include <string.h>
@@ -129,6 +130,11 @@ typedef struct {
     GtkWidget    *ui_tool_rule;      /* divider before contributed buttons  */
     GtkWidget    *float_bar;         /* Compact Layout's floating New /
                                       * Delete Task pair (overlay child)    */
+    GtkWidget    *search_entry;      /* the toolbar's search box, at the
+                                      * right edge where Notes keeps its    */
+    TaskSearch   *search;            /* its parsed query, or NULL for "no
+                                      * filter" — the ONE test for whether
+                                      * a search is active (see search.h)   */
     GtkWidget    *status_left;       /* selection info label                */
     GtkWidget    *status_right;      /* latest event message label          */
     guint         listen_changed;    /* TaskApp event subscriptions —       */
@@ -177,6 +183,34 @@ typedef struct {
     gint                 status_fade_step;    /* current step               */
     gchar               *status_fade_text;   /* plain text being faded      */
 } TaskLibrary;
+
+/* ---------------------------------------------------------------------------
+ * manual_sort_live() — may rows be hand-reordered RIGHT NOW?
+ *
+ * The setting alone is not the answer: a SEARCH is on, and both order
+ * writers — task_view_save_manual_order and the board's card_drop_apply —
+ * serialize the rows CURRENTLY IN THE PANE and nothing else.  Drag one row
+ * while a filter hides the rest and the saved order comes back holding only
+ * the matches, with every hidden task's hand-made position gone for good.
+ * It is the same trap the sync's "ABSENCE NEVER DELETES" rule exists for:
+ * a partial listing is not permission to throw away what is missing from
+ * it.
+ *
+ * So dragging is refused while filtered rather than made lossy, and the
+ * refusal is VISIBLE — the ⠿ handle column goes, the sort toggle greys
+ * with its reason in the tooltip.  READING a saved order is unaffected:
+ * refresh_tasks still applies it to whatever survived the filter, which
+ * keeps the matches in the order the user put them in.
+ *
+ * The board has no handle column to hide, so card_drop_apply skips its
+ * ORDER half instead and lets the status change through — that drag is not
+ * lossy, and the two halves are already independent there.
+ * ------------------------------------------------------------------------- */
+static gboolean
+manual_sort_live(TaskLibrary *lw)
+{
+    return lw->manual_sort && lw->search == NULL;
+}
 
 /* list_label() — a list's display label: the optional emoji prefixes
  * the name, set off by two spaces.  New string (g_free).                   */
@@ -788,6 +822,23 @@ refresh_sidebar(TaskLibrary *lw)
  * change (the sidebar follows its own item in both modes).                */
 #define CTRL_LABEL_TO_COMPACT "Compact Controls"
 #define CTRL_LABEL_TO_FULL    "Full Controls"
+
+/* The search box's own text.  The PLACEHOLDER says what is searched, not
+ * merely "Search": the box narrows the SELECTED view rather than sweeping
+ * the database, and a user who reads "Search all tasks" (Notes' wording,
+ * for a box that really does search everything) would read an empty result
+ * in one list as "that task does not exist".  All Tasks is a view like any
+ * other, so selecting it and typing IS the search-everything case.
+ *
+ * The TOOLTIP is the only place the operators are written down, so it
+ * spells both out with an example rather than naming them.  It is also set
+ * from task_pane_mode_apply, which swaps in a reason while the box is
+ * greyed — hence a macro rather than a string at the construction site.   */
+#define SEARCH_PLACEHOLDER "Search this view"
+#define SEARCH_TOOLTIP \
+    "Search the selected view's task titles, notes and subtasks.\n" \
+    "\"quoted words\" matches the phrase; -word leaves out tasks " \
+    "containing it."
 
 /* Thickness of the insertion marker, in logical px.  Thin on purpose: it
  * occupies a slot in the lane, so anything chunky would shove the cards
@@ -1638,6 +1689,72 @@ on_card_drag_key(GtkWidget *w, GdkEventKey *ev, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
+ * card_order_save() — the ORDER half of a board drop: rewrite the view's
+ * kanban_order_<id> key with every lane's cards in display order, the
+ * dragged ids lifted out of wherever they were and re-inserted into `lane`
+ * at `slot` with their relative order intact.  Removing before inserting is
+ * what makes `slot` — measured against the cards on screen, the dragged
+ * ones included — land where the marker was.
+ *
+ * Returns TRUE when the saved order actually changed.
+ *
+ * REFUSES OUTRIGHT while a search is up, and that is the point of it being
+ * separate: lane_card_ids reads the cards ON SCREEN, which under a filter
+ * is only the matches, so writing that back would drop every hidden task
+ * out of the saved order for good.  Same trap as the list view's drag, and
+ * manual_sort_live carries the full reasoning.  The caller's STATUS half
+ * still runs — dragging a card to Done while searching is a perfectly good
+ * thing to do and loses nothing.
+ *   lw      — the library window.
+ *   to_move — the dragged task ids, in the order they should land.
+ *   lane    — the destination lane (its index IS the TaskStatus).
+ *   slot    — the position within that lane.
+ * ------------------------------------------------------------------------- */
+static gboolean
+card_order_save(TaskLibrary *lw, GArray *to_move, gint lane, gint slot)
+{
+    if (lw->search != NULL)
+        return FALSE;                /* filtered: not ours to rewrite      */
+
+    GString *order = g_string_new(NULL);
+    for (gint sl = 0; sl < TASK_STATUS_N_VALUES; sl++) {
+        GArray *ids = lane_card_ids(lw, sl);
+        for (guint m = 0; m < to_move->len; m++) {
+            gint64 id = g_array_index(to_move, gint64, m);
+            for (guint i = 0; i < ids->len; i++)
+                if (g_array_index(ids, gint64, i) == id) {
+                    g_array_remove_index(ids, i);
+                    break;
+                }
+        }
+        if (sl == lane) {
+            gint at = CLAMP(slot, 0, (gint)ids->len);
+            for (guint m = 0; m < to_move->len; m++) {
+                gint64 id = g_array_index(to_move, gint64, m);
+                g_array_insert_val(ids, at + (gint)m, id);
+            }
+        }
+        for (guint i = 0; i < ids->len; i++) {
+            if (order->len > 0)
+                g_string_append_c(order, ',');
+            g_string_append_printf(order, "%" G_GINT64_FORMAT,
+                                   g_array_index(ids, gint64, i));
+        }
+        g_array_unref(ids);
+    }
+
+    gchar *key   = kanban_order_key(lw);
+    gchar *saved = key != NULL ? task_app_config_get(key) : NULL;
+    gboolean changed = (g_strcmp0(saved, order->str) != 0);
+    g_free(saved);
+    if (changed && key != NULL)
+        task_app_config_set(key, order->str);
+    g_free(key);
+    g_string_free(order, TRUE);
+    return changed;
+}
+
+/* ---------------------------------------------------------------------------
  * card_drop_apply() — the drop: put the dragged task(s) in `lane` at
  * `slot`, keeping their relative order.  `moving` is the whole dragged
  * selection, so one card and twenty take the same path.
@@ -1646,7 +1763,8 @@ on_card_drag_key(GtkWidget *w, GdkEventKey *ev, gpointer data)
  *
  *   the STATUS, when the lane changed — a real database write that stamps
  *     updated_at and syncs;
- *   the ORDER, always — local-only, config, never touches the row.
+ *   the ORDER, always — local-only, config, never touches the row, and
+ *     handed to card_order_save, which refuses it while a search is up.
  *
  * A drag that lands the cards exactly where they already were does
  * NEITHER, which is what keeps "pick up and put back" from buying a sync
@@ -1688,46 +1806,7 @@ card_drop_apply(TaskLibrary *lw, GArray *moving, gint lane, gint slot)
         return FALSE;
     }
 
-    /* Build the view's new card order: every lane's ids in display order,
-     * with ALL the dragged ids lifted out of wherever they were and
-     * dropped into `lane` at `slot`, keeping their relative order.
-     * Removing first is what makes `slot` — measured against the cards on
-     * screen, dragged cards included — land right.                        */
-    GString *order = g_string_new(NULL);
-    for (gint sl = 0; sl < TASK_STATUS_N_VALUES; sl++) {
-        GArray *ids = lane_card_ids(lw, sl);
-        for (guint m = 0; m < to_move->len; m++) {
-            gint64 id = g_array_index(to_move, gint64, m);
-            for (guint i = 0; i < ids->len; i++)
-                if (g_array_index(ids, gint64, i) == id) {
-                    g_array_remove_index(ids, i);
-                    break;
-                }
-        }
-        if (sl == lane) {
-            gint at = CLAMP(slot, 0, (gint)ids->len);
-            for (guint m = 0; m < to_move->len; m++) {
-                gint64 id = g_array_index(to_move, gint64, m);
-                g_array_insert_val(ids, at + (gint)m, id);
-            }
-        }
-        for (guint i = 0; i < ids->len; i++) {
-            if (order->len > 0)
-                g_string_append_c(order, ',');
-            g_string_append_printf(order, "%" G_GINT64_FORMAT,
-                                   g_array_index(ids, gint64, i));
-        }
-        g_array_unref(ids);
-    }
-
-    gchar *key   = kanban_order_key(lw);
-    gchar *saved = key != NULL ? task_app_config_get(key) : NULL;
-    gboolean order_change = (g_strcmp0(saved, order->str) != 0);
-    g_free(saved);
-    if (order_change && key != NULL)
-        task_app_config_set(key, order->str);
-    g_free(key);
-    g_string_free(order, TRUE);
+    gboolean order_change = card_order_save(lw, to_move, lane, slot);
 
     if (n_status == 0 && !order_change) {
         g_array_unref(to_move);
@@ -2219,16 +2298,38 @@ task_pane_mode_apply(TaskLibrary *lw)
                        : "Show the tasks as a Kanban board");
     }
 
-    gboolean sortable = !lw->kanban;
+    /* Two reasons the sort control can be unavailable, and they get
+     * DIFFERENT tooltips: one control greyed for two unrelated causes is
+     * only honest if it says which one is in force.                       */
+    gboolean sortable = !lw->kanban && lw->search == NULL;
     if (lw->view_manual_sort_item != NULL) {
         gtk_widget_set_sensitive(lw->view_manual_sort_item, sortable);
         gtk_widget_set_tooltip_text(lw->view_manual_sort_item,
-            sortable ? NULL
-                     : "The Kanban board is always drag-sorted \xe2\x80\x94 "
-                       "turn Kanban View off to change list sorting");
+            sortable      ? NULL
+            : lw->kanban  ? "The Kanban board is always drag-sorted \xe2\x80\x94 "
+                            "turn Kanban View off to change list sorting"
+                          : "A search hides rows, and saving an order from "
+                            "a filtered list would lose the hidden tasks' "
+                            "places \xe2\x80\x94 clear the search box to "
+                            "drag-sort again");
     }
     if (lw->manual_sort_item != NULL)
         gtk_widget_set_sensitive(GTK_WIDGET(lw->manual_sort_item), sortable);
+
+    /* The search box filters the task LIST the core lays out, and a panel
+     * view has none — the Weekly Forecast owns its seven day views and
+     * what goes in them.  So grey the box out there rather than leave a
+     * control that silently does nothing, the same call the sort toggle
+     * makes above.  Keyed on `panel`, not on lw->kanban: unlike the board,
+     * a panel is only ever up while its own row is selected, so the
+     * sensitivity tracks something the user can see.                       */
+    if (lw->search_entry != NULL) {
+        gtk_widget_set_sensitive(lw->search_entry, !panel);
+        gtk_widget_set_tooltip_text(lw->search_entry,
+            panel ? "The Weekly Forecast lays out its own days \xe2\x80\x94 "
+                    "pick a list or All Tasks to search"
+                  : SEARCH_TOOLTIP);
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -2284,10 +2385,41 @@ refresh_tasks(TaskLibrary *lw)
 
     TaskRowCtx ctx;                  /* shared lookups (see above)          */
     task_row_ctx_init(lw->app, &ctx, virtual_view);
+
+    /* The toolbar search box narrows the view IN PLACE, so its scope is
+     * whatever the sidebar has selected — this list, or All Tasks for a
+     * search across every one of them.  Filtering here, between the
+     * collection and the presentation, is what gives the board the same
+     * filter as the list for free: below this line the two branches differ
+     * only in how they draw the tasks they were handed.
+     *
+     * The filtered array BORROWS its elements; `tasks` still owns them and
+     * still frees them at the end.  Subtasks come from the row context that
+     * was just built rather than a query of our own — it has already
+     * grouped every visible subtask by parent for the row markup, and
+     * asking the database again per task is exactly what that grouping
+     * exists to avoid.                                                     */
+    GPtrArray *filtered = NULL;      /* the matches, or NULL when unfiltered*/
+    if (lw->search != NULL) {
+        filtered = g_ptr_array_new();
+        for (guint i = 0; i < tasks->len; i++) {
+            Task *t = g_ptr_array_index(tasks, i);
+            GPtrArray *subs = t->parent_id == 0
+                ? g_hash_table_lookup(ctx.subs_by_parent,
+                                      GINT_TO_POINTER(t->id))
+                : NULL;
+            if (task_search_matches(lw->search, t, subs))
+                g_ptr_array_add(filtered, t);
+        }
+    }
+    GPtrArray *rows = filtered != NULL ? filtered : tasks;
+
     guint shown = kanban
-        ? refresh_kanban(lw, tasks, &ctx)
-        : task_rows_append(lw->task_store, tasks, &ctx);
+        ? refresh_kanban(lw, rows, &ctx)
+        : task_rows_append(lw->task_store, rows, &ctx);
     task_row_ctx_clear(&ctx);
+    if (filtered != NULL)
+        g_ptr_array_free(filtered, TRUE);   /* elements belong to `tasks`   */
 
     /* Reorder to match the saved manual order.  No-op when the mode is
      * off, and skipped entirely on the board — a manual order is a
@@ -2302,9 +2434,17 @@ refresh_tasks(TaskLibrary *lw)
     const gchar *where = virtual_view    ? view_name
                        : sel_list != NULL ? sel_list->name : "?";
     /* The view names its own noun ("action item" reads better than
-     * "task" for a mirrored list); only the plural "s" is ours.           */
-    gchar *loc = g_strdup_printf("%s - %u %s%s", where, shown, unit,
-                                 shown == 1 ? "" : "s");
+     * "task" for a mirrored list); only the plural "s" is ours.
+     *
+     * While a search is running the count says "matching", because a bare
+     * count would claim the view holds three tasks when it holds thirty
+     * and is showing three.  It is deliberately NOT "3 of 30": the total
+     * would have to re-apply the completed-visibility rule that
+     * task_rows_append already owns, and a third copy of that test is how
+     * the three drift apart.                                              */
+    gchar *loc = g_strdup_printf("%s - %u %s%s%s", where, shown,
+                                 lw->search != NULL ? "matching " : "",
+                                 unit, shown == 1 ? "" : "s");
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
     g_free(loc);
     task_list_free(sel_list);
@@ -2329,6 +2469,46 @@ full_refresh(TaskLibrary *lw)
         gtk_widget_set_visible(lw->ui_tool_rule,
                                task_ui_any_tool_visible(lw->app));
     task_editor_refresh_all(lw->app);
+}
+
+/* ---------------------------------------------------------------------------
+ * on_search_changed() — the toolbar search box's text changed: re-compile
+ * the query and redraw the task pane through it.
+ *
+ * Only the TASK PANE is rebuilt, never the sidebar: a search narrows what
+ * is shown of the selected view, and rebuilding the sidebar from a
+ * keystroke would snapshot and restore the Lists expansion on every
+ * character typed.
+ *
+ * GtkSearchEntry holds "search-changed" back until typing pauses, so this
+ * does not run per keystroke; "activate" (Enter) is wired here too so the
+ * filter lands at once for someone who types and immediately presses it.
+ * The clear icon emits "search-changed" like any other edit, which is what
+ * puts the whole view back.
+ * ------------------------------------------------------------------------- */
+static void
+on_search_changed(GtkWidget *entry, gpointer data)
+{
+    TaskLibrary *lw = data;
+    task_search_free(lw->search);
+    lw->search = task_search_parse(gtk_entry_get_text(GTK_ENTRY(entry)));
+    /* Hand-sorting is suspended while a filter is up and comes back when
+     * it clears (manual_sort_live says why), so the ⠿ handle column has to
+     * be re-applied on the way through — BEFORE the rows are rebuilt, so
+     * the pane is drawn once, in the shape it is about to keep.           */
+    task_manual_sort_apply(lw);
+    refresh_tasks(lw);
+}
+
+/* on_search_stopped() — Escape in the search box: empty it, which fires
+ * "search-changed" and so drops the filter through the one path above.
+ * GtkSearchEntry raises the signal but does not clear itself — that is
+ * GtkSearchBar's job, and there is no search bar here.                     */
+static void
+on_search_stopped(GtkWidget *entry, gpointer data)
+{
+    (void)data;
+    gtk_entry_set_text(GTK_ENTRY(entry), "");
 }
 
 /* hide_done_icon_refresh() — point the completed-visibility toggle's
@@ -2807,6 +2987,17 @@ compact_layout_apply(TaskLibrary *lw)
     if (lw->view_compact_item != NULL)
         gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_compact_item),
             compact ? CTRL_LABEL_TO_FULL : CTRL_LABEL_TO_COMPACT);
+
+    /* Compact Controls takes the whole toolbar away, search box included,
+     * so a filter left running would go on hiding tasks with nothing left
+     * on screen to say why or to switch it off — a worse trap than a
+     * control that does nothing, because the pane looks like the data.
+     * Emptying the box drops the filter through the ordinary
+     * "search-changed" path, so there is no second place that knows how to
+     * clear a search.  Only when there is one: an unconditional set_text
+     * would refresh the pane on every layout toggle.                       */
+    if (compact && lw->search != NULL && lw->search_entry != NULL)
+        gtk_entry_set_text(GTK_ENTRY(lw->search_entry), "");
 }
 
 /* on_toggle_sidebar() — toolbar show/hide button for the lists pane:
@@ -3744,8 +3935,10 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
 {
     TaskLibrary *lw = data;
 
-    /* Left-click in the drag handle column starts a manual reorder. */
-    if (event->button == 1 && lw->manual_sort) {
+    /* Left-click in the drag handle column starts a manual reorder.
+     * manual_sort_live, not the raw flag: a search hides rows, and the
+     * order writer would drop every hidden one (see manual_sort_live).  */
+    if (event->button == 1 && manual_sort_live(lw)) {
         GtkTreePath      *path = NULL;
         GtkTreeViewColumn *col = NULL;
         if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view),
@@ -4114,43 +4307,6 @@ on_menu_about(GtkWidget *w, gpointer data)
     gtk_widget_destroy(dialog);
 }
 
-/* about_button_fit_style() — the About button shows the centered logo in
- * every toolbar style; the "About" text appears ONLY in text-only mode
- * (where there would otherwise be nothing to click).  The item is a plain
- * GtkToolItem wrapping a GtkButton whose single child gets swapped — a
- * GtkToolButton would reserve empty label space under the icon in
- * icons-above-text mode.  The logo and label widgets live as object data
- * ("task-logo"/"task-label", owning refs) so they survive being unparented.
- *   item  — the About tool item.
- *   style — the toolbar style being applied.                               */
-static void
-about_button_fit_style(GtkToolItem *item, GtkToolbarStyle style)
-{
-    GtkWidget *btn   = gtk_bin_get_child(GTK_BIN(item));
-    GtkWidget *logo  = g_object_get_data(G_OBJECT(item), "task-logo");
-    GtkWidget *label = g_object_get_data(G_OBJECT(item), "task-label");
-
-    GtkWidget *want =                /* the child this style calls for      */
-        (style == GTK_TOOLBAR_TEXT) ? label : logo;
-    GtkWidget *cur = gtk_bin_get_child(GTK_BIN(btn));
-    if (cur == want)
-        return;
-    if (cur != NULL)
-        gtk_container_remove(GTK_CONTAINER(btn), cur);
-    gtk_container_add(GTK_CONTAINER(btn), want);
-    gtk_widget_show(want);
-}
-
-/* on_toolbar_style_changed() — keep the About button's label rule
- * applied when the toolbar style changes.                                  */
-static void
-on_toolbar_style_changed(GtkToolbar *toolbar, GtkToolbarStyle style,
-                         gpointer user_data)
-{
-    (void)toolbar;
-    about_button_fit_style(GTK_TOOL_ITEM(user_data), style);
-}
-
 /* on_menu_quit() — File → Quit.                                            */
 static void
 on_menu_quit(GtkWidget *w, gpointer data)
@@ -4464,6 +4620,9 @@ on_library_destroy(GtkWidget *w, gpointer data)
     /* The panes themselves are children of the window and are destroyed
      * with it; only the table goes here.                                 */
     g_clear_pointer(&lw->panels, (GDestroyNotify)g_hash_table_destroy);
+    /* The entry is a child of the toolbar and goes with the window; the
+     * PARSED query is ours and does not.                                   */
+    g_clear_pointer(&lw->search, (GDestroyNotify)task_search_free);
     task_ui_tool_forget_all();   /* the toolbar destroyed them */
     task_app_unlisten(lw->app, lw->listen_changed);
     task_app_unlisten(lw->app, lw->listen_tasks);
@@ -4625,7 +4784,7 @@ task_drag_set_cursor(GtkWidget *widget, TaskLibrary *lw, gdouble x, gdouble y)
     GdkWindow  *win = gtk_widget_get_window(widget);
     if (win == NULL) return;
     gboolean want_resize = lw->drag_active;
-    if (!want_resize && lw->manual_sort) {
+    if (!want_resize && manual_sort_live(lw)) {
         GtkTreeViewColumn *over = NULL;
         gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
             (gint)x, (gint)y, NULL, &over, NULL, NULL);
@@ -4762,9 +4921,14 @@ on_task_drag_release(GtkWidget *widget, GdkEventButton *ev, gpointer data)
 static void
 task_manual_sort_apply(TaskLibrary *lw)
 {
-    gboolean manual =
+    lw->manual_sort =
         task_app_config_get_bool("task_list_manual_sort", FALSE);
-    lw->manual_sort = manual;
+    /* What the COLUMNS show is what is actually on offer, which a search
+     * suspends (see manual_sort_live) — so the ⠿ handle goes and the
+     * headers become clickable again, giving the filtered view the sorting
+     * it can still do.  The cached SETTING above is untouched: clearing the
+     * box must bring hand-sorting back, not turn it off.                  */
+    gboolean manual = manual_sort_live(lw);
     GtkTreeViewColumn *cdrag =
         g_object_get_data(G_OBJECT(lw->task_view), "task-cdrag");
     GtkTreeViewColumn *cdone =
@@ -5093,43 +5257,43 @@ task_library_window_new(TaskApp *app)
         task_ui_tool_bind(d->id, GTK_WIDGET(item));
     }
 
-    /* Expanding blank separator pushes the About button to the right
-     * edge (the Notes layout).                                            */
+    /* Expanding blank separator pushes the search box to the right edge
+     * (the Notes layout, which keeps its own search box there).           */
     GtkToolItem *spacer = gtk_separator_tool_item_new();
     gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spacer),
                                      FALSE);
     gtk_tool_item_set_expand(spacer, TRUE);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), spacer, -1);
 
-    /* The About button at the far right.  Built by hand because the
-     * child must stay centered (see about_button_fit_style).               */
-    GtkToolItem *about_item = gtk_tool_item_new();
-    GtkWidget *about_btn = gtk_button_new();
-    gtk_button_set_relief(GTK_BUTTON(about_btn), GTK_RELIEF_NONE);
-    gtk_container_add(GTK_CONTAINER(about_item), about_btn);
-    {
-        GtkWidget *logo =            /* the icon-mode child                 */
-            task_app_icon_image_sized(app, "document", 24);
-        if (logo == NULL)
-            logo = gtk_label_new("\xf0\x9f\x8f\xa0");    /* 🏠 fallback     */
-        GtkWidget *label = gtk_label_new("About");   /* text-mode child     */
+    /* The search box at the far right, where Notes keeps its own.  It took
+     * the About button's place rather than crowding in beside it: the
+     * button was a SECOND way to reach a dialog File → About Tasks
+     * already opens, and a search box is worth more at the one spot on the
+     * toolbar a user's eye goes looking for one.  Nothing was lost with it
+     * — the menu item is unchanged, and on_menu_about still serves it.
+     *
+     * A GtkSearchEntry rather than a plain GtkEntry: it brings the
+     * magnifier, the clear icon, Escape, and the typing-pause delay that
+     * keeps a keystroke from rebuilding the pane.  It is NOT registered
+     * with task_app_register_toolbar — that system swaps icons for
+     * labels, and an entry has neither.                                    */
+    lw->search_entry = gtk_search_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(lw->search_entry),
+                                   SEARCH_PLACEHOLDER);
+    gtk_widget_set_tooltip_text(lw->search_entry, SEARCH_TOOLTIP);
+    gtk_entry_set_width_chars(GTK_ENTRY(lw->search_entry), 18);
+    /* 5 px of air between the box and the window edge (Notes' spacing).    */
+    gtk_widget_set_margin_end(lw->search_entry, 5);
+    g_signal_connect(lw->search_entry, "search-changed",
+                     G_CALLBACK(on_search_changed), lw);
+    g_signal_connect(lw->search_entry, "activate",
+                     G_CALLBACK(on_search_changed), lw);
+    g_signal_connect(lw->search_entry, "stop-search",
+                     G_CALLBACK(on_search_stopped), lw);
 
-        /* Keep owning refs so removal from the button never frees them.    */
-        g_object_set_data_full(G_OBJECT(about_item), "task-logo",
-                               g_object_ref_sink(logo), g_object_unref);
-        g_object_set_data_full(G_OBJECT(about_item), "task-label",
-                               g_object_ref_sink(label), g_object_unref);
-    }
-    gtk_tool_item_set_tooltip_text(about_item, "About Tasks");
-    g_signal_connect(about_btn, "clicked",
-                     G_CALLBACK(on_menu_about), lw);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), about_item, -1);
-
-    /* Logo only, except in text-only mode — applied now and re-applied
-     * on every style switch (register_toolbar sets the style below).       */
-    about_button_fit_style(about_item, app->toolbar_style);
-    g_signal_connect(toolbar, "style-changed",
-                     G_CALLBACK(on_toolbar_style_changed), about_item);
+    GtkToolItem *search_item = gtk_tool_item_new();
+    gtk_container_add(GTK_CONTAINER(search_item), lw->search_entry);
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), search_item, -1);
 
     task_app_register_toolbar(app, toolbar);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);

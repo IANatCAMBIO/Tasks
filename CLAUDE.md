@@ -111,6 +111,7 @@ the user).  A logic test harness lives in the session scratchpad
 | `src/app.[ch]` | Shared `TaskApp` context; ini config; dialogs; toolbar style system (icons/both/text + right-click menu); HiDPI icon loader; CSS helper; date helpers |
 | `src/backup.[ch]` | OPTIONAL rotating db backups: own worker + connection, VACUUM INTO + verify, bounded rotation; off by default |
 | `src/db.[ch]` | SQLite schema (user_version 12) + CRUD; `TaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
+| `src/search.[ch]` | The toolbar search box's query language: parse once, match per task.  Pure GLib — no GTK, no SQLite |
 | `src/recur.[ch]` | Recurring tasks: presets, GDateTime schedule arithmetic, and the periodic pass — the ONE core worker that runs on the main thread |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, Kanban board, multi-select context menu, status bar |
 | `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); Status dropdown; the Recurrence block; plugin-contributed sections |
@@ -401,13 +402,67 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   menu, which read the cache.  A drag-lock (`drag_lock_ref`) prevents
   rapid row flicker at boundaries; the "ns-resize" cursor is made once
   and kept on `lw->drag_cursor` (the motion path must not allocate).
-  Far right (after an expanding blank
-  separator): the About button — document.png logo in every style
-  except text-only, which swaps in an "About" label
-  (`about_button_fit_style` on "style-changed"); it opens the
-  Notes-style about dialog (`on_menu_about`: HiDPI logo, compile
-  stamp, `task_db_totals` vitals), shared with File → About Tasks.
-  document.png is also the .app bundle icon (Makefile `app` target).
+  Far right (after an expanding blank separator): the **search box** —
+  see "Searching the task pane" below.  It TOOK THE ABOUT BUTTON'S PLACE
+  (2026-09-01) and that button is gone, along with
+  `about_button_fit_style` and its "style-changed" wiring: it was a second
+  way to reach a dialog File → About Tasks already opens, and the right
+  edge is where a user's eye looks for a search box (it is where Notes
+  keeps its own).  Nothing was lost — `on_menu_about` still serves the
+  menu item, HiDPI logo, compile stamp, `task_db_totals` vitals and all.
+  document.png is still the .app bundle icon (Makefile `app` target); it
+  is no longer shown in the toolbar.
+- **Searching the task pane** (`src/search.[ch]`, the toolbar's right
+  edge).  The box FILTERS THE SELECTED VIEW IN PLACE — it does not open a
+  window and does not add a sidebar row.  Its SCOPE is therefore whatever
+  the sidebar has selected, which is why the placeholder says "Search this
+  view" and not Notes' "Search all notes": All Tasks is a view like any
+  other, so selecting it and typing IS the search-everything case, and a
+  box promising "all" while showing one list's matches would read an empty
+  result as "that task does not exist".
+  Searched: the task TITLE, its NOTES, and its subtasks' TITLES, joined
+  with newlines so a quoted phrase cannot match across the seam.  A
+  subtask match surfaces its PARENT — the pane lists top-level tasks and a
+  subtask has no row to select.
+  Terms AND together (they do not OR); `"quoted words"` is one phrase,
+  `-word` excludes.  `-` is an operator only at the START of a term, so
+  "well-known" is literal and `"-5"` searches for the hyphen.  Matching is
+  `g_utf8_casefold`, not ASCII tolower.  A query with no usable term
+  (empty, whitespace, a bare `-`) parses to **NULL**, which is the ONE
+  test for "is a search active" — there is no separate flag.
+  The filter is applied in `refresh_tasks` BETWEEN the collection and the
+  presentation, which is what gives the Kanban board the same filter as
+  the list for nothing: below that line the two branches differ only in
+  how they draw the tasks they were handed.  Subtasks come off the
+  `TaskRowCtx` that was just built (`subs_by_parent`), never a query of
+  its own — that grouping exists precisely to keep per-row queries out.
+  The status bar says "3 matching tasks", deliberately NOT "3 of 30": the
+  total would have to re-apply the completed-visibility rule
+  `task_rows_append` already owns, and a third copy of that test is how
+  the three drift.
+  **A search SUSPENDS hand-sorting, in both panes** (`manual_sort_live`).
+  This is not tidiness: `task_view_save_manual_order` and
+  `card_order_save` both serialize the rows CURRENTLY IN THE PANE, so a
+  drag while a filter is up would write back an order holding only the
+  matches and throw away every hidden task's hand-made position.  Same
+  trap as the sync's "ABSENCE NEVER DELETES" — a partial listing is not
+  permission to discard what is missing from it.  So the ⠿ handle column
+  goes, the sort toggle greys (with its OWN tooltip, distinct from the
+  Kanban one — one control greyed for two unrelated reasons must say
+  which), and `card_order_save` returns FALSE early while the board's
+  STATUS half still runs (dragging a card to Done while searching loses
+  nothing).  READING a saved order is untouched: the matches keep the
+  order the user put them in.  The cached SETTING is never written, so
+  clearing the box brings hand-sorting back rather than turning it off.
+  Greyed on a PANEL view too (the Weekly Forecast lays out its own days;
+  there is no task list to filter), with a tooltip saying so — the same
+  call the sort toggle makes, from the same `task_pane_mode_apply`.
+  **Compact Controls CLEARS it**: that mode takes the whole toolbar away,
+  and a filter still running with nothing on screen to say why or to
+  switch it off is worse than a control that does nothing — the pane just
+  looks like the data.  Cleared by emptying the ENTRY, so the drop goes
+  through the one "search-changed" path and no second place knows how to
+  end a search.
 - View menu, top to bottom: the **completed-visibility** item, the **sort
   toggle**, divider, the **sidebar** item, the **controls** item, the
   **pane** item.  The divider separates what the task PANE shows from what

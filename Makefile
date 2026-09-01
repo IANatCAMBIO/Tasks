@@ -99,6 +99,7 @@ SRCS     := src/main.c \
             src/task_view.c \
             src/task_rows.c \
             src/task_ui.c \
+            src/search.c \
             src/core_views.c \
             src/db.c \
             src/backup.c \
