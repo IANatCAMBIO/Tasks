@@ -571,6 +571,17 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   its rule is what separates the contributed group from the window group),
   File passes FALSE.  Either way the helper appends nothing at all,
   separator included, when no plugin contributed to that menu.
+- **Classic scrollbars, not GTK's overlay indicators**, matching Notes:
+  `g_setenv("GTK_OVERLAY_SCROLLING", "0", TRUE)` in `main()` BEFORE GTK
+  initializes (the first-run dialog's `gtk_init_check` is the earliest it
+  can).  That one call is the whole mechanism and there are no
+  `gtk_scrolled_window_set_overlay_scrolling` calls to keep in step with
+  it: GTK reads the variable itself per scroller, so it reaches the
+  PLUGINS' scrollers (the forecast panel's) — which the core cannot call
+  into — and every scroller added later.  A bar then takes real width
+  (measured 15 px, against 6 px of overlay indicator) instead of floating
+  over the content.
+
 - Thin `gtk_separator_new` rules under the toolbar and above the status
   bar.  Status bar: margins 8/8/3/3 (NOT border_width) and
   `label { font-size: 85%; }` on both labels — measured pixel-identical

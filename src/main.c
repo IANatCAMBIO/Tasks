@@ -273,6 +273,14 @@ main(int argc, char **argv)
     /* Config first: everything else may read it.                           */
     task_app_config_init(argc > 0 ? argv[0] : NULL);
 
+    /* Classic full-width scrollbars everywhere instead of GTK's modern
+     * overlay style, matching Notes.  This is the ONE lever: it is a
+     * GtkSettings default, so it reaches every scroller in the process —
+     * the plugins' included, which the core cannot call into — and every
+     * one added later.  Must be set before GTK initializes, which the
+     * first-run dialog's gtk_init_check() below may do.                   */
+    g_setenv("GTK_OVERLAY_SCROLLING", "0", TRUE);
+
     /* NOTE there is no curl_global_init here any more, and no other
      * library's either.  A dependency belongs to whatever needs it: the
      * Google Tasks plugin does its own from `task_plugin_entry`, which
