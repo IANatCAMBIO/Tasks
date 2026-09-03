@@ -96,7 +96,20 @@ typedef struct {
     gboolean      kanban;            /* the kanban_view config flag, cached
                                       * like manual_sort; kanban_apply is
                                       * the single writer                   */
+    gboolean      done_show_all;     /* the Done lane's "Show All" link has
+                                      * been clicked.  TRANSIENT — not a
+                                      * config key: it is reset whenever the
+                                      * sidebar selection moves, so leaving a
+                                      * list and coming back does not bring
+                                      * a thousand completed cards with it  */
     GtkWidget    *kanban_drops[TASK_STATUS_N_VALUES];  /* lane hit boxes    */
+    guint         kanban_counts[TASK_STATUS_N_VALUES]; /* what each lane
+                                      * STOOD FOR at the last render (the
+                                      * heading's number, not the number of
+                                      * cards drawn — the Done lane is
+                                      * capped).  Half of the test that
+                                      * lets a refresh skip the rebuild;
+                                      * see kanban_plan_matches            */
     GdkCursor    *card_grab;         /* "grab" — hovering a card            */
     GdkCursor    *card_grabbing;     /* "grabbing" — dragging one.  Both
                                       * made ONCE and kept, like
@@ -447,6 +460,7 @@ static void     on_toggle_kanban(GtkWidget *, gpointer);
 static void     full_refresh(TaskLibrary *lw);
 static void     on_ui_task_menu_activated(GtkWidget *, gpointer);
 static void     scroll_keep_queue_win(GtkWidget *scroll);
+static void     refresh_tasks(TaskLibrary *lw);
 
 /* sel_view() — the registered view the sidebar is sitting on, or NULL
  * when the selection is a list or a group.                                 */
@@ -854,6 +868,13 @@ refresh_sidebar(TaskLibrary *lw)
  * note in kanban_css_install.                                             */
 #define CARD_PAD 8               /* card border → its text               */
 #define LANE_PAD 6               /* lane frame → the cards inside it     */
+
+/* How many completed tasks the Done lane shows before its "Show All" link.
+ * The lane is the only one that grows without bound — a task leaves New and
+ * In Progress again, but nothing leaves Done — and every card is ~5 widgets
+ * of height-for-width layout, so an uncapped lane is what makes the whole
+ * board slow (measured: 1971 cards rebuild in 3.3 s, 438 in 0.69 s).      */
+#define DONE_CAP 10
 
 /* pad_widget() — inset a widget from its parent on all four sides.        */
 static void
@@ -1671,6 +1692,14 @@ card_drag_move(TaskLibrary *lw, gint rx, gint ry)
                         rx - lw->card_hot_x, ry - lw->card_hot_y);
     gint lane = card_lane_at_root(lw, rx, ry);
     card_lane_highlight(lw, lane);
+    /* No insertion bar over Done: that lane sorts itself by completion, so
+     * a slot marker there would promise a landing position the drop then
+     * ignores.  The lane TINT still says the card is going there, which is
+     * the part that is true.                                              */
+    if (lane == TASK_STATUS_DONE) {
+        card_mark_clear(lw);
+        return;
+    }
     /* The marker is placed BEFORE the slot is read back at drop time, so
      * what the user sees is exactly what the release will do.             */
     card_mark_place(lw, lane, lane >= 0 ? card_slot_at(lw, lane, ry) : -1);
@@ -1718,6 +1747,15 @@ card_order_save(TaskLibrary *lw, GArray *to_move, gint lane, gint slot)
 
     GString *order = g_string_new(NULL);
     for (gint sl = 0; sl < TASK_STATUS_N_VALUES; sl++) {
+        /* Done contributes NOTHING to the key: it sorts itself by
+         * completion and has no hand-made order to preserve (see the
+         * Done-lane banner).  Skipping it is also what keeps a CAPPED
+         * lane from truncating the saved order — its on-screen cards are
+         * only the most recent few, and writing those back would drop
+         * every other completed task out of the key, the same trap a
+         * search springs.                                                */
+        if (sl == TASK_STATUS_DONE)
+            continue;
         GArray *ids = lane_card_ids(lw, sl);
         for (guint m = 0; m < to_move->len; m++) {
             gint64 id = g_array_index(to_move, gint64, m);
@@ -1806,7 +1844,12 @@ card_drop_apply(TaskLibrary *lw, GArray *moving, gint lane, gint slot)
         return FALSE;
     }
 
-    gboolean order_change = card_order_save(lw, to_move, lane, slot);
+    /* The ORDER half — but never for Done, which sorts itself by
+     * completion.  A drag landing there has nothing to write, so a move
+     * within the lane changes nothing at all and buys no rebuild.        */
+    gboolean order_change = lane != TASK_STATUS_DONE
+                          ? card_order_save(lw, to_move, lane, slot)
+                          : FALSE;
 
     if (n_status == 0 && !order_change) {
         g_array_unref(to_move);
@@ -1978,7 +2021,7 @@ on_card_grab_broken(GtkWidget *w, GdkEventGrabBroken *ev, gpointer data)
  * views), wrapped in an event box that can be clicked and dragged.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
-kanban_card_new(TaskLibrary *lw, const Task *t, const gchar *markup,
+kanban_card_new(TaskLibrary *lw, gint64 id, const gchar *markup,
                 gboolean selected)
 {
     GtkWidget *card = gtk_event_box_new();
@@ -1989,7 +2032,7 @@ kanban_card_new(TaskLibrary *lw, const Task *t, const gchar *markup,
         gtk_style_context_add_class(gtk_widget_get_style_context(card),
                                     "task-card-selected");
     g_object_set_data(G_OBJECT(card), "task-task-id",
-                      GSIZE_TO_POINTER((gsize)t->id));
+                      GSIZE_TO_POINTER((gsize)id));
 
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_container_add(GTK_CONTAINER(card), row);
@@ -2014,14 +2057,36 @@ kanban_card_new(TaskLibrary *lw, const Task *t, const gchar *markup,
     GtkWidget *label = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(label), markup);
     gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-    gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
-    gtk_label_set_line_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
-    /* A lane is a third of the pane; without this a long unbroken title
-     * would set the card's natural width and push the board wider than
-     * the (horizontally unscrollable) viewport.                           */
+    /* ELLIPSIZED, NOT WRAPPED, and that is a performance decision rather
+     * than a typographic one.  A wrapping label is height-for-width: its
+     * height cannot be known until its width is, so every size negotiation
+     * re-runs a Pango layout for every card on the board.  Measured in
+     * this app over 1936 cards, the board took 1641 ms to settle wrapped
+     * against 573 ms ellipsized — and that cost is paid on every rebuild:
+     * switching views, a drop, a sync pull.  The price is that a title
+     * longer than the lane is cut with an ellipsis instead of running on
+     * to a second line, which was weighed and accepted (2026-09-02).
+     *
+     * The cell markup is MULTI-LINE (title, "in <list>", a notes preview,
+     * subtasks), and that keeps working because nothing here calls
+     * gtk_label_set_lines: the layout's height stays 0, which is what
+     * makes Pango ellipsize each paragraph SEPARATELY rather than cutting
+     * the card off after its first line.  Setting a line count would
+     * quietly turn every card into a one-line card.
+     *
+     * max_width_chars stays for the reason it was added: it caps the
+     * label's NATURAL width, so a 200-character title cannot push the
+     * board wider than the (horizontally unscrollable) viewport.  It does
+     * NOT cap the allocation — the lane is homogeneous and the label fills
+     * it, so the ellipsis lands at the lane's edge, not at 22 characters.  */
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
     gtk_label_set_max_width_chars(GTK_LABEL(label), 22);
     pad_widget(label, CARD_PAD);     /* text off the card's border        */
     gtk_box_pack_start(GTK_BOX(row), label, TRUE, TRUE, 0);
+    /* Remembered so kanban_plan_relabel can reach it: the card is an event
+     * box wrapping a box, and walking down to the label per refresh would
+     * be one more place that knows this card's shape.                     */
+    g_object_set_data(G_OBJECT(card), "task-card-label", label);
 
     /* The CARD takes clicks: select, double-click to open, right-click for
      * the context menu.  It gets NO cursor, so the pointer stays the
@@ -2061,6 +2126,251 @@ kanban_card_new(TaskLibrary *lw, const Task *t, const gchar *markup,
 }
 
 /* ---------------------------------------------------------------------------
+ * The Done lane, which is the one lane with NO hand-made order.
+ *
+ * Nothing ever leaves Done, so a position in it is not something a user
+ * maintains — "what did I just finish?" is the only question that lane
+ * answers, and completed_at answers it exactly.  Two consequences follow
+ * and are spelled out where they bite: card_order_save never writes the
+ * lane, and card_drag_move shows no insertion bar over it.
+ *
+ * It is also the only lane that grows without bound, which is what made
+ * the board slow: every card is ~5 widgets of height-for-width layout, so
+ * a full rebuild measured 3.3 s at 1971 cards against 0.69 s at 438.  The
+ * cap is what keeps the lane a fixed cost; the link below lifts it.
+ * ------------------------------------------------------------------------- */
+
+/* Named for what a click DOES, the *_LABEL_TO_* idiom the View menu's
+ * items follow.  The capped face carries the count, so a collapsed lane
+ * never hides an unknown quantity.
+ *
+ * A real Pango <a> link, not a hand-underlined label: GtkLabel then paints
+ * it in the THEME's link color rather than the row's text color, gives it
+ * the pointer cursor and keyboard activation on its own, and emits
+ * "activate-link".  The href is never followed (the handler returns TRUE),
+ * so it only has to be non-empty — it names the state it moves to purely
+ * so the markup reads.                                                    */
+#define DONE_LABEL_TO_ALL "<a href=\"#all\">Show all %u completed</a>"
+#define DONE_LABEL_TO_CAP "<a href=\"#recent\">Show recent only</a>"
+
+/* ---------------------------------------------------------------------------
+ * done_recent_cmp() — most recently completed first.
+ *
+ * completed_at is stamped on ENTERING Done and never cleared, so it is
+ * monotonic and is the lane's whole order.  A Done task can still carry NO
+ * stamp — a row completed before 2026-08-27, or one a remote source turned
+ * Done (every remote reports 0 for anything it does not consider done) —
+ * so updated_at breaks the tie and those rows sort last among themselves
+ * rather than in whatever order the query happened to return.
+ * ------------------------------------------------------------------------- */
+static gint
+done_recent_cmp(gconstpointer a, gconstpointer b)
+{
+    const Task *ta = *(const Task * const *)a;
+    const Task *tb = *(const Task * const *)b;
+    if (ta->completed_at != tb->completed_at)
+        return ta->completed_at > tb->completed_at ? -1 : 1;
+    if (ta->updated_at != tb->updated_at)
+        return ta->updated_at > tb->updated_at ? -1 : 1;
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * The PLAN: what the board is about to show, decided before a single
+ * widget is touched.
+ *
+ * refresh_kanban builds one of these per lane and then asks whether the
+ * board already holds exactly it (kanban_plan_matches).  When it does,
+ * nothing is destroyed and only the labels whose text actually moved are
+ * rewritten — which is the difference between a keystroke costing 704 ms
+ * and costing nothing at 438 cards (3734 ms against 4.2 ms at 1971).
+ * An editor autosave fires notify_tasks every 600 ms while someone types,
+ * so that path is walked constantly and almost never has structural work
+ * to do.
+ *
+ * Deciding first is also what makes the test trustworthy: the plan is
+ * built from the same query, filter, order and cap the rebuild would use,
+ * so "the board already shows this" cannot be answered from a stale idea
+ * of what the board should be.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    gint64  id;                      /* the task this card stands for      */
+    gchar  *markup;                  /* its finished cell markup, owned    */
+} CardPlan;
+
+/* card_plan_add() — append `t`'s card to `lane`'s plan, generating the
+ * markup once.  The row-markup lookups live here and nowhere else, so the
+ * fast path and the rebuild cannot disagree about what a card says.       */
+static void
+card_plan_add(GArray *lane, const Task *t, const TaskRowCtx *ctx)
+{
+    GPtrArray *subs = t->parent_id == 0
+        ? g_hash_table_lookup(ctx->subs_by_parent, GINT_TO_POINTER(t->id))
+        : NULL;
+    const gchar *list_name = ctx->list_names != NULL
+        ? g_hash_table_lookup(ctx->list_names, GINT_TO_POINTER(t->list_id))
+        : NULL;
+    gint att = GPOINTER_TO_INT(
+        g_hash_table_lookup(ctx->att_counts, GINT_TO_POINTER(t->id)));
+    CardPlan cp;
+    cp.id     = t->id;
+    cp.markup = task_rows_desc_markup(t, list_name, att, subs, ctx);
+    g_array_append_val(lane, cp);
+}
+
+/* kanban_plan_free() — drop a plan and the markup it owns.                */
+static void
+kanban_plan_free(GArray **plan)
+{
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
+        for (guint i = 0; i < plan[s]->len; i++)
+            g_free(g_array_index(plan[s], CardPlan, i).markup);
+        g_array_free(plan[s], TRUE);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * kanban_plan_matches() — is the board already showing exactly these
+ * cards, in these lanes, in this order?
+ *
+ * Compares IDS only: a card's text is what the fast path is about to
+ * update, so a changed title must NOT count as a mismatch.  The lane
+ * TOTALS are compared as well, because they are what the headings state
+ * and the Done lane's are not the number of cards drawn — 11 completed
+ * tasks and 10 both draw ten cards, but only one of them wants the "Show
+ * all" link.
+ *
+ * Returns FALSE for anything it cannot vouch for, which is what makes the
+ * whole thing safe: every structural change falls through to the rebuild.
+ * ------------------------------------------------------------------------- */
+static gboolean
+kanban_plan_matches(TaskLibrary *lw, GArray * const *plan,
+                    const guint *per_lane)
+{
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
+        if (lw->kanban_lanes[s] == NULL ||
+            per_lane[s] != lw->kanban_counts[s])
+            return FALSE;
+        /* lane_card_ids skips every child with no task id — the drag
+         * marker, the empty-lane placeholder and the Done link — so none
+         * of them has to be reasoned about here.                         */
+        GArray  *ids  = lane_card_ids(lw, s);
+        gboolean same = ids->len == plan[s]->len;
+        for (guint i = 0; same && i < ids->len; i++)
+            same = g_array_index(ids, gint64, i) ==
+                   g_array_index(plan[s], CardPlan, i).id;
+        g_array_unref(ids);
+        if (!same)
+            return FALSE;
+    }
+    return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
+ * kanban_plan_relabel() — the fast path: rewrite the markup of the cards
+ * whose text actually moved and leave every widget where it is.
+ *
+ * Only called after kanban_plan_matches has vouched for the lanes, so the
+ * plan and the cards line up index for index.  The comparison before the
+ * write is not tidiness: gtk_label_set_markup re-runs Pango and queues a
+ * resize, and an autosave typically moves ONE card of several hundred.
+ * ------------------------------------------------------------------------- */
+static void
+kanban_plan_relabel(TaskLibrary *lw, GArray * const *plan)
+{
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
+        GList *kids = gtk_container_get_children(
+            GTK_CONTAINER(lw->kanban_lanes[s]));
+        guint i = 0;
+        for (GList *k = kids; k != NULL; k = k->next) {
+            GtkWidget *card = GTK_WIDGET(k->data);
+            if (card_task_id(card) == 0)
+                continue;            /* marker / placeholder / the link    */
+            const gchar *want =
+                g_array_index(plan[s], CardPlan, i++).markup;
+            GtkWidget *lab = g_object_get_data(G_OBJECT(card),
+                                               "task-card-label");
+            if (lab != NULL &&
+                g_strcmp0(gtk_label_get_label(GTK_LABEL(lab)), want) != 0)
+                gtk_label_set_markup(GTK_LABEL(lab), want);
+        }
+        g_list_free(kids);
+    }
+}
+
+/* done_expand_idle() — rebuild the pane after the Done lane's link was
+ * clicked.  Deferred for the same reason card_refresh_idle is: the refresh
+ * destroys every child of the lane, the link included, and that is the
+ * widget whose handler we are inside.                                     */
+static gboolean
+done_expand_idle(gpointer data)
+{
+    TaskLibrary *lw = lib_of(data);
+    if (lw != NULL)
+        refresh_tasks(lw);
+    return G_SOURCE_REMOVE;
+}
+
+/* ---------------------------------------------------------------------------
+ * on_done_link_activate() — flip the lane between the most recent DONE_CAP
+ * and all of them.
+ *
+ * Flips the FLAG only; refresh_kanban writes the label, the same rule the
+ * View menu follows — the single applier owns the label, never the
+ * handler.  Returns TRUE so GtkLabel does not hand the href to
+ * gtk_show_uri and try to open "#all" in a browser.
+ * ------------------------------------------------------------------------- */
+static gboolean
+on_done_link_activate(GtkLabel *lbl, gchar *uri, gpointer data)
+{
+    (void)lbl; (void)uri;
+    TaskLibrary *lw = data;
+    lw->done_show_all = !lw->done_show_all;
+    g_idle_add(done_expand_idle, lw->app);
+    return TRUE;                     /* handled; do not follow the href    */
+}
+
+/* ---------------------------------------------------------------------------
+ * done_link_pack() — append the Done lane's expand/collapse link.
+ *
+ * A bare GtkLabel carrying a Pango <a> link — no button.  GtkLabel handles
+ * a link itself: the theme's link color, the pointer cursor, keyboard
+ * activation, and an "activate-link" signal.  It also carries NO task id,
+ * so card_slot_at, card_mark_place and kanban_plan_relabel skip it exactly
+ * as they skip the empty-lane placeholder — the drag code and the fast
+ * path need to know nothing about it.
+ *
+ * Visited-link tracking is turned OFF: this is a toggle, not a destination,
+ * and GTK would otherwise recolor it permanently the first time it is used,
+ * which reads as the control having been spent.
+ *
+ * It sits at the BOTTOM of the lane, after the last card, which is the
+ * "load more" idiom the collapsed state wants.  Known cost, accepted: in
+ * the EXPANDED state the collapse link is below every completed task, so
+ * getting back to the capped lane means scrolling to the end of it.
+ *   total — how many completed tasks the lane stands for, capped or not.
+ * ------------------------------------------------------------------------- */
+static void
+done_link_pack(TaskLibrary *lw, guint total)
+{
+    GtkWidget *lbl = gtk_label_new(NULL);
+    if (lw->done_show_all) {
+        gtk_label_set_markup(GTK_LABEL(lbl), DONE_LABEL_TO_CAP);
+    } else {
+        gchar *m = g_strdup_printf(DONE_LABEL_TO_ALL, total);
+        gtk_label_set_markup(GTK_LABEL(lbl), m);
+        g_free(m);
+    }
+    gtk_label_set_track_visited_links(GTK_LABEL(lbl), FALSE);
+    gtk_widget_set_margin_top(lbl, 4);      /* off the last card's border  */
+    gtk_widget_set_margin_bottom(lbl, 2);
+    g_signal_connect(lbl, "activate-link",
+                     G_CALLBACK(on_done_link_activate), lw);
+    gtk_box_pack_start(GTK_BOX(lw->kanban_lanes[TASK_STATUS_DONE]), lbl,
+                       FALSE, FALSE, 0);
+}
+
+/* ---------------------------------------------------------------------------
  * refresh_kanban() — rebuild the board from `tasks` (already collected for
  * the current view by refresh_tasks, so every view that has a task list
  * can be shown as a board).  Returns the number of cards placed.
@@ -2071,16 +2381,73 @@ kanban_card_new(TaskLibrary *lw, const Task *t, const gchar *markup,
 static guint
 refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
 {
-    scroll_keep_queue_win(lw->kanban_box);
-
     /* The saved slot order, applied before the tasks are handed out to
      * lanes — one list for the whole view, which the status filter below
      * projects onto each lane (see kanban_order_key).                     */
     kanban_order_apply(lw, tasks);
 
+    /* ---- Decide, before touching a widget (see the PLAN banner) ------- */
+    GArray *plan[TASK_STATUS_N_VALUES];
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++)
+        plan[s] = g_array_new(FALSE, FALSE, sizeof(CardPlan));
+    guint per_lane[TASK_STATUS_N_VALUES] = { 0 };
+    guint shown = 0;
+
+    /* The Done lane is planned in a SECOND pass: it takes no hand-made
+     * order, so its cards are sorted by completion and capped rather than
+     * taken in the order the query handed them over.                      */
+    GPtrArray *done = g_ptr_array_new();
+
+    for (guint i = 0; i < tasks->len; i++) {
+        Task *t = g_ptr_array_index(tasks, i);
+        gboolean done_task = t->status == TASK_STATUS_DONE;
+        /* The completed-visibility toggle applies here exactly as it does
+         * to every other view: with completed hidden the Done lane simply
+         * empties.  It stays on screen as a drop target, so ticking a task
+         * off by dragging still works — and the card vanishing afterwards
+         * is the same behavior as the list's fade-out.                     */
+        if (!ctx->show_done && done_task)
+            continue;
+        gint lane = (gint)t->status;
+        if (lane < 0 || lane >= TASK_STATUS_N_VALUES)
+            lane = TASK_STATUS_NEW;    /* a status off disk, clamped        */
+
+        per_lane[lane]++;
+        shown++;
+        if (lane == TASK_STATUS_DONE)
+            g_ptr_array_add(done, t);  /* second pass, below               */
+        else
+            card_plan_add(plan[lane], t, ctx);
+    }
+
+    /* The Done pass.  `shown` and per_lane already counted every one of
+     * these, because the status bar and the lane heading answer "how many
+     * are there", not "how many did we draw" — a capped lane that also
+     * shrank its own count would hide the fact that it is capped.         */
+    g_ptr_array_sort(done, done_recent_cmp);
+    guint done_total = done->len;
+    guint done_cap   = lw->done_show_all ? done_total
+                                         : MIN(done_total, (guint)DONE_CAP);
+    for (guint i = 0; i < done_cap; i++)
+        card_plan_add(plan[TASK_STATUS_DONE],
+                      g_ptr_array_index(done, i), ctx);
+    g_ptr_array_free(done, TRUE);      /* borrowed elements; `tasks` owns  */
+
+    /* ---- The fast path: same cards, so only the text can have moved --- */
+    if (kanban_plan_matches(lw, plan, per_lane)) {
+        kanban_plan_relabel(lw, plan);
+        kanban_plan_free(plan);
+        return shown;                  /* nothing destroyed, nothing built */
+    }
+
+    /* ---- The rebuild ------------------------------------------------- */
+    scroll_keep_queue_win(lw->kanban_box);
+
     /* A rebuild destroys the marker along with everything else; drop the
      * dangling pointer so card_mark_place does not reorder freed memory
-     * if a refresh lands mid-drag (an editor autosave can do that).       */
+     * if a refresh lands mid-drag (an editor autosave can do that).  The
+     * fast path above returns BEFORE this, which is what lets a drag
+     * survive the autosaves running underneath it.                        */
     lw->card_mark      = NULL;
     lw->card_mark_lane = -1;
     lw->card_mark_slot = -1;
@@ -2092,44 +2459,22 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
      * rebuild — Delete Task would act on a tombstone.  Collect the ones
      * that DID come back and keep only those.                             */
     GHashTable *alive = g_hash_table_new(NULL, NULL);
-    guint    per_lane[TASK_STATUS_N_VALUES] = { 0 };
-    guint    shown = 0;
-
-    for (guint i = 0; i < tasks->len; i++) {
-        Task *t = g_ptr_array_index(tasks, i);
-        gboolean done = t->status == TASK_STATUS_DONE;
-        /* The completed-visibility toggle applies here exactly as it does
-         * to every other view: with completed hidden the Done lane simply
-         * empties.  It stays on screen as a drop target, so ticking a task
-         * off by dragging still works — and the card vanishing afterwards
-         * is the same behavior as the list's fade-out.                     */
-        if (!ctx->show_done && done)
-            continue;
-        gint lane = (gint)t->status;
-        if (lane < 0 || lane >= TASK_STATUS_N_VALUES)
-            lane = TASK_STATUS_NEW;    /* a status off disk, clamped        */
-
-        GPtrArray *subs = t->parent_id == 0
-            ? g_hash_table_lookup(ctx->subs_by_parent,
-                                  GINT_TO_POINTER(t->id))
-            : NULL;
-        const gchar *list_name = ctx->list_names != NULL
-            ? g_hash_table_lookup(ctx->list_names,
-                                  GINT_TO_POINTER(t->list_id))
-            : NULL;
-        gint att = GPOINTER_TO_INT(
-            g_hash_table_lookup(ctx->att_counts, GINT_TO_POINTER(t->id)));
-        gchar *markup = task_rows_desc_markup(t, list_name, att, subs, ctx);
-        gboolean selected = card_sel_has(lw, t->id);
-        if (selected)
-            g_hash_table_add(alive, GSIZE_TO_POINTER((gsize)t->id));
-        gtk_box_pack_start(GTK_BOX(lw->kanban_lanes[lane]),
-                           kanban_card_new(lw, t, markup, selected),
-                           FALSE, FALSE, 0);
-        g_free(markup);
-        per_lane[lane]++;
-        shown++;
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
+        for (guint i = 0; i < plan[s]->len; i++) {
+            const CardPlan *cp = &g_array_index(plan[s], CardPlan, i);
+            gboolean selected = card_sel_has(lw, cp->id);
+            if (selected)
+                g_hash_table_add(alive, GSIZE_TO_POINTER((gsize)cp->id));
+            gtk_box_pack_start(GTK_BOX(lw->kanban_lanes[s]),
+                               kanban_card_new(lw, cp->id, cp->markup,
+                                               selected),
+                               FALSE, FALSE, 0);
+        }
     }
+    if (done_total > (guint)DONE_CAP)
+        done_link_pack(lw, done_total);
+    kanban_plan_free(plan);
+
     /* Replace the selection with the survivors.                          */
     g_hash_table_remove_all(lw->kanban_sel);
     GHashTableIter it;
@@ -2163,6 +2508,8 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
         }
         gtk_widget_show_all(lw->kanban_lanes[s]);
     }
+    /* What the lanes now stand for, for the next refresh to compare.      */
+    memcpy(lw->kanban_counts, per_lane, sizeof(per_lane));
     return shown;
 }
 
@@ -2743,6 +3090,9 @@ on_sidebar_changed(GtkTreeSelection *sel, gpointer data)
                            SB_ID,   &lw->sel_id,
                            -1);
     gtk_tree_path_free(cursor);
+    /* A new view starts with the Done lane capped again: an expansion
+     * answers "show me more of THIS view", it is not a mode.              */
+    lw->done_show_all = FALSE;
     if (lw->sel_kind != SB_KIND_GROUP)
         refresh_tasks(lw);
 }
