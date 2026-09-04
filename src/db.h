@@ -371,6 +371,12 @@ gboolean task_db_has_pinned(TaskDatabase *db);
  * ordered by list then position.                                           */
 GPtrArray *task_db_tasks_all_visible(TaskDatabase *db);
 
+/* Visible top-level tasks of every list in one GROUP, ordered by list then
+ * position — the same shape as task_db_tasks_all_visible, narrowed to the
+ * group's lists.  A tombstoned list contributes nothing.  An empty group
+ * (or an id naming no group) yields the empty array, never NULL.           */
+GPtrArray *task_db_tasks_in_group(TaskDatabase *db, gint64 group_id);
+
 /* Visible tasks (any level) with lo <= due < hi, soonest first.            */
 GPtrArray *task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi);
 
@@ -579,6 +585,10 @@ void      task_ptr_array_free_groups(GPtrArray *a);
 
 /* All groups, ordered by position then name.                               */
 GPtrArray *task_db_groups(TaskDatabase *db);
+
+/* One group row, or NULL when no group has that id.  Free with
+ * task_group_free.                                                         */
+TaskGroup *task_db_group_get(TaskDatabase *db, gint64 id);
 
 /* Create a group.  Returns the new id, or 0 on failure.                    */
 gint64    task_db_group_create(TaskDatabase *db, const gchar *name);

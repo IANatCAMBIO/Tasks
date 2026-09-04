@@ -454,7 +454,8 @@ scroll_keep_queue(GtkWidget *view)
 
 static void     task_view_apply_manual_order(TaskLibrary *lw);
 static void     task_manual_sort_apply(TaskLibrary *lw);
-static gchar   *list_order_key(gint64 list_id);
+static gchar   *row_order_key(const gchar *family, gint kind, gint64 id);
+static void     row_order_keys_drop(gint kind, gint64 id);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
 static void     on_toggle_kanban(GtkWidget *, gpointer);
 static void     full_refresh(TaskLibrary *lw);
@@ -1491,9 +1492,9 @@ card_drag_stop(TaskLibrary *lw)
 static gchar *
 kanban_order_key(TaskLibrary *lw)
 {
-    if (lw->sel_kind == SB_KIND_LIST)
-        return g_strdup_printf("kanban_order_list_%" G_GINT64_FORMAT,
-                               lw->sel_id);
+    gchar *key = row_order_key("kanban_order", lw->sel_kind, lw->sel_id);
+    if (key != NULL)
+        return key;
     return task_view_order_key(sel_view(lw), "kanban_order");
 }
 
@@ -2719,12 +2720,27 @@ refresh_tasks(TaskLibrary *lw)
     gboolean virtual_view;           /* show the "in <list>" line           */
     const gchar *view_name = "";
     const gchar *unit      = "task";
+    TaskGroup   *sel_group = NULL;   /* owns view_name for a group row      */
     if (view != NULL) {
         tasks        = view->query(lw->app, view->user_data);
         virtual_view = view->virtual_rows;
         view_name    = view->name != NULL ? view->name : "";
         if (view->unit != NULL)
             unit = view->unit;
+    } else if (lw->sel_kind == SB_KIND_GROUP) {
+        /* A group shows the tasks of every list under it, aggregated.  It
+         * is VIRTUAL in exactly the sense the registered views are: the
+         * rows come from several lists at once, so each keeps its
+         * "in <list>" line — which is the only thing telling two
+         * identically-titled tasks in different lists apart, and the
+         * reason a group is worth selecting rather than each list in
+         * turn.  Everything below this point is the shared path, so the
+         * board, the search box and the manual order come for free.       */
+        tasks        = task_db_tasks_in_group(lw->app->db, lw->sel_id);
+        virtual_view = TRUE;
+        sel_group    = task_db_group_get(lw->app->db, lw->sel_id);
+        if (sel_group != NULL)
+            view_name = sel_group->name;
     } else {
         tasks        = task_db_tasks_toplevel(lw->app->db, lw->sel_id);
         virtual_view = FALSE;
@@ -2795,6 +2811,7 @@ refresh_tasks(TaskLibrary *lw)
     gtk_label_set_text(GTK_LABEL(lw->status_left), loc);
     g_free(loc);
     task_list_free(sel_list);
+    task_group_free(sel_group);      /* view_name pointed into it           */
 
     task_ptr_array_free_tasks(tasks);
 }
@@ -3069,8 +3086,10 @@ sb_row_selectable(GtkTreeSelection *sel, GtkTreeModel *model,
 }
 
 /* on_sidebar_changed() — selection drives the task pane.  With MULTIPLE
- * selection the cursor row (last pressed) drives sel_kind/sel_id; group
- * rows are tracked but don't switch the task pane.                         */
+ * selection the cursor row (last pressed) drives sel_kind/sel_id.  A GROUP
+ * row refreshes like any other: it shows its lists' tasks aggregated (see
+ * refresh_tasks).  Only the "Lists" header selects nothing, and
+ * sb_row_selectable already refuses it.                                    */
 static void
 on_sidebar_changed(GtkTreeSelection *sel, gpointer data)
 {
@@ -3093,8 +3112,7 @@ on_sidebar_changed(GtkTreeSelection *sel, gpointer data)
     /* A new view starts with the Done lane capped again: an expansion
      * answers "show me more of THIS view", it is not a mode.              */
     lw->done_show_all = FALSE;
-    if (lw->sel_kind != SB_KIND_GROUP)
-        refresh_tasks(lw);
+    refresh_tasks(lw);
 }
 
 /* selected_list_id() — the currently selected REAL list, or 0.             */
@@ -3559,13 +3577,9 @@ on_sb_ctx_rename_group(GtkWidget *item, gpointer data)
     TaskLibrary *lw   = data;
     gint64 group_id = (gint64)(gintptr)
         g_object_get_data(G_OBJECT(item), "task-group-id");
-    GPtrArray *groups  = task_db_groups(lw->app->db);
-    gchar     *current = NULL;
-    for (guint i = 0; i < groups->len; i++) {
-        TaskGroup *g = g_ptr_array_index(groups, i);
-        if (g->id == group_id) { current = g_strdup(g->name); break; }
-    }
-    task_ptr_array_free_groups(groups);
+    TaskGroup *grp     = task_db_group_get(lw->app->db, group_id);
+    gchar     *current = grp != NULL ? g_strdup(grp->name) : NULL;
+    task_group_free(grp);
     gchar *name = NULL;
     if (run_group_name_dialog(lw, "Rename Group", "Rename",
                               current ? current : "", &name)) {
@@ -3594,6 +3608,9 @@ on_sb_ctx_delete_group(GtkWidget *item, gpointer data)
             lw->sel_id   = 0;
         }
         task_db_group_delete(lw->app->db, group_id);
+        /* The group's aggregate had orders of its own (see
+         * row_order_key); its lists keep theirs and become ungrouped.     */
+        row_order_keys_drop(SB_KIND_GROUP, group_id);
         full_refresh(lw);
     }
 }
@@ -3881,17 +3898,7 @@ on_delete_list(GtkWidget *w, gpointer data)
         "tasks?", l->name);
     if (yes) {
         task_db_list_delete(lw->app->db, id);
-        /* Drop the list's order keys with it — nothing else ever would, so
-         * the ini otherwise grows a dead manual_order_list_<id> AND
-         * kanban_order_list_<id> entry for every list ever deleted.  Both
-         * families are per-list, so both need this.                        */
-        gchar *order_key = list_order_key(id);
-        task_app_config_set(order_key, NULL);   /* NULL removes the key     */
-        g_free(order_key);
-        gchar *kb_key = g_strdup_printf(
-            "kanban_order_list_%" G_GINT64_FORMAT, id);
-        task_app_config_set(kb_key, NULL);
-        g_free(kb_key);
+        row_order_keys_drop(SB_KIND_LIST, id);
         lw->sel_kind = SB_KIND_LIST;
         lw->sel_id = 0;              /* falls back to the first list        */
         full_refresh(lw);
@@ -3910,9 +3917,13 @@ on_new_task(GtkWidget *w, gpointer data)
     TaskLibrary *lw = data;
     gint64 list_id = selected_list_id(lw);
     if (list_id == 0) {
-        task_app_status(lw->app,
-                        "Select a list first \xe2\x80\x94 tasks cannot be "
-                      "created in the virtual views");
+        /* A group holds several lists, so "the selected list" has no
+         * answer there — say which of the two refusals this is rather
+         * than calling a group a virtual view.                            */
+        task_app_status(lw->app, "Select a list first \xe2\x80\x94 %s",
+                        lw->sel_kind == SB_KIND_GROUP
+                        ? "a group has no one list to create the task in"
+                        : "tasks cannot be created in the virtual views");
         return;
     }
     gint64 id = task_db_task_create(lw->app->db, list_id, 0, "New Task");
@@ -5003,13 +5014,40 @@ on_library_destroy(GtkWidget *w, gpointer data)
  * Manual sort: order persistence, drag handlers, mode toggle.
  * =========================================================================== */
 
-/* list_order_key() — a real list's manual-order config key.  Its own
- * function so on_delete_list can name the key it has to remove without
- * repeating the format string.  New string (g_free).                       */
+/* row_order_key() — the order key for a sidebar row that carries its own
+ * task order: "<family>_list_<id>" for a real list, "<family>_group_<id>"
+ * for a group's aggregate.  NULL for any other row kind.
+ *
+ * Both families (manual_order and kanban_order) and both key deleters go
+ * through here, so the ini spelling exists in ONE place — on_delete_list
+ * and on_sb_ctx_delete_group have to name the very keys the pane wrote,
+ * and a second copy of the format is how those drift.  New string
+ * (g_free).                                                                */
 static gchar *
-list_order_key(gint64 list_id)
+row_order_key(const gchar *family, gint kind, gint64 id)
 {
-    return g_strdup_printf("manual_order_list_%" G_GINT64_FORMAT, list_id);
+    const gchar *noun = kind == SB_KIND_LIST  ? "list"
+                      : kind == SB_KIND_GROUP ? "group"
+                      : NULL;
+    if (noun == NULL)
+        return NULL;
+    return g_strdup_printf("%s_%s_%" G_GINT64_FORMAT, family, noun, id);
+}
+
+/* row_order_keys_drop() — remove BOTH order keys of a sidebar row that is
+ * going away.  Nothing else ever would, so the ini otherwise grows a dead
+ * entry per family for every list and group ever deleted.                  */
+static void
+row_order_keys_drop(gint kind, gint64 id)
+{
+    static const gchar *families[] = { "manual_order", "kanban_order" };
+    for (gsize i = 0; i < G_N_ELEMENTS(families); i++) {
+        gchar *key = row_order_key(families[i], kind, id);
+        if (key == NULL)
+            continue;
+        task_app_config_set(key, NULL);         /* NULL removes the key     */
+        g_free(key);
+    }
 }
 
 /* view_order_key() — the config key for the current view's manual sort
@@ -5017,8 +5055,9 @@ list_order_key(gint64 list_id)
 static gchar *
 view_order_key(TaskLibrary *lw)
 {
-    if (lw->sel_kind == SB_KIND_LIST)
-        return list_order_key(lw->sel_id);
+    gchar *key = row_order_key("manual_order", lw->sel_kind, lw->sel_id);
+    if (key != NULL)
+        return key;
     return task_view_order_key(sel_view(lw), "manual_order");
 }
 

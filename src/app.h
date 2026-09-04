@@ -267,12 +267,14 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
  *                task_list_manual_sort, kanban_view,
  *                col_done_visible, col_status_visible, col_due_visible,
  *                col_completed_visible, win_w, win_h
- *   per-view   — manual_order_list_<id>, manual_order_all,
- *                manual_order_pinned, manual_order_today,
- *                manual_order_bn_actions (task-pane drag-reorder), and
- *                kanban_order_* under the same five names (the board's
- *                own card order — a separate family on purpose, see
- *                kanban_order_key)
+ *   per-view   — manual_order_list_<id>, manual_order_group_<id>,
+ *                manual_order_all, manual_order_pinned,
+ *                manual_order_today, manual_order_bn_actions (task-pane
+ *                drag-reorder), and kanban_order_* under the same six
+ *                names (the board's own card order — a separate family
+ *                on purpose, see kanban_order_key).  A group's aggregate
+ *                orders separately from the lists under it: they are
+ *                different panes of tasks.
  * ------------------------------------------------------------------------- */
 void      task_app_config_init(const gchar *argv0);
 gchar    *task_app_config_get(const gchar *key);         /* NULL when unset */

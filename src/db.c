@@ -1013,26 +1013,62 @@ task_db_list_restore(TaskDatabase *db, gint64 id)
  * Group CRUD.
  * ------------------------------------------------------------------------- */
 
+/* The group column list, so the two queries below cannot disagree about
+ * what read_group is reading.                                              */
+#define GROUP_COLS "id, name, position"
+
+/*
+ * read_group — build a TaskGroup from the current row of a statement
+ * selecting GROUP_COLS.
+ *
+ * Inputs:
+ *   st — a stepped statement positioned on a row
+ *
+ * Output:
+ *   a new TaskGroup (never NULL); free with task_group_free.
+ */
+static TaskGroup *
+read_group(sqlite3_stmt *st)
+{
+    TaskGroup *g = g_new0(TaskGroup, 1);
+    g->id       = sqlite3_column_int64(st, 0);
+    g->name     = column_text_dup(st, 1);
+    if (g->name == NULL) g->name = g_strdup("");
+    g->position = sqlite3_column_int(st, 2);
+    return g;
+}
+
 /* task_db_groups() — all groups, ordered by position then name.            */
 GPtrArray *
 task_db_groups(TaskDatabase *db)
 {
     GPtrArray *out = g_ptr_array_new();
     const gchar *sql =
-        "SELECT id, name, position FROM list_groups "
+        "SELECT " GROUP_COLS " FROM list_groups "
         "ORDER BY position, lower(name)";
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK)
-        while (sqlite3_step(st) == SQLITE_ROW) {
-            TaskGroup *g = g_new0(TaskGroup, 1);
-            g->id       = sqlite3_column_int64(st, 0);
-            g->name     = column_text_dup(st, 1);
-            if (g->name == NULL) g->name = g_strdup("");
-            g->position = sqlite3_column_int(st, 2);
-            g_ptr_array_add(out, g);
-        }
+        while (sqlite3_step(st) == SQLITE_ROW)
+            g_ptr_array_add(out, read_group(st));
     sqlite3_finalize(st);
     return out;
+}
+
+/* task_db_group_get() — one group row; NULL if absent (see db.h).          */
+TaskGroup *
+task_db_group_get(TaskDatabase *db, gint64 id)
+{
+    sqlite3_stmt *st = NULL;
+    TaskGroup    *g  = NULL;
+    if (sqlite3_prepare_v2(db->sq,
+            "SELECT " GROUP_COLS " FROM list_groups WHERE id = ?", -1,
+            &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, id);
+        if (sqlite3_step(st) == SQLITE_ROW)
+            g = read_group(st);
+    }
+    sqlite3_finalize(st);
+    return g;
 }
 
 /* task_db_group_create() — insert a new group; returns rowid or 0.         */
@@ -1278,6 +1314,21 @@ task_db_tasks_all_visible(TaskDatabase *db)
         "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NULL AND "
         "deleted = 0 ORDER BY priority DESC, list_id, position, id",
         0, 0, 0);
+}
+
+/* task_db_tasks_in_group() — All Tasks narrowed to one group's lists.
+ * The subquery names the LIVE lists only: a tombstoned list keeps its
+ * group_id, and its tasks are tombstoned with it, so leaving it in would
+ * be a second spelling of the same exclusion.                              */
+GPtrArray *
+task_db_tasks_in_group(TaskDatabase *db, gint64 group_id)
+{
+    return task_query(db,
+        "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NULL AND "
+        "deleted = 0 AND list_id IN (SELECT id FROM lists "
+        "                            WHERE group_id = ? AND deleted = 0) "
+        "ORDER BY priority DESC, list_id, position, id",
+        1, group_id, 0);
 }
 
 /* task_db_tasks_due_between() — the Due Today / Weekly Forecast views.     */

@@ -38,7 +38,8 @@ you find something that reads like an upgrade path, it is dead code.
 TYPE, not an old name — do not sweep them.  The sidebar has a collapsible
 **Lists** section holding the user's task lists; `TaskList`, the `lists` and
 `list_groups` TABLES, `task_db_lists*`, `SB_KIND_LIST`,
-`manual_order_list_<id>`, `kanban_order_list_<id>` and Google's own
+`manual_order_list_<id>`, `kanban_order_list_<id>`,
+`manual_order_group_<id>` and Google's own
 `/users/@me/lists` API paths all mean lists-the-data-type.
 
 The repo DIRECTORY is still `~/salt_development/lists` and the git remote
@@ -382,8 +383,9 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   The Manual Sort toggle
   (`task_list_manual_sort`, default 0) enables drag-reorder of the task
   pane: a ⠿ drag-handle column (26 px wide, `cdrag`) appears; order is
-  persisted per view in config keys `manual_order_list_<id>` (built by
-  `list_order_key`, the single source of that format),
+  persisted per view in config keys `manual_order_list_<id>` and
+  `manual_order_group_<id>` (both built by `row_order_key`, the single
+  source of that format for the kanban family too),
   `manual_order_all`, `manual_order_pinned`, `manual_order_today`,
   `manual_order_bn_actions`.  The ⠿ glyph and its dimming live on the
   `cdrag` RENDERER, not in `drag_handle_func` — a data func runs per
@@ -394,8 +396,10 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   return early and silently threw its drags away).  Saved orders are
   task ids only — the old "NOTEID:ORD" token form is gone, and a
   pre-mirror order still holding those tokens parses them to 0 and
-  skips them.  `on_delete_list` removes the deleted list's order key — nothing else
-  would, and the ini otherwise grows one dead entry per deleted list.
+  skips them.  `on_delete_list` removes the deleted list's order keys — nothing else
+  would, and the ini otherwise grows one dead entry per family per
+  deleted list.  `on_sb_ctx_delete_group` does the same for a group's
+  aggregate; both call `row_order_keys_drop`.
   `lw->manual_sort` caches the config flag (read per motion event and
   per refresh); `task_manual_sort_apply` is the only writer, and
   `task_library_window_new` seeds it before building the toolbar and View
@@ -692,9 +696,30 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   right-click a list → Move to Group / Remove from Group.  Group
   expansion state is snapshotted separately in `lw->group_expanded`
   (GHashTable of group_id → bool); groups expand by default on first
-  population and force-open when the selected list is inside.  Selecting
-  a group row does NOT refresh the task pane — it just tracks
-  `sel_kind`/`sel_id`.  List labels: `emoji + two spaces + name` when
+  population and force-open when the selected list is inside.
+  **Selecting a group row shows its child lists' tasks AGGREGATED**
+  (`task_db_tasks_in_group`, added 2026-09-04; it used to track
+  `sel_kind`/`sel_id` and leave the pane alone, which read as a row that
+  does nothing).  It is a VIRTUAL view in exactly the sense the
+  registered ones are — `virtual_view` is TRUE, so every row keeps its
+  "in <list>" line, which is the only thing telling two identically
+  titled tasks in different lists apart and the reason to select the
+  group rather than each list in turn.  The branch sits in
+  `refresh_tasks` ABOVE the shared filter/present line, so the Kanban
+  board, the search box and the manual order all come for free.  A
+  tombstoned list contributes nothing (the query names the live lists
+  only, and its tasks are tombstoned with it), and an empty group is an
+  empty pane rather than a special case.  The aggregate has ORDER KEYS
+  OF ITS OWN (`manual_order_group_<id>` / `kanban_order_group_<id>`,
+  both from `row_order_key` — the single spelling of both families for
+  both row kinds, which is what lets `on_delete_list` and
+  `on_sb_ctx_delete_group` drop exactly the keys the pane wrote via
+  `row_order_keys_drop`): a hand-made order in the group's pane must not
+  rearrange the lists under it, and vice versa.  **New Task still
+  refuses** — a group holds several lists, so there is no one list to
+  create in, and it says that rather than reusing the virtual-views
+  wording; Edit List / Delete List / Clear Completed refuse through the
+  same `selected_list_id() == 0` path they always did.  List labels: `emoji + two spaces + name` when
   an emoji is set.  Double-clicking a list row opens the Edit List
   dialog (metas/header/BN row: no-op).  Sidebar starts HIDDEN by default
   (`sidebar_visible`, write-through on toggle).  Lists are ALPHABETICAL
