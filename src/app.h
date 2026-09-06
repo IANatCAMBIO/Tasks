@@ -251,8 +251,9 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
  *   sync       — google_sync_enabled, google_client_id,
  *                google_client_secret, gtasks_refresh_token,
  *                sync_interval_min, sync_toolbar_button
- *   Notes — notes_sync, notes_cli, notes_embed_list,
- *                notes_sync_interval_min, notes_meta_row
+ *   Notes — notes_sync, notes_cli, notes_sync_interval_min,
+ *                notes_meta_row (where mirrored items are FILED is not a
+ *                key: the plugin's filing-rules table decides it)
  *   database   — db_dir (custom directory for tasks.db; absent = default
  *                location), db_integrity_check, backup_enabled,
  *                backup_dir, backup_interval_min, backup_keep

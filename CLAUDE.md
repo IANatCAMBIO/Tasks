@@ -62,17 +62,32 @@ Functions that name their subject still read `task_db_task_get` — the
 namespace, the module, then the subject; that is not a stutter to
 "fix".
 
-The companion app is **Notes**.  Its source names here carry a `bn_`
-prefix — `src/bnotes.[ch]`, `src/bnsync.[ch]`, `task_bnotes_*`,
-`task_bnsync_*`, `bn_*`, `SB_KIND_BN_ACTIONS`, the `bn_deleted` table and
-`tasks.bn_uid` / `bn_done` / `bn_due`.  Internal only; nothing a user sees
-is derived from them.
+The companion app is **Notes**.  Its source names here USED to carry a
+`bn_` prefix — "Blue Notes", the app's own first name.  The FILES were
+renamed on 2026-09-06 to say what they do:
+
+- `src/plugins/notes/bnotes.[ch]` → **`notes_api.[ch]`** (the CLI wrapper)
+- `src/plugins/notes/notes.c` → **`notes_to_tasks.c`** (the mirror)
+- `task_bnotes_*` → **`task_notes_*`** (the API those two share)
+
+The module is still `plugins/notes.so`, the plugin id still `notes` and
+the config keys still `notes_*`: the Makefile names a plugin after its
+DIRECTORY, not its files, so renaming the sources moved nothing a user or
+an ini file can see.
+
+`bn_` SURVIVES on the file-local statics inside notes_to_tasks.c, and on
+three kinds of name that are ON-DISK DATA and must not move: the
+`sync_state` keys `bn_filing` and `bn_last_sync`; the sidebar view id
+`bn_actions`, which `manual_order_bn_actions` and `kanban_order_bn_actions`
+are derived from in users' ini files; and the core's `SB_KIND_BN_ACTIONS`.
+A blind `bn_` sweep would rename all of those and silently orphan every
+saved order — do the statics by hand, or not at all.
 
 **Where Notes is**: `~/salt_development/records` (the directory was not
 renamed), git remote `orange_notes.git`, GitHub repo `IANatCAMBIO/Records`
 — all redirect.  The live CLI binary is **`notes`** (`make` there builds
 it; app bundle `dist/Notes.app`, ini `notes.ini`, socket
-`~/.cache/notes.sock`).  `task_bnotes_cli_path` looks for `notes` and
+`~/.cache/notes.sock`).  `task_notes_cli_path` looks for `notes` and
 nothing else, deliberately: a stale build left beside the current one
 answers `action list` with an EMPTY result and exit 0, which reads as "no
 action items" rather than as an error.
@@ -126,10 +141,10 @@ the user).  A logic test harness lives in the session scratchpad
 | Plugin | Purpose |
 |---|---|
 | `gtasks/` | Google Tasks: two-way sync engine, OAuth (PKCE + loopback), libcurl HTTP wrapper, minimal JSON parser.  Owns `gtasks_list` / `gtasks_task`.  Brings its OWN libcurl (`deps.mk`) |
-| `notes/` | Notes action-item mirror: worker-thread pass, bulk write-back, uid identity, `notes.c` + the `bnotes.c` CLI wrapper.  Owns `notes_task` / `notes_deleted` |
+| `notes/` | Notes action-item mirror: worker-thread pass, bulk write-back, uid identity, text-matched filing rules, its own menu + toolbar button, `notes_to_tasks.c` + the `notes_api.c` CLI wrapper.  Owns `notes_task` / `notes_rule` |
 | `forecast.c` | Weekly Forecast panel |
 | `overdue.c` | Overdue sidebar view — the small worked example |
-| `icons/` | Curated toolbar images directly in icons/ (icon names are extension-less basenames — the loader tries `.png` then `.svg`, case-exact for Linux; spares live in `icons/Unused/`) |
+| `icons/` | Curated toolbar images directly in icons/ (icon names are extension-less basenames — the loader tries `.png` then `.svg`, case-exact for Linux; spares live in `icons/Unused/`).  A PLUGIN's icon goes here too — `composition.png` is the Notes sync button's — because the loader resolves names against icons/ beside the executable, not beside the .so |
 | `icons/theme/hicolor/` | Bundled SVG `pan-*-symbolic` arrows → crisp HiDPI tree expanders (needs librsvg loader) |
 
 ## Conventions
@@ -343,7 +358,10 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   divider, the completed-visibility toggle, the Manual Sort toggle,
   the pane toggle, a second divider, then New Task and Delete Task —
   and the CONTRIBUTED buttons behind their own rule, which is where the
-  Google Sync button lives (the plugin's, not the window's).
+  Notes and Google sync buttons live (the plugins', not the window's).
+  Notes' is FIRST (`sort` 5 against Google's 10), the order the two
+  passes actually run in — the mirror is worker sort -10, ahead of the
+  sync — so the toolbar reads the way one press of each would work.
   The pane toggle sits WITH the sort toggle rather than with the task
   pair: both change how the tasks are PRESENTED instead of acting on a
   task, and the sort toggle is the control it pairs with (the board is
@@ -549,15 +567,23 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   each.  Built at construction like the rest of the bar, so a plugin
   switched on at runtime gets its menu at the NEXT LAUNCH, exactly as its
   File items always have.
+  Two integrations contribute one each: **Notes → Sync Now** and
+  **Google → Sync Now**, Notes' menu first because its item sorts first.
   **There is no File → Sync Now** (removed 2026-08-27) and no `on_sync` in
   library_window.c.  It ran every registered worker, which made its label
   a promise it could not keep: nothing with no integration installed, two
   different things with two, and either way it could not say WHAT it was
-  about to sync.  Google's is **Google → Sync Now**, contributed by the
-  plugin and wired to the SAME `sync_now` as its toolbar button, so the
-  two cannot drift.  Unlike the button it is not gated on
-  `toolbar_button` — that setting is about the toolbar, and someone who
-  reclaimed the space still needs a way to sync by hand.
+  about to sync.  Each plugin contributes its own instead, wired to the SAME callback as
+  its toolbar button so the two cannot drift — `sync_now` in gtasks,
+  `bn_sync_now` in notes (TaskUiToolDef and TaskUiMenuDef take the same
+  callback shape, which is what makes one function the single answer).
+  Neither menu item is gated on its `toolbar_button` setting — that
+  setting is about the toolbar, and someone who reclaimed the space still
+  needs a way to sync by hand.  `bn_sync_now` greys the button and
+  `bn_apply` gives it back, which is what returns it after a FAILED pass
+  too; it also REPORTS the mirror being switched off rather than doing
+  nothing, since the menu item is reachable in that state even though the
+  button is hidden.
   `task_worker_run_all` survives as the run-everything call with NO
   caller in the core's chrome; that is deliberate, not an oversight —
   the core is not the one who knows what "everything" is.
@@ -1403,9 +1429,10 @@ is core code any more.
 ## Notes integration (the action-item MIRROR)
 
 **This is a PLUGIN** — `src/plugins/notes/`, built to `plugins/notes.so`.
-`notes.c` is the mirror, `bnotes.c` the CLI wrapper; they share one host
+`notes_to_tasks.c` is the mirror, `notes_api.c` the CLI wrapper; they
+share one host
 table and one identity through `plugin_ctx.h`.  It owns `notes_task`
-(uid + the done/due BASELINE) and `notes_deleted`, created from its
+(uid + the done/due BASELINE) and `notes_rule`, created from its
 `db_open` hook — schema v9 moved them off the task row.
 
 Rewritten 2026-08-05: action items are no longer a special row type.
@@ -1419,28 +1446,62 @@ Google rather than taking two.  Registration order would otherwise
 decide it, and that is whatever order the plugin loader's directory read
 happened to return.
 
-- ALL access via the `notes` CLI (`action list --uid`, `action
-  done/undone/due`), NEVER its database file — Notes' GUI/CLI
+- ALL access via the `notes` CLI (`action list --uid`, `action show`,
+  `action done/undone/due`, `action text`), NEVER its database file —
+  Notes' GUI/CLI
   coexistence is a single-writer design (CLI routes through the running
   GUI's socket).  Row format with `--uid`:
   `UID \t NOTEID:ORD \t [x]|[ ] \t YYYY-MM-DD|- \t text`.
+  `action show UID` prints ONE row in that same format — the read-back
+  for a single pinned item, so confirming a push costs one round trip
+  instead of a listing to diff.  `parse_action_row` in notes_api.c is
+  THE one parser for the format, shared by the listing and the show, so
+  the two cannot come to disagree about what a field means.
 - **Identity is the UID, never the position.** `NOTEID:ORD` renumbers
   whenever a note gains or loses a '!' line (Notes assigns ord by
   position), so a stored ref silently comes to mean a different item —
   a "done" tick would strike the wrong line.  The uid is stable across
   rewording and renumbering.  A Notes too old to know `--uid` makes
   the pass REFUSE to run ("Notes is too old…") rather than fall back
-  to positional addressing: `task_bnotes_supports_uid()` tells that case
+  to positional addressing: `task_notes_supports_uid()` tells that case
   apart on the failure path only, so a healthy pass costs ONE spawn.
   The listing's positional second field is validated as a format guard
   and then DISCARDED — nothing keys off a positional address.
-- Field ownership: Notes owns TITLE, DONE and DUE; a title edited in
-  Tasks is overwritten next pass (the CLI has no verb to rewrite an
-  item's text).  Everything else is Tasks-only and never leaves.
+- Field ownership: TITLE, DONE and DUE are all SHARED — each is pushed
+  when it drifts from the baseline and pulled from Notes otherwise.
+  Everything else is Tasks-only and never leaves.
   Notes' DONE is binary, so the mirror speaks only in the DONE-ness of
   `status` (`local_done` in `sync_item`): a New ↔ In Progress move is
   not a pending write and has nothing to push, and an item Notes
   reports as unfinished keeps whichever of the two it already had.
+- **TITLE became two-way** once the Notes CLI grew `action text UID
+  TEXT` (which keeps the item's uid, done state and due date — the uid
+  survives because Notes' identity mark sits at the line start, outside
+  the replaced span).  Before that a title edited here was simply
+  overwritten next pass.  Three consequences:
+  - `notes_task.text` is the TEXT baseline, alongside `done`/`due`.  In
+    `notes_db_open`'s CREATE plus a column-guarded ALTER (the
+    `notes_rule.position` pattern, `BN_TEXT_COLUMN` spelled once for
+    both) — and deliberately NOT in db.c's v9 migration, which moves
+    only what existed when it ran.
+  - **`''` is the no-baseline-yet sentinel**, and `sync_item` resolves
+    it in NOTES' favour, never as a local rename.  A row bound before
+    the column existed would otherwise look renamed on the first pass
+    after the upgrade and push a possibly-stale title over a rewording
+    Notes had made meanwhile.  `''` is safe as that sentinel because
+    Notes cannot hold a blank item (a '!' line with no text is not an
+    action item, and `action text` refuses a blank rename).
+  - Text is pushed BEFORE done and due, since `action text` preserves
+    both — the reverse order would have the rename rewrite the line
+    those two had just touched.  And an accepted rename records what was
+    SENT as the baseline, because Notes may not store it verbatim: a
+    text ending in a parseable `due <date>` is taken AS a due date, so
+    the next pass reads the difference as a Notes-side rewording and
+    pulls it instead of pushing the same text forever.
+- Re-filing still follows a rewording NOTES made, never one made here
+  (`retitled` compares the task's title against the value being
+  applied): a rename the user just typed in Tasks leaves the title
+  unchanged and files nothing, so their own placement stands.
 - **Writes are cached, not live.** `tasks.bn_done`/`bn_due` hold what
   Notes was last known to have, so the rows whose done-ness
   (`status == TASK_STATUS_DONE`) or `due` differs
@@ -1453,12 +1514,25 @@ happened to return.
   alone, so the delta is retried — which is why
   `task_db_task_apply_notes` takes the baselines separately from the
   applied values.
-- Existence: Notes is authoritative, so an item that leaves it
-  tombstones its task.  The reverse has no CLI verb, so deleting a
-  mirror task in Tasks parks its uid in `notes_deleted` (done inside
-  `task_db_task_delete`'s transaction) — without that the very next pass
-  would helpfully re-create what the user just deleted.  The
-  suppression is dropped once the item is gone from Notes too.
+- **Existence: Notes is authoritative, and since 2026-09-08 that is the
+  WHOLE rule** — what the listing holds is what the mirror holds.  An
+  item that leaves Notes tombstones its task; an item still in Notes gets
+  a task back on the next pass even if it was deleted here.
+  There is NO suppression list any more.  `notes_deleted` used to park
+  the uid of a mirror task deleted in Tasks so the next pass would not
+  re-create it, and `bn_delete_hook` spliced that INSERT into
+  `task_db_task_delete`'s own transaction.  It was removed because it is
+  the wrong shape for what this mirror IS: the answer to "why is this
+  action item not in Tasks?" must never be a hidden list of uids the app
+  is declining to mirror.  MEASURED on the live database that day: all 37
+  listed items were suppressed — one Clear Completed on the mirror's list
+  parks every done item's uid in one go, and a suppression only lapsed
+  when the item LEFT Notes, so 15 open action items could never come
+  back and the pass honestly reported "up to date" because it had nothing
+  it was willing to do.  `notes_db_open` now DROPS the table rather than
+  leaving it unread.  Do not reintroduce it: the cost is that deleting a
+  mirrored task in Tasks is undone within the sync interval, which is
+  what "Notes is authoritative" means.
 - **An EMPTY listing reaps NOTHING.**  `reap_missing` refuses when the
   listing came back with no rows and there is anything to reap, leaves
   every task alone, logs it and says so in the status bar.  This is not
@@ -1471,39 +1545,161 @@ happened to return.
   the deletes leave the machine.  It is the same "ABSENCE NEVER DELETES"
   rule the Google pass follows and the same shape as the v8/v9
   migrations, where a copy that does not verify drops nothing and
-  reports.  The suppression sweep is skipped on the same pass: a
-  listing not trusted to say what exists cannot be trusted to say what
-  is gone for good.  Accepted cost — a Notes genuinely emptied leaves
+  reports.  Accepted cost — a Notes genuinely emptied leaves
   its mirrored tasks behind, and the user deletes them in Tasks.  That
   direction is recoverable; the other is not.  A listing missing SOME
   items still reaps them normally; only the all-or-nothing case is
   refused.
-- The sidebar's "Action Items" row is a META VIEW (`SB_KIND_BN_ACTIONS`
-  among Favorites / All Tasks / Due Today), not a list: it queries
-  `bn_uid > 0` across every list, so an item filed anywhere still shows
-  up in one place.  Toggled by `notes_meta_row`; `virtual_view` stays
-  TRUE so each row keeps its "in <list>" line.
-- Items live in `notes_embed_list` when it names a live list, else
-  the managed "Action Items" list (❗), created on first use.  The
-  target is consulted when a task is CREATED, so changing the setting
-  needs `task_bnsync_reconcile_target` to carry the existing items over —
-  without it the setting silently only affects the next new item, which
-  reads as "the setting does nothing".  It compares against the applied
-  value in `sync_state.bn_target_list` and moves only on a real change,
-  so a task moved to another list BY HAND stays there; an ABSENT
-  applied value counts as "not yet applied" (the upgrade case).  It
-  runs on the main thread from `task_bnsync_auto_start` and the Settings
-  combo, and goes through `task_gtasks_move_task` because a cross-list
-  move has a remote half — a bare `list_id` update would strand the
-  Google copy in the old list.
+- The sidebar's **"All Action Items"** row is a META VIEW
+  (`SB_KIND_BN_ACTIONS` among Favorites / All Tasks / Due Today), not a
+  list: it queries `bn_uid > 0` across every list, so an item filed
+  anywhere still shows up in one place.  Toggled by `notes_meta_row`;
+  `virtual_view` stays TRUE so each row keeps its "in <list>" line.
+  **ALL** is load-bearing, not decoration: "Action Items" is also the
+  name of the LIST the default filing rule ships pointing at, and the two
+  are different things — the list is where UNCLAIMED items are filed,
+  the view is every mirrored item wherever a rule put it.  It reads the
+  way the meta row above it does ("All Tasks").  Renamed 2026-09-06; the
+  view's `id` stays `bn_actions`, because `manual_order_bn_actions` and
+  `kanban_order_bn_actions` are derived from it and are in users' ini
+  files.
+- **The FILING RULES table is the WHOLE answer** to "which list does an
+  item land in".  There is NO destination setting beside it: the ini key
+  `notes_embed_list` and its Settings combo were REMOVED (2026-09-06)
+  because they made that question answerable in two places, one of them
+  not in the table that claims to say.  Do not reintroduce one.
+- The catch-all is an ORDINARY `notes_rule` row whose **pattern is
+  EMPTY** — the DEFAULT RULE, shown last in the table as "Anything
+  else".  No flag column, no second table.  `bn_default_list` reads it,
+  seeding it with the managed "Action Items" list (❗) on first use and
+  RESEEDING the same way when the list it named has gone (falling back
+  beats stranding every unclaimed item).  `bn_default_set` writes it in
+  ONE statement whose subquery names the existing row or NULL, so
+  "create or repoint" is not two paths.
+- An empty pattern is NOT matched against: `bn_rules_load` drops it and
+  `BnFiling.target` carries it, which is the same answer by a shorter
+  route — `bn_filing_dest` already falls back to target when no rule
+  claims an item.  (Leaving it in would also be correct: it matches
+  everything at length 0, so every real rule beats it under
+  longest-match.)  `BnFiling` is the pair, and `bn_filing_dest` is the
+  ONE answer both the creating path in `sync_item` and the re-filing
+  pass go through, so a rule cannot mean one thing for a new item and
+  another for an old one.  Loaded ONCE per pass, never per item.
+- **Exactly ONE empty-pattern row exists**, and the Settings table is
+  what keeps that true.  The default row IS EDITABLE: typing a pattern
+  into "Anything else" turns THAT row into an ordinary rule — moved to
+  the END of the order, where it already appeared to be — and seeds a
+  fresh default INHERITING ITS LIST, so the destination the user chose is
+  carried over rather than silently reset to the managed list.  Emptying
+  it changes nothing (it is still the row that catches the rest);
+  emptying an ORDINARY rule's pattern DELETES it, since that spelling
+  belongs to the default.  Add Rule puts its row in the STORE ONLY until
+  a pattern is typed — a placeholder row in the database would BE a
+  second empty pattern, and a fabricated one ("text to match") would be
+  data nobody asked for.  A rule left untyped was never created.  What
+  the default rule cannot be is REMOVED: something has to catch the items
+  no rule claims.
+- Filing is consulted when a task is CREATED, so changing it needs
+  `bn_refile` to carry the existing items over — without that a rule
+  silently only affects the next new item, which reads as "the setting
+  does nothing".  It compares `bn_filing_stamp` against the
+  applied value in `sync_state.bn_filing` and moves only on a real
+  change, so a task moved to another list BY HAND stays there; an ABSENT
+  applied value counts as "not yet applied" (the upgrade case).  The
+  stamp covers the RULES as well as the target, or a newly written rule
+  would have nothing to trigger it and would hit the same "does
+  nothing" trap.  It runs on the main thread from `bn_on_arm` and the
+  Settings controls, and goes through `host->ops->move_to_list` because
+  a cross-list move has a remote half — a bare `list_id` update would
+  strand the Google copy in the old list.
+- **FILING RULES** (`notes_rule`: `pattern`, `list_id`): an item whose
+  TEXT contains the pattern is filed in the rule's list, and the
+  empty-pattern row above catches the rest.  Matching is
+  `g_utf8_casefold` (the search
+  box's rule, not ASCII tolower) and unanchored, because "Scotia — Ian
+  to update the config" does not reliably lead with the name.
+  **THE FIRST MATCH WINS**, reading TOP DOWN, and matching STOPS there:
+  two rules can plainly both claim one item ("scotia", "scotia bank"),
+  and the order the user put them in is the answer they can SEE and
+  CHANGE — Move Up / Move Down, persisted in `notes_rule.position`.
+  **That ordering UI is not optional**: precedence living anywhere but on
+  screen (insertion order, pattern length, id) leaves "why did this go
+  there?" unanswerable from the table that claims to say, so if the
+  buttons ever go the rule has to go back to something the table states
+  by itself.  `position` came after the table did and therefore carries
+  BOTH halves of gotcha 24 — the declaration in the plugin's CREATE and a
+  guarded ALTER for a database that predates it, the DEFAULT built from
+  one `BN_POSITION_DEFAULT` macro so it is not spelled twice, and the
+  guard on the COLUMN (via the plugin's own `bn_table_has_column`, since
+  nothing sqlite-shaped crosses the ABI) rather than a version stamp.
+  Rows that predate it sit on 0 and `ORDER BY position, id` breaks that
+  tie, so an untouched table keeps reading in the order it was typed;
+  `bn_rule_positions_save` renumbers 1..N from the TABLE's own order on
+  every move, which is what normalises those zeros.  Both ORDER BYs —
+  the matcher's and the Settings table's — must agree, or the table
+  shows an order the mirror does not use.  An ordinary rule is INERT
+  when its list is gone — `bn_rules_load` drops it, which keeps the
+  matcher a pure comparison, and the table SHOWS it as naming a deleted
+  list rather than hiding it.  The DEFAULT rule cannot be left inert the
+  same way: its items have to go somewhere, so it reseeds instead.  No
+  foreign key on `list_id`: lists are TOMBSTONED rather than deleted, so
+  no cascade could see one go.
+  They live in the DATABASE, not the ini, because a rule names a list by
+  ID and ids belong to the file the lists live in — the ini travels with
+  the binary and survives `task_app_switch_database`, which would leave
+  every rule pointing at whatever held that id in the new file, filing
+  items into a stranger's list and saying nothing.
+- A REWORDED item re-files, and only a reworded one: the text is what a
+  rule matches on, so `sync_item` parks the id in `BnJob.refile` when
+  the title actually moved and `bn_apply` re-files exactly those on the
+  main thread (`bn_refile_ids`, ungated).  A sweep of the whole mirror
+  there would drag every hand-moved task back — the property
+  `bn_refile`'s stamp exists to protect.
+- The Settings table is two columns, both edited IN PLACE, with Add Rule
+  / Remove Rule / Move Up / Move Down under it (measured 397 px against
+  `SETTINGS_WIDTH` 470, so four text buttons fit and do not need to
+  become arrows).  All three of the latter grey out with no selection, on
+  the default row, and on a row not yet written; Move Up greys on the
+  first row and Move Down on the last ordinary one, since the default
+  stays last.  A swap moves the row under a selection that never
+  "changed", so `on_rule_move` re-evaluates them by hand.  The default
+  row reads "Anything else" in ITALICS — from one `rule_pattern_func`
+  data func over the `RC_DEFAULT` column rather than another store
+  column, one source of truth, doing nothing but set two properties
+  because a data func runs per DRAW — and its editor opens EMPTY
+  (`on_rule_editing_started`), because those words describe the row
+  rather than being text anyone typed.  A row not yet
+  in the database carries `RC_ID` 0: the default row before anything
+  seeded it (written on first touch, so merely OPENING Settings never
+  creates an "Action Items" list) and a just-added rule (written when
+  its pattern is typed).  The list
+  ITER the combo hands back, never a lookup by label — two lists may
+  share a name.  `BnRuleUi` hangs off the tree view so it dies with the
+  window, which is rebuilt on every opening (the same reason
+  `BN_SET_IDS` lives on its combo).  Every handler writes its row and
+  then calls `bn_refile`.
 - Threading matches gtasks: own worker, own SQLite connection, CLI
   spawned there too, results marshalled with `g_idle_add`.  The toolbar
   Sync runs the mirror FIRST so a new action item reaches Google in one
   press.  BOTH timers carry their db path, so `task_app_switch_database`
   must re-arm both.
-- The Settings CLI-path entry persists per keystroke but only runs a
+- The Settings **Notes binary path** row is an ENTRY plus a **Browse…**
+  button, and the ENTRY is the field of record: a bare command name
+  still searches PATH, so pasting a line of `which -a notes` has to go
+  on working — the button is a second way to the same setting, never a
+  replacement for typing one.  It persists per keystroke but only runs a
   pass on Enter/focus-out (a per-keystroke pass would spawn the
-  half-typed command).
+  half-typed command); `on_bn_cli_browse` fills the entry and then calls
+  the SAME commit Enter does, so there is one spelling of "the path
+  changed" and a wrong pick reports itself now rather than at the next
+  tick.  The chooser opens where the answer probably is — the path
+  already typed, else what `notes` resolves to on PATH — and falls back
+  to a stale path's FOLDER when the file itself has gone, which is the
+  usual reason to be in the dialog.  NO file filter: there is no
+  reliable "is executable" pattern, and a filter that hides the file you
+  came for is worse than none.  The plugin builds the
+  `GtkFileChooserDialog` itself — GTK is the shared floor (plugin.h), so
+  this needs no host call and no ABI revision.
 
 ## Hard-won gotchas (do not re-learn)
 
@@ -1676,3 +1872,18 @@ happened to return.
     both halves is TWO spellings of one value, so build the SQL from
     the macro (`g_strdup_printf`) rather than writing the number
     twice.
+25. A C HEX ESCAPE IS GREEDY, so the house style of writing UTF-8 as
+    `\xe2\x80\x9c` breaks the moment the next character is a hex digit:
+    `"\xe2\x80\x9capple"` is read as `\x9ca` and fails with "hex escape
+    sequence out of range".  It bit for real on 2026-09-06, when the
+    example inside a curly-quoted phrase in notes_to_tasks.c was reworded
+    from
+    "scotia" to "apple" — the escape had been fine only because `s` is
+    not a hex digit.  It is a COMPILE error, so nothing ships broken, but
+    the message points at the string rather than at the edit.  Fix by
+    ENDING THE LITERAL after the escape and starting another —
+    `"\xe2\x80\x9c" "apple"` — which costs nothing at runtime
+    (adjacent literals are concatenated) and cannot be re-broken by the
+    next rewording.  Watch the closing quote too: `\x9d` is safe before a
+    space, and `\x94` before " Ian" likewise, but any of them before a
+    word starting a-f or A-F is not.

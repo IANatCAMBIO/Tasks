@@ -2,9 +2,9 @@
  * plugin_ctx.h — the host table and this plugin's identity, shared across
  * the plugin's translation units.
  *
- * notes.c owns the definitions (set once in task_plugin_entry); bnotes.c
- * reads them through here.  A plugin split across files still has exactly
- * one host table and one identity.
+ * notes_to_tasks.c owns the definitions (set once in task_plugin_entry);
+ * notes_api.c reads them through here.  A plugin split across files still
+ * has exactly one host table and one identity.
  * =========================================================================== */
 
 #ifndef NOTES_PLUGIN_CTX_H

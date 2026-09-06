@@ -637,6 +637,17 @@ task_db_open(const gchar *path, GError **err)
      * v9 — the Notes mirror's columns move to its own side table, the
      * same shape v8 gave the Google sync.  COPY, VERIFY, then DROP.
      *
+     * It still copies bn_deleted into notes_deleted, and that is
+     * deliberate even though the mirror STOPPED USING suppression on
+     * 2026-09-08 and its db_open now drops notes_deleted outright.  A
+     * migration's job is to move what existed WHEN IT RAN; rewriting one
+     * to know about a decision taken later is how the single path nobody
+     * can easily test acquires a bug.  The `lost` check below also GATES
+     * the drop of bn_uid/bn_done/bn_due — unpick the copy and that gate
+     * reads a missing table, returns -1, and every pre-v9 database stays
+     * half-migrated forever.  The table is dropped once, afterwards, in
+     * one place (notes.c), whatever version the file started at.
+     *
      * The INDEX goes first: SQLite refuses ALTER TABLE ... DROP COLUMN on
      * an indexed column, so leaving idx_tasks_bn_uid in place would fail
      * the drop and strand the migration half-applied.

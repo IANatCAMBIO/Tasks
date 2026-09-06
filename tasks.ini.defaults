@@ -36,13 +36,19 @@ toolbar_style=icons
 # refuses to run against an older build rather than guess.
 notes_sync=0
 # notes_cli=notes
-# notes_embed_list — a list id: file mirrored action items into that
-# list; unset (or a list that no longer exists) uses the managed
-# "Action Items" list, created on first use.
+# Where mirrored action items are filed is NOT an ini key: the FILING
+# RULES table decides it (Settings → Notes), ending in a default rule
+# that catches whatever no rule claims.  It lives in the DATABASE, not
+# here, because a rule names a list by id and an id only means anything
+# in the file the lists live in.
 # How often the mirror runs, in minutes (0 = only when Sync is pressed).
 # Local done/due changes are cached until then and pushed in bulk.
 notes_sync_interval_min=5
-# Show the sidebar's "Action Items" view — every mirrored item in one
+# Show the "Sync Notes" toolbar button (1|0; Settings → Notes).  Notes →
+# Sync Now in the menu bar does the same thing and is NOT gated on this:
+# the setting is about the toolbar, not about syncing by hand.
+notes_toolbar_button=1
+# Show the sidebar's "All Action Items" view — every mirrored item in one
 # place, whichever list each one lives in (1|0; Settings → Notes).
 notes_meta_row=1
 # Sidebar visibility (1|0, default 0; the toolbar Sidebar toggle and
