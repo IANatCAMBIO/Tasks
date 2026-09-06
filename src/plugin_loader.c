@@ -826,6 +826,7 @@ task_plugins_set_enabled(TaskApp *app, const gchar *id, gboolean enabled)
             f->plugin->db_open(app, app->db, f->plugin);
         if (app->db != NULL)
             task_worker_arm_owner(app, id, app->db->path);
+        task_library_rebuild_chrome(app);
         task_app_notify_changed(app);
         return TRUE;
     }
@@ -853,8 +854,12 @@ task_plugins_set_enabled(TaskApp *app, const gchar *id, gboolean enabled)
             task_worker_arm_owner(app, id, app->db->path);
     }
 
-    /* Structural: the sidebar, the toolbar and the menus are all built
-     * from the registries that just changed.                            */
+    /* The window chrome is built from the registries that just changed,
+     * and a refresh does not rebuild it — a plugin's toolbar buttons and
+     * menus arrive and leave here (see library_window.h).  The refresh
+     * that follows is for the rest: its sidebar views, its row
+     * decorations, its editor sections.                                  */
+    task_library_rebuild_chrome(app);
     task_app_notify_changed(app);
     return TRUE;
 }

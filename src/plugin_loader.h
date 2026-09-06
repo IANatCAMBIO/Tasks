@@ -108,7 +108,12 @@ const TaskPluginInfo  *task_plugins_info(guint index);
  * Disabling sweeps everything the plugin registered — views, workers (its
  * timer stopped), op and delete hooks, row decorations, window chrome,
  * settings sections — and refreshes the windows, so the app stops
- * offering the feature on the spot.
+ * offering the feature on the spot.  The window CHROME is the one that
+ * takes a rebuild rather than a refresh: a toolbar button and a menu item
+ * are widgets the window built once from the registry, so this calls
+ * task_library_rebuild_chrome (see library_window.h).  Left alone they
+ * stayed on screen still wired to the plugin's callback — which goes on
+ * working, since the module is never unmapped.
  *
  * Re-enabling one that is still mapped re-runs its init(), which is why
  * a plugin's init() must be safe to call more than once (see plugin.h).

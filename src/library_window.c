@@ -141,6 +141,18 @@ typedef struct {
     GtkWidget    *toolbar;           /* hidden by Compact Layout            */
     GtkWidget    *toolbar_rule;      /* the thin rule under the toolbar     */
     GtkWidget    *ui_tool_rule;      /* divider before contributed buttons  */
+    gint          ui_tool_pos;       /* the toolbar index the contributed
+                                      * block starts at.  Recorded because
+                                      * that block is REBUILT IN PLACE when
+                                      * a plugin is switched on or off, so
+                                      * the spot has to outlive the first
+                                      * build (see ui_tools_build)          */
+    GtkWidget    *menubar;           /* the bar itself â its contributed
+                                      * menus are rebuilt the same way      */
+    GtkWidget    *file_menu;         /* File and View hold contributed      */
+    GtkWidget    *view_menu;         /* items INSIDE them, so each one      */
+    gint          file_ui_pos;       /* remembers where its group begins    */
+    gint          view_ui_pos;
     GtkWidget    *float_bar;         /* Compact Layout's floating New /
                                       * Delete Task pair (overlay child)    */
     GtkWidget    *search_entry;      /* the toolbar's search box, at the
@@ -459,6 +471,7 @@ static void     row_order_keys_drop(gint kind, gint64 id);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
 static void     on_toggle_kanban(GtkWidget *, gpointer);
 static void     full_refresh(TaskLibrary *lw);
+static void     ui_tools_apply(TaskLibrary *lw);
 static void     on_ui_task_menu_activated(GtkWidget *, gpointer);
 static void     scroll_keep_queue_win(GtkWidget *scroll);
 static void     refresh_tasks(TaskLibrary *lw);
@@ -2828,10 +2841,7 @@ full_refresh(TaskLibrary *lw)
      * task_ui.h).  The window used to own a Sync button and gate it on
      * Google's setting while it also ran the Notes mirror; each
      * integration now brings its own button and answers for it.         */
-    task_ui_tools_apply_visibility(lw->app);
-    if (lw->ui_tool_rule != NULL)
-        gtk_widget_set_visible(lw->ui_tool_rule,
-                               task_ui_any_tool_visible(lw->app));
+    ui_tools_apply(lw);
     task_editor_refresh_all(lw->app);
 }
 
@@ -4677,14 +4687,26 @@ on_menu_quit(GtkWidget *w, gpointer data)
     gtk_widget_destroy(lw->window);
 }
 
-/* menu_item() — build one wired menu item.                                 */
+/* menu_item_at() — build one wired menu item at `pos`; -1 appends.
+ *
+ * The positional form is what the CONTRIBUTED groups need: they sit
+ * INSIDE File and View rather than at the end of either, and they are
+ * rebuilt in place when a plugin is switched on or off.                    */
 static GtkWidget *
-menu_item(GtkWidget *menu, const gchar *label, GCallback cb, gpointer data)
+menu_item_at(GtkWidget *menu, const gchar *label, GCallback cb,
+             gpointer data, gint pos)
 {
     GtkWidget *item = gtk_menu_item_new_with_label(label);
     g_signal_connect(item, "activate", cb, data);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+    gtk_menu_shell_insert(GTK_MENU_SHELL(menu), item, pos);
     return item;
+}
+
+/* menu_item() — the common case: one wired menu item at the end.           */
+static GtkWidget *
+menu_item(GtkWidget *menu, const gchar *label, GCallback cb, gpointer data)
+{
+    return menu_item_at(menu, label, cb, data, -1);
 }
 
 /* ---------------------------------------------------------------------------
@@ -4760,36 +4782,96 @@ on_ui_task_menu_activated(GtkWidget *item, gpointer data)
         d->activate(lw->app, ids, d->user_data);
 }
 
-/* ui_menu_items() — append every contributed item for `which`.
+/* ---------------------------------------------------------------------------
+ * The CONTRIBUTED CHROME — a plugin's toolbar buttons and menu items — is
+ * built from the task_ui registries and REBUILT IN PLACE whenever those
+ * registries change, which is what makes the Settings checkbox honest:
+ * switching a plugin on puts its button and its menu there and then, and
+ * switching one off takes them away.  Without that, an enabled plugin's
+ * button appeared only at the next launch and a DISABLED one's button
+ * stayed on the toolbar, still wired to the callback it registered — the
+ * module is never unmapped, so it went on working.
+ *
+ * Every widget built for it is marked with UI_CHROME_KEY, and rebuilding
+ * means "destroy this container's marked children, then build the group
+ * again at the recorded index".  The mark rather than an index range: the
+ * group sits INSIDE File and View, next to items the window owns, and a
+ * range would have to be kept true through every future edit to those
+ * menus.
+ * ------------------------------------------------------------------------- */
+#define UI_CHROME_KEY "task-ui-chrome"
+
+/* chrome_mark() — this widget belongs to the contributed group.           */
+static void
+chrome_mark(GtkWidget *w)
+{
+    g_object_set_data(G_OBJECT(w), UI_CHROME_KEY, GINT_TO_POINTER(1));
+}
+
+/* chrome_clear() — destroy every marked child of `container`, leaving
+ * everything the window built itself alone.                               */
+static void
+chrome_clear(GtkWidget *container)
+{
+    GList *kids = gtk_container_get_children(GTK_CONTAINER(container));
+    for (GList *l = kids; l != NULL; l = l->next)
+        if (g_object_get_data(G_OBJECT(l->data), UI_CHROME_KEY) != NULL)
+            gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(kids);
+}
+
+/* chrome_pos() — how many children `container` has right now, which is
+ * the index the next thing appended would land at.  Recorded at
+ * construction so a rebuild puts the group back where it was.             */
+static gint
+chrome_pos(GtkWidget *container)
+{
+    GList *kids = gtk_container_get_children(GTK_CONTAINER(container));
+    gint n = (gint)g_list_length(kids);
+    g_list_free(kids);
+    return n;
+}
+
+/* ui_menu_items() — (re)build the contributed items for `which`, at `pos`.
  *
  * `rule` adds a separator AFTER them so the group reads as its own
  * section; pass FALSE where the caller's own grouping already says where
  * the group ends (File puts them at the head of its second group, which
- * a rule of their own would then split in two).  Either way this appends
+ * a rule of their own would then split in two).  Either way this adds
  * NOTHING when nothing is contributed — rule included — which keeps an
- * app with no plugins looking exactly as it did.                         */
+ * app with no plugins looking exactly as it did.
+ *
+ * The items are shown as they are built rather than left to the window's
+ * show_all: on a rebuild there is no show_all coming.                     */
 static void
 ui_menu_items(TaskLibrary *lw, GtkWidget *menu, TaskUiMenu which,
-              gboolean rule)
+              gboolean rule, gint pos)
 {
+    chrome_clear(menu);
     gboolean any = FALSE;
     for (guint i = 0; i < task_ui_menu_count(); i++) {
         const TaskUiMenuDef *d = task_ui_menu_nth(i);
         if (d->menu != which)
             continue;
-        GtkWidget *item = menu_item(menu, d->label,
-                                    G_CALLBACK(on_ui_menu_activated), lw);
+        GtkWidget *item = menu_item_at(menu, d->label,
+                                       G_CALLBACK(on_ui_menu_activated),
+                                       lw, pos++);
         g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
+        chrome_mark(item);
+        gtk_widget_show(item);
         any = TRUE;
     }
-    if (any && rule)
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                              gtk_separator_menu_item_new());
+    if (any && rule) {
+        GtkWidget *sep = gtk_separator_menu_item_new();
+        chrome_mark(sep);
+        gtk_menu_shell_insert(GTK_MENU_SHELL(menu), sep, pos);
+        gtk_widget_show(sep);
+    }
 }
 
 /* ---------------------------------------------------------------------------
- * ui_own_menus() — build the TOP-LEVEL menus contributed items asked for
- * (TASK_UI_MENU_OWN, see task_ui.h) and append them to the menu bar.
+ * ui_own_menus() — (re)build the TOP-LEVEL menus contributed items asked
+ * for (TASK_UI_MENU_OWN, see task_ui.h) at the end of the menu bar.
  *
  * One menu per distinct `menu_title`, created when its first item is
  * reached — so the registry order (which is `sort` order) decides both
@@ -4798,12 +4880,14 @@ ui_menu_items(TaskLibrary *lw, GtkWidget *menu, TaskUiMenu which,
  * compared by CONTENT, not pointer: two plugins are two shared objects,
  * so the same title is a different string in each.
  *
- * Appends nothing when nothing is contributed, which is what keeps the
- * bar at File + View for an app with no plugins.
+ * Adds nothing when nothing is contributed, which is what keeps the
+ * bar at File + View for an app with no plugins.  These always sit after
+ * the window's own menus, so they are appended rather than placed.
  * ------------------------------------------------------------------------- */
 static void
 ui_own_menus(TaskLibrary *lw, GtkWidget *menubar)
 {
+    chrome_clear(menubar);
     GHashTable *by_title = g_hash_table_new(g_str_hash, g_str_equal);
     for (guint i = 0; i < task_ui_menu_count(); i++) {
         const TaskUiMenuDef *d = task_ui_menu_nth(i);
@@ -4819,13 +4903,110 @@ ui_own_menus(TaskLibrary *lw, GtkWidget *menubar)
             GtkWidget *top = gtk_menu_item_new_with_label(d->menu_title);
             gtk_menu_item_set_submenu(GTK_MENU_ITEM(top), menu);
             gtk_menu_shell_append(GTK_MENU_SHELL(menubar), top);
+            chrome_mark(top);
+            gtk_widget_show(top);
             g_hash_table_insert(by_title, (gpointer)d->menu_title, menu);
         }
         GtkWidget *item = menu_item(menu, d->label,
                                     G_CALLBACK(on_ui_menu_activated), lw);
         g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
+        gtk_widget_show(item);
     }
     g_hash_table_destroy(by_title);
+}
+
+/* ---------------------------------------------------------------------------
+ * ui_tools_apply() — re-ask every contributed button whether it should be
+ * on screen, and hide the divider when none of them is.
+ *
+ * The divider follows the BUTTONS, not the registry: an item can be
+ * registered and hidden (an integration switched off in its own settings),
+ * and a rule with nothing after it reads as a mistake.
+ * ------------------------------------------------------------------------- */
+static void
+ui_tools_apply(TaskLibrary *lw)
+{
+    task_ui_tools_apply_visibility(lw->app);
+    if (lw->ui_tool_rule != NULL)
+        gtk_widget_set_visible(lw->ui_tool_rule,
+                               task_ui_any_tool_visible(lw->app));
+}
+
+/* ---------------------------------------------------------------------------
+ * ui_tools_build() — (re)build the contributed toolbar block at
+ * lw->ui_tool_pos: its own divider, then one button per registered item.
+ *
+ * They sit LAST among the buttons, behind that divider: an integration's
+ * button is neither one of the view controls nor one of the task actions,
+ * and grouping it with either would say it was.  Nothing at all is added
+ * when nothing is contributed, so an app with no plugins keeps exactly
+ * the toolbar it had.
+ *
+ * task_ui_tool_forget_all() comes first because the widgets the map named
+ * have just been destroyed; the fresh ones re-bind below.
+ * ------------------------------------------------------------------------- */
+static void
+ui_tools_build(TaskLibrary *lw)
+{
+    chrome_clear(lw->toolbar);
+    lw->ui_tool_rule = NULL;
+    task_ui_tool_forget_all();
+
+    gint pos = lw->ui_tool_pos;
+    if (task_ui_tool_count() > 0) {
+        GtkToolItem *rule = gtk_separator_tool_item_new();
+        chrome_mark(GTK_WIDGET(rule));
+        lw->ui_tool_rule = GTK_WIDGET(rule);
+        gtk_toolbar_insert(GTK_TOOLBAR(lw->toolbar), rule, pos++);
+        gtk_widget_show(GTK_WIDGET(rule));
+    }
+    for (guint i = 0; i < task_ui_tool_count(); i++) {
+        const TaskUiToolDef *d = task_ui_tool_nth(i);
+        GtkToolItem *item = task_app_tool_item_new(lw->app, d->icon,
+                                                   d->fallback_markup,
+                                                   d->label, d->tooltip);
+        g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
+        chrome_mark(GTK_WIDGET(item));
+        g_signal_connect(item, "clicked", G_CALLBACK(on_ui_tool_clicked),
+                         lw);
+        gtk_toolbar_insert(GTK_TOOLBAR(lw->toolbar), item, pos++);
+        /* show_all, not show: the button inside the tool item has to come
+         * up too, and on a rebuild no window-wide show_all follows.  Its
+         * OWN visibility is then settled by ui_tools_apply below.        */
+        gtk_widget_show_all(GTK_WIDGET(item));
+        task_ui_tool_bind(d->id, GTK_WIDGET(item));
+    }
+    ui_tools_apply(lw);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_library_rebuild_chrome() — the plugin registries changed; put the
+ * window's contributed chrome back in step with them (see header).
+ * ------------------------------------------------------------------------- */
+void
+task_library_rebuild_chrome(TaskApp *app)
+{
+    TaskLibrary *lw = lib_of(app);
+    if (lw == NULL)
+        return;
+    ui_menu_items(lw, lw->file_menu, TASK_UI_MENU_FILE, FALSE,
+                  lw->file_ui_pos);
+    ui_menu_items(lw, lw->view_menu, TASK_UI_MENU_VIEW, TRUE,
+                  lw->view_ui_pos);
+    ui_own_menus(lw, lw->menubar);
+    ui_tools_build(lw);
+#ifdef HAVE_GTKOSX
+    /* The native bar is driven by this very menu shell, so it has to be
+     * told the shell changed.  ONLY while that mode is on: with the
+     * in-window bar showing, macOS has never been handed a menu shell at
+     * all, and gtkosx_application_sync_menubar then sends -resync to an
+     * object that does not implement it — an uncaught NSException that
+     * kills the process (seen for real on 3.24.52, gtk-mac-integration
+     * 3.0.1).  The setting is the same one task_library_apply_native_menubar
+     * is driven by.                                                      */
+    if (task_app_config_get_bool("native_menubar", FALSE))
+        gtkosx_application_sync_menubar(gtkosx_application_get());
+#endif
 }
 
 /* tool_button() — a style-aware toolbar button (local icon + label)
@@ -5467,7 +5648,9 @@ task_library_window_new(TaskApp *app)
 
     /* --- Menubar ---------------------------------------------------------- */
     GtkWidget *menubar = gtk_menu_bar_new();
+    lw->menubar = menubar;           /* rebuilt in part per plugin toggle   */
     GtkWidget *file_menu = gtk_menu_new();
+    lw->file_menu = file_menu;
     GtkWidget *file_item = gtk_menu_item_new_with_label("File");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
     /* ONE separator in this menu, and it goes after the group below.
@@ -5487,8 +5670,12 @@ task_library_window_new(TaskApp *app)
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
     /* Contributed items lead the second group WITHOUT a rule of their
-     * own — one more rule is exactly what this menu is losing.           */
-    ui_menu_items(lw, file_menu, TASK_UI_MENU_FILE, FALSE);
+     * own — one more rule is exactly what this menu is losing.  The index
+     * is recorded first: this group is rebuilt in place when a plugin is
+     * switched on or off, and it has to come back HERE rather than at the
+     * end of the menu.                                                   */
+    lw->file_ui_pos = chrome_pos(file_menu);
+    ui_menu_items(lw, file_menu, TASK_UI_MENU_FILE, FALSE, lw->file_ui_pos);
     menu_item(file_menu, "Open Database File\xe2\x80\xa6",
               G_CALLBACK(on_open_db), lw);
     menu_item(file_menu, "Settings\xe2\x80\xa6",
@@ -5498,6 +5685,7 @@ task_library_window_new(TaskApp *app)
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), file_item);
 
     GtkWidget *view_menu = gtk_menu_new();
+    lw->view_menu = view_menu;
     GtkWidget *view_item = gtk_menu_item_new_with_label("View");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(view_item), view_menu);
     /* Built with the label the persisted state calls for;
@@ -5531,7 +5719,8 @@ task_library_window_new(TaskApp *app)
      * read, so anything registered for it went nowhere at all.  It
      * appends nothing (not even its rule) when nothing is contributed,
      * so the menu is unchanged for an app with no plugins.               */
-    ui_menu_items(lw, view_menu, TASK_UI_MENU_VIEW, TRUE);
+    lw->view_ui_pos = chrome_pos(view_menu);
+    ui_menu_items(lw, view_menu, TASK_UI_MENU_VIEW, TRUE, lw->view_ui_pos);
 
     /* Below the divider: what the WINDOW looks like.  Show/Hide Sidebar
      * mirrors the toolbar's Sidebar button (both write `sidebar_visible`);
@@ -5563,9 +5752,9 @@ task_library_window_new(TaskApp *app)
 
     /* Contributed top-level menus come after the app's own: File and View
      * are the window's, and an integration's menu is about the
-     * integration.  Built here, once, like the rest of the bar — a plugin
-     * switched on while the app is running gets its menu at the next
-     * launch, the same as its File items always have.                     */
+     * integration.  Rebuilt from the registry when a plugin is switched
+     * on or off, so a menu arrives and leaves with its plugin rather than
+     * waiting for the next launch.                                        */
     ui_own_menus(lw, menubar);
 
     /* Remembered so the menu can be moved into the native macOS menu
@@ -5617,34 +5806,13 @@ task_library_window_new(TaskApp *app)
                 "Delete Task", "Delete the selected task",
                 G_CALLBACK(on_delete_task));
 
-    /* Contributed toolbar items (see task_ui.h) sit LAST, behind their
-     * own divider: an integration's button is neither one of the view
-     * controls nor one of the task actions, and grouping it with either
-     * would say it was.  The divider is added only when there is
-     * something to divide, so an app with no plugins keeps exactly the
-     * toolbar it had.
-     *
-     * The divider follows the BUTTONS, not the registry: an item can be
-     * registered and hidden (an integration switched off), and a rule
-     * with nothing after it reads as a mistake.  It is kept in
-     * lw->ui_tool_rule and hidden with them.                              */
-    task_ui_tool_forget_all();
-    if (task_ui_tool_count() > 0) {
-        GtkToolItem *rule = gtk_separator_tool_item_new();
-        lw->ui_tool_rule = GTK_WIDGET(rule);
-        gtk_toolbar_insert(GTK_TOOLBAR(toolbar), rule, -1);
-    }
-    for (guint i = 0; i < task_ui_tool_count(); i++) {
-        const TaskUiToolDef *d = task_ui_tool_nth(i);
-        GtkToolItem *item = task_app_tool_item_new(lw->app, d->icon,
-                                                   d->fallback_markup,
-                                                   d->label, d->tooltip);
-        g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
-        g_signal_connect(item, "clicked", G_CALLBACK(on_ui_tool_clicked),
-                         lw);
-        gtk_toolbar_insert(GTK_TOOLBAR(toolbar), item, -1);
-        task_ui_tool_bind(d->id, GTK_WIDGET(item));
-    }
+    /* Contributed toolbar items (see task_ui.h) sit LAST among the
+     * buttons, behind their own divider.  ui_tools_build owns that block
+     * whole — it is rebuilt there when a plugin is switched on or off —
+     * so the index it starts at is recorded before the call and the
+     * search box below is appended after it.                              */
+    lw->ui_tool_pos = (gint)gtk_toolbar_get_n_items(GTK_TOOLBAR(toolbar));
+    ui_tools_build(lw);
 
     /* Expanding blank separator pushes the search box to the right edge
      * (the Notes layout, which keeps its own search box there).           */
@@ -6068,9 +6236,6 @@ task_library_window_new(TaskApp *app)
     /* show_all revealed every contributed toolbar button; let each one
      * answer for itself (see task_ui.h).  Same reason the pane choice is
      * re-applied above.                                                   */
-    task_ui_tools_apply_visibility(lw->app);
-    if (lw->ui_tool_rule != NULL)
-        gtk_widget_set_visible(lw->ui_tool_rule,
-                               task_ui_any_tool_visible(lw->app));
+    ui_tools_apply(lw);
     return lw->window;
 }

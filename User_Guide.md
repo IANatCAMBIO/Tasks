@@ -285,9 +285,13 @@ window per task: opening it again focuses the one you already have.
   the existing one or overwrite it with your current data.
 - **Plugins** — every plugin found, with a checkbox each. Ticking one
   switches it on and unticking switches it off, both taking effect
-  immediately — no restart. Each row shows what the plugin does and
-  links to its README, whether or not it is switched on. Below the
-  list are the folder plugins load from and a button to change it.
+  immediately — no restart. That includes what the plugin adds to the
+  main window: its sidebar views, its toolbar button and its menu all
+  arrive when it is switched on and go when it is switched off. An
+  editor window that is already open keeps the section a plugin added
+  to it until you close and reopen it. Each row shows what the plugin
+  does and links to its README, whether or not it is switched on. Below
+  the list are the folder plugins load from and a button to change it.
 
 The sections that follow the Plugins list belong to the plugins
 themselves, and are present only while that plugin is on:

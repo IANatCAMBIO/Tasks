@@ -288,8 +288,14 @@ typedef struct {
  * Everything a plugin registers FROM init() is recorded as belonging to
  * that plugin, so switching it off in Settings can take exactly its
  * registrations back out and nothing else — its views leave the sidebar,
- * its worker's timer is stopped, its hooks leave the op chains, its
- * settings section leaves the window, all without a restart.
+ * its toolbar button and its menus leave the library window, its
+ * worker's timer is stopped, its hooks leave the op chains, its
+ * settings section leaves the window, all without a restart.  Switching
+ * one ON puts the same things there on the spot.
+ *
+ * The one piece of chrome that waits is a contributed EDITOR SECTION: an
+ * editor window builds its sections when it opens, so a window already on
+ * screen keeps the section until it is closed and reopened.
  *
  * Two consequences worth knowing:
  *

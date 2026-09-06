@@ -564,9 +564,9 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   by where their FIRST item lands in the registry, so an item's `sort`
   places its menu too.  Titles compare by CONTENT, not pointer — two
   plugins are two shared objects, so "Google" is a different string in
-  each.  Built at construction like the rest of the bar, so a plugin
-  switched on at runtime gets its menu at the NEXT LAUNCH, exactly as its
-  File items always have.
+  each.  Built at construction like the rest of the bar and REBUILT IN
+  PLACE when a plugin is switched on or off, so a menu arrives and leaves
+  with its plugin instead of waiting for the next launch (2026-09-06).
   Two integrations contribute one each: **Notes → Sync Now** and
   **Google → Sync Now**, Notes' menu first because its item sorts first.
   **There is no File → Sync Now** (removed 2026-08-27) and no `on_sync` in
@@ -601,6 +601,26 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   its rule is what separates the contributed group from the window group),
   File passes FALSE.  Either way the helper appends nothing at all,
   separator included, when no plugin contributed to that menu.
+- **The CONTRIBUTED CHROME is REBUILT, not refreshed.**  A plugin's
+  toolbar button, its File/View items and its own top-level menu are
+  widgets the window builds from the `task_ui` registries; a full refresh
+  only re-asks the existing buttons whether they should be VISIBLE, so it
+  cannot add or remove one.  `task_library_rebuild_chrome` does that —
+  destroy this container's children marked `"task-ui-chrome"`, build the
+  group again at the index recorded at construction (`ui_tool_pos`,
+  `file_ui_pos`, `view_ui_pos`) — and the PLUGIN LOADER is its only
+  caller, from `task_plugins_set_enabled`.  Not on the notify path: a
+  refresh runs on every structural change to the tasks and would take a
+  menu apart while it was open, for nothing, since the registries only
+  ever change when a plugin does.  Before this (fixed 2026-09-06) the
+  Settings note "takes effect immediately — no restart needed" was false
+  in BOTH directions: a plugin switched ON got its button and menu at the
+  next launch, and one switched OFF kept both on screen STILL WORKING —
+  `task_ui_remove_owner` drops the definition but the widget holds its own
+  pointer to it, and a disabled plugin is never unmapped, so the callback
+  is still live code.  A contributed EDITOR section is the one piece that
+  still waits: an editor builds its sections when it opens, so a window
+  already on screen keeps the section until it is reopened.
 - **Classic scrollbars, not GTK's overlay indicators**, matching Notes:
   `g_setenv("GTK_OVERLAY_SCROLLING", "0", TRUE)` in `main()` BEFORE GTK
   initializes (the first-run dialog's `gtk_init_check` is the earliest it
@@ -1887,3 +1907,15 @@ happened to return.
     next rewording.  Watch the closing quote too: `\x9d` is safe before a
     space, and `\x94` before " Ian" likewise, but any of them before a
     word starting a-f or A-F is not.
+26. `gtkosx_application_sync_menubar()` CRASHES THE PROCESS when the
+    native menu bar was never switched on: with `native_menubar=0`
+    nothing has ever called `gtkosx_application_set_menu_bar`, so the
+    integration's internal menu object does not implement `-resync` and
+    the call raises an uncaught `NSInvalidArgumentException`
+    ("-[GNSMenu resync]: unrecognized selector") — an ObjC exception, so
+    it terminates rather than logging.  Seen for real on 2026-09-06 while
+    testing the contributed-chrome rebuild, on GTK 3.24.52 /
+    gtk-mac-integration 3.0.1.  Anything that changes the menu shell has
+    to guard the sync on the SAME setting `task_library_apply_native_menubar`
+    is driven by.  It is quartz-only code either way, so the X11 path
+    never sees it.

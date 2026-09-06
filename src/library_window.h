@@ -49,6 +49,27 @@ GtkWidget *task_library_window_new(TaskApp *app);
 void task_library_apply_native_menubar(TaskApp *app, gboolean native);
 
 /* ---------------------------------------------------------------------------
+ * task_library_rebuild_chrome() — put the window's CONTRIBUTED chrome back
+ * in step with the plugin registries: the toolbar buttons behind their
+ * divider, the items inside File and View, and the top-level menus a
+ * plugin asked for.  A no-op when no library window is open.
+ *
+ * Called by the plugin loader when a plugin is switched on or off, and by
+ * nobody else — it is NOT part of a full refresh.  A refresh happens on
+ * every structural change to the tasks, and destroying menu items on that
+ * path would take a menu apart while it was open, for no gain: the
+ * registries only ever change when a plugin does.
+ *
+ * This is what makes the Settings checkbox honest in BOTH directions.  A
+ * plugin switched on gets its button and its menu at once instead of at
+ * the next launch; a plugin switched off loses them — its widgets would
+ * otherwise stay on the toolbar still wired to the callback it
+ * registered, and since a disabled plugin is never unmapped (see
+ * plugin_loader.h) that callback goes on working.
+ * ------------------------------------------------------------------------- */
+void task_library_rebuild_chrome(TaskApp *app);
+
+/* ---------------------------------------------------------------------------
  * task_library_scroll_keep() — capture a scrolled window's position and
  * restore it once the main loop settles.
  *
