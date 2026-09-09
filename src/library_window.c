@@ -15,7 +15,6 @@
 #include "settings_window.h"
 #include <stdlib.h>
 #include <string.h>
-#include <glib/gstdio.h>
 #ifdef HAVE_GTKOSX
 #include <gtkosxapplication.h>
 #endif
@@ -4696,10 +4695,10 @@ on_open_db(GtkWidget *widget, gpointer user_data)
     }
     task_plugins_db_open(app, app->db);
 
+    /* The ini key is the whole of "where the database is kept": it is read
+     * once at startup to resolve the path, and this is its only writer.  */
     if (set_default) {
         gchar *dir = g_path_get_dirname(file_path);
-        g_free(app->db_dir);
-        app->db_dir = g_strdup(dir);
         task_app_config_set("db_dir", dir);
         g_free(dir);
     }
@@ -4707,10 +4706,11 @@ on_open_db(GtkWidget *widget, gpointer user_data)
     g_free(old_path);
     g_free(file_path);
 
-    /* Every timer carries the db path it was armed with, so a switch must
-     * re-arm all of them or that worker keeps writing to the file we just
-     * moved away from.  This site used to name them one by one and had
-     * silently fallen one short of task_app_switch_database's list.       */
+    /* Every timer carries the db path it was armed with, so opening
+     * another database must re-arm all of them or a worker keeps writing
+     * to the file we just left.  This is now the ONLY site that opens a
+     * different database (gotcha 14); it used to name the timers one by
+     * one and had silently fallen one short.                             */
     task_worker_arm_all(app, app->db->path);
     task_app_notify_changed(app);
     task_app_status(app, "Opened %s", app->db->path);
@@ -4822,26 +4822,18 @@ on_menu_about(GtkWidget *w, gpointer data)
     }
     gtk_about_dialog_set_authors(GTK_ABOUT_DIALOG(dialog), authors);
 
-    /* Database vitals: task/list counts, location, on-disk size.           */
-    gint n_tasks, n_lists;           /* totals across the database          */
-    task_db_totals(lw->app->db, &n_tasks, &n_lists);
-    GStatBuf st;                     /* for the database file size          */
-    const gchar *db_path = lw->app->db->path;
-    gchar *size_str = (g_stat(db_path, &st) == 0)
-                      ? g_format_size((guint64)st.st_size)
-                      : g_strdup("unknown");
-
-    /* __DATE__/__TIME__ expand when this file is compiled — the closest
+    /* No database vitals here.  The path, the task and list counts and the
+     * on-disk size all moved to File -> Settings... -> Database, where
+     * they sit with the database's health and with the controls that act
+     * on the file.  Two places answering "how big is my database?" is one
+     * place too many, and About is the one that cannot also offer to
+     * check it or move it.
+     *
+     * __DATE__/__TIME__ expand when this file is compiled — the closest
      * portable thing to a "last compiled" stamp.                           */
-    gchar *comments = g_strdup_printf(
+    gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog),
         "Gettin' shit done since 2026!\n\n"
-        "Compiled " __DATE__ " " __TIME__ "\n\n"
-        "Database: %s\n"
-        "%d tasks in %d lists \xe2\x80\x94 %s on disk",
-        db_path, n_tasks, n_lists, size_str);
-    gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog), comments);
-    g_free(comments);
-    g_free(size_str);
+        "Compiled " __DATE__ " " __TIME__);
     gtk_about_dialog_set_license_type(GTK_ABOUT_DIALOG(dialog),
                                       GTK_LICENSE_BSD_3);
     gtk_about_dialog_set_website(GTK_ABOUT_DIALOG(dialog),

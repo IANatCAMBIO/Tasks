@@ -80,12 +80,12 @@ the database schema and the sync engine see [Internals](Internals.md).
   will get. On the list it shows the list icon turned on its side, three
   columns standing up, and takes you to the Kanban board; on the board it
   shows the same icon upright, a list again, and brings the list back. The
-  menu item and this button change together. At the far right, the logo
-  button opens the About dialog
-  (program info plus live database statistics). Button style —
-  icons, icons + text, or text — is set in Settings or by
-  right-clicking an empty spot on the toolbar. The Sync button can be
-  hidden in Settings → Google Tasks.
+  menu item and this button change together. At the far right is the
+  **search box** — see *Searching* below. The toolbar is icons only,
+  with a tooltip on every button saying more than a one-word label
+  would; there is nothing to configure about its appearance. The About
+  dialog (program info plus live database statistics) is at *File →
+  About*. The Sync button can be hidden in Settings → Google Tasks.
 - **Status bar** — the left side describes the current view and
   selection; the right side shows the latest event message (a sync
   result, a save failure), which fades out after a few seconds.
@@ -180,6 +180,20 @@ the database schema and the sync engine see [Internals](Internals.md).
   you have already marked *Done* is left alone: finishing one more subtask
   is progress, not a reason to reopen it. Unticking a subtask does not
   move the parent either — that is your call to make.
+- **Searching** — the box at the right of the toolbar filters the view
+  you are already in, in place. It does not open a window or add a
+  sidebar row, which is why it says *Search this view*: **All Tasks** is
+  a view like any other, so selecting that and typing is how you search
+  everything. It looks at each task's title, its notes and its subtasks'
+  titles; a subtask match brings up its parent, since the pane lists
+  top-level tasks. Words **and** together rather than or, `"a quoted
+  phrase"` counts as one term, and `-word` excludes. The `-` only means
+  *exclude* at the start of a word, so *well-known* searches for the
+  hyphen. Case and accents are ignored. The status bar counts the
+  matches, the Kanban board filters exactly the same way, and hand
+  sorting is suspended while a search is up — a drag then would only see
+  the matches and would throw away the position of everything hidden.
+  Clear the box to bring it back.
 - **Double-click a task** to open its editor window.
 - Menus: *File → New Task*, *New List…*, *Clear Completed
   Tasks*, *Open Database File…*, *Settings…*, *About*, and *Quit*. With
@@ -227,28 +241,45 @@ window per task: opening it again focuses the one you already have.
   button for a task you just created. Only new tasks get it; nothing in
   an existing task's editor can delete it.
 - **Recurrence** — the last section, at the foot of the window: make the
-  task come back round. **Repeat** offers *Hourly*, *Daily*, *Weekly*,
-  *Every 2 weeks*, *Monthly* and *Custom…*. Picking **Custom…** adds an
-  **Every N minutes/hours/days/weeks/months/years** row underneath —
-  it is not there at all until you ask for it, and it opens showing the
-  schedule already in force rather than an arbitrary one. The **at** box
-  beside the dropdown is the time of day a
-  daily, weekly or monthly repeat lands on — **08:00** unless you change
-  it (a repeat measured in minutes or hours has no time of day, and the
-  box greys out).
+  task come back round. It opens with **Repeat this task**; tick it and
+  the schedule appears underneath — two rows saying when the task
+  repeats, read top to bottom the way you would say it out loud, then one
+  set slightly apart saying what happens to a completed task beforehand:
+
+  **Starting `YYYY-MM-DD` at `HH:MM`** is the anchor — the "Monday" and
+  the "9:00 AM" of *every Monday at 9:00 AM*. The date box is its own
+  calendar (click it, there is no separate button), and leaving it
+  **empty** is the ordinary case: the schedule then anchors on the task's
+  own due date. A start still in the future is the *first* repeat, not a
+  week after it. The time is **08:00** unless you change it; a repeat
+  measured in days, weeks, months or years lands on it every time, and
+  one measured in minutes or hours starts from it and steps on from
+  there.
+
+  **Repeat every `N` minutes/hours/days/weeks/months/years** is the
+  schedule itself. There are no preset choices to pick from — this one
+  row says any of them.
 
   **Reset to New … beforehand** is how the repeat actually reaches you:
   that long before each repeat, a task you have already **completed** is
-  put back to *New* and its due date moves to the repeat. Five days by
-  default. A task you have *not* finished keeps whatever status it has —
-  the due date still rolls forward, but *New* stays *New* and *In
-  Progress* stays *In Progress*.
+  put back to *New* and its due date moves to the repeat. A week by
+  default, or half the repeat when that is shorter, so *every hour*
+  starts you at 30 minutes rather than a week. A task you have *not*
+  finished keeps whatever status it has — the due date still rolls
+  forward, but *New* stays *New* and *In Progress* stays *In Progress*.
 
-  The dimmed line underneath always says what will happen and when
-  ("Next Sep 3, 2026 at 8:00 AM — resets to New Aug 29, 2026 at 8:00
-  AM"). If the head start will not fit inside the repeat — five days
-  ahead of a repeat that comes every three — it is shortened to fit and
-  the line says so.
+  The dimmed lines underneath always say what the schedule is and where
+  it lands next ("Every Monday at 9:00 AM" / "Next Sep 14, 2026 — resets
+  to New Sep 7, 2026 at 9:00 AM"). If the head start will not fit inside
+  the repeat — five days ahead of a repeat that comes every three — it is
+  shortened to fit and the line says so.
+
+  There is nothing in *Settings* for any of this, and nothing to switch
+  repeats on with: a schedule set here *is* the instruction to act on it.
+  Tasks works out when the next repeat falls due and wakes up then, so a
+  database with nothing recurring in it has nothing running in the
+  background, and a repeat that came round while Tasks was closed is
+  applied at the next launch.
 
   Repeats stay on this machine: neither Google Tasks nor Notes is told
   about them, and what they see is the ordinary due date and status the
@@ -269,20 +300,19 @@ window per task: opening it again focuses the one you already have.
 
 ## Settings (*File → Settings…*)
 
-- **Appearance** — toolbar button style (icons / icons + text /
-  text), bold task titles in the list, whether **Due Today** also
-  includes everything past due, and — when built with
-  gtk-mac-integration — a native macOS menu bar option.
-- **Recurring Tasks** — whether repeats are acted on at all, and how
-  often the check runs (default every 5 minutes; 0 checks only at
-  launch, which always happens, so a repeat that came round while Tasks
-  was closed is never missed either way). Switching it off leaves every
-  schedule stored but inert.
-- **Database** — shows the current database file path and lets you
-  move it to a different folder. Switching always removes the old
-  file: if the target folder is empty the current database is copied
-  there; if it already contains a database you choose whether to use
-  the existing one or overwrite it with your current data.
+- **Appearance** — bold task titles in the list, drop shadows on Kanban
+  cards, whether **Due Today** also includes everything past due, and —
+  when built with gtk-mac-integration — a native macOS menu bar option.
+- **Database** — what the database currently is: whether it passed its
+  health check and when, the file it lives in, how many tasks and lists
+  it holds, its size on disk and its SHA-256, with **Update** to re-read
+  all of it. The same two checks run automatically every time Tasks
+  opens — there is no switch for that, and nothing is said about it
+  unless something is wrong. There is nothing here for *moving* the
+  file: your database lives at
+  `~/.local/share/tasks/tasks.db`, and to work from one somewhere else
+  you open it with *File → Open Database File…* and choose **Set as
+  Default** to keep using it at the next launch.
 - **Plugins** — every plugin found, with a checkbox each. Ticking one
   switches it on and unticking switches it off, both taking effect
   immediately — no restart. That includes what the plugin adds to the
@@ -350,19 +380,23 @@ verified copy named `tasks-YYYYMMDD-HHMMSS.db` on your chosen interval,
 keeping only the most recent few. Set the interval to `0` to back up only
 when you press **Back Up Now**.
 
-If you don't choose a folder, backups go to `~/.local/share/tasks` — so
-switching it on always does something. That is also where your database
-lives, which Settings tells you, and it is the arrangement you most want
-to change: **Choose Folder…** points them somewhere else.
+If you don't pick a folder, backups go to
+`~/.local/share/tasks/backups` — so switching it on always does
+something. That keeps them out of the way of your database, but it is
+*beside* it rather than away from it, which Settings tells you, and it is
+the arrangement you most want to change: **Change Folder…** points them
+somewhere else.
 
 Three things worth knowing:
 
 - **Point it somewhere your database is not.** A backup's whole value is
   being in a different place from the file it copies, and by default it
-  is not: both land in `~/.local/share/tasks`. Settings says so when the
-  two folders match — the backup is still a real, separate, verified
-  file, but it cannot survive losing that folder, and losing a folder is
-  the ordinary way this goes wrong. An external drive is the strongest
+  is not: the backups sit in a folder inside `~/.local/share/tasks`,
+  which is where the database lives, and a folder goes with its parent.
+  Settings says so whenever the backups are inside the database's own
+  directory — they are still real, separate, verified files, but they
+  cannot survive losing that folder, and losing a folder is the ordinary
+  way this goes wrong. An external drive is the strongest
   choice; a synced folder (iCloud Drive, Dropbox, a network share) is a
   good one *provided the database is not in it too*, since one mishap
   would otherwise take both.

@@ -63,8 +63,10 @@ typedef void (*TaskBackupDoneFn)(TaskApp *app, gboolean ok, const gchar *message
 
 /* ---------------------------------------------------------------------------
  * task_backup_dir() — where backups actually go: `backup_dir` when it names
- * something, otherwise the default database directory under the home
- * directory, which is CREATED if missing so the fallback is always usable.
+ * something, otherwise a `backups/` folder inside the default database
+ * directory under the home directory, CREATED if missing so the fallback
+ * is always usable.  That default is TIDY, not independent: it shares the
+ * fate of the folder holding the database, and Settings says so.
  *
  * Returns a new string (g_free).  Never NULL.  This is the single answer
  * to "where?" — Settings displays it and the worker writes to it, so the
@@ -96,8 +98,9 @@ void task_backup_start(TaskApp *app, const gchar *db_path,
 /* ---------------------------------------------------------------------------
  * task_backup_auto_start() — (re)install the periodic timer from
  * `backup_interval_min`, or remove it when backups are off.  Safe to call
- * again whenever the settings change; must be called again after
- * task_app_switch_database, since the timer carries the database path.
+ * again whenever the settings change; must be called again whenever the
+ * app opens a different database, since the timer carries the path —
+ * task_worker_arm_all is what does that.
  *
  * Unlike the sync timers this does NOT run an immediate pass: an app that
  * has just started has nothing new to preserve, and a backup on every

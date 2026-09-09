@@ -26,110 +26,31 @@
 #endif
 
 /* ---------------------------------------------------------------------------
- * integrity_collect() — sqlite3_exec callback: accumulates non-"ok" rows
- * from a PRAGMA integrity_check result into the GString passed as `data`.
- * ------------------------------------------------------------------------- */
-static int
-integrity_collect(void *data, int argc, char **argv, char **col_names)
-{
-    (void)col_names;
-    GString *out = data;
-    for (int i = 0; i < argc; i++) {
-        if (argv[i] != NULL && g_strcmp0(argv[i], "ok") != 0) {
-            if (out->len > 0)
-                g_string_append_c(out, '\n');
-            g_string_append(out, argv[i]);
-        }
-    }
-    return 0;
-}
-
-/* fk_collect() — sqlite3_exec callback: formats PRAGMA foreign_key_check
- * rows (table, rowid, parent, fkid) into human-readable lines.             */
-static int
-fk_collect(void *data, int argc, char **argv, char **col_names)
-{
-    (void)col_names;
-    GString *out = data;
-    if (argc >= 3 && argv[0] != NULL) {
-        if (out->len > 0)
-            g_string_append_c(out, '\n');
-        g_string_append_printf(out, "  %s (row %s) \xe2\x86\x92 %s",
-                               argv[0],
-                               argv[1] != NULL ? argv[1] : "?",
-                               argv[2] != NULL ? argv[2] : "?");
-    }
-    return 0;
-}
-
-/* ---------------------------------------------------------------------------
- * startup_integrity_check() — run PRAGMA integrity_check and PRAGMA
- * foreign_key_check against the open database.  Shows a warning dialog if
- * either check reports problems.  Returns TRUE if both actually RAN and
- * both passed.
+ * startup_integrity_check() — verify the database at launch and show a
+ * warning dialog if anything is wrong.  Returns TRUE when it is sound.
  *
- * The sqlite3_exec return codes are load-bearing, not noise: a PRAGMA that
- * never ran (a locked database, an I/O error) collects no rows, which is
- * indistinguishable from a clean result if you only look at the collectors.
- * Reporting "checked, all good" when nothing was checked is the one outcome
- * a health check must never produce, so a failed exec is surfaced with
- * sqlite's own message.
+ * The checks themselves live in task_db_health_check, which also RECORDS
+ * what it found — so the Settings window's health block normally shows a
+ * result from this launch without running anything of its own.  All this
+ * adds is the dialog, and the one distinction that dialog has to get
+ * right: "found issues" would be a lie when the checks never ran at all,
+ * which is exactly the case worth exposing.
  * ------------------------------------------------------------------------- */
 static gboolean
 startup_integrity_check(TaskApp *app)
 {
-    GString *ic_errors = g_string_new(NULL);
-    gchar   *ic_fail   = NULL;       /* sqlite's message if exec failed     */
-    if (sqlite3_exec(app->db->sq, "PRAGMA integrity_check",
-                     integrity_collect, ic_errors, NULL) != SQLITE_OK)
-        ic_fail = g_strdup(sqlite3_errmsg(app->db->sq));
+    if (task_db_health_check(app->db))
+        return TRUE;
 
-    GString *fk_errors = g_string_new(NULL);
-    gchar   *fk_fail   = NULL;
-    if (sqlite3_exec(app->db->sq, "PRAGMA foreign_key_check",
-                     fk_collect, fk_errors, NULL) != SQLITE_OK)
-        fk_fail = g_strdup(sqlite3_errmsg(app->db->sq));
-
-    gboolean ok = ic_errors->len == 0 && fk_errors->len == 0 &&
-                  ic_fail == NULL && fk_fail == NULL;
-    if (!ok) {
-        GString *msg = g_string_new(NULL);
-        if (ic_fail != NULL)
-            g_string_append_printf(msg,
-                "The integrity check could not be run:\n  %s\n", ic_fail);
-        if (fk_fail != NULL)
-            g_string_append_printf(msg,
-                "The foreign key check could not be run:\n  %s\n", fk_fail);
-        if (ic_errors->len > 0) {
-            if (msg->len > 0)
-                g_string_append_c(msg, '\n');
-            g_string_append(msg, "Integrity check errors:\n");
-            g_string_append(msg, ic_errors->str);
-        }
-        if (fk_errors->len > 0) {
-            if (msg->len > 0)
-                g_string_append(msg, "\n\n");
-            g_string_append(msg, "Foreign key violations:\n");
-            g_string_append(msg, fk_errors->str);
-        }
-        /* "found issues" would be a lie when the checks never ran at all,
-         * which is exactly the case this dialog exists to expose.          */
-        gboolean ran = ic_fail == NULL && fk_fail == NULL;
-        task_app_notice(NULL, GTK_MESSAGE_WARNING,
-                        "Tasks \xe2\x80\x94 Database Integrity Check",
-                        ran ? "The database integrity check found issues:"
-                            "\n\n%s"
-                          : "The database integrity check did not "
-                            "complete:\n\n%s",
-                      msg->str);
-        g_string_free(msg, TRUE);
-    }
-
-    g_free(ic_fail);
-    g_free(fk_fail);
-    g_string_free(ic_errors, TRUE);
-    g_string_free(fk_errors, TRUE);
-    return ok;
+    const TaskDbHealth *h = task_db_health(app->db);
+    task_app_notice(NULL, GTK_MESSAGE_WARNING,
+                    "Tasks \xe2\x80\x94 Database Integrity Check",
+                    h->ran ? "The database integrity check found issues:"
+                             "\n\n%s"
+                           : "The database integrity check did not "
+                             "complete:\n\n%s",
+                    h->detail != NULL ? h->detail : "?");
+    return FALSE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -138,13 +59,11 @@ startup_integrity_check(TaskApp *app)
  * of silently creating an empty database (a user pointing at a shared
  * folder usually means to OPEN a file that is already there).
  *   expected — the path where the db was looked for (shown in dialog text).
- *   db_dir   — in/out: the configured db directory; replaced (and
- *              persisted to the ini) when an existing file is opened.
  *   db_path  — in/out: the path handed to task_db_open(); replaced when an
  *              existing file is opened.
  * Returns TRUE to proceed with task_db_open(*db_path), FALSE to quit.      */
 static gboolean
-startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
+startup_first_run(const gchar *expected, gchar **db_path)
 {
     /* Loop so cancelling the file chooser returns to the choice dialog.    */
     for (;;) {
@@ -189,12 +108,15 @@ startup_first_run(const gchar *expected, gchar **db_dir, gchar **db_path)
         if (file_path == NULL)
             continue;                /* cancelled — back to the choice      */
 
+        /* The chosen folder goes straight into the ini and nowhere else:
+         * that key is what the NEXT launch resolves the path from, and
+         * this one already has the path in hand.                        */
         gchar *dir = g_path_get_dirname(file_path);
         g_free(file_path);
         task_app_config_set("db_dir", dir);
-        g_free(*db_dir);   *db_dir  = dir;
         g_free(*db_path);  *db_path = g_build_filename(dir, TASK_DB_FILENAME,
                                                        NULL);
+        g_free(dir);
         return TRUE;
     }
 }
@@ -241,9 +163,13 @@ on_activate(GtkApplication *gtk_app, gpointer data)
     g_free(icon_path);
 #endif
 
-    /* DB integrity check: run PRAGMA integrity_check + foreign_key_check.  */
-    gboolean db_ok = !boot->app->db_integrity_check
-                     || startup_integrity_check(boot->app);
+    /* PRAGMA integrity_check + foreign_key_check, EVERY launch and with no
+     * setting to switch it off (removed 2026-09-09).  It is two PRAGMAs on
+     * a database this size, it is the only thing that catches a file gone
+     * bad before the user writes more into it, and an off switch on a
+     * health check is a way to be told nothing is wrong by a check that
+     * never ran — the one outcome this code exists to avoid.            */
+    gboolean db_ok = startup_integrity_check(boot->app);
 
     task_library_window_new(boot->app);
     /* Arm every registered worker (see task_worker.h).  The window comes
@@ -251,7 +177,7 @@ on_activate(GtkApplication *gtk_app, gpointer data)
      * before anything is listening is simply dropped.                     */
     task_worker_arm_all(boot->app, boot->db_path);
 
-    if (boot->app->db_integrity_check && db_ok)
+    if (db_ok)
         task_app_status(boot->app, "DB at %s loaded, integrity check passed",
                         boot->app->db->path);
 
@@ -287,8 +213,12 @@ main(int argc, char **argv)
      * is before any worker of its own can exist — the same guarantee
      * this spot used to give, made by the code that actually cares.     */
 
+    /* The key is consumed here and not kept: the resolved PATH is the
+     * only thing the rest of the run needs, and the ini is the record of
+     * where it came from.                                              */
     gchar *db_dir  = task_app_config_get("db_dir");
     gchar *db_path = task_db_resolve_path(db_dir);
+    g_free(db_dir);
 
     /* First-run: if the database file does not yet exist, ask the user
      * whether to open an existing file or create a fresh one — silently
@@ -298,9 +228,8 @@ main(int argc, char **argv)
     if (!g_file_test(db_path, G_FILE_TEST_EXISTS)) {
         gchar *expected = g_strdup(db_path);
         if (gtk_init_check(&argc, &argv) &&
-            !startup_first_run(expected, &db_dir, &db_path)) {
+            !startup_first_run(expected, &db_path)) {
             g_free(expected);
-            g_free(db_dir);
             g_free(db_path);
             return 0;                /* user closed the welcome dialog      */
         }
@@ -313,7 +242,6 @@ main(int argc, char **argv)
         g_printerr("tasks: %s\n",
                    gerr != NULL ? gerr->message : "cannot open database");
         g_clear_error(&gerr);
-        g_free(db_dir);
         g_free(db_path);
         return 1;
     }
@@ -321,13 +249,9 @@ main(int argc, char **argv)
 
     TaskApp *app = g_new0(TaskApp, 1);
     app->db     = db;
-    app->db_dir = (db_dir != NULL && *db_dir != '\0')
-                  ? g_strdup(db_dir) : NULL;
     app->editors = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                          g_free, NULL);
     task_app_init_icons_dir(app);
-    app->db_integrity_check =
-        task_app_config_get_bool("db_integrity_check", TRUE);
 
     /* Register every subsystem: its periodic worker with the shared
      * scheduler, and its hooks into the core operations.  All of it must
@@ -378,9 +302,7 @@ main(int argc, char **argv)
         task_plugins_db_closing(app, app->db);
     task_plugins_shutdown(app);
     task_db_close(app->db);
-    g_free(app->db_dir);
     g_free(app);
-    g_free(db_dir);
     g_free(db_path);
     return status;
 }

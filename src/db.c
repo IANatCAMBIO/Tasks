@@ -322,15 +322,26 @@ table_has_column(TaskDatabase *db, const gchar *table, const gchar *column)
 }
 
 /* ---------------------------------------------------------------------------
- * task_db_verify_file() — integrity_check + foreign_key_check on a separate
- * read-only connection (see db.h).
+ * db_check_pragmas() — run PRAGMA integrity_check then PRAGMA
+ * foreign_key_check on `sq`, honoring BOTH exec return codes.
  *
- * Both exec return codes are load-bearing, the same rule
- * startup_integrity_check follows: a PRAGMA that never RAN collects no
- * rows, which is indistinguishable from a clean result if you only look
- * at the collector.  Reporting "verified" when nothing was checked is the
- * one answer this function must never give — it is what a caller is about
- * to delete the original on.
+ * The ONE spelling of "is this database structurally sound?".  Three
+ * callers want that answer about different connections — task_db_verify_file
+ * about a file nothing has open, task_db_health_check about the live one,
+ * and through the latter the startup check — and the rule they must all
+ * follow is the same: a PRAGMA that never RAN collects no rows, which is
+ * indistinguishable from a clean result if you only look at the collector.
+ * Reporting "verified" when nothing was checked is the one answer this must
+ * never give — it is what a caller is about to delete the original on.
+ *
+ * Inputs:
+ *   sq     — an open connection, must not be NULL
+ *   ran    — optional out: TRUE when both PRAGMAs actually executed
+ *   detail — optional out: sqlite's own words on failure (g_free), NULL on
+ *            success
+ *
+ * Output:
+ *   TRUE only when both RAN and both came back clean.
  * ------------------------------------------------------------------------- */
 static int
 verify_collect(void *data, int argc, char **argv, char **cols)
@@ -346,6 +357,97 @@ verify_collect(void *data, int argc, char **argv, char **cols)
     return 0;
 }
 
+/* fk_collect() — foreign_key_check rows (table, rowid, parent, fkid) as
+ * readable lines.  Its own collector because those four columns are a
+ * RECORD rather than a message: verify_collect would spill each field onto
+ * a line of its own and lose which table the row belongs to.              */
+static int
+fk_collect(void *data, int argc, char **argv, char **cols)
+{
+    (void)cols;
+    GString *out = data;
+    if (argc >= 3 && argv[0] != NULL) {
+        if (out->len > 0)
+            g_string_append_c(out, '\n');
+        g_string_append_printf(out, "  %s (row %s) \xe2\x86\x92 %s",
+                               argv[0],
+                               argv[1] != NULL ? argv[1] : "?",
+                               argv[2] != NULL ? argv[2] : "?");
+    }
+    return 0;
+}
+
+static gboolean
+db_check_pragmas(sqlite3 *sq, gboolean *ran, gchar **detail)
+{
+    if (detail != NULL)
+        *detail = NULL;
+
+    /* Two GStrings, because what a check REPORTED and why a check STOPPED
+     * are the two different answers this function has to keep apart.     */
+    GString  *found = g_string_new(NULL);   /* the checks' own findings   */
+    GString  *errs  = g_string_new(NULL);   /* why one gave up            */
+    gboolean  broke = FALSE;                /* an exec returned an error  */
+    gchar    *msg   = NULL;                 /* sqlite's exec message      */
+
+    if (sqlite3_exec(sq, "PRAGMA integrity_check", verify_collect, found,
+                     &msg) != SQLITE_OK) {
+        broke = TRUE;
+        g_string_append_printf(errs, "integrity_check stopped: %s",
+                               msg != NULL ? msg : "?");
+    }
+    sqlite3_free(msg);
+    msg = NULL;
+
+    /* Skipped once the first check has errored: over pages sqlite could
+     * not read, this reports the same damage in a second vocabulary.    */
+    GString *fk = g_string_new(NULL);
+    if (!broke && sqlite3_exec(sq, "PRAGMA foreign_key_check", fk_collect,
+                               fk, &msg) != SQLITE_OK) {
+        broke = TRUE;
+        g_string_append_printf(errs, "foreign_key_check stopped: %s",
+                               msg != NULL ? msg : "?");
+    }
+    sqlite3_free(msg);
+    if (fk->len > 0) {
+        if (found->len > 0)
+            g_string_append_c(found, '\n');
+        g_string_append(found, "Foreign key violations:\n");
+        g_string_append(found, fk->str);
+    }
+    g_string_free(fk, TRUE);
+
+    /* The verdict, decided ONCE at the end.
+     *
+     * A CORRUPT file makes integrity_check do both things at once: it
+     * reports the damage it found and THEN returns an error, having given
+     * up on the page that caused it.  So the error code alone cannot mean
+     * "did not run" — what means that is coming back having learned
+     * NOTHING, which is the locked or unreadable file this distinction
+     * exists for.  Deciding per-exec reported real corruption as "the
+     * check did not complete", which sends someone looking for a lock
+     * that was never the problem.                                       */
+    gboolean any  = found->len > 0;         /* we learned something       */
+    gboolean done = !broke || any;
+    gboolean ok   = !broke && !any;
+
+    if (!ok && detail != NULL) {
+        if (errs->len > 0) {
+            if (found->len > 0)
+                g_string_append_c(found, '\n');
+            g_string_append(found, errs->str);
+        }
+        *detail = g_strdup(found->str);
+    }
+    if (ran != NULL)
+        *ran = done;
+    g_string_free(found, TRUE);
+    g_string_free(errs, TRUE);
+    return ok;
+}
+
+/* task_db_verify_file() — the same checks on a file nothing has open
+ * (see db.h).                                                             */
 gboolean
 task_db_verify_file(const gchar *path, gchar **detail)
 {
@@ -364,31 +466,68 @@ task_db_verify_file(const gchar *path, gchar **detail)
     }
     g_free(uri);
 
-    GString *bad = g_string_new(NULL);
-    gboolean ran = TRUE;
-    gchar   *msg = NULL;
-    if (sqlite3_exec(sq, "PRAGMA integrity_check", verify_collect, bad,
-                     &msg) != SQLITE_OK) {
-        ran = FALSE;
-        g_string_append_printf(bad, "integrity_check did not run: %s",
-                               msg != NULL ? msg : "?");
-    }
-    sqlite3_free(msg);
-    msg = NULL;
-    if (ran && sqlite3_exec(sq, "PRAGMA foreign_key_check", verify_collect,
-                            bad, &msg) != SQLITE_OK) {
-        ran = FALSE;
-        g_string_append_printf(bad, "foreign_key_check did not run: %s",
-                               msg != NULL ? msg : "?");
-    }
-    sqlite3_free(msg);
+    gboolean ok = db_check_pragmas(sq, NULL, detail);
     sqlite3_close(sq);
-
-    gboolean ok = ran && bad->len == 0;
-    if (!ok && detail != NULL)
-        *detail = g_strdup(bad->str);
-    g_string_free(bad, TRUE);
     return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * task_db_file_sha256() — hex SHA-256 of the file at `path` (see db.h).
+ *
+ * Read in fixed-size chunks rather than slurped: this runs against the
+ * live database, whose size is the user's business and not ours to hold
+ * in memory twice.
+ * ------------------------------------------------------------------------- */
+#define SHA_CHUNK 65536              /* bytes per read                      */
+
+gchar *
+task_db_file_sha256(const gchar *path)
+{
+    FILE *f = g_fopen(path, "rb");
+    if (f == NULL)
+        return NULL;
+
+    GChecksum *sum = g_checksum_new(G_CHECKSUM_SHA256);
+    guchar    *buf = g_malloc(SHA_CHUNK);
+    gsize      n;                    /* bytes in the current chunk          */
+    while ((n = fread(buf, 1, SHA_CHUNK, f)) > 0)
+        g_checksum_update(sum, buf, (gssize)n);
+    gboolean bad = ferror(f) != 0;
+    g_free(buf);
+    fclose(f);
+
+    gchar *hex = bad ? NULL : g_strdup(g_checksum_get_string(sum));
+    g_checksum_free(sum);
+    return hex;
+}
+
+/* ---------------------------------------------------------------------------
+ * task_db_health_check() / task_db_health() — the health of the open
+ * database, held on the connection (see db.h).
+ *
+ * Nothing is written to the database.  Recording the verdict IN it made
+ * the check change the bytes it had just measured, which moved the digest
+ * shown beside it on every run.
+ * ------------------------------------------------------------------------- */
+gboolean
+task_db_health_check(TaskDatabase *db)
+{
+    gboolean ran = FALSE;            /* did both PRAGMAs execute?           */
+    gchar   *detail = NULL;          /* sqlite's words on failure           */
+    gboolean ok = db_check_pragmas(db->sq, &ran, &detail);
+
+    g_free(db->health.detail);
+    db->health.ok     = ok;
+    db->health.ran    = ran;
+    db->health.detail = detail;      /* handed over                         */
+    db->health.when   = g_get_real_time() / G_USEC_PER_SEC;
+    return ok;
+}
+
+const TaskDbHealth *
+task_db_health(TaskDatabase *db)
+{
+    return db->health.when != 0 ? &db->health : NULL;
 }
 
 /* task_db_copy_file() — a transactionally consistent copy (see db.h).      */
@@ -848,6 +987,7 @@ task_db_close(TaskDatabase *db)
         return;
     sqlite3_close(db->sq);
     g_free(db->path);
+    g_free(db->health.detail);
     g_free(db);
 }
 

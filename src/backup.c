@@ -61,14 +61,25 @@ backup_keep(void)
     return CLAMP(n, 1, 500);
 }
 
+/* The default destination: a folder of its own inside the database's
+ * directory, so the live tasks.db does not sit among the copies.      */
+#define BACKUP_SUBDIR "backups"
+
 /* ---------------------------------------------------------------------------
  * task_backup_dir() — the resolved destination (see backup.h).
  *
- * The fallback is the DEFAULT DATABASE directory under the home
- * directory, taken from task_db_default_path so the two can never drift
- * apart — and reached through it deliberately, because that call also
- * creates the directory, which is what makes the fallback usable with no
- * setup at all.
+ * The fallback is BACKUP_SUBDIR inside the default database directory,
+ * built off task_db_default_dir so the two can never drift apart, and
+ * created here so the fallback is usable with no setup at all.
+ *
+ * It is a SUBDIRECTORY rather than the database's own folder (changed
+ * 2026-09-09) because backups and the live file mixed together is a
+ * folder nobody can read at a glance: the pruning already had to match
+ * `tasks-*.db` so as not to touch `tasks.db`, and a listing that needs a
+ * filename rule to be understood is one a human will eventually get
+ * wrong.  It buys TIDINESS and nothing else — a subfolder shares the
+ * fate of its parent exactly, so this is no more independent of the
+ * database than the old default was, and Settings still says so.
  * ------------------------------------------------------------------------- */
 gchar *
 task_backup_dir(void)
@@ -77,7 +88,11 @@ task_backup_dir(void)
     if (dir != NULL && *dir != '\0')
         return dir;
     g_free(dir);
-    return task_db_default_dir();          /* creates <data>/tasks/         */
+    gchar *base = task_db_default_dir();   /* creates <data>/tasks/         */
+    gchar *sub  = g_build_filename(base, BACKUP_SUBDIR, NULL);
+    g_free(base);
+    g_mkdir_with_parents(sub, 0755);
+    return sub;
 }
 
 /* task_backup_ready() — see backup.h.                                      */

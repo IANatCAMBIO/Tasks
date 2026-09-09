@@ -200,13 +200,23 @@ the user).  A logic test harness lives in the session scratchpad
   `BEGIN;…;COMMIT` via sqlite3_exec wedges the connection in an open
   transaction on SQLITE_BUSY).  Create failures (id 0) must surface a
   status-bar message at the call site.  The same rule binds READS whose
-  whole purpose is to report health: `startup_integrity_check` checks
-  both `sqlite3_exec` return codes, because a PRAGMA that never ran
+  whole purpose is to report health: `db_check_pragmas` (behind
+  `task_db_health_check`, which both the launch check and the Settings
+  Update button go through) checks both `sqlite3_exec` return codes and
+  reports `ran` separately from `ok`, because a PRAGMA that never ran
   collects no rows and is otherwise indistinguishable from a clean
   result — "checked, all good" when nothing was checked is the one
   outcome a health check must never produce, so a failed exec reports
-  sqlite's own message and the dialog says "did not complete" rather
-  than "found issues".
+  sqlite's own message and `startup_integrity_check`'s dialog says "did
+  not complete" rather than "found issues".  **That check is
+  UNCONDITIONAL at launch and has NO setting** (`db_integrity_check`,
+  its Settings checkbox and `app->db_integrity_check` were removed
+  2026-09-09).  Two PRAGMAs are cheap, they are the only thing that
+  catches a file gone bad before more is written into it, and an off
+  switch on a health check is just another way to be told nothing is
+  wrong by something that never looked — the same failure the `ran` flag
+  exists to prevent, reintroduced as a preference.  A stale key in an
+  ini is inert; don't reintroduce one.
 - Notify hooks on TaskApp: `notify_changed` = FULL refresh (sidebar +
   tasks + reload all editors) for structural changes; `notify_tasks` =
   task pane only — editor saves and subtask/attachment edits use this
@@ -1375,10 +1385,14 @@ block is the only place it is set.
   Static markup, set where the label is built and never touched again —
   the controls below say what each of them sets and the summary at the
   foot says where this schedule lands, but neither explains the rule.
-  It says "X (defaults to 5) days", the user's own wording: the live
-  number is immediately below it on the lead row.  Its "date and time" is
-  accurate as of v12 — `tasks.due` is still date-only, but `due_time`
-  carries the occurrence's clock time and the pass writes both.
+  It says "New X (defaults to a week, or less on a shorter repeat)",
+  which is `task_recur_lead_default`'s actual rule rather than a number —
+  it read "(defaults to 5)" while the default was five days, and a
+  literal there is a second spelling of a value that has already moved
+  once.  The live number is immediately below it on the lead row either
+  way.  Its "date and time" is accurate as of v12 — `tasks.due` is still
+  date-only, but `due_time` carries the occurrence's clock time and the
+  pass writes both.
 - The summary is now TWO LINES: `task_recur_phrase` ("Every Monday at
   9:00 AM", "Every 2 weeks on Thursday", "Every 3 hours") and then the
   familiar "Next … — resets to New …".  The WEEKDAY comes off the
@@ -1529,6 +1543,56 @@ block is the only place it is set.
   save), which is why it does not need a bump of its own: that statement
   is never the only thing being written.
 
+## Settings: the Database section
+
+- The health PLATE (verdict + LED, path, counts, size, SHA-256) with
+  **Update** under it, then the rotating-backup controls.  There is
+  nothing for MOVING the database (gotcha 14) and nothing for switching
+  the startup integrity check off (see the error-discipline rule above).
+- The rotating-backup block reads TOP DOWN as one statement, and the
+  order is the point (2026-09-09): the switch, then **Every N minutes,
+  keeping M files** directly under it — the SCHEDULE that switch turns
+  on — then **Backing up to `<folder>`**, then the two buttons that
+  change that folder and force a pass.  The destination and its controls
+  sit together at the foot because they answer WHERE, where everything
+  above answers WHETHER and HOW OFTEN.
+- **The ⚠ tests CONTAINMENT, not equality** (`dir_shares_fate`): the
+  default destination is now INSIDE the database's directory, so the
+  string comparison this used to be would answer "different folder" for
+  precisely the arrangement the warning exists to describe.  Canonicalise
+  both, then require a separator after the prefix so `tasks-old` is not
+  read as living inside `tasks`; symlinks are deliberately NOT resolved,
+  since that needs the paths to exist and would make the label depend on
+  whether a removable disk is plugged in.  Verified over eleven cases
+  including both prefix traps and `..` resolving back in and out.
+- **That destination line is ONE SENTENCE naming the RESOLVED folder**,
+  and it has no "(default)" or "no folder chosen" variant, because there
+  is no state in which backups go nowhere — `task_backup_dir` falls back
+  to the database's own directory.  It keeps exactly ONE second line, the
+  ⚠ for when that fallback is what is in force: those are real backups
+  but they cannot survive losing the folder, and since it is the DEFAULT,
+  silence would leave the arrangement most in need of changing looking
+  like the one nobody need think about.
+- **The two spin buttons go through `small_spin`**, which is narrow for a
+  reason that is not the obvious one: `gtk_entry_set_width_chars` alone
+  moves a spin button ALMOST NOT AT ALL, because Adwaita floors
+  `min-width` on the entry and on both steppers and a floor beats a
+  request.  MEASURED on that row: width_chars alone 432 → 430 px (two
+  pixels — indistinguishable from the call being ignored), naming the
+  floors as well 432 → 346.  Keep BOTH levers: the CSS removes the floor,
+  and the char count then decides the width, sized to each spin's own
+  RANGE (10080 is five digits, 500 is three) so the widest reachable
+  value still fits.  Same shape as `small_button`'s min-height note, and
+  the same lesson as gotcha 18 — a property being discarded looks exactly
+  like one that is too subtle, so MEASURE.
+- **The button row's RIGHT EDGE is the Update button's.**  Both carry
+  `margin_end` 12 and hug the right — Update via `halign END` inside
+  `plate_box`, the pair via `halign END` on their own row — so the
+  section has ONE right edge running down it instead of two that are
+  nearly the same.  MEASURED at SETTINGS_WIDTH 470: both land on x=444.
+  `halign END` on the row, NOT `pack_end` into a full-width one — that
+  reverses the pair, and the folder is chosen before the backup is taken.
+
 ## Data safety (read this before touching the database file)
 
 A 1965-task production database was destroyed on 2026-08-26.  These rules
@@ -1540,8 +1604,12 @@ are the post-mortem; none of them is optional.
   `task_db_verify_file` (integrity_check + foreign_key_check on its own
   read-only connection, BOTH exec return codes honored) — never by
   opening it.  That mistake is precisely what turned a bad copy into
-  data loss: `switch_database` discarded `copy_file`'s return value,
-  treated a successful `task_db_open` as proof, and deleted the original.
+  data loss: `task_app_switch_database` — the Settings flow that MOVED
+  the database to a chosen folder, removed on 2026-09-09 — discarded
+  `copy_file`'s return value, treated a successful `task_db_open` as
+  proof, and deleted the original.  Nothing in the app copies-then-deletes
+  the live database any more, which is the strongest form of this rule;
+  the backup pass still copies, and it still verifies before it prunes.
 - **Copy with `task_db_copy_file` (VACUUM INTO), never a byte copy.**  It
   runs in a read transaction, so it cannot capture a torn page.  The old
   `copy_file` helper in app.c was DELETED; a comment stands in its place
@@ -1570,11 +1638,17 @@ are the post-mortem; none of them is optional.
   backup's whole value is being in a DIFFERENT PLACE from the live file,
   and a directory being there at startup is not a promise it will be there
   at the next write.
-- **`task_app_switch_database` re-arms ALL THREE timers** (sync, Notes
-  mirror, backup) on the new path.  Each captured the old path when
-  installed, and that file has just been deleted — left alone the workers
-  would open a nonexistent path and CREATE an empty database there.  This
-  doc claimed it happened long before the code did; it does now.
+- **Anything that opens a DIFFERENT database re-arms ALL THREE timers**
+  (sync, Notes mirror, backup) on the new path, through
+  `task_worker_arm_all` and never by naming them one at a time.  Each
+  captured its path when it was installed — left alone, a worker goes on
+  writing to the file the app has just moved away from, and if that path
+  no longer exists it helpfully CREATES an empty database there and syncs
+  against it.  Since 2026-09-09 there is exactly ONE such site,
+  `on_open_db` (File → Open Database File…), which is what makes the rule
+  easy to keep: naming timers by hand is how that site once came to
+  re-arm two of three, and how the deleted `task_app_switch_database`
+  came to have a longer list than it did.
 - The optional rotating backup (`backup.[ch]`, off by default) is the
   independent-copy safety net: own worker + connection, VACUUM INTO,
   verify, and prune ONLY after a new backup verifies — so a run of
@@ -1583,10 +1657,15 @@ are the post-mortem; none of them is optional.
   safe, and the live `tasks.db` is not a candidate — `tasks.` is not
   `tasks-`), and is bounded by `backup_keep`.
   `task_backup_dir` is the single answer to "where": `backup_dir` when set,
-  else the DEFAULT DATABASE DIRECTORY under the home dir, created on
-  demand — so there is no enabled-but-inert state, and Settings displays
-  that same resolved value so the label cannot promise a folder the
-  worker does not use.  A pass whose source is unchanged writes nothing;
+  else **`backups/` INSIDE the default database directory**
+  (`~/.local/share/tasks/backups`, `BACKUP_SUBDIR`), created on demand —
+  so there is no enabled-but-inert state, and Settings displays that same
+  resolved value so the label cannot promise a folder the worker does not
+  use.  The subfolder arrived on 2026-09-09 and buys TIDINESS ONLY: the
+  live `tasks.db` no longer sits among the `tasks-*.db` copies, so the
+  folder can be read without knowing the filename rule that pruning
+  depends on.  It is NOT independence — a subfolder shares its parent's
+  fate exactly, which is why the warning below tests CONTAINMENT.  A pass whose source is unchanged writes nothing;
   the stamp (`sync_state.backup_source_stamp`) includes the DESTINATION,
   because otherwise choosing a new folder would leave it empty until the
   database happened to change and the feature would look broken.
@@ -1898,7 +1977,7 @@ happened to return.
   no cascade could see one go.
   They live in the DATABASE, not the ini, because a rule names a list by
   ID and ids belong to the file the lists live in — the ini travels with
-  the binary and survives `task_app_switch_database`, which would leave
+  the binary and survives a change of database, which would leave
   every rule pointing at whatever held that id in the new file, filing
   items into a stranger's list and saying nothing.
 - A REWORDED item re-files, and only a reworded one: the text is what a
@@ -1933,8 +2012,8 @@ happened to return.
 - Threading matches gtasks: own worker, own SQLite connection, CLI
   spawned there too, results marshalled with `g_idle_add`.  The toolbar
   Sync runs the mirror FIRST so a new action item reaches Google in one
-  press.  BOTH timers carry their db path, so `task_app_switch_database`
-  must re-arm both.
+  press.  BOTH timers carry their db path, so anything that opens
+  another database must re-arm both — `task_worker_arm_all` does.
 - The Settings **Notes binary path** row is an ENTRY plus a **Browse…**
   button, and the ENTRY is the field of record: a bare command name
   still searches PATH, so pasting a line of `which -a notes` has to go
@@ -1986,12 +2065,24 @@ happened to return.
     GTK_TREE_MODEL_ROW.  Harmless (that flavor is skipped, the row
     flavor still resolves); documented in User_Guide.md.  Don't
     suppress with a log filter.
-14. `task_app_switch_database` always **removes the old database file**
-    after a successful switch — it is a move, not a copy.  This holds
-    even when the user picks "Use Existing Database" (no copy was made,
-    but the old file is still removed so no orphan is left behind).
-    Do not add logic that skips the delete based on whether a copy was
-    performed; that was the bug that caused orphaned files.
+14. **There is NO "move the database somewhere else" flow, and there must
+    not be one again** (removed 2026-09-09).  `task_app_switch_database`
+    and the Settings pair that drove it — "Store the database in a custom
+    folder" plus its Choose Folder… button — are gone, along with
+    `app->db_dir`.  The database lives at `task_db_default_path()`; a
+    database anywhere ELSE is OPENED, through File → Open Database File…
+    (which offers "Set as Default", the only writer of the `db_dir` ini
+    key) or through the first-run dialog a launch with nothing at the
+    default location already puts up.  Opening is the whole answer, and
+    the removed flow was a second one that did something materially
+    different — it COPIED the file and then DELETED the original, which
+    is the operation that destroyed a database on 2026-08-26 and the
+    reason the Data safety section above exists.  It also carried its own
+    trap, recorded here in case someone rebuilds it: the delete had to be
+    unconditional, "Use Existing Database" included (no copy was made,
+    but the old file still had to go or an orphan was left behind), and
+    the "skip the delete when nothing was copied" version of that logic
+    is what left orphaned files.
 13. Google's DEFAULT tasklist cannot be deleted — `tasklists.delete`
     returns 400 "Invalid Value" from any client, and an unhandled
     failure there aborts the whole sync pass (blocking every later

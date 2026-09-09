@@ -8,11 +8,12 @@
  * g_strdup'd path, tick, GDestroyNotify and arm function, differing only
  * in which config keys they read.
  *
- * Three copies is how they drifted.  task_app_switch_database re-armed
- * all three; the File → Open Database path re-armed two, leaving the
- * backup worker pointed at a file that had just been moved — where it
- * would open the missing path and helpfully CREATE an empty database
- * there.  That is a data-safety bug produced purely by duplication, and
+ * Three copies is how they drifted.  The Settings "move the database"
+ * flow (since deleted — gotcha 14) re-armed all three; the File → Open
+ * Database path re-armed two, leaving the backup worker pointed at a
+ * file that had just been moved — where it would open the missing path
+ * and helpfully CREATE an empty database there.  That is a data-safety
+ * bug produced purely by duplication, and
  * the fix is to have one scheduler that every worker is registered with,
  * so "re-arm everything" is one call that cannot miss a member.
  *

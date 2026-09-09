@@ -54,9 +54,13 @@
  *   backup_timer   — its periodic GSource id, or 0.
  *   icons_dir      — absolute path of the local icons/ folder the
  *                    toolbar button PNGs are loaded from (owned string).
- *   db_dir         — custom directory holding tasks.db (owned string),
- *                    or NULL for the default location.  Persisted in the
- *                    ini as "db_dir"; not stored in the database itself.
+ *
+ * There is no db_dir member: where the database is kept is answered by
+ * the ini key of that name, read ONCE at startup to resolve the path,
+ * and written only by File → Open Database File… choosing "Set as
+ * Default".  A copy of it on the app was a second answer to the same
+ * question that nothing ever read back — it existed for the Settings
+ * control that MOVED the database, which is gone (gotcha 14).
  *
  * The three event lists are lists rather than single hooks because more
  * than one subscriber is now normal, and because a subscriber that
@@ -79,8 +83,6 @@ typedef struct TaskApp {
     gboolean         backup_running;     /* rotating-backup worker in flight */
     guint            backup_timer;       /* its periodic GSource, or 0      */
     gchar           *icons_dir;
-    gchar           *db_dir;
-    gboolean         db_integrity_check; /* run PRAGMA checks on startup    */
     gint             pending_fades;      /* row fade-outs in flight; the
                                           * refresh waits for the last one
                                           * (see task_rows_toggle_done)     */
@@ -197,17 +199,6 @@ guint task_app_listen_status(TaskApp *app, TaskAppStatusFn fn,
 void  task_app_unlisten(TaskApp *app, guint id);
 
 /* ---------------------------------------------------------------------------
- * task_app_switch_database() — move tasks.db to `new_dir` (or back to
- * the default location when `new_dir` is NULL): closes all editors, copies
- * the database to the new home (if target folder has no existing db),
- * reopens, removes the old file, updates app->db_dir + config, and fires
- * notify_changed.  If target already has a db the user chooses whether to
- * use it or overwrite it; either way the old file is removed on success.
- * Returns TRUE on success; on failure the previous database is still open.
- * ------------------------------------------------------------------------- */
-gboolean task_app_switch_database(TaskApp *app, const gchar *new_dir);
-
-/* ---------------------------------------------------------------------------
  * task_app_notice() — run a modal OK message dialog and destroy it.
  * ------------------------------------------------------------------------- */
 void task_app_notice(GtkWindow *parent, GtkMessageType type,
@@ -237,8 +228,10 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
  *   Notes — notes_sync, notes_cli, notes_sync_interval_min,
  *                notes_meta_row (where mirrored items are FILED is not a
  *                key: the plugin's filing-rules table decides it)
- *   database   — db_dir (custom directory for tasks.db; absent = default
- *                location), db_integrity_check, backup_enabled,
+ *   database   — db_dir (the directory holding tasks.db; absent = the
+ *                default location.  Written only by File → Open
+ *                Database File…; there is no Settings control for it),
+ *                backup_enabled,
  *                backup_dir, backup_interval_min, backup_keep
  *   plugins    — plugin_dir (folder to load plugins from; absent =
  *                beside the binary if that exists, else

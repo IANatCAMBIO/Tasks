@@ -63,9 +63,31 @@
  * TaskDatabase — one open connection.  A connection must not cross threads:
  * the sync worker opens its own on the same path (task_db_open).
  * ------------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+ * TaskDbHealth — the outcome of one health pass over a database.
+ *
+ * `ok` is the only thing a caller normally acts on; `ran` is what tells
+ * "the checks found problems" apart from "the checks could not be run",
+ * which are a very different sentence to put in front of a user — and the
+ * dividing line is whether the checks came back with ANYTHING, not
+ * whether sqlite returned an error, because a corrupt file does both.
+ * `detail` is NULL when there is nothing to say; `when` is unix time, and
+ * 0 means no pass has been made.
+ * ------------------------------------------------------------------------- */
+typedef struct {
+    gboolean  ok;                    /* both checks ran AND both passed     */
+    gboolean  ran;                   /* both checks actually executed       */
+    gint64    when;                  /* unix time of the pass, 0 = never    */
+    gchar    *detail;                /* what went wrong, or NULL (owned)    */
+} TaskDbHealth;
+
 typedef struct {
     sqlite3 *sq;
     gchar   *path;                   /* absolute file path (owned)          */
+    /* The last health pass over this file, held IN MEMORY for the life of
+     * the connection and deliberately never written down — see
+     * task_db_health_check.                                               */
+    TaskDbHealth health;
 } TaskDatabase;
 
 /* ---------------------------------------------------------------------------
@@ -297,6 +319,48 @@ gchar *task_db_default_path(void);
  * before it is trusted — never by opening it.
  * ------------------------------------------------------------------------- */
 gboolean task_db_verify_file(const gchar *path, gchar **detail);
+
+/* ---------------------------------------------------------------------------
+ * task_db_health_check() — verify the OPEN database and remember the result.
+ *
+ * Runs the same two PRAGMAs task_db_verify_file runs, against this
+ * connection, and stores what it found on the connection so a later
+ * reader (the Settings window) can say WHEN the answer was true.
+ * Returns TRUE when the database is sound.
+ *
+ * It writes NOTHING to the database, and that is the point rather than an
+ * optimisation.  The verdict used to be stamped into sync_state, which
+ * made a health check MUTATE THE FILE IT WAS MEASURING: every run changed
+ * the database's bytes, so the SHA-256 shown beside it moved on every
+ * press of Update while the user's tasks sat untouched.  A fingerprint
+ * that its own refresh invalidates is worse than no fingerprint.  Holding
+ * the verdict in memory also makes "checked 14:55 today" mean a check
+ * made in THIS session, where a stamp read off disk could describe a file
+ * that has changed many times since.
+ *
+ * The cost, accepted: the verdict does not survive a restart, so a launch
+ * with the startup check switched off shows "Not checked" until Update is
+ * pressed.  Living on the connection is also what makes a database SWITCH
+ * safe — the old connection's verdict cannot outlive the file it describes.
+ * ------------------------------------------------------------------------- */
+gboolean task_db_health_check(TaskDatabase *db);
+
+/* task_db_health() — the stored result, or NULL when no pass has been made
+ * on this connection.  Borrowed, owned by the connection: do not free it,
+ * and do not keep it across a task_db_health_check.                      */
+const TaskDbHealth *task_db_health(TaskDatabase *db);
+
+/* ---------------------------------------------------------------------------
+ * task_db_file_sha256() — hex SHA-256 of the file at `path`, or NULL when
+ * it cannot be read (g_free the result).
+ *
+ * Answers about the file AS IT STANDS, and is never stored: a live
+ * database changes with the next thing the user types, and writing the
+ * digest into the database would change it again.  A caller showing one
+ * is showing a fingerprint of this moment, which is exactly what makes it
+ * comparable with `shasum -a 256` or with a backup.
+ * ------------------------------------------------------------------------- */
+gchar *task_db_file_sha256(const gchar *path);
 
 /* ---------------------------------------------------------------------------
  * task_db_copy_file() — a CONSISTENT copy of the open database at `dest`,
