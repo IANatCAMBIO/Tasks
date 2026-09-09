@@ -80,12 +80,11 @@ task_plugins_dir(void)
     }
     g_free(beside);
 
-    /* <data dir>/tasks/plugins — beside the default database.  Created on
-     * demand so Settings can offer to open a folder that exists, and so
-     * "copy a plugin in here" is advice the user can actually follow.    */
-    gchar *db  = task_db_default_path();      /* creates <data>/tasks/     */
-    gchar *dir = g_path_get_dirname(db);
-    g_free(db);
+    /* <data dir>/tasks/plugins — beside the default database and the ini.
+     * Created on demand so Settings can offer to open a folder that
+     * exists, and so "copy a plugin in here" is advice the user can
+     * actually follow.                                                   */
+    gchar *dir = task_db_default_dir();       /* creates <data>/tasks/     */
     plugin_dir = g_build_filename(dir, TASK_PLUGIN_DIR, NULL);
     g_free(dir);
     g_mkdir_with_parents(plugin_dir, 0755);

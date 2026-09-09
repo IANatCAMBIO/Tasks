@@ -77,10 +77,7 @@ task_backup_dir(void)
     if (dir != NULL && *dir != '\0')
         return dir;
     g_free(dir);
-    gchar *db  = task_db_default_path();   /* creates <data>/tasks/         */
-    gchar *out = g_path_get_dirname(db);
-    g_free(db);
-    return out;
+    return task_db_default_dir();          /* creates <data>/tasks/         */
 }
 
 /* task_backup_ready() — see backup.h.                                      */

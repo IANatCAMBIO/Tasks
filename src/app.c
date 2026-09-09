@@ -544,10 +544,31 @@ task_app_exe_dir(void)
 #define TASK_INI_DEFAULTS "tasks.ini.defaults"
 
 /* ---------------------------------------------------------------------------
- * task_app_config_init() — resolve + load the config file once.  Portable
- * mode: tasks.ini next to the binary; when none exists there AND the
- * directory is unwritable, ~/.config/tasks/tasks.ini.  On first run it is
- * seeded from tasks.ini.defaults next to the binary.
+ * task_app_config_init() — resolve + load the config file once.
+ *
+ * THE INI LIVES WITH THE DATABASE AND THE PLUGINS, in
+ * task_db_default_dir() — ~/.local/share/tasks on Linux.  One directory
+ * holds everything this app keeps per user, so there is one place to back
+ * up, one place to look, and no answer to "where are my settings?" that
+ * depends on how the binary was started.
+ *
+ * Three steps, in this order:
+ *   1. <data dir>/tasks/tasks.ini, if it EXISTS — the normal case;
+ *   2. else tasks.ini NEXT TO THE BINARY, if it EXISTS — portable mode,
+ *      and what keeps a source tree or a USB copy working with the ini it
+ *      came with;
+ *   3. else CREATE one at <data dir>/tasks/tasks.ini.
+ *
+ * Steps 1 and 2 are EXISTENCE tests, which is what makes the order
+ * meaningful: the data dir wins when it has an ini, and a portable tree is
+ * only consulted when it does not.  A writability test would not do — the
+ * old rule took the binary's directory whenever it was WRITABLE, so a
+ * development tree silently outranked the user's real settings.
+ *
+ * There is NO ~/.config/tasks fallback any more, and no migration from
+ * one: this build has never shipped, so no other spelling exists in the
+ * wild.  On first run the new file is seeded from tasks.ini.defaults NEXT
+ * TO THE BINARY, which is where that file ships.
  * ------------------------------------------------------------------------- */
 void
 task_app_config_init(const gchar *argv0)
@@ -557,18 +578,22 @@ task_app_config_init(const gchar *argv0)
 
     gchar *exe_dir = exe_dir_from_argv0(argv0);
     exe_dir_cached = g_strdup(exe_dir);
-    gchar *local = g_build_filename(exe_dir, TASK_INI_FILE, NULL);
-    if (g_file_test(local, G_FILE_TEST_EXISTS) ||
-        g_access(exe_dir, W_OK) == 0) {
-        config_path = local;         /* portable mode                       */
-    } else {
+
+    gchar *data_dir = task_db_default_dir();      /* creates it            */
+    gchar *shared   = g_build_filename(data_dir, TASK_INI_FILE, NULL);
+    gchar *local    = g_build_filename(exe_dir, TASK_INI_FILE, NULL);
+
+    if (g_file_test(shared, G_FILE_TEST_EXISTS)) {
+        config_path = shared;                     /* 1. the normal home    */
         g_free(local);
-        gchar *dir = g_build_filename(g_get_user_config_dir(),
-                                      TASK_APP_DIR, NULL);
-        g_mkdir_with_parents(dir, 0700);
-        config_path = g_build_filename(dir, TASK_INI_FILE, NULL);
-        g_free(dir);
+    } else if (g_file_test(local, G_FILE_TEST_EXISTS)) {
+        config_path = local;                      /* 2. portable mode      */
+        g_free(shared);
+    } else {
+        config_path = shared;                     /* 3. create it there    */
+        g_free(local);
     }
+    g_free(data_dir);
 
     config_kf = g_key_file_new();
     if (!g_key_file_load_from_file(config_kf, config_path,

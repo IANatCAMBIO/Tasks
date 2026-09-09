@@ -259,13 +259,23 @@ task_ptr_array_free_attachments(GPtrArray *a)
 }
 
 /* ---------------------------------------------------------------------------
+ * task_db_default_dir() — the app's per-user state directory (see db.h).
+ * ------------------------------------------------------------------------- */
+gchar *
+task_db_default_dir(void)
+{
+    gchar *dir = g_build_filename(g_get_user_data_dir(), TASK_APP_DIR, NULL);
+    g_mkdir_with_parents(dir, 0755);
+    return dir;
+}
+
+/* ---------------------------------------------------------------------------
  * task_db_default_path() — the standard db location (see db.h).
  * ------------------------------------------------------------------------- */
 gchar *
 task_db_default_path(void)
 {
-    gchar *dir = g_build_filename(g_get_user_data_dir(), TASK_APP_DIR, NULL);
-    g_mkdir_with_parents(dir, 0755);
+    gchar *dir  = task_db_default_dir();
     gchar *path = g_build_filename(dir, TASK_DB_FILENAME, NULL);
     g_free(dir);
     return path;

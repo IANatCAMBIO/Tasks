@@ -155,10 +155,27 @@ the user).  A logic test harness lives in the session scratchpad
   x.h" plus the how.  Non-obvious variables get column-aligned trailing
   comments; ~78-col lines.  UTF-8 escapes (`\xe2\x80\xa6`) for …/—/✓ in
   source strings.
-- Config: `tasks.ini` NEXT TO THE BINARY (portable mode), fallback
-  `~/.config/tasks/` when unwritable; seeded from
-  `tasks.ini.defaults`; loaded ONCE, written through on change,
-  never re-read.  Everything except the OAuth client keys and the
+- **ONE DIRECTORY holds everything this app keeps per user**:
+  `task_db_default_dir()` — `<user data dir>/tasks`, which is
+  `~/.local/share/tasks` on Linux.  The DATABASE, the PLUGINS and the
+  INI all default there, so there is one place to back up, one place to
+  look, and no answer to "where are my settings?" that depends on how the
+  binary was started.  That function is the single spelling of the path:
+  `task_db_default_path` and `task_plugins_dir` both go through it, and
+  the latter used to reach it by taking `g_path_get_dirname` of the
+  database path, which is the same fact stated sideways.
+- Config: `tasks.ini` is resolved ONCE, in three steps —
+  `<data dir>/tasks/tasks.ini` if it EXISTS; else `tasks.ini` NEXT TO THE
+  BINARY if it EXISTS (portable mode, which keeps a source tree or a USB
+  copy working with the ini it came with); else CREATED at
+  `<data dir>/tasks/tasks.ini`.  Both tests are for EXISTENCE, and that
+  is what makes the order mean anything: the old rule took the binary's
+  directory whenever it was WRITABLE, so a development tree silently
+  outranked the user's real settings.  There is NO `~/.config/tasks`
+  fallback any more and no migration from one — this build has never
+  shipped.  Seeded from `tasks.ini.defaults`, which ships NEXT TO THE
+  BINARY and is read from there whichever ini is being created;
+  loaded ONCE, written through on change, never re-read.  Everything except the OAuth client keys and the
   window geometry is editable in File → Settings… — which is why the
   recurrence pass has NO Settings section at all: its schedules live on
   the task row and are set in the editor, and a schedule set there IS the

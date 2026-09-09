@@ -265,6 +265,19 @@ TaskDatabase *task_db_open(const gchar *path, GError **err);
 /* task_db_close() — close the connection and free the handle.  NULL-safe.  */
 void task_db_close(TaskDatabase *db);
 
+/* ---------------------------------------------------------------------------
+ * task_db_default_dir() — "<user data dir>/tasks", the ONE directory this
+ * app keeps its per-user state in: the database, the plugins and the ini
+ * all live here by default, so there is one place to back up and one
+ * place to look.  On Linux that is ~/.local/share/tasks (XDG_DATA_HOME).
+ *
+ * Created if missing.  Returns a new string; free with g_free.  Declared
+ * here rather than in app.h because db.h is the header that already owns
+ * TASK_APP_DIR, and the config loader needs this before a database
+ * exists.
+ * ------------------------------------------------------------------------- */
+gchar *task_db_default_dir(void);
+
 /* task_db_default_path() — "<user data dir>/tasks/tasks.db" (the names are
  * TASK_APP_DIR / TASK_DB_FILENAME), creating the directory.  Returns a new
  * string (g_free it).                                                      */
