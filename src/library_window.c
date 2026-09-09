@@ -978,6 +978,38 @@ kanban_css_install(void)
         ".task-card-mark {"
         "  background-color: @theme_selected_bg_color;"
         "}"
+        /* The card's DROP SHADOW, and it is on the WRAPPER rather than on
+         * the card, because a visible-window GtkEventBox CANNOT PAINT
+         * OUTSIDE ITSELF: an outset box-shadow on .task-card is clipped
+         * away entirely and silently.  See gotcha 30 — this is gotcha 18's
+         * twin, and the wrapper (a plain GtkBox, no window of its own) is
+         * what gives GTK somewhere to extend the clip to.
+         *
+         * The light is in the UPPER LEFT, so the shadow falls to the
+         * BOTTOM and RIGHT only.  That takes an offset that out-reaches
+         * the blur: at "0 1px 2px" the blur spreads on all four sides and
+         * the card wears a halo.  The 4th length is a NEGATIVE SPREAD,
+         * which shrinks the shadow box so the wider blur still clears the
+         * top and left edges — measured mean darkening in the 4 px band
+         * outside each edge (0-255): top 2.1, left 2.0 against bottom
+         * 23.6, right 22.4.
+         *
+         * It fits without moving anything: the lane pads its cards by
+         * LANE_PAD and stacks them 6 px apart, so a 2 px offset with a
+         * 3 px blur lands inside the lane and never reaches the frame.  */
+        ".task-card-shadow {"
+        "  box-shadow: 2px 2px 3px -1px alpha(@theme_fg_color, 0.40);"
+        "}"
+        /* While its card is in flight the shadow goes AWAY rather than
+         * dimming with it: .task-card-dragging fades the card to 40%, and
+         * a crisp shadow under a nearly transparent card reads as the
+         * shadow having come loose.  Flat here, and the GHOST is the thing
+         * that looks lifted.  Listed AFTER .task-card-shadow so it wins at
+         * equal specificity — both classes sit on the same widget, the
+         * same rule .task-lane-target follows above.                     */
+        ".task-card-shadow-flat {"
+        "  box-shadow: none;"
+        "}"
         /* The ⠿ grip strip down the card's left edge.  Only this area
          * starts a drag, and only it wears the hand cursor — the rest of
          * the card clicks and selects like an ordinary row.               */
@@ -1070,6 +1102,40 @@ card_task_id(GtkWidget *card)
 {
     return (gint64)GPOINTER_TO_SIZE(
         g_object_get_data(G_OBJECT(card), "task-task-id"));
+}
+
+/* ---------------------------------------------------------------------------
+ * card_of() — the CARD inside a lane's child.
+ *
+ * A lane's children are the shadow WRAPPERS kanban_card_new returns, not
+ * the cards themselves, so everything that walks a lane goes through this
+ * first: the id, the style classes and the label all live on the card.
+ * The wrapper names its card with the same "task-card" key the ⠿ grip
+ * uses, and the key means the same thing in both places.
+ *
+ * Input:
+ *   child — any child of a lane box.
+ *
+ * Output:
+ *   the card, or `child` itself when it is not a wrapper — which is what
+ *   makes it safe on the insertion marker, the empty-lane placeholder and
+ *   the Done lane's "Show All" link, none of which carry a task id, and
+ *   idempotent if it is ever handed a card directly.
+ * ------------------------------------------------------------------------- */
+static GtkWidget *
+card_of(GtkWidget *child)
+{
+    GtkWidget *card = g_object_get_data(G_OBJECT(child), "task-card");
+    return card != NULL ? card : child;
+}
+
+/* card_shadow_of() — the shadow-carrying wrapper a card sits in, which by
+ * construction (kanban_card_new) is its PARENT.  NULL-safe both ways: a
+ * card that has been unparented answers NULL.                             */
+static GtkWidget *
+card_shadow_of(GtkWidget *card)
+{
+    return card != NULL ? gtk_widget_get_parent(card) : NULL;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1166,7 +1232,7 @@ card_restyle(TaskLibrary *lw)
         GList *kids =
             gtk_container_get_children(GTK_CONTAINER(lw->board.kanban_lanes[s]));
         for (GList *k = kids; k != NULL; k = k->next) {
-            GtkWidget *card = GTK_WIDGET(k->data);
+            GtkWidget *card = card_of(GTK_WIDGET(k->data));
             gint64 id = card_task_id(card);
             if (id == 0)
                 continue;            /* the marker / empty placeholder      */
@@ -1490,10 +1556,16 @@ card_drag_stop(TaskLibrary *lw)
             card_set_cursor(lw->board.card_drag_handle,
                             card_cursor(lw->board.card_drag_handle,
                                         &lw->board.card_grab, "grab"));
-        if (lw->board.card_drag_src != NULL)
+        if (lw->board.card_drag_src != NULL) {
             gtk_style_context_remove_class(
                 gtk_widget_get_style_context(lw->board.card_drag_src),
                 "task-card-dragging");
+            GtkWidget *sh = card_shadow_of(lw->board.card_drag_src);
+            if (sh != NULL)
+                gtk_style_context_remove_class(
+                    gtk_widget_get_style_context(sh),
+                    "task-card-shadow-flat");
+        }
         card_lane_highlight(lw, -1);
         card_mark_clear(lw);
     }
@@ -1586,7 +1658,7 @@ lane_card_ids(TaskLibrary *lw, gint s)
     GList *kids = gtk_container_get_children(
         GTK_CONTAINER(lw->board.kanban_lanes[s]));
     for (GList *k = kids; k != NULL; k = k->next) {
-        gint64 id = card_task_id(GTK_WIDGET(k->data));
+        gint64 id = card_task_id(card_of(GTK_WIDGET(k->data)));
         if (id != 0)
             g_array_append_val(ids, id);
     }
@@ -1612,7 +1684,10 @@ card_slot_at(TaskLibrary *lw, gint s, gint ry)
     GList *kids = gtk_container_get_children(
         GTK_CONTAINER(lw->board.kanban_lanes[s]));
     for (GList *k = kids; k != NULL; k = k->next) {
-        GtkWidget *w = GTK_WIDGET(k->data);
+        /* The CARD, not the lane child: the wrapper has no window of its
+         * own, so gtk_widget_get_window would answer the LANE's window and
+         * every card would report the lane's origin as its top.           */
+        GtkWidget *w = card_of(GTK_WIDGET(k->data));
         if (card_task_id(w) == 0)
             continue;                /* marker / placeholder               */
         GdkWindow *win = gtk_widget_get_window(w);
@@ -1674,7 +1749,7 @@ card_mark_place(TaskLibrary *lw, gint lane, gint slot)
         GtkWidget *w = GTK_WIDGET(k->data);
         if (w == mark)
             continue;
-        if (card_task_id(w) != 0) {
+        if (card_task_id(card_of(w)) != 0) {
             if (seen == slot)
                 break;
             seen++;
@@ -1974,6 +2049,13 @@ on_card_motion(GtkWidget *w, GdkEventMotion *ev, gpointer data)
          * that would break the grab and end the drag on the spot.        */
         gtk_style_context_add_class(gtk_widget_get_style_context(card),
                                     "task-card-dragging");
+        /* ... and take its SHADOW away with the same gesture: a crisp
+         * shadow under a card faded to 40% reads as the shadow having come
+         * loose from it.  The ghost is what should look lifted.          */
+        GtkWidget *sh = card_shadow_of(card);
+        if (sh != NULL)
+            gtk_style_context_add_class(gtk_widget_get_style_context(sh),
+                                        "task-card-shadow-flat");
         lw->board.card_mark_lane = -1;     /* force the first placement          */
         lw->board.card_mark_slot = -1;
         lw->board.card_dragging  = TRUE;
@@ -2045,6 +2127,10 @@ on_card_grab_broken(GtkWidget *w, GdkEventGrabBroken *ev, gpointer data)
  * kanban_card_new() — one task as a card: the same Pango markup the list
  * rows and the forecast use (so a task reads identically in all three
  * views), wrapped in an event box that can be clicked and dragged.
+ *
+ * RETURNS THE SHADOW WRAPPER, not the card: see the note at the foot of
+ * this function.  Callers pack what they are given and reach the card
+ * through card_of(), which is the one place that indirection is spelled.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 kanban_card_new(TaskLibrary *lw, gint64 id, const gchar *markup,
@@ -2148,7 +2234,24 @@ kanban_card_new(TaskLibrary *lw, gint64 id, const gchar *markup,
                      G_CALLBACK(on_card_grab_broken), lw);
     g_signal_connect(handle, "realize",
                      G_CALLBACK(on_handle_realize), lw);
-    return card;
+
+    /* THE SHADOW'S CARRIER, and the reason this returns a wrapper rather
+     * than the card: the card is a visible-window GtkEventBox, and such a
+     * widget cannot paint outside its own GdkWindow — an outset
+     * box-shadow on it is clipped away with no warning (gotcha 30).  A
+     * plain GtkBox has NO window of its own, so GTK extends its clip to
+     * cover the shadow and it lands in the lane's gap where it belongs.
+     *
+     * It costs nothing in layout: a vertical GtkBox gives its child the
+     * full width and its own natural height, so the card is exactly the
+     * size and place it was before.  What it does cost is one indirection
+     * for everything that walks a lane — hence card_of().               */
+    GtkWidget *shadow = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(shadow),
+                                "task-card-shadow");
+    g_object_set_data(G_OBJECT(shadow), "task-card", card);
+    gtk_box_pack_start(GTK_BOX(shadow), card, FALSE, FALSE, 0);
+    return shadow;
 }
 
 /* ---------------------------------------------------------------------------
@@ -2309,7 +2412,7 @@ kanban_plan_relabel(TaskLibrary *lw, GArray * const *plan)
             GTK_CONTAINER(lw->board.kanban_lanes[s]));
         guint i = 0;
         for (GList *k = kids; k != NULL; k = k->next) {
-            GtkWidget *card = GTK_WIDGET(k->data);
+            GtkWidget *card = card_of(GTK_WIDGET(k->data));
             if (card_task_id(card) == 0)
                 continue;            /* marker / placeholder / the link    */
             const gchar *want =

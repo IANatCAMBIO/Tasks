@@ -1115,6 +1115,45 @@ and only ever grows downwards.
   tint inside a square frame reads as a mistake, and rounded cards made
   the board the odd view out.  No `border-radius` in the board's CSS is
   deliberate — don't add one back.
+- **Each card CASTS A DROP SHADOW, and the shadow sits on a WRAPPER**
+  rather than on the card: `kanban_card_new` returns a non-windowed
+  `GtkBox` carrying `.task-card-shadow` with the card inside it.  A
+  visible-window `GtkEventBox` cannot paint outside its own GdkWindow, so
+  a `box-shadow` on `.task-card` is clipped away ENTIRELY AND SILENTLY —
+  see gotcha 30, which is gotcha 18's twin.  The light is in the UPPER
+  LEFT (`2px 2px 3px -1px`), so the shadow falls to the bottom and right
+  only; the fourth length is a NEGATIVE SPREAD, and it is what keeps the
+  blur off the top and left edges, which a plain `0 1px 2px` halos on all
+  four sides (measured mean darkening in the 4 px band outside each edge,
+  0-255: top 2.1, left 2.0 against bottom 23.6, right 22.4).  It fits
+  without moving anything — the lane already pads its cards by `LANE_PAD`
+  and stacks them 6 px apart, so a 2 px offset with a 3 px blur lands
+  inside the lane and never reaches the frame.
+  The wrapper costs ONE indirection, and it is spelled once:
+  a lane's children are WRAPPERS now, so everything that walks a lane goes
+  through **`card_of()`** first, because the task id, the style classes and
+  the label all live on the CARD.  It returns its argument unchanged when
+  handed something that is not a wrapper, which is what makes it safe on
+  the insertion marker, the empty-lane placeholder and the Done lane's
+  "Show All" link — none of which carry a task id — and idempotent if it
+  is ever handed a card.  `card_slot_at` is the caller that would fail
+  loudest without it: `gtk_widget_get_window` on a non-windowed wrapper
+  answers the LANE's window, so every card would report the lane's origin
+  as its own top and the slot arithmetic would collapse to "always slot
+  0".
+  A card IN FLIGHT loses its shadow rather than dimming with it
+  (`.task-card-shadow-flat`, listed AFTER `.task-card-shadow` so it wins
+  at equal specificity — both classes sit on the same widget, the rule
+  `.task-lane-target` already follows): `.task-card-dragging` fades the
+  card to 40 %, and a crisp shadow under a nearly transparent card reads
+  as the shadow having come loose from it.  The GHOST has no shadow
+  either, and that is not a defect to fix — it is a snapshot of the card's
+  OWN window, which the shadow is deliberately outside of, and the ghost
+  already carries `CARD_GHOST_ALPHA`.
+  Cost, measured: **+0.96 ms per repaint of a lane's worth of visible
+  cards**, all of it the BLUR and none of it the extra widget.  Read
+  gotcha 30 before trying to make that cheaper — the answer is not a
+  bigger GPU.
 - Inner spacing is WIDGET MARGINS on the child (`pad_widget`, CARD_PAD 8
   / LANE_PAD 6), not CSS `padding` and not `border_width` — see gotcha
   18.  The card still paints its background and border at its own edge.
@@ -2111,3 +2150,51 @@ happened to return.
     to guard the sync on the SAME setting `task_library_apply_native_menubar`
     is driven by.  It is quartz-only code either way, so the X11 path
     never sees it.
+30. **A CSS `box-shadow` ON A VISIBLE-WINDOW `GtkEventBox` IS CLIPPED
+    AWAY, and nothing says so.**  A widget with its own GdkWindow cannot
+    paint outside itself, and GTK clips windowed children to their
+    allocation, so an OUTSET shadow has nowhere to land.  Measured, not
+    assumed: `box-shadow: 0 24px 0 rgb(255,0,0)` on `.task-card` changed
+    ZERO pixels, while the same shadow on a non-windowed `GtkLabel`
+    painted normally — so the property is implemented and the widget is
+    the problem.  This is gotcha 18 in another costume (that widget
+    ignores CSS `padding` and `border_width` for its size), and it carries
+    the same lesson: CSS that is being DISCARDED looks exactly like CSS
+    that is too subtle, so MEASURE rather than nudging the number up.  The
+    fix is a non-windowed carrier — the `.task-card-shadow` wrapper in
+    `kanban_card_new`.  `inset` shadows are unaffected, since they land
+    inside the widget.
+    Two more things fell out of that investigation (2026-09-09) and are
+    recorded so nobody re-derives them:
+    - **The BLUR is the whole cost, and it is CPU work in GTK's own
+      code.**  GTK3 blurs every shadow itself — `_gtk_cairo_blur_surface`
+      from `gtkcairoblur.c`, inside libgtk-3 — into a scratch image
+      surface, PER SHADOW, PER DRAW, with no cache.  So a blur radius of
+      **0 is free** (0.82 vs 0.82 ms over a 12-card lane) and any blur at
+      all roughly DOUBLES the lane's paint: 12 cards 0.74 → 1.70 ms, 120
+      cards 8.5 → 19.6 ms, drawing into the window's own native surface.
+      Only the VISIBLE cards paint, which is what keeps this off the
+      drag's back — ~1 ms against a 16 ms frame.
+    - **The GPU cannot take it, in GTK3, at all.**  Widget drawing is
+      cairo `"draw"` handlers and there is no GPU pipeline behind them.
+      Drawing into the real native surface came out SLOWER than an image
+      surface (1.70 vs 1.15 ms), so nothing is being offloaded.  On X11
+      cairo-xlib does hand fills, blits and gradients to the driver, and
+      with glamor those reach the GPU — but blur is not an XRender
+      primitive, so GTK still produces those pixels in system memory.  A
+      compositor works at the WINDOW level (the same distinction gotcha 20
+      makes about the ghost's opacity) and accelerates getting a finished
+      window onto the screen, not producing a card.  `GtkGLArea` only
+      gives you a viewport for content you draw yourself; it does not
+      change how CSS renders.
+      Where this DOES change is a toolkit move: GTK4's GSK compiles a
+      frame into render nodes and has Vulkan/OpenGL renderers, where a
+      blurred shadow is a shader pass with caching, and a native macOS
+      toolkit gets the same from Core Animation.  That is a PORT, not a
+      flag — it would take out the `GtkWindow`/`GtkEventBox` drawing
+      model, the hand-rolled board drag and every CSS assumption with it.
+      If the board's shadow cost ever genuinely matters before then, the
+      in-toolkit answer is to stop re-blurring per frame: render the
+      shadow ONCE into a cached surface and 9-slice-blit it per card from
+      the lane's `"draw"` — blits being exactly what XRender does
+      accelerate.  Do not reach for that pre-emptively at ~1 ms.
