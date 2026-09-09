@@ -22,21 +22,31 @@
  *   - `recur_start` (v11) is the DAY the schedule is anchored on, as a
  *     unix local midnight — the "Monday" half of "every Monday at
  *     9:00 AM".  It is a DATE and never a time: the time of day is
- *     `recur_time`, so the two together are the whole sentence.  0 means
+ *     `recur_time`, and the editor shows the two side by side as one
+ *     phrase ("Starting <date> at <time>").  0 means
  *     unset, and the anchor then falls back to the task's due date and
  *     finally to today, which is what every schedule set before v11 was
  *     built on.  A start in the FUTURE is honored as the first
  *     occurrence, so "every Monday starting the 7th" first fires on the
  *     7th rather than a week later.
- *   - `recur_time` is the time of day a DATED occurrence lands on, in
- *     minutes past local midnight, default 08:00 — so Daily, Weekly,
- *     Biweekly and Monthly all mean "at 8am".  The minute and hour units
- *     ignore it: "every 3 hours" has no time of day.
+ *   - `recur_time` is the ANCHOR'S TIME OF DAY, in minutes past local
+ *     midnight, default 08:00 — the "9:00 AM" half of the sentence whose
+ *     other half is `recur_start`.  It reaches every unit, by two routes
+ *     that are the same rule seen twice: for the DATED units it is the
+ *     time each occurrence lands on (recur_step re-applies it), and for
+ *     the MINUTE and HOUR units it phase-locks the stride, so "starting
+ *     at 09:00, every 3 hours" means 9, 12, 3 rather than three hours
+ *     from whenever the task happened to be saved.  It used to be read
+ *     for the dated units alone; the editor greyed it out for the other
+ *     two, which is what left "every 3 hours" unable to say when it
+ *     started.
  *   - `recur_lead` is how long before the occurrence the reset happens,
- *     in minutes, default 5 days.  It is CLAMPED to shorter than the
- *     repeat period (task_recur_lead_seconds), because a lead as long as
- *     the period would put the task permanently inside its own lead
- *     window and the schedule would run away from the calendar.
+ *     in minutes.  A new schedule is seeded with
+ *     task_recur_lead_default — one week, or half the period when that
+ *     is shorter — and whatever is stored is then CLAMPED to shorter than
+ *     the period (task_recur_lead_seconds), because a lead as long as the
+ *     period would put the task permanently inside its own lead window
+ *     and the schedule would run away from the calendar.
  *   - `recur_next` is the unix time of the next occurrence.  It is
  *     bookkeeping, not a setting: 0 means "not computed yet" and the pass
  *     seeds it.  The user never sees the field, only the sentence the
@@ -47,26 +57,51 @@
  * Progress stays In Progress.  Only Done is reset, because only Done is
  * the state that would otherwise hide the task from the user for good.
  *
- * WHY A PASS AND NOT A PER-TASK TIMER: one scan every few minutes is
- * O(recurring tasks) with no state to leak, it catches up correctly after
- * the app has been closed for a week (occurrences are SKIPPED forward, not
- * replayed one per period), and it needs no timer to be cancelled when a
- * task is deleted or its schedule edited.  A GSource per recurring task
- * would be none of those things.
+ * ONE PASS OVER ALL OF THEM, ARMED FOR THE NEXT DEADLINE.  Two decisions,
+ * and they answer different objections:
+ *
+ *   - A PASS rather than a GSource per recurring task, because a pass is
+ *     O(recurring tasks) with no state to leak, catches up correctly after
+ *     the app has been closed for a week (occurrences are SKIPPED forward,
+ *     not replayed one per period), and needs nothing cancelled when a
+ *     task is deleted or its schedule edited.  N timers would be none of
+ *     those things.
+ *   - A DEADLINE rather than a fixed cadence, because a cadence has to
+ *     pick one number for every schedule and gets each of them wrong at
+ *     the ends.  It was 5 minutes: a per-minute repeat (reachable straight
+ *     from the editor's custom row, and clamped to a zero lead) was seen
+ *     five minutes late, and recur_catch_up lands on the LAST occurrence
+ *     already due — so four in five simply never happened, while the
+ *     editor's summary went on promising a minute nothing could keep.  At
+ *     the other end an idle database woke 288 times a day to find nothing.
+ *     The pass therefore ends by arming ITSELF for the earliest fire time
+ *     it just computed: exact for the fast schedules, and no wakeups at
+ *     all for a database with nothing recurring in it.
+ *
+ * Arming too EARLY is free — the pass finds nothing due and re-arms — so
+ * only a deadline that moved NEARER has to be wired up anywhere.  That is
+ * one call, task_recur_wake_by, from the editor's save.
  *
  * The pass is registered with the shared scheduler (task_worker.h), which
- * is what makes "re-arm everything after the database moves" cover it too.
- * Unlike the sync engines it runs ON THE MAIN THREAD against the app's own
- * connection: it is a handful of statements over one small query with no
- * network and no process spawn, so a thread plus a second connection would
- * buy latency nobody can perceive and cost the marshalling every one of
- * those brings.  It is INITIAL_ALWAYS, because occurrences that came due
- * while the app was closed have to be applied at launch even when the
- * periodic timer is switched off.
+ * is what makes "re-arm everything after the database moves" cover it too;
+ * it declares no interval, so the scheduler installs no timer and the
+ * deadline is the only clock.  Unlike the sync engines it runs ON THE MAIN
+ * THREAD against the app's own connection: it is a handful of statements
+ * over one small query with no network and no process spawn, so a thread
+ * plus a second connection would buy latency nobody can perceive and cost
+ * the marshalling every one of those brings.  It is INITIAL_ALWAYS,
+ * because occurrences that came due while the app was closed have to be
+ * applied at launch — which is also what puts the first deadline up.
  *
- * Config keys (in the [tasks] group; Settings → Recurring Tasks):
- *   recur_enabled    1|0, default 1 — the master switch for the pass.
- *   recur_check_min  minutes between passes, default 5; 0 = launch only.
+ * THERE ARE NO CONFIG KEYS, and no Settings section (2026-09-08).  A
+ * schedule set on a task IS the request to act on it, so a switch beside
+ * that could only ever leave a repeat set in the editor doing nothing,
+ * with nothing on the task to say why.  What made a master switch look
+ * necessary was the cost of a background timer running for nothing, and
+ * the deadline arming removed it: a database with nothing recurring arms
+ * NO timer at all and the whole feature is one query at launch.  Both
+ * keys are gone — recur_enabled and recur_check_min — and a stale one
+ * left in an ini is inert.
  * =========================================================================== */
 
 #ifndef TASK_RECUR_H
@@ -74,66 +109,19 @@
 
 #include "app.h"
 
-/* The default check cadence, shared with the Settings spin button so the
- * UI and the timer cannot disagree about what an unset key means (the
- * same arrangement backup.h makes).                                       */
-#define TASK_RECUR_CHECK_DEFAULT 5
-
-/* ---------------------------------------------------------------------------
- * The presets the editor offers, in menu order.  A preset is nothing but a
- * named (interval, unit) pair — CUSTOM is the absence of one, so the user's
- * own numbers show through.  NEVER is index 0 so an untouched combo reads
- * as "does not recur", matching recur_interval = 0 on disk.
- *
- * TASK_RECUR_PRESET_CUSTOM is deliberately LAST: the combo's index is the
- * enum value, and "Custom…" belongs at the bottom of a list of shortcuts.
- * ------------------------------------------------------------------------- */
-typedef enum {
-    TASK_RECUR_PRESET_NEVER = 0,
-    TASK_RECUR_PRESET_HOURLY,
-    TASK_RECUR_PRESET_DAILY,
-    TASK_RECUR_PRESET_WEEKLY,
-    TASK_RECUR_PRESET_BIWEEKLY,
-    TASK_RECUR_PRESET_MONTHLY,
-    TASK_RECUR_PRESET_CUSTOM
-} TaskRecurPreset;
-
-#define TASK_RECUR_N_PRESETS 7
-
-/* task_recur_preset_label() — the user-facing name ("Never" / "Hourly" /
- * … / "Custom…").  Returns a static string; an out-of-range value reads
- * "Never" rather than NULL, so it can never blank a combo row.             */
-const gchar *task_recur_preset_label(TaskRecurPreset preset);
-
 /* task_recur_unit_label() — the user-facing plural of a unit ("minutes",
- * "hours", …), for the custom row's combo.  Static string; out-of-range
- * reads "minutes".                                                         */
+ * "hours", …), for the editor's unit combos.  Static string; out-of-range
+ * reads "minutes".
+ *
+ * There are no PRESETS.  "Hourly / Daily / Weekly / Every 2 weeks /
+ * Monthly / Custom…" was a combo in front of this until 2026-09-08, and
+ * every one of those rows was nothing but a named (interval, unit) pair
+ * that the "Every N units" row underneath could say directly — so the
+ * combo's only real job was deciding whether that row was allowed to
+ * appear at all.  Every schedule is now written the one way, and the
+ * enum, the table and task_recur_preset_{label,spec,of} are gone with it.
+ * ------------------------------------------------------------------------- */
 const gchar *task_recur_unit_label(TaskRecurUnit unit);
-
-/* ---------------------------------------------------------------------------
- * task_recur_preset_spec() — the (interval, unit) a preset stands for.
- *
- *   preset   — the preset to expand.
- *   interval — out: repeats per unit, or 0 for NEVER.
- *   unit     — out: the unit.
- *
- * Returns FALSE for CUSTOM (and for an out-of-range value) WITHOUT
- * touching the outputs: custom means "whatever the user typed", so there
- * is nothing to expand and the caller must leave its own numbers alone.
- * ------------------------------------------------------------------------- */
-gboolean task_recur_preset_spec(TaskRecurPreset preset, gint *interval,
-                                TaskRecurUnit *unit);
-
-/* ---------------------------------------------------------------------------
- * task_recur_preset_of() — which preset a task's schedule matches.
- *
- * The inverse of task_recur_preset_spec, so the editor can open a combo on
- * the right row: interval 0 is NEVER, an exact preset match is that
- * preset, and anything else is CUSTOM.  It looks ONLY at interval and
- * unit — the time of day and the lead are settings of their own and a
- * changed 8am does not stop a schedule being "Weekly".
- * ------------------------------------------------------------------------- */
-TaskRecurPreset task_recur_preset_of(const Task *t);
 
 /* ---------------------------------------------------------------------------
  * task_recur_period_seconds() — how long one repeat lasts, approximately.
@@ -147,6 +135,28 @@ TaskRecurPreset task_recur_preset_of(const Task *t);
  * Returns 0 for a non-recurring spec (interval <= 0).
  * ------------------------------------------------------------------------- */
 gint64 task_recur_period_seconds(TaskRecurUnit unit, gint interval);
+
+/* ---------------------------------------------------------------------------
+ * task_recur_lead_default() — the lead to seed a NEW schedule with, in
+ * minutes: TASK_RECUR_LEAD_DEFAULT (one week), or HALF the repeat period
+ * when that is shorter.
+ *
+ * A flat week is meaningless at the fast end — it is longer than an hourly
+ * schedule's whole period, and the clamp below would cut it to one minute
+ * short of the period, which is the runaway case that clamp exists to
+ * stop.  Half a period instead, ROUNDED DOWN to a whole number of weeks,
+ * days, hours or minutes so the editor can say it in one of the four units
+ * its combo offers: 3 days for a weekly repeat (half is 3.5, which reads
+ * as "84 hours"), 12 hours for a daily one, 30 minutes for an hourly one,
+ * 0 for a per-minute one (the column stores minutes and half of one is
+ * less than that).  Rounding only ever shortens, so it can never reach the
+ * clamp and the two rules cannot disagree.
+ *
+ * Returns 0 for a spec that does not recur (interval <= 0).  This is a
+ * DEFAULT and nothing enforces it: a lead the user typed is theirs, and
+ * the editor only re-seeds one it put there itself.
+ * ------------------------------------------------------------------------- */
+gint task_recur_lead_default(TaskRecurUnit unit, gint interval);
 
 /* ---------------------------------------------------------------------------
  * task_recur_lead_seconds() — `t`'s reset lead in seconds, CLAMPED.
@@ -234,8 +244,15 @@ gchar *task_recur_phrase(const Task *t, gint64 next_ts);
  * passed in rather than read here so the caller can describe a schedule it
  * has not saved yet.
  *
- * Returns a new string (g_free it); "" when `t` does not recur.  Plain
- * text, NOT markup — the caller escapes if it needs to.
+ * A task that does NOT recur reads "Does not repeat." rather than coming
+ * back empty — the honest answer to the question this function is asked,
+ * and a blank string answers nothing.  The editor does not show it (its
+ * master switch says so, and the summary sits inside the body that switch
+ * hides), but nothing about that is this function's business.  "" only
+ * for a NULL task, or a schedule that yields no occurrence at all.
+ *
+ * Returns a new string (g_free it).  Plain text, NOT markup — the caller
+ * escapes if it needs to.
  * ------------------------------------------------------------------------- */
 gchar *task_recur_describe(const Task *t, gint64 now_ts);
 
@@ -246,7 +263,14 @@ gchar *task_recur_describe(const Task *t, gint64 now_ts);
  * task_app_notify_changed() plus a status message when that is nonzero (a
  * roll-forward changes both a due date and possibly a status, so the task
  * pane and every open editor need to see it).  Zero changes are silent —
- * this runs every few minutes and has nothing to say most times.
+ * a capped deadline can bring the pass round with nothing to do, and it
+ * has nothing to say then.
+ *
+ * It also ARMS THE NEXT DEADLINE, which is why every caller wants this
+ * one function: the earliest fire time is a by-product of the walk it
+ * already does, so "roll everything due forward" and "come back when the
+ * next one is" are one answer computed once.  A database with nothing
+ * recurring leaves no timer armed at all.
  *
  * Two callers: recur_run, the scheduler's tick, and the scratchpad test
  * harness — which is also why the pure helpers above (advance, seed,
@@ -265,8 +289,19 @@ gint task_recur_pass(TaskApp *app);
  * ------------------------------------------------------------------------- */
 void task_recur_init(TaskApp *app);
 
-/* task_recur_auto_start() — (re)arm just this worker, for a Settings
- * change to its own interval.  Everything else re-arms all of them.        */
-void task_recur_auto_start(TaskApp *app, const gchar *db_path);
+/* ---------------------------------------------------------------------------
+ * task_recur_wake_by() — make sure the pass runs no later than `fire_ts`
+ * (unix seconds), for a schedule that has just been written.
+ *
+ * O(1) and side-effect free: it moves the timer, it does not run a pass.
+ * That matters on the editor's debounced save, where running one would let
+ * a just-typed schedule roll its own task forward under the user's cursor.
+ *
+ * Only a NEARER deadline does anything — a schedule that slowed down or a
+ * recurring task deleted needs no call at all, because the timer simply
+ * fires early, finds nothing due and re-arms.  A no-op when `fire_ts` is
+ * 0, which is what a task that does not recur passes.
+ * ------------------------------------------------------------------------- */
+void task_recur_wake_by(TaskApp *app, gint64 fire_ts);
 
 #endif /* TASK_RECUR_H */

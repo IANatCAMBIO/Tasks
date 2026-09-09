@@ -26,9 +26,6 @@ show_completed=1
 google_sync_enabled=1
 # Show the Sync button in the toolbar (1|0; Settings → Google Tasks).
 sync_toolbar_button=1
-# Toolbar button rendering: icons|both|text (Settings → Appearance or
-# right-click an empty toolbar spot).
-toolbar_style=icons
 # Notes integration: mirror its action items as ordinary tasks (1|0),
 # and the notes CLI to reach them with (a path or a command name on
 # PATH; Settings → Notes).  Needs a Notes new enough to understand
@@ -78,13 +75,12 @@ due_today_show_overdue=0
 # automatically when it would not fit inside the repeat itself).
 # Those live on the task row, not here.
 #
-# recur_enabled (1|0, default 1) is the master switch for the pass that
-# acts on them; switching it off leaves the schedules stored but inert.
-recur_enabled=1
-# Minutes between checks.  0 checks only at launch — which always
-# happens, so repeats that came round while Tasks was closed are applied
-# either way rather than being missed.
-recur_check_min=5
+# There are NO recurrence keys here and no Settings section for it.  A
+# schedule set on a task is the request to act on it, and the pass arms
+# itself for the earliest occurrence rather than waking on a timer — so
+# with nothing recurring it costs one query at launch and no timer at
+# all, and there is nothing a switch would save.  Occurrences that came
+# round while Tasks was closed are applied at launch.
 # Kanban View (1|0, default 0; View → Kanban View): show the selected
 # view's tasks as a three-lane board (New / In Progress / Done) instead
 # of a list, with cards you drag between lanes to change their status —

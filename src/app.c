@@ -481,7 +481,7 @@ task_app_icon_image_sized(TaskApp *app, const gchar *name, gint size)
 }
 
 /* ---------------------------------------------------------------------------
- * task_app_tool_item_new() — style-aware toolbar button (see app.h).
+ * task_app_tool_item_new() — a toolbar button (see app.h).
  * ------------------------------------------------------------------------- */
 GtkToolItem *
 task_app_tool_item_new(TaskApp *app, const gchar *icon_name,
@@ -505,127 +505,7 @@ task_app_tool_item_new(TaskApp *app, const gchar *icon_name,
     gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(item), icon);
 
     gtk_tool_item_set_tooltip_text(item, tooltip);
-    gtk_tool_item_set_is_important(item, TRUE);
     return item;
-}
-
-/* style_name()/style_from_name() — the persisted spelling of a style.      */
-static const gchar *
-style_name(GtkToolbarStyle style)
-{
-    return style == GTK_TOOLBAR_TEXT ? "text"
-         : style == GTK_TOOLBAR_BOTH ? "both" : "icons";
-}
-
-static GtkToolbarStyle
-style_from_name(const gchar *name)
-{
-    if (g_strcmp0(name, "text") == 0) return GTK_TOOLBAR_TEXT;
-    if (g_strcmp0(name, "both") == 0) return GTK_TOOLBAR_BOTH;
-    return GTK_TOOLBAR_ICONS;
-}
-
-/* task_app_load_toolbar_style() — the persisted style (default icons).     */
-void
-task_app_load_toolbar_style(TaskApp *app)
-{
-    gchar *v = task_app_config_get("toolbar_style");
-    app->toolbar_style = style_from_name(v);
-    g_free(v);
-}
-
-/* ---------------------------------------------------------------------------
- * task_app_set_toolbar_style() — apply + persist a style change (see app.h).
- * ------------------------------------------------------------------------- */
-void
-task_app_set_toolbar_style(TaskApp *app, GtkToolbarStyle style)
-{
-    app->toolbar_style = style;
-    task_app_config_set("toolbar_style", style_name(style));
-    if (app->toolbars != NULL)
-        for (guint i = 0; i < app->toolbars->len; i++)
-            gtk_toolbar_set_style(
-                GTK_TOOLBAR(g_ptr_array_index(app->toolbars, i)), style);
-}
-
-/* toolbar_destroyed() — drop a dying toolbar from the registry.            */
-static void
-toolbar_destroyed(GtkWidget *toolbar, gpointer data)
-{
-    TaskApp *app = data;
-    if (app->toolbars != NULL)
-        g_ptr_array_remove(app->toolbars, toolbar);
-}
-
-/* style_menu_toggled() — a radio item in the right-click menu.             */
-static void
-style_menu_toggled(GtkCheckMenuItem *item, gpointer data)
-{
-    TaskApp *app = data;
-    if (!gtk_check_menu_item_get_active(item))
-        return;                      /* ignore the deactivating item        */
-    task_app_set_toolbar_style(app, (GtkToolbarStyle)GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "task-style")));
-}
-
-/* ---------------------------------------------------------------------------
- * toolbar_context_menu() — "popup-context-menu": right-clicking a
- * toolbar offers the icons/both/text radio choices (fires on empty
- * toolbar area only, like Notes).
- * ------------------------------------------------------------------------- */
-static gboolean
-toolbar_context_menu(GtkToolbar *toolbar, gint x, gint y, gint button,
-                     gpointer data)
-{
-    (void)x; (void)y; (void)button;
-    TaskApp *app = data;
-    static const struct {
-        const gchar    *label;
-        GtkToolbarStyle style;
-    } CHOICES[] = {
-        { "Icons",            GTK_TOOLBAR_ICONS },
-        { "Text Below Icons", GTK_TOOLBAR_BOTH  },
-        { "Text Only",        GTK_TOOLBAR_TEXT  },
-    };
-    GtkWidget *menu = gtk_menu_new();
-    gtk_menu_attach_to_widget(GTK_MENU(menu), GTK_WIDGET(toolbar), NULL);
-    /* One menu is built per right-click; without this it would stay
-     * attached (= alive) until the toolbar dies.  selection-done fires
-     * after the chosen item's activate, so destroying there is safe.       */
-    g_signal_connect(menu, "selection-done",
-                     G_CALLBACK(gtk_widget_destroy), NULL);
-    GSList *group = NULL;            /* the radio group                     */
-    for (gsize i = 0; i < G_N_ELEMENTS(CHOICES); i++) {
-        GtkWidget *item =
-            gtk_radio_menu_item_new_with_label(group, CHOICES[i].label);
-        group = gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(item));
-        g_object_set_data(G_OBJECT(item), "task-style",
-                          GINT_TO_POINTER(CHOICES[i].style));
-        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item),
-                                       app->toolbar_style ==
-                                       CHOICES[i].style);
-        g_signal_connect(item, "toggled",
-                         G_CALLBACK(style_menu_toggled), app);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-    }
-    gtk_widget_show_all(menu);
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), NULL);
-    return TRUE;
-}
-
-/* ---------------------------------------------------------------------------
- * task_app_register_toolbar() — track + style a toolbar (see app.h).
- * ------------------------------------------------------------------------- */
-void
-task_app_register_toolbar(TaskApp *app, GtkWidget *toolbar)
-{
-    gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), app->toolbar_style);
-    if (app->toolbars != NULL)
-        g_ptr_array_add(app->toolbars, toolbar);
-    g_signal_connect(toolbar, "destroy",
-                     G_CALLBACK(toolbar_destroyed), app);
-    g_signal_connect(toolbar, "popup-context-menu",
-                     G_CALLBACK(toolbar_context_menu), app);
 }
 
 /* ===========================================================================

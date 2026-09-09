@@ -64,27 +64,34 @@ typedef struct {
     GtkWidget    *att_view;
     GtkWidget    *ext_box;           /* contributed sections (task_ui.h)    */
 
-    /* The Recurrence block (recur.h).  The preset combo's active index IS
-     * the TaskRecurPreset value, and the unit combo's IS the
-     * TaskRecurUnit — both are built by appending their labels in enum
-     * order, the same trick the Status combo uses.                        */
-    GtkWidget    *recur_combo;       /* Never / Hourly / … / Custom…       */
-    GtkWidget    *recur_custom_row;  /* the "Every N …" row, present only
-                                      * while Custom… is the preset        */
-    GtkWidget    *recur_every_spin;  /* custom: repeat every N …            */
-    GtkWidget    *recur_unit_combo;  /* … of THIS unit                      */
-    GtkWidget    *recur_time_entry;  /* "HH:MM" — the dated units' time     */
-    GtkWidget    *recur_start_entry; /* "YYYY-MM-DD" — the anchor DAY; the
-                                      * "Monday" of "every Monday at 9",
+    /* The Recurrence block (recur.h).  TWO ROWS, and they are one
+     * sentence read top to bottom: "Starting <date> at <time>, repeat
+     * every <N> <units>".  Every schedule is written that one way —
+     * there is no preset combo any more, so nothing here is ever greyed
+     * out waiting to be unlocked.  The unit combos' active index IS the
+     * TaskRecurUnit, built by appending the labels in enum order, the
+     * same trick the Status combo uses.                                  */
+    GtkWidget    *recur_enable;      /* the block's MASTER SWITCH; ticked
+                                      * IFF the task has a schedule, so it
+                                      * holds no state of its own          */
+    GtkWidget    *recur_body;        /* everything below the switch, hidden
+                                      * whole while it is off              */
+    GtkWidget    *recur_start_entry; /* "YYYY-MM-DD" — the anchor DAY,
                                       * empty = anchor on the due date     */
+    GtkWidget    *recur_time_entry;  /* "HH:MM" — that anchor's o'clock    */
+    GtkWidget    *recur_every_spin;  /* repeat every N …, 0 = not at all    */
+    GtkWidget    *recur_unit_combo;  /* … of THIS unit                      */
     GtkWidget    *recur_lead_spin;   /* reset this long before it …         */
     GtkWidget    *recur_lead_unit;   /* … in these units                    */
     GtkWidget    *recur_summary;     /* "Every Monday at 9:00 AM / Next …"  */
     gint64        recur_next;        /* the next occurrence, reseeded on
                                       * every edit to the schedule         */
-    gboolean      recur_custom_shown; /* is that row on screen?             */
-    gint          recur_custom_h;    /* px the window grew to show it,
-                                      * given back when it goes away       */
+    /* The (interval, unit) the lead was last defaulted FOR, so a change
+     * of period can tell a lead the user chose from one this editor put
+     * there itself (editor_recur_lead_follow).                           */
+    gint          recur_seen_every;
+    gint          recur_seen_unit;
+    gboolean      recur_body_shown;  /* is the body on screen?             */
 
     GtkWidget    *adv_box;           /* Recurrence + Subtasks + Attachments,
                                       * folded away behind the Advanced
@@ -260,8 +267,18 @@ editor_recur_lead_minutes(TaskEditor *ed)
 static void
 editor_recur_lead_set(TaskEditor *ed, gint minutes)
 {
-    if (minutes <= 0)
-        minutes = TASK_RECUR_LEAD_DEFAULT;
+    /* 0 is a REAL lead now, not a missing one: task_recur_lead_default
+     * answers 0 for a per-minute repeat, where half a period is less than
+     * the minute this column stores.  Showing it as "0 minutes" says so;
+     * folding it to a default would put back a number the schedule cannot
+     * hold.  The unit is forced rather than searched for, because every
+     * unit divides 0 and the loop below would otherwise say "0 weeks".  */
+    if (minutes <= 0) {
+        gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_lead_unit),
+                                 (gint)TASK_RECUR_MINUTE);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(ed->recur_lead_spin), 0);
+        return;
+    }
     gint u = 0;
     for (gint i = RECUR_LEAD_N_UNITS - 1; i >= 0; i--)
         if (minutes % recur_lead_minutes[i] == 0) {
@@ -273,29 +290,36 @@ editor_recur_lead_set(TaskEditor *ed, gint minutes)
                               minutes / recur_lead_minutes[u]);
 }
 
+/* editor_recur_every() — the interval the widgets describe, in the units
+ * the unit combo names.  0 when the MASTER SWITCH is off, which is what
+ * "does not recur" is on disk — so the checkbox needs no state of its own
+ * and cannot disagree with the row.  Spelled once because both the save
+ * (editor_recur_read) and the lead default (editor_recur_lead_follow) ask
+ * the same question and must get the same answer.                         */
+static gint
+editor_recur_every(TaskEditor *ed)
+{
+    if (!gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(ed->recur_enable)))
+        return 0;
+    return gtk_spin_button_get_value_as_int(
+               GTK_SPIN_BUTTON(ed->recur_every_spin));
+}
+
 /* ---------------------------------------------------------------------------
  * editor_recur_read() — fill `t`'s schedule fields from the widgets.
  *
- * The preset decides whether the custom spin and unit are consulted at
- * all: task_recur_preset_spec expands a named preset and leaves the
- * outputs ALONE for Custom, which is exactly the branch needed here.
- * recur_next is NOT written — see the block comment above.
+ * Straight off the two rows, with nothing to expand: every schedule is
+ * "every N units", and the master switch is what turns that into the 0
+ * interval meaning "does not repeat" (editor_recur_every).  recur_next is
+ * NOT written — see the block comment above.
  * ------------------------------------------------------------------------- */
 static void
 editor_recur_read(TaskEditor *ed, Task *t)
 {
-    gint p = gtk_combo_box_get_active(GTK_COMBO_BOX(ed->recur_combo));
-    if (p < 0 || p >= TASK_RECUR_N_PRESETS)
-        p = TASK_RECUR_PRESET_NEVER;
-    if (!task_recur_preset_spec((TaskRecurPreset)p, &t->recur_interval,
-                                &t->recur_unit)) {
-        t->recur_interval = gtk_spin_button_get_value_as_int(
-                                GTK_SPIN_BUTTON(ed->recur_every_spin));
-        gint u = gtk_combo_box_get_active(
-                     GTK_COMBO_BOX(ed->recur_unit_combo));
-        t->recur_unit = (u >= 0 && u < TASK_RECUR_N_UNITS)
-                        ? (TaskRecurUnit)u : TASK_RECUR_DAY;
-    }
+    t->recur_interval = editor_recur_every(ed);
+    gint u = gtk_combo_box_get_active(GTK_COMBO_BOX(ed->recur_unit_combo));
+    t->recur_unit = (u >= 0 && u < TASK_RECUR_N_UNITS)
+                    ? (TaskRecurUnit)u : TASK_RECUR_DAY;
     t->recur_time  = editor_time_entry_parse(ed->recur_time_entry,
                                             TASK_RECUR_TIME_DEFAULT);
     t->recur_start = editor_recur_start_parse(ed, t->recur_start);
@@ -447,6 +471,14 @@ editor_save_now(TaskEditor *ed)
     editor_recur_read(ed, t);
     t->recur_next = ed->recur_next;
     task_db_task_update(ed->app->db, t);
+    /* The pass waits on the EARLIEST fire time in the database, and a
+     * schedule saved here may have moved it nearer — a task set to repeat
+     * every minute has to be picked up within the minute, not whenever
+     * something else happened to be due.  AFTER the write, or the pass
+     * could reach the row before this save did.  Only nearer counts, so a
+     * schedule slowed down or switched off needs nothing (see recur.h).  */
+    task_recur_wake_by(ed->app, t->recur_next > 0
+                       ? t->recur_next - task_recur_lead_seconds(t) : 0);
     /* Only a STATUS change can move completed_at, and the row is the one
      * that knows where it landed — the stamping rule is an SQL CASE over
      * the old row (db.c), and spelling it a second time here is how the
@@ -508,32 +540,92 @@ on_toggle_changed(GtkWidget *w, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_recur_custom_set() — show or hide the "Every N …" row, growing or
- * shrinking the window by exactly its height.
+ * editor_recur_lead_follow() — keep the lead on its DEFAULT while the user
+ * has not chosen one, as the repeat period moves.
  *
- * The row is HIDDEN rather than greyed, so the block only ever shows
- * controls that do something.  That costs the bookkeeping below, and the
- * bookkeeping is the whole point: adv_height is what the Advanced fold
- * gives back on the way in, so a row that appears afterwards has to be
- * added to it or a later collapse leaves the window taller than it opened.
+ * The default is a function of the period (task_recur_lead_default: a
+ * week, or half the period when that is shorter), so it has to be
+ * recomputed when the period changes — otherwise picking "every hour"
+ * leaves a week's lead sitting there, which the clamp then silently cuts
+ * to 59 minutes and nothing on screen explains.
  *
- * The RESIZE half only runs for a window already on screen — the same
- * split editor_advanced_reveal and editor_advanced_set make, and for the
- * same reason: on the open path the row's visibility is settled before the
- * window is ever presented, so it is already in the natural height and
- * resizing would be the visible two-step that path exists to avoid.
+ * It must not stomp a lead the user typed, so it only rewrites one that is
+ * still exactly the default for the PREVIOUS period — the widgets' own
+ * "has this been touched?" test, needing no extra flag.  Creating a
+ * schedule (the previous interval was 0) always seeds, because the number
+ * in the widgets then is the column's default rather than anyone's choice.
  *
- * The row carries no_show_all, so neither show_all on adv_box nor the
- * construction-time one on the window can reveal it behind this
- * function's back; the flag is lifted across its own show_all, without
- * which that call would return early and nothing would appear (gotcha 15).
+ * Writing the lead widgets re-emits their own change signals, so the call
+ * is fenced with ed->loading — the caller re-applies and saves anyway.
  * ------------------------------------------------------------------------- */
 static void
-editor_recur_custom_set(TaskEditor *ed, gboolean shown)
+editor_recur_lead_follow(TaskEditor *ed)
 {
-    if (shown == ed->recur_custom_shown)
+    gint every = editor_recur_every(ed);
+    gint unit  = gtk_combo_box_get_active(
+                     GTK_COMBO_BOX(ed->recur_unit_combo));
+    if (unit < 0 || unit >= TASK_RECUR_N_UNITS)
+        unit = (gint)TASK_RECUR_DAY;
+    if (every == ed->recur_seen_every && unit == ed->recur_seen_unit)
+        return;                      /* the period did not move            */
+
+    gint was = task_recur_lead_default((TaskRecurUnit)ed->recur_seen_unit,
+                                       ed->recur_seen_every);
+    if (ed->recur_seen_every <= 0 || editor_recur_lead_minutes(ed) == was) {
+        gboolean loading = ed->loading;
+        ed->loading = TRUE;
+        editor_recur_lead_set(ed,
+            task_recur_lead_default((TaskRecurUnit)unit, every));
+        ed->loading = loading;
+    }
+    ed->recur_seen_every = every;
+    ed->recur_seen_unit  = unit;
+}
+
+/* ---------------------------------------------------------------------------
+ * editor_recur_body_set() — show or hide EVERYTHING below the master
+ * switch, resizing the window by exactly what that changed.
+ *
+ * One box rather than four rows, so this measures and resizes ONCE.  The
+ * bookkeeping is the price of hiding rather than greying, and it is the
+ * same bargain the Advanced disclosure makes: adv_height is what the fold
+ * gives back, so a group that appears and vanishes INSIDE it has to keep
+ * that total true or a later collapse leaves the window the wrong height.
+ *
+ * Nothing here is GREYED instead, which would be the cheaper option: a
+ * greyed control still shows a value, and a whole schedule shown but
+ * untouchable is what the old preset combo did — four dead controls with
+ * no hint of the way in.  Off means gone.
+ *
+ * adv_height is RE-MEASURED off adv_box rather than adjusted by the body's
+ * own height, and the window moves by the difference between the old total
+ * and the new one.  Adjusting by the body was the obvious way and it drifts:
+ * the summary inside it is a WRAPPED label, whose preferred height depends
+ * on the width it is asked at, so the height it reports alone is not the
+ * height it contributes in place — measured 13 px out over one hide, which
+ * a later Advanced fold then handed back as a window 13 px short.  Taking
+ * the total fresh each time leaves adv_height equal to a real measurement
+ * at every moment, which is what makes the fold exact by construction.
+ *
+ * The RESIZE half runs only for a window already on screen with the block
+ * open, the same split editor_advanced_reveal / editor_advanced_set make:
+ * on the open path the body's visibility is settled by editor_load before
+ * the window is ever presented, so it is already in the natural height and
+ * adv_height has not been taken yet — the reveal takes it afterwards, over
+ * a body that is already in its final state.
+ *
+ * recur_body carries no_show_all permanently, which keeps it out of BOTH
+ * show_all passes — the window's, and the one editor_advanced_reveal runs
+ * over adv_box — so this function is the only thing that can reveal it.
+ * The flag is lifted across its own show_all, without which that call
+ * would return early and nothing would appear (gotcha 15).
+ * ------------------------------------------------------------------------- */
+static void
+editor_recur_body_set(TaskEditor *ed, gboolean shown)
+{
+    if (shown == ed->recur_body_shown)
         return;                      /* no change, and so no resize         */
-    ed->recur_custom_shown = shown;
+    ed->recur_body_shown = shown;
 
     gboolean live = gtk_widget_get_visible(ed->window) && ed->adv_shown;
     gint w = 0, h = 0;               /* live client size                    */
@@ -541,62 +633,38 @@ editor_recur_custom_set(TaskEditor *ed, gboolean shown)
         gtk_window_get_size(GTK_WINDOW(ed->window), &w, &h);
 
     if (shown) {
-        gtk_widget_set_no_show_all(ed->recur_custom_row, FALSE);
-        gtk_widget_show_all(ed->recur_custom_row);
-        gtk_widget_set_no_show_all(ed->recur_custom_row, TRUE);
-        gint min, nat;               /* measured AFTER the show             */
-        gtk_widget_get_preferred_height(ed->recur_custom_row, &min, &nat);
-        ed->recur_custom_h = nat + 4;   /* + the section box's spacing      */
-        if (live) {
-            ed->adv_height += ed->recur_custom_h;
-            gtk_window_resize(GTK_WINDOW(ed->window), w,
-                              h + ed->recur_custom_h);
-        }
+        gtk_widget_set_no_show_all(ed->recur_body, FALSE);
+        gtk_widget_show_all(ed->recur_body);
+        gtk_widget_set_no_show_all(ed->recur_body, TRUE);
     } else {
-        gtk_widget_hide(ed->recur_custom_row);
-        if (live && ed->recur_custom_h > 0) {
-            ed->adv_height = MAX(ed->adv_height - ed->recur_custom_h, 0);
-            gtk_window_resize(GTK_WINDOW(ed->window), w,
-                              MAX(h - ed->recur_custom_h, 1));
-        }
-        ed->recur_custom_h = 0;
+        gtk_widget_hide(ed->recur_body);
     }
+    if (!live)
+        return;
+
+    gint min, nat;                   /* the WHOLE block, measured afresh    */
+    gtk_widget_get_preferred_height(ed->adv_box, &min, &nat);
+    gint was = ed->adv_height;
+    ed->adv_height = nat + 8;        /* + the vbox's inter-child spacing    */
+    gtk_window_resize(GTK_WINDOW(ed->window), w,
+                      MAX(h + (ed->adv_height - was), 1));
 }
 
 /* ---------------------------------------------------------------------------
- * editor_recur_refresh() — the Recurrence block's single applier: what is
- * sensitive, and what the summary line says.
+ * editor_recur_refresh() — the Recurrence block's single applier: what the
+ * master switch reveals, and what the summary line says.
  *
- * The custom row comes and goes (editor_recur_custom_set, which keeps the
- * window's height honest); everything else is greyed in place, so a
- * control that does not currently apply still shows what it holds.
+ * NOTHING IS EVER GREYED OUT.  The start date, the time and the lead used
+ * to be dead until a preset was chosen from a combo, and the "Every N
+ * units" row appeared only for Custom… — so the block a user first met was
+ * four controls they could not touch, with no hint that the combo was the
+ * way in.  There is one switch now, it says what it does, and everything
+ * it governs is either fully live or not on screen at all.
  * ------------------------------------------------------------------------- */
 static void
 editor_recur_refresh(TaskEditor *ed)
 {
-    gint     p      = gtk_combo_box_get_active(GTK_COMBO_BOX(ed->recur_combo));
-    gboolean on     = p > TASK_RECUR_PRESET_NEVER;
-    gboolean custom = p == TASK_RECUR_PRESET_CUSTOM;
-    Task     t      = editor_recur_task(ed);
-
-    /* The custom row is HIDDEN when it does not apply (it is a whole
-     * control that would otherwise sit there doing nothing); the two
-     * below are GREYED, because they keep showing the value in force and
-     * only stop being editable.                                          */
-    editor_recur_custom_set(ed, custom);
-    /* The minute and hour units have no time of day to land on — "every
-     * 3 hours at 8am" is not a thing anyone can mean.                     */
-    gtk_widget_set_sensitive(ed->recur_time_entry,
-                             on && t.recur_unit >= TASK_RECUR_DAY);
-    /* The start date applies to EVERY unit — it anchors the minute and
-     * hour strides as well as naming the weekday of a weekly repeat — so
-     * it greys with the schedule as a whole and not with the time entry
-     * below it.  That also disarms its click-to-pick: an insensitive entry
-     * gets no button press, so on_recur_start_press cannot open a calendar
-     * that would write into a dead field.                                  */
-    gtk_widget_set_sensitive(ed->recur_start_entry, on);
-    gtk_widget_set_sensitive(ed->recur_lead_spin, on);
-    gtk_widget_set_sensitive(ed->recur_lead_unit, on);
+    Task t = editor_recur_task(ed);
 
     gchar *text = task_recur_describe(&t, (gint64)time(NULL));
     /* Dimmed with Pango alpha, never a fixed gray (a gray is unreadable
@@ -609,6 +677,16 @@ editor_recur_refresh(TaskEditor *ed)
     gtk_label_set_markup(GTK_LABEL(ed->recur_summary), markup);
     g_free(markup);
     g_free(text);
+
+    /* LAST, after the summary has its final text.  editor_recur_body_set
+     * measures the body to size the window, and the summary is a wrapped
+     * label INSIDE it — so measuring first reads whatever the label still
+     * said a moment ago.  Switching the block on measured the one-line
+     * "Does not repeat." it was showing while off and came out 13 px (one
+     * line) short, which the next Advanced fold then handed back as a
+     * window 13 px too tall.                                            */
+    editor_recur_body_set(ed,
+        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(ed->recur_enable)));
 }
 
 /* on_recur_changed() — any Recurrence control moved: reseed the next
@@ -626,6 +704,9 @@ on_recur_changed(GtkWidget *w, gpointer data)
     TaskEditor *ed = data;
     if (ed->loading)
         return;
+    /* BEFORE the reseed: a changed period may carry the lead with it, and
+     * the summary states where the reset lands.                          */
+    editor_recur_lead_follow(ed);
     editor_recur_reseed(ed);
     editor_recur_refresh(ed);
     editor_queue_save(ed);
@@ -826,10 +907,9 @@ on_due_entry_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
 /* on_recur_start_press() — the Starting entry is its own picker, exactly
  * as the due entry is (on_due_entry_press): a left click opens the
  * calendar, every other button falls through, and the block needs no 📅
- * button of its own.  The entry greys with the schedule as a whole
- * (editor_recur_refresh), and an insensitive GtkEntry is never handed a
- * button press, so the click stops offering a picker for a dead field
- * without a check of its own here.
+ * button of its own.  It needs no "is the schedule on?" check of its own
+ * either: the whole body is HIDDEN while the master switch is off
+ * (editor_recur_body_set), and an unmapped entry is handed no clicks.
  *
  * Setting the entry's text emits "changed", so on_recur_changed reseeds
  * the next occurrence and re-labels the summary on its own; only the
@@ -1334,17 +1414,15 @@ editor_load(TaskEditor *ed)
     ed->status_saved = t->status;
     editor_completed_refresh(ed, t);
 
-    /* The recurrence schedule.  The preset combo is set from the (interval,
-     * unit) pair rather than stored separately — task_recur_preset_of is
-     * the inverse of the expansion editor_recur_read does, so a schedule
-     * saved as Custom that happens to be "every 1 week" comes back reading
-     * Weekly, which is what it IS.
-     *
-     * The custom spin and unit are loaded either way, so switching the
-     * combo to Custom… shows the schedule already in force rather than an
-     * arbitrary "every 1 minute".                                          */
-    gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_combo),
-                             (gint)task_recur_preset_of(t));
+    /* The recurrence schedule, straight onto the two rows.  The MASTER
+     * SWITCH is simply "does this task have a schedule?" — it is derived
+     * from the interval rather than stored, so it can never disagree with
+     * the row it describes.  The spin then never holds 0: 0 is said by
+     * the switch being off, and a task with no schedule opens the block
+     * ready to be given "every 1 days" rather than "every 0".  The unit
+     * falls back to days only when there is no schedule to read one from. */
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->recur_enable),
+                                 t->recur_interval > 0);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(ed->recur_every_spin),
                               t->recur_interval > 0 ? t->recur_interval : 1);
     gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_unit_combo),
@@ -1354,6 +1432,13 @@ editor_load(TaskEditor *ed)
                           TASK_RECUR_TIME_DEFAULT);
     editor_recur_start_set(ed, t->recur_start);
     editor_recur_lead_set(ed, t->recur_lead);
+    /* What the lead is currently the default FOR.  Seeded from the row
+     * just loaded, so the first change of period can tell a lead this
+     * task has carried all along from one the user is about to leave
+     * alone (editor_recur_lead_follow).                                   */
+    ed->recur_seen_every = t->recur_interval > 0 ? t->recur_interval : 0;
+    ed->recur_seen_unit  = t->recur_interval > 0 ? (gint)t->recur_unit
+                                                 : (gint)TASK_RECUR_DAY;
     ed->recur_next = t->recur_next;
     editor_recur_refresh(ed);
 
@@ -1507,8 +1592,8 @@ on_editor_advanced(GtkWidget *w, gpointer data)
 static gboolean
 editor_has_advanced_content(TaskEditor *ed)
 {
-    return gtk_combo_box_get_active(GTK_COMBO_BOX(ed->recur_combo))
-               > TASK_RECUR_PRESET_NEVER ||
+    return gtk_toggle_button_get_active(
+               GTK_TOGGLE_BUTTON(ed->recur_enable)) ||
            (ed->sub_store != NULL &&
             gtk_tree_model_iter_n_children(
                 GTK_TREE_MODEL(ed->sub_store), NULL) > 0) ||
@@ -1846,40 +1931,82 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
             "<small><span alpha=\"65%\">"
             "Recurrence will change the Due Date of your task to the next "
             "specified iteration date and time.  Additionally, completed "
-            "tasks will be set to New X (defaults to 5) days before that "
-            "Due Date to give you lead time."
+            "tasks will be set to New X (defaults to a week, or less on a "
+            "shorter repeat) before that Due Date to give you lead time."
             "</span></small>");
         gtk_label_set_xalign(GTK_LABEL(desc), 0.0);
         gtk_label_set_line_wrap(GTK_LABEL(desc), TRUE);
         gtk_label_set_max_width_chars(GTK_LABEL(desc), 52);
         gtk_box_pack_start(GTK_BOX(rec), desc, FALSE, FALSE, 0);
 
-        /* Row 1 — the START date: the day the schedule is anchored on.
+        /* The MASTER SWITCH, directly under the description that says what
+         * the block does — so the block reads: here is the feature, here
+         * is the switch, and here (only once it is on) is the schedule.
+         *
+         * It holds NO STATE OF ITS OWN.  Ticked means "this task has a
+         * schedule", which on disk is recur_interval > 0, so the switch is
+         * derived on load and folded back in by editor_recur_every.  A
+         * flag beside the interval would be a second thing to keep true,
+         * and the two would eventually disagree.                          */
+        ed->recur_enable = gtk_check_button_new_with_label("Repeat this task");
+        gtk_widget_set_tooltip_text(ed->recur_enable,
+            "Give this task a repeating schedule.  Switching it off leaves "
+            "the task exactly where it is and stops it coming back.");
+        gtk_box_pack_start(GTK_BOX(rec), ed->recur_enable, FALSE, FALSE, 0);
+
+        /* Everything the switch governs, in ONE box so it can be shown or
+         * hidden — and MEASURED — as a unit (editor_recur_body_set).
+         * no_show_all keeps it out of the window's show_all AND out of the
+         * one editor_advanced_reveal runs over adv_box, which is what
+         * leaves that applier the only thing able to reveal it.           */
+        ed->recur_body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_widget_set_no_show_all(ed->recur_body, TRUE);
+        GtkWidget *body = ed->recur_body;
+        gtk_box_pack_start(GTK_BOX(rec), body, FALSE, FALSE, 0);
+
+        /* The three rows below lead with a label of their own, and their
+         * first CONTROL lines up in a column: one size group over those
+         * labels, each left-aligned so the extra width lands to the right
+         * of the words rather than centring them.  Without it "Starting",
+         * "Repeat every" and "Reset to New" are three different widths and
+         * the entry, the spin and the spin start at three different x —
+         * which reads as three unrelated rows rather than one schedule. */
+        GtkSizeGroup *lead_col =
+            gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
+
+        /* Row 1 — the ANCHOR: "Starting <date> at <time>".
+         *
          * FIRST, above the repeat, because that is the order the sentence
-         * runs in — "starting on this date, repeat every N units".  The
-         * schedule then reads top to bottom the way someone would say it
-         * out loud, and the two rows that describe WHEN it repeats sit
-         * together, apart from the reset row further down.
+         * runs in — "starting on this date at this time, repeat every N
+         * units".  The schedule then reads top to bottom the way someone
+         * would say it out loud.
          *
-         * A row of its own rather than more of the Repeat row: three
-         * controls and their labels on one line would take the editor
-         * past the 490 px it asks for, and widening the window is the one
-         * cost this layout does not pay (the notes box and every other
-         * row are sized against that width).
+         * The TIME sits here rather than on the Repeat row below, where
+         * it used to hang off the preset combo as "repeat weekly at
+         * 08:00".  It belongs with the start: it is the other half of one
+         * anchor, and saying so is what finally lets a minute-or-hour
+         * schedule state when it begins.  It used to be GREYED OUT for
+         * exactly those two units, on the reasoning that "every 3 hours at
+         * 8am" is not a thing anyone can mean — true of the old reading,
+         * but the phrase here is "STARTING at 8am, every 3 hours", which
+         * is both meaningful and what task_recur_seed now phase-locks to
+         * (see TASK_RECUR_TIME_DEFAULT in db.h).
          *
-         * The entry IS the picker (on_recur_start_press) — there is no
-         * 📅 button beside it, for the reason the due row has none:
-         * two controls for one field, where the click a user tries first
-         * is the one on the field itself.
+         * Both entries ARE their own pickers — the date opens the
+         * calendar on a click (on_recur_start_press), the time is typed
+         * like the due row's.  No 📅 button beside either, for the reason
+         * the due row has none: two controls for one field, where the
+         * click a user tries first is the one on the field itself.
          *
-         * EMPTY is a real and ordinary value — it means "anchor on the
-         * due date", which is what every schedule did before this row
-         * existed and what most tasks still want.  So the entry starts
-         * blank rather than being seeded with today: a date filled in
+         * An EMPTY date is a real and ordinary value — it means "anchor on
+         * the due date", which is what most tasks want.  So the entry
+         * starts blank rather than seeded with today: a date filled in
          * here is a date the user chose.                                 */
         GtkWidget *r_start = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_box_pack_start(GTK_BOX(r_start), gtk_label_new("Starting:"),
-                           FALSE, FALSE, 0);
+        GtkWidget *l_start = gtk_label_new("Starting");
+        gtk_label_set_xalign(GTK_LABEL(l_start), 0.0);
+        gtk_size_group_add_widget(lead_col, l_start);
+        gtk_box_pack_start(GTK_BOX(r_start), l_start, FALSE, FALSE, 0);
         ed->recur_start_entry = gtk_entry_new();
         gtk_entry_set_width_chars(GTK_ENTRY(ed->recur_start_entry), 12);
         gtk_entry_set_max_width_chars(GTK_ENTRY(ed->recur_start_entry), 12);
@@ -1895,65 +2022,59 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                          G_CALLBACK(on_recur_start_press), ed);
         gtk_box_pack_start(GTK_BOX(r_start), ed->recur_start_entry,
                            FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(rec), r_start, FALSE, FALSE, 0);
-
-        /* Row 2 — the preset.  One row per TaskRecurPreset, appended IN
-         * ENUM ORDER, so the active index IS the preset value (the same
-         * arrangement the Status combo has).                              */
-        GtkWidget *r1 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_box_pack_start(GTK_BOX(r1), gtk_label_new("Repeat:"),
+        gtk_box_pack_start(GTK_BOX(r_start), gtk_label_new("at"),
                            FALSE, FALSE, 0);
-        ed->recur_combo = gtk_combo_box_text_new();
-        for (gint i = 0; i < TASK_RECUR_N_PRESETS; i++)
-            gtk_combo_box_text_append_text(
-                GTK_COMBO_BOX_TEXT(ed->recur_combo),
-                task_recur_preset_label((TaskRecurPreset)i));
-        gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_combo),
-                                 (gint)TASK_RECUR_PRESET_NEVER);
-        gtk_widget_set_tooltip_text(ed->recur_combo,
-            "How often this task comes back.  A set time before each "
-            "repeat, a COMPLETED task is put back to New and its due date "
-            "moves to that repeat.");
-        gtk_box_pack_start(GTK_BOX(r1), ed->recur_combo, FALSE, FALSE, 0);
-
-        /* … and the time of day the dated repeats land on, on the same
-         * row: it belongs with "how often", and the editor is 490 px of
-         * natural height where a row of its own would cost real pixels.
-         *
-         * pack_START, immediately after the combo.  It was pack_end'd to
-         * line the entry up with the Due entry further above, and that
-         * put ~300 px of nothing in the middle of what is ONE SENTENCE —
-         * "repeat weekly at 08:00".  A column that splits a phrase in
-         * half is not worth the column.                                 */
+        /* 5 chars, the width the due row's time entry settled on — that
+         * row is the editor's widest and measured 4 px over at 6.  This
+         * row is far shorter, but one spelling of "an HH:MM entry" is
+         * worth more than the two characters.                           */
         ed->recur_time_entry = gtk_entry_new();
-        gtk_entry_set_width_chars(GTK_ENTRY(ed->recur_time_entry), 6);
-        gtk_entry_set_max_width_chars(GTK_ENTRY(ed->recur_time_entry), 6);
+        gtk_entry_set_width_chars(GTK_ENTRY(ed->recur_time_entry), 5);
+        gtk_entry_set_max_width_chars(GTK_ENTRY(ed->recur_time_entry), 5);
         gtk_entry_set_placeholder_text(GTK_ENTRY(ed->recur_time_entry),
                                        "HH:MM");
         gtk_widget_set_tooltip_text(ed->recur_time_entry,
-            "The time of day a daily, weekly or monthly repeat lands on "
-            "(24-hour).  Repeats measured in minutes or hours have no "
-            "time of day and ignore it.");
-        gtk_box_pack_start(GTK_BOX(r1), gtk_label_new("at"),
+            "The time of day the schedule is anchored at (24-hour).  A "
+            "repeat measured in days, weeks, months or years lands on this "
+            "time every time; one measured in minutes or hours starts from "
+            "it and steps on from there.");
+        gtk_box_pack_start(GTK_BOX(r_start), ed->recur_time_entry,
                            FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(r1), ed->recur_time_entry,
-                           FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(rec), r1, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(body), r_start, FALSE, FALSE, 0);
 
-        /* Row 3 — the custom schedule, PRESENT only while the preset
-         * above is Custom….  no_show_all keeps it out of both show_all
-         * passes (the window's and adv_box's), which is what makes it
-         * absent from the folded natural height and leaves
-         * editor_recur_custom_set the only thing that can reveal it.
+        /* Row 2 — the PERIOD: "repeat every N units".
+         *
+         * EVERY schedule is written this way.  A preset combo (Hourly /
+         * Daily / Weekly / Every 2 weeks / Monthly / Custom…) stood in
+         * front of this row until 2026-09-08 and kept it HIDDEN unless
+         * Custom… was picked — so the one row that can say any schedule
+         * at all was the one a user had to go looking for, and five of
+         * the six presets were just (interval, unit) pairs this row
+         * states directly.  Losing it took the enum, the table, three
+         * recur.h functions and the show/hide height bookkeeping with it.
+         *
+         * The spin starts at 0, and 0 IS "does not repeat" — the same
+         * value recur_interval carries on disk for a task with no
+         * schedule.  So there is no separate off switch and no state in
+         * which the row lies: the summary underneath reads "Does not
+         * repeat" and every control stays live.
+         *
          * The unit combo's rows are the TaskRecurUnit values in order, so
-         * its active index is the enum value too.                        */
-        ed->recur_custom_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_widget_set_no_show_all(ed->recur_custom_row, TRUE);
-        GtkWidget *r2 = ed->recur_custom_row;
-        gtk_box_pack_start(GTK_BOX(r2), gtk_label_new("Every"),
-                           FALSE, FALSE, 0);
+         * its active index is the enum value.                            */
+        GtkWidget *r_every = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *l_every = gtk_label_new("Repeat every");
+        gtk_label_set_xalign(GTK_LABEL(l_every), 0.0);
+        gtk_size_group_add_widget(lead_col, l_every);
+        gtk_box_pack_start(GTK_BOX(r_every), l_every, FALSE, FALSE, 0);
+        /* From 1, not 0: "does not repeat" is the master switch's job now,
+         * so this spin never has to hold a value that means "off" and
+         * "Repeat every 0 days" is unreachable.                          */
         ed->recur_every_spin = gtk_spin_button_new_with_range(1, 999, 1);
-        gtk_box_pack_start(GTK_BOX(r2), ed->recur_every_spin,
+        gtk_widget_set_tooltip_text(ed->recur_every_spin,
+            "How often this task comes back.  A set time before each "
+            "repeat, a COMPLETED task is put back to New and its due date "
+            "moves to that repeat.");
+        gtk_box_pack_start(GTK_BOX(r_every), ed->recur_every_spin,
                            FALSE, FALSE, 0);
         ed->recur_unit_combo = gtk_combo_box_text_new();
         for (gint i = 0; i < TASK_RECUR_N_UNITS; i++)
@@ -1962,12 +2083,15 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                 task_recur_unit_label((TaskRecurUnit)i));
         gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_unit_combo),
                                  (gint)TASK_RECUR_DAY);
-        gtk_box_pack_start(GTK_BOX(r2), ed->recur_unit_combo,
+        gtk_box_pack_start(GTK_BOX(r_every), ed->recur_unit_combo,
                            FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(rec), r2, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(body), r_every, FALSE, FALSE, 0);
 
-        /* Row 4 — the lead: how long before each repeat a completed task
-         * is reset to New.  Five days by default.
+        /* Row 3 — the lead: how long before each repeat a completed task
+         * is reset to New.  A week by default, or half the period when
+         * that is shorter (task_recur_lead_default), so picking "every
+         * hour" leaves 30 minutes rather than a week the clamp would
+         * silently cut to 59 minutes.
          *
          * SET APART from the two rows above by a top margin: those say
          * WHEN the task repeats, this says what happens to a completed
@@ -1979,8 +2103,10 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
          * (it is read AFTER the block is built).                          */
         GtkWidget *r3 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         gtk_widget_set_margin_top(r3, 8);
-        gtk_box_pack_start(GTK_BOX(r3), gtk_label_new("Reset to New"),
-                           FALSE, FALSE, 0);
+        GtkWidget *l_reset = gtk_label_new("Reset to New");
+        gtk_label_set_xalign(GTK_LABEL(l_reset), 0.0);
+        gtk_size_group_add_widget(lead_col, l_reset);
+        gtk_box_pack_start(GTK_BOX(r3), l_reset, FALSE, FALSE, 0);
         ed->recur_lead_spin = gtk_spin_button_new_with_range(0, 999, 1);
         gtk_widget_set_tooltip_text(ed->recur_lead_spin,
             "How far ahead of each repeat a completed task is reopened.  "
@@ -1999,7 +2125,8 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                            FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(r3), gtk_label_new("beforehand"),
                            FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(rec), r3, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(body), r3, FALSE, FALSE, 0);
+        g_object_unref(lead_col);    /* the three labels hold it now        */
 
         /* The summary.  Wrapped rather than allowed to widen the window:
          * the editor asks for 490 px and takes its natural height, so a
@@ -2008,13 +2135,13 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
         gtk_label_set_xalign(GTK_LABEL(ed->recur_summary), 0.0);
         gtk_label_set_line_wrap(GTK_LABEL(ed->recur_summary), TRUE);
         gtk_label_set_max_width_chars(GTK_LABEL(ed->recur_summary), 52);
-        gtk_box_pack_start(GTK_BOX(rec), ed->recur_summary,
+        gtk_box_pack_start(GTK_BOX(body), ed->recur_summary,
                            FALSE, FALSE, 0);
 
         /* Wired LAST, so the construction-time set_active calls above
          * cannot fire the handler before every widget it reads exists.
          * (ed->loading also guards it, but only once editor_load runs.)   */
-        g_signal_connect(ed->recur_combo, "changed",
+        g_signal_connect(ed->recur_enable, "toggled",
                          G_CALLBACK(on_recur_changed), ed);
         g_signal_connect(ed->recur_every_spin, "value-changed",
                          G_CALLBACK(on_recur_changed), ed);

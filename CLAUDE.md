@@ -128,7 +128,7 @@ the user).  A logic test harness lives in the session scratchpad
 | `src/backup.[ch]` | OPTIONAL rotating db backups: own worker + connection, VACUUM INTO + verify, bounded rotation; off by default |
 | `src/db.[ch]` | SQLite schema (user_version 12) + CRUD; `TaskStatus` tri-state; tombstones + `updated_at` for sync; `step_done`/`exec_txn` error discipline |
 | `src/search.[ch]` | The toolbar search box's query language: parse once, match per task.  Pure GLib — no GTK, no SQLite |
-| `src/recur.[ch]` | Recurring tasks: presets, GDateTime schedule arithmetic, and the periodic pass — the ONE core worker that runs on the main thread |
+| `src/recur.[ch]` | Recurring tasks: presets, GDateTime schedule arithmetic, and the deadline-armed pass — the ONE core worker that runs on the main thread |
 | `src/library_window.[ch]` | Sidebar (virtual lists + collapsible Lists section with list groups), tall task rows, toolbar, Kanban board, multi-select context menu, status bar |
 | `src/editor_window.[ch]` | Per-task editor (debounced write-through saves); Status dropdown; the Recurrence block; plugin-contributed sections |
 | `src/settings_window.[ch]` | Singleton settings: appearance, database, Plugins list; contributed sections |
@@ -160,13 +160,14 @@ the user).  A logic test harness lives in the session scratchpad
   `tasks.ini.defaults`; loaded ONCE, written through on change,
   never re-read.  Everything except the OAuth client keys and the
   window geometry is editable in File → Settings… — which is why the
-  recurrence pass has a Settings → Recurring Tasks section of its own
-  (`recur_enabled`, `recur_check_min`) even though the schedules
-  themselves live on the task row and are edited in the editor.  Both
-  handlers RE-ARM the worker rather than only writing the key: a timer
-  already installed carries the old interval, so writing the setting
-  alone would leave it taking effect at the NEXT LAUNCH, which reads as
-  "the setting does nothing".
+  recurrence pass has NO Settings section at all: its schedules live on
+  the task row and are set in the editor, and a schedule set there IS the
+  request to act on it (see the recurrence section below).  Where a
+  background worker DOES keep a setting — the Google and Notes intervals
+  — the handler RE-ARMS the worker rather than only writing the key: a
+  timer already installed carries the old interval, so writing the
+  setting alone would leave it taking effect at the NEXT LAUNCH, which
+  reads as "the setting does nothing".
   The ini GROUP NAME is `[tasks]` and it is part of the file format —
   the app reads only that group.  There are no config migrations: this
   build has never shipped, so no other spelling exists in the wild.
@@ -352,9 +353,17 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
 
 - Toolbar: `GTK_ICON_SIZE_SMALL_TOOLBAR` metrics; buttons via
   `task_app_tool_item_new` (local PNG at 24 px logical, Pango-markup glyph
-  fallback); registered with `task_app_register_toolbar` so the
-  icons/both/text style applies live (Settings combo + right-click
-  radio menu).  Layout (all left-packed): the Sidebar toggle, a drawn
+  fallback).  It is **ICONS ONLY**, set once with
+  `gtk_toolbar_set_style(GTK_TOOLBAR_ICONS)` where the bar is built —
+  GTK's own default is text beside the icon, so the call is required, not
+  decoration.  There is NO toolbar-style setting: the Settings combo, the
+  right-click radio menu, the `toolbar_style` ini key, the live-toolbar
+  registry (`app->toolbars`, `task_app_register_toolbar`,
+  `task_app_set_toolbar_style`) and the `is_important` flag on the tool
+  items were all removed on 2026-09-08.  Every button carries a TOOLTIP
+  that says more than its one-word label would, and the label survives
+  only to name the item in the overflow menu and to accessibility — so
+  don't reintroduce a way to show it.  Layout (all left-packed): the Sidebar toggle, a drawn
   divider, the completed-visibility toggle, the Manual Sort toggle,
   the pane toggle, a second divider, then New Task and Delete Task —
   and the CONTRIBUTED buttons behind their own rule, which is where the
@@ -538,8 +547,8 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   LIVE visibility).
   **Compact Layout** (`compact_layout`, default 0) hides the whole
   toolbar and its rule, and shows `float_bar` instead:
-  a two-button pill (New Task + Delete Task, icons only, never
-  registered with `task_app_register_toolbar`) added as a `GtkOverlay`
+  a two-button pill (New Task + Delete Task, icons only) added as a
+  `GtkOverlay`
   child over the paned with halign/valign END and 20 px end/bottom
   margins.  Its plate is themed through `themed_bg_css_apply`
   (`float_bar_css`), NOT hardcoded — the light-theme grays it shipped
@@ -1150,17 +1159,28 @@ block is the only place it is set.
   ORDER, which is what makes `recur_dated()` one comparison; do not
   renumber).  `recur_interval = 0` means "does not recur" and is every
   task until someone says otherwise.
-- The PRESETS (Hourly, Daily, Weekly, Every 2 weeks, Monthly) are
-  nothing but named (interval, unit) pairs in `recur_presets[]`, and
-  **Custom is the ABSENCE of one**: `task_recur_preset_spec` returns
-  FALSE for it and LEAVES THE OUTPUTS UNTOUCHED, which is exactly the
-  branch the editor needs.  `task_recur_preset_of` is the inverse, so a
-  schedule saved as custom "every 1 week" reopens reading Weekly —
-  because that is what it IS.
+- **There are NO PRESETS** (2026-09-08).  Every schedule is written the
+  one way, "every N units", and the enum, the table and
+  `task_recur_preset_{label,spec,of}` are deleted.  Hourly / Daily /
+  Weekly / Every 2 weeks / Monthly were each nothing but an (interval,
+  unit) pair the custom row could state directly, and the combo's only
+  real job was deciding whether that row appeared at all — so the one
+  control that can say ANY schedule was the one a user had to go looking
+  for behind "Custom…".  Don't reintroduce them.
 - `recur_time` is minutes past local midnight, **480 (08:00)** by
-  default, and applies to the DAY-or-longer units only.  "Every 3 hours
-  at 8am" is not a thing anyone can mean, so the editor greys that entry
-  out for minutes and hours and `recur_step` passes -1.
+  default, and is the ANCHOR'S TIME OF DAY for **every** unit — the
+  "9:00 AM" whose other half is `recur_start`.  Two routes, one rule: the
+  dated units land each occurrence on it (`recur_step` re-applies it),
+  and the minute/hour units PHASE-LOCK their stride to it in
+  `task_recur_seed` (via `recur_at_minute`, the same fold the dated
+  branch uses), so "starting at 09:00, every 3 hours" means 9, 12, 3
+  rather than three hours from whenever the task was saved.  It was read
+  for the dated units alone until 2026-09-08, and the editor greyed the
+  entry out for the other two on the reasoning that "every 3 hours at
+  8am" is meaningless — true of that reading, but the phrase is
+  "STARTING at 8am, every 3 hours", which is not.  `recur_step` still
+  passes -1 for those units: the anchor has a clock time, the
+  occurrences after it do not.
 - **`recur_start` (v11) is the schedule's ANCHOR DAY** — the "Monday" of
   "every Monday at 9:00 AM", where `recur_time` is the "9:00".  It is a
   DATE and never a time: unix local midnight, like `due`, and the editor
@@ -1178,21 +1198,59 @@ block is the only place it is set.
   phase-locks the stride (`task_recur_seed` fast-forwards to it with ONE
   DIVISION — a per-minute schedule and a month-old start is otherwise
   43200 GDateTime allocations, the same trick `recur_catch_up` uses).
-- The Recurrence block's rows run **`Starting:` FIRST, then
-  `Repeat: [combo] at [HH:MM]`, then the custom row**, and that order is
-  the SENTENCE: "starting on this date, repeat every N units".  Starting
-  led the Repeat row on 2026-08-30 for exactly that reason — it used to
-  sit below the custom row, which made the block read back to front.
-  The Repeat row is all PACK_START.  The time entry was pack_end'd to
-  line up with the Due entry above, which put ~300 px of nothing in the
-  middle of what is ONE SENTENCE — a column that splits a phrase in half
-  is not worth the column.  The start date keeps a ROW OF ITS OWN: three
-  controls and their labels on one line would take the editor past the
-  490 px it asks for, and widening the window is the one cost this
-  layout does not pay.  The custom row stays DIRECTLY under Repeat,
-  since it is that combo's Custom… expanding, and
-  `editor_recur_custom_set`'s grow/shrink arithmetic (`nat + 4`, the
-  box's spacing) assumes nothing else between them.
+- The Recurrence block opens with a **MASTER SWITCH**, "Repeat this
+  task", sitting directly under the description that says what the block
+  does — so it reads: here is the feature, here is the switch, and here
+  (only once it is on) is the schedule.  It holds **NO STATE OF ITS
+  OWN**: ticked means `recur_interval > 0`, derived on load and folded
+  back by `editor_recur_every`, which both the save and the lead default
+  ask.  A flag beside the interval would be a second thing to keep true.
+  Because the switch is the off position, the interval spin starts at
+  **1**, not 0 — "Repeat every 0 days" is unreachable.
+- Everything below the switch lives in ONE box, `recur_body`, shown and
+  hidden whole by `editor_recur_body_set` — **hidden, never greyed**.  A
+  greyed control still shows a value, and a whole schedule shown but
+  untouchable is exactly what the preset combo used to do.  The box
+  carries `no_show_all` permanently, which keeps it out of BOTH show_all
+  passes (the window's and the one `editor_advanced_reveal` runs over
+  `adv_box`), so that applier is the only thing that can reveal it.
+  `adv_height` is **RE-MEASURED off adv_box** and the window moved by the
+  difference, never adjusted by the body's own height: the body contains
+  a wrapped label, whose height alone is not the height it contributes in
+  place.  See gotcha 27 for the ordering that goes with it.  Measured
+  round trips, all exact: switch 859 → 707 → 859, fold 859 → 343 → 859
+  with the body shown and 707 → 343 → 707 with it hidden, and the folded
+  editor is still 343 — the same number as before any of this.
+- Below the switch it is **TWO ROWS AND ONE SENTENCE** (2026-09-08):
+  `Starting [YYYY-MM-DD] at [HH:MM]` then `Repeat every [N] [unit]`, read
+  top to bottom the way someone would say it out loud.  Both rows are all
+  PACK_START, and their three leading labels ("Starting", "Repeat every",
+  "Reset to New") share a `GtkSizeGroup` so the date entry and the two
+  spins START AT THE SAME x — without it they sit at three different
+  offsets and read as three unrelated rows rather than one schedule.
+  Each label is `xalign 0.0`, so the width the group adds lands to the
+  right of the words instead of centring them.  Two rows rather than one
+  because three controls and their labels on a line would take the editor
+  past the 490 px it asks for, and widening the window is the one cost
+  this layout does not pay.
+  **The TIME moved onto the Starting row**, where it is the other half of
+  one anchor.  It used to hang off the preset combo as `Repeat: [combo]
+  at [HH:MM]` and was GREYED OUT for the minute and hour units, on the
+  reasoning that "every 3 hours at 8am" is meaningless — true of that
+  reading, but the phrase is now "STARTING at 8am, every 3 hours", which
+  is not, and `task_recur_seed` phase-locks to it.
+  **NOTHING IN THE BLOCK IS EVER GREYED, and no row comes and goes.**
+  Both were consequences of the preset combo: the start, time and lead
+  were dead until a preset was picked, and the "Every N units" row
+  appeared only for Custom… — so the block a user first met was four
+  controls they could not touch.  `editor_recur_custom_set` and its
+  show/hide `adv_height` arithmetic are deleted with it.
+  **An interval of 0 IS "does not repeat"** — the same value the column
+  carries for an unscheduled task — which is what lets the master switch
+  above store nothing.  `task_recur_describe` answers "Does not repeat."
+  rather than "" for such a task; the editor no longer shows that (the
+  summary is inside the hidden body), but it is the honest answer for any
+  caller and the switch is what says so on screen.
 - **The `Reset to New … beforehand` row is SET APART** from the two
   above it by an 8 px top margin: those two say WHEN the task repeats,
   that one says what happens to a completed task beforehand — a
@@ -1222,24 +1280,21 @@ block is the only place it is set.
   MONTH ("Every month", not "Every month on the 15th") — an ordinal
   suffix table for a fact the Next line already carries.
 - All three additions live inside `adv_box`, so the FOLDED editor is
-  still 343 px (measured); unfolded it went 735 → 827.
-- **The custom "Every N …" row is HIDDEN, not greyed, until Custom… is
-  picked** — it is a whole control that would otherwise sit there doing
-  nothing.  Everything else in the block greys instead, because a greyed
-  control still SHOWS the value in force and only stops being editable.
-  Hiding costs height bookkeeping and `editor_recur_custom_set` is where
-  it lives: `no_show_all` on the row keeps it out of BOTH show_all
-  passes (the window's and `adv_box`'s) and so out of the folded natural
-  height, the flag is lifted across its own `show_all` (gotcha 15), and
-  the window is grown or shrunk by exactly the row's measured height.
-  `adv_height` is adjusted by the same amount, or a later collapse of
-  the Advanced block gives back the wrong pixels — measured round trip
-  733 → 771 → 733.  The RESIZE half runs only for a window already on
-  screen, the same split `editor_advanced_reveal` /
-  `editor_advanced_set` makes and for the same reason: on the open path
-  the row's visibility is settled before the window is presented, so it
-  is already in the natural height.
-- `recur_lead` is minutes, **7200 (5 days)** by default, and is CLAMPED
+  still 343 px (measured; still 343 after the two-row rewrite).
+- `recur_lead` is minutes.  A NEW schedule is seeded by
+  `task_recur_lead_default`: `TASK_RECUR_LEAD_DEFAULT` (10080 — **one
+  week**), or half the period when that is shorter, rounded DOWN to a
+  whole number of weeks/days/hours/minutes so the editor can say it in
+  one of the four units its combo offers.  So weekly gets 3 days (half is
+  3.5, which would read "84 hours"), daily 12 hours, hourly 30 minutes,
+  per-minute 0.  A flat week at the fast end is longer than the whole
+  period and the clamp below would cut it to a minute short of one, which
+  is the runaway that clamp exists to stop; rounding only shortens, so
+  the default can never reach the clamp and the two rules cannot fight.
+  It is a DEFAULT and nothing enforces it — `editor_recur_lead_follow`
+  re-seeds only a lead still equal to the default for the PREVIOUS
+  period, so a number the user typed is theirs.  The stored value is
+  CLAMPED
   by `task_recur_lead_seconds` to a minute short of one period, floored
   at 0.  That clamp is load-bearing, not tidiness: a lead as long as the
   period puts the task permanently inside its own lead window, so every
@@ -1302,7 +1357,59 @@ block is the only place it is set.
   process spawn, a handful of statements over one small query.  A thread
   plus a second connection would buy latency nobody can perceive.
   `INITIAL_ALWAYS`, because repeats that came round while the app was
-  closed must be applied at launch even at interval 0.
+  closed must be applied at launch — which is also what puts the first
+  deadline up.
+- **There is NO SETTING for any of this** (2026-09-08) — no
+  `recur_enabled`, no `recur_check_min`, no Settings → Recurring Tasks
+  section, and `task_recur_auto_start` went with them (the toggle was its
+  only caller; `task_worker_arm_all` covers startup and a database
+  switch).  A schedule set on a task is the request to act on it, so a
+  master switch beside it could only ever leave a repeat set in the
+  editor doing nothing, with nothing on the task to say why.  What made
+  one look necessary was a background timer running for nothing, and the
+  deadline arming below removed that: **with nothing recurring the pass
+  arms NO timer at all** and the whole feature is one query at launch.
+  Don't reintroduce either key.
+- **It is NOT PERIODIC, and that is the point** (2026-09-08).  The worker
+  declares `enabled_key = NULL` and `interval_key = NULL` /
+  `interval_default = 0`, so the
+  scheduler installs no timer of its own; `task_recur_pass` ends by
+  arming a ONE-SHOT `g_timeout_add_seconds` for the earliest fire time it
+  just computed (`recur_arm_deadline`), and each firing re-arms.  A
+  fixed cadence had to pick one number for every schedule and got both
+  ends wrong: at `recur_check_min = 5` a per-minute repeat — reachable
+  straight from the editor's custom row, and clamped to a ZERO lead —
+  was looked at five minutes late, and since `recur_catch_up` lands on
+  the LAST occurrence already due, four in five simply never happened
+  while the editor's summary went on promising a minute nothing could
+  keep.  At the other end an idle database woke 288 times a day to find
+  nothing.  Now: exact for the fast schedules, and NO timer at all when
+  nothing in the database recurs — which is what made the master switch
+  above unnecessary.  A stale `recur_check_min` or `recur_enabled` in an
+  ini is inert.
+- The earliest deadline is a BY-PRODUCT of the walk the pass already
+  does — `pending - lead` per row, minimised — never a second query.
+  That is deliberate: a SQL `MIN(recur_next - recur_lead * 60)` would be
+  a second spelling of `task_recur_lead_seconds`' CLAMP, whose subtlety
+  has already cost one bug.  Both branches leave `pending` past
+  `now + lead`, so every candidate is strictly in the FUTURE and the
+  one-shot timer can never spin.
+- `RECUR_MAX_SLEEP_SEC` (900) caps how long the timer will sleep, and it
+  is a SAFETY NET rather than the mechanism — anything due sooner is
+  still timed exactly.  A GLib timeout runs on the MONOTONIC clock, which
+  does not advance across suspend on X11 or quartz, so a timer armed for
+  Thursday and spanning a laptop sleep would fire late by the length of
+  the sleep; an NTP step, a DST change and the sync folder replacing the
+  database do the same to a sleeping timer.  The pass stays CORRECT
+  through all of them (`recur_catch_up` reads the wall clock and skips
+  forward), so the only cost is lateness and this bounds it.
+- **Arming too EARLY is free; only too LATE is a bug.**  A deadline that
+  moved further out — a schedule slowed, a recurring task deleted —
+  needs no wiring at all: the timer fires, the pass finds nothing due and
+  re-arms.  So exactly ONE call exists, `task_recur_wake_by`, from
+  `editor_save_now` AFTER the row is written.  It is O(1) and does NOT
+  run a pass: running one there would let a just-typed schedule roll its
+  own task forward under the user's cursor on the 600 ms debounce.
 - Recurrence is LOCAL-ONLY and neither integration is told any of it.
   What they see is the ordinary due date and status the pass produces —
   which for a mirrored Notes item means the mirror pushes the reopen and
@@ -1907,7 +2014,21 @@ happened to return.
     next rewording.  Watch the closing quote too: `\x9d` is safe before a
     space, and `\x94` before " Ian" likewise, but any of them before a
     word starting a-f or A-F is not.
-26. `gtkosx_application_sync_menubar()` CRASHES THE PROCESS when the
+27. **MEASURE A CONTAINER ONLY ONCE ITS CONTENTS ARE FINAL.**  Anything
+    that sizes a window from `gtk_widget_get_preferred_height` reads the
+    text the widgets hold AT THAT MOMENT, and a WRAPPED label inside it
+    reports the height of whatever it currently says.  The recurrence
+    block's applier showed its body and measured it BEFORE writing the
+    summary label, so switching the block on measured the one-line
+    "Does not repeat." it had been showing while off — 13 px (exactly one
+    line) short.  The window came out right, because the same wrong number
+    was used for the resize; the damage was to `adv_height`, which the
+    NEXT Advanced fold then handed back as a window 13 px too tall.  Set
+    the text first, measure second (`editor_recur_refresh` ends with
+    `editor_recur_body_set` for this reason).  Caught by measuring a fold
+    round trip against a git worktree at HEAD — the base round-tripped
+    exactly, which is what proved it a regression rather than a quirk.
+28. `gtkosx_application_sync_menubar()` CRASHES THE PROCESS when the
     native menu bar was never switched on: with `native_menubar=0`
     nothing has ever called `gtkosx_application_set_menu_bar`, so the
     integration's internal menu object does not implement `-resync` and

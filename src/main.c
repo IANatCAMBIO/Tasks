@@ -325,9 +325,7 @@ main(int argc, char **argv)
                   ? g_strdup(db_dir) : NULL;
     app->editors = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                          g_free, NULL);
-    app->toolbars = g_ptr_array_new();
     task_app_init_icons_dir(app);
-    task_app_load_toolbar_style(app);
     app->db_integrity_check =
         task_app_config_get_bool("db_integrity_check", TRUE);
 
@@ -366,7 +364,6 @@ main(int argc, char **argv)
 
     g_object_unref(app->gtk_app);
     g_hash_table_destroy(app->editors);
-    g_ptr_array_free(app->toolbars, TRUE);
     /* Any listener still subscribed here outlived its window, which is
      * not an error — a plugin may subscribe for the whole run.           */
     g_slist_free_full(app->changed_l, g_free);

@@ -52,11 +52,6 @@
  *                    backup (backup.h), a third worker on its own
  *                    schedule.
  *   backup_timer   — its periodic GSource id, or 0.
- *   toolbar_style  — how toolbar buttons render (icons only, text below
- *                    icons, or text only); persisted as "toolbar_style".
- *   toolbars       — every live toolbar, so a style change can be
- *                    applied to all open windows at once.  Entries
- *                    remove themselves on destroy.
  *   icons_dir      — absolute path of the local icons/ folder the
  *                    toolbar button PNGs are loaded from (owned string).
  *   db_dir         — custom directory holding tasks.db (owned string),
@@ -83,8 +78,6 @@ typedef struct TaskApp {
     guint            sync_timer;
     gboolean         backup_running;     /* rotating-backup worker in flight */
     guint            backup_timer;       /* its periodic GSource, or 0      */
-    GtkToolbarStyle  toolbar_style;
-    GPtrArray       *toolbars;
     gchar           *icons_dir;
     gchar           *db_dir;
     gboolean         db_integrity_check; /* run PRAGMA checks on startup    */
@@ -139,33 +132,17 @@ GtkWidget *task_app_icon_image_rotated(TaskApp *app, const gchar *name,
                                        GdkPixbufRotation rotation);
 
 /* ---------------------------------------------------------------------------
- * task_app_tool_item_new() — create a toolbar button that honors the
- * app-wide toolbar style: `icon_name` names a local icon file (see
- * task_app_icon_image_sized), `fallback_markup` is Pango markup rendered
- * as the "icon" when that file is missing (NULL falls back to the plain
- * label).  The label shows in text/both modes.
+ * task_app_tool_item_new() — create a toolbar button: `icon_name` names a
+ * local icon file (see task_app_icon_image_sized), `fallback_markup` is
+ * Pango markup rendered as the "icon" when that file is missing (NULL
+ * falls back to the plain label).  Toolbars are ICONS-ONLY, so `label`
+ * never shows on the button itself — it names the item in the toolbar's
+ * overflow menu and to accessibility; `tooltip` is what a user reads.
  * ------------------------------------------------------------------------- */
 GtkToolItem *task_app_tool_item_new(TaskApp *app, const gchar *icon_name,
                                     const gchar *fallback_markup,
                                     const gchar *label,
                                     const gchar *tooltip);
-
-/* ---------------------------------------------------------------------------
- * task_app_register_toolbar() — apply the current style to `toolbar`, keep
- * it updated when the style changes, and offer the icons/both/text radio
- * menu on right-click.  The toolbar unregisters itself when destroyed.
- * ------------------------------------------------------------------------- */
-void task_app_register_toolbar(TaskApp *app, GtkWidget *toolbar);
-
-/* ---------------------------------------------------------------------------
- * task_app_set_toolbar_style() — change the style on every live toolbar
- * and persist the choice ("toolbar_style" = icons|both|text).
- * ------------------------------------------------------------------------- */
-void task_app_set_toolbar_style(TaskApp *app, GtkToolbarStyle style);
-
-/* task_app_load_toolbar_style() — read the persisted style into the app
- * context (default: icons only).                                           */
-void task_app_load_toolbar_style(TaskApp *app);
 
 /* ---------------------------------------------------------------------------
  * task_app_status() — post a one-line event message to the library window's
@@ -262,7 +239,7 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
  *                <data>/tasks/plugins), and one <id>_plugin_enabled per
  *                plugin found.  A plugin's OWN keys are namespaced by
  *                its id (see task_app_config_get_ns).
- *   UI         — toolbar_style, bold_task_titles, native_menubar,
+ *   UI         — bold_task_titles, native_menubar,
  *                show_completed, sidebar_visible, compact_layout,
  *                due_today_show_overdue,
  *                task_list_manual_sort, kanban_view,

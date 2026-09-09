@@ -1,7 +1,7 @@
 /* ===========================================================================
  * recur.c — recurring tasks (see recur.h for the rule and the reasoning)
  *
- * Three layers, smallest first: the preset tables, the calendar arithmetic
+ * Three layers, smallest first: the unit names, the calendar arithmetic
  * (all of it through GDateTime — nothing here adds 86400 to a timestamp
  * and calls it a day), and the pass that walks the recurring tasks once.
  * =========================================================================== */
@@ -19,42 +19,14 @@
 #define RECUR_MAX_STEPS 20000
 
 /* ===========================================================================
- * The presets.
+ * Unit names.
  * =========================================================================== */
 
-/* One row per TaskRecurPreset, IN ENUM ORDER: the editor's combo appends
- * these in order and reads its active index back as the enum value, so the
- * order here is the order on screen.  interval 0 marks the two rows that
- * are not a schedule at all (Never, and Custom — which means "the user's
- * own numbers, don't touch them").                                        */
-static const struct {
-    const gchar   *label;
-    gint           interval;
-    TaskRecurUnit  unit;
-} recur_presets[TASK_RECUR_N_PRESETS] = {
-    { "Never",             0, TASK_RECUR_MINUTE },
-    { "Hourly",            1, TASK_RECUR_HOUR   },
-    { "Daily",             1, TASK_RECUR_DAY    },
-    { "Weekly",            1, TASK_RECUR_WEEK   },
-    { "Every 2 weeks",     2, TASK_RECUR_WEEK   },
-    { "Monthly",           1, TASK_RECUR_MONTH  },
-    { "Custom\xe2\x80\xa6", 0, TASK_RECUR_MINUTE },
-};
-
-/* Plural unit names for the custom row's combo, indexed by TaskRecurUnit
- * — so its active index is the enum value too.                            */
+/* Plural unit names, indexed by TaskRecurUnit — so the editor's combo can
+ * append them in order and read its active index back as the enum value.  */
 static const gchar *recur_units[TASK_RECUR_N_UNITS] = {
     "minutes", "hours", "days", "weeks", "months", "years"
 };
-
-/* task_recur_preset_label() — see recur.h.                                 */
-const gchar *
-task_recur_preset_label(TaskRecurPreset preset)
-{
-    if (preset < 0 || preset >= TASK_RECUR_N_PRESETS)
-        return recur_presets[TASK_RECUR_PRESET_NEVER].label;
-    return recur_presets[preset].label;
-}
 
 /* task_recur_unit_label() — see recur.h.                                   */
 const gchar *
@@ -63,36 +35,6 @@ task_recur_unit_label(TaskRecurUnit unit)
     if (unit < 0 || unit >= TASK_RECUR_N_UNITS)
         return recur_units[TASK_RECUR_MINUTE];
     return recur_units[unit];
-}
-
-/* task_recur_preset_spec() — see recur.h.                                  */
-gboolean
-task_recur_preset_spec(TaskRecurPreset preset, gint *interval,
-                       TaskRecurUnit *unit)
-{
-    if (preset < 0 || preset >= TASK_RECUR_N_PRESETS ||
-        preset == TASK_RECUR_PRESET_CUSTOM)
-        return FALSE;                /* nothing to expand — outputs UNTOUCHED */
-    if (interval != NULL)
-        *interval = recur_presets[preset].interval;
-    if (unit != NULL)
-        *unit = recur_presets[preset].unit;
-    return TRUE;
-}
-
-/* task_recur_preset_of() — see recur.h.                                    */
-TaskRecurPreset
-task_recur_preset_of(const Task *t)
-{
-    if (t == NULL || t->recur_interval <= 0)
-        return TASK_RECUR_PRESET_NEVER;
-    /* From HOURLY, so the interval-0 rows at either end (Never, Custom)
-     * can never be matched by a real schedule.                             */
-    for (gint p = TASK_RECUR_PRESET_HOURLY; p < TASK_RECUR_N_PRESETS; p++)
-        if (recur_presets[p].interval == t->recur_interval &&
-            recur_presets[p].unit == t->recur_unit)
-            return (TaskRecurPreset)p;
-    return TASK_RECUR_PRESET_CUSTOM;
 }
 
 /* ===========================================================================
@@ -207,6 +149,44 @@ task_recur_period_seconds(TaskRecurUnit unit, gint interval)
     return unit_s * interval;
 }
 
+/* ---------------------------------------------------------------------------
+ * task_recur_lead_default() — see recur.h.
+ *
+ * ONE WEEK, or half the period when that is shorter.  The ceiling is what
+ * someone means by "give me warning"; the half is what keeps it meaningful
+ * at the fast end, where a week is longer than the whole schedule.  Half a
+ * period can never reach task_recur_lead_seconds' clamp below, so the two
+ * rules cannot fight: this one picks a sensible value, that one is the
+ * backstop for a number typed by hand.
+ * ------------------------------------------------------------------------- */
+gint
+task_recur_lead_default(TaskRecurUnit unit, gint interval)
+{
+    /* The lead units the editor can SAY, longest first — the same four
+     * its combo offers (minutes, hours, days, weeks), because a default
+     * it cannot spell in one of them comes out as "84 hours" instead of
+     * "3 days".                                                          */
+    static const gint STEPS[] = { 7 * 24 * 60, 24 * 60, 60, 1 };
+
+    gint64 period = task_recur_period_seconds(unit, interval);
+    if (period <= 0)
+        return 0;                    /* does not recur — no lead to give    */
+    /* /120 is "half, in minutes" (seconds / 2 / 60) in one division.  It
+     * FLOORS, which is what a one-minute repeat wants: half of it is 30
+     * seconds, the column stores minutes, and 0 is the honest answer.     */
+    gint64 cap = MIN((gint64)TASK_RECUR_LEAD_DEFAULT, period / 120);
+
+    /* Then DOWN to a whole number of the largest of those that fits.  Half
+     * a week is 3.5 days, which the editor can only render as 84 hours;
+     * 3 days is the same intent said in a way someone would write it.
+     * Rounding down only, so the result stays under half a period and can
+     * never reach task_recur_lead_seconds' clamp.                         */
+    for (gsize i = 0; i < G_N_ELEMENTS(STEPS); i++)
+        if (cap >= STEPS[i])
+            return (gint)((cap / STEPS[i]) * STEPS[i]);
+    return 0;
+}
+
 /* task_recur_lead_seconds() — see recur.h.  The CLAMP is the point.        */
 gint64
 task_recur_lead_seconds(const Task *t)
@@ -313,7 +293,11 @@ task_recur_seed(const Task *t, gint64 now_ts)
         if (t->recur_start <= 0 || period <= 0)
             return task_recur_advance(now_ts, t->recur_unit,
                                       t->recur_interval, -1);
-        gint64 occ = t->recur_start;
+        /* recur_at_minute, the same fold the dated branch below uses: the
+         * anchor is the start DATE at the start TIME for every unit, so
+         * "starting at 09:00, every 3 hours" phase-locks to 9, 12, 3
+         * rather than to midnight.  One rule, no branch.                 */
+        gint64 occ = recur_at_minute(t->recur_start, t->recur_time);
         if (occ <= now_ts)
             occ += ((now_ts - occ) / period + 1) * period;
         return occ;
@@ -457,8 +441,15 @@ task_recur_phrase(const Task *t, gint64 next_ts)
 gchar *
 task_recur_describe(const Task *t, gint64 now_ts)
 {
-    if (t == NULL || t->recur_interval <= 0)
+    if (t == NULL)
         return g_strdup("");
+    /* SAY SO rather than going blank.  Interval 0 is the ordinary state
+     * of a task nobody has given a schedule, and the editor no longer
+     * greys the block out to signal it — so this line is the only thing
+     * on screen that answers "is this task set to repeat?", and an empty
+     * label answers nothing.                                             */
+    if (t->recur_interval <= 0)
+        return g_strdup("Does not repeat.");
 
     gint64 next = t->recur_next > 0 ? t->recur_next
                                     : task_recur_seed(t, now_ts);
@@ -530,6 +521,102 @@ recur_due_of(gint64 ts, gint *due_min)
     return due;
 }
 
+/* ===========================================================================
+ * The deadline timer.
+ *
+ * The pass is not periodic: it is armed for the EARLIEST fire time in the
+ * database and re-armed by each run.  A schedule that repeats every minute
+ * is therefore acted on every minute, and a database whose next occurrence
+ * is on Thursday costs no wakeups until Thursday — where a fixed cadence
+ * had to choose one number for both and got each of them wrong (a
+ * per-minute schedule saw four occurrences in five skipped, since
+ * recur_catch_up lands on the LAST one already due).
+ * =========================================================================== */
+
+/* The longest the timer will ever sleep, however far off the next
+ * occurrence is.  This is a SAFETY NET, not the mechanism: anything due
+ * sooner is still timed exactly, and only a deadline further out than this
+ * is broken into steps.
+ *
+ * It exists because a GLib timeout runs on the MONOTONIC clock, which does
+ * not advance while the machine is suspended on either X11 or quartz — so
+ * a timer armed for Thursday and spanning a laptop sleep would fire late by
+ * the length of the sleep.  Three more things move a deadline underneath a
+ * sleeping timer: an NTP step, a timezone or DST change (which moves where
+ * "Monday at 9:00 AM" actually lands), and the database being replaced by
+ * the sync folder it routinely lives in.  The pass stays CORRECT through
+ * all of them — recur_catch_up reads the wall clock and skips forward — so
+ * the only cost is lateness, and this bounds it at fifteen minutes on a
+ * deadline that was days away anyway.                                      */
+#define RECUR_MAX_SLEEP_SEC 900
+
+/* The GSource id lives HERE rather than on TaskApp: nothing outside this
+ * file arms, disarms or reads it, and the scheduler only borrows the
+ * pointer (task_worker.h) — which is exactly what makes it disarm this
+ * timer for us whenever the worker is re-armed (a database switch, say).
+ *
+ * recur_due_at is what the timer is armed FOR, which is not the same as
+ * when it will fire once RECUR_MAX_SLEEP_SEC has capped it.  It is the
+ * value task_recur_wake_by compares against.                               */
+static guint  recur_timer  = 0;
+static gint64 recur_due_at = 0;      /* unix time; 0 = nothing recurring    */
+
+static gboolean recur_deadline_cb(gpointer data);
+
+/* ---------------------------------------------------------------------------
+ * recur_arm_deadline() — wake the pass at `fire_ts` (unix seconds).
+ *
+ * 0 disarms and leaves NO timer at all, which is the ordinary state of a
+ * database with nothing recurring in it.  A time already past arms for one
+ * second rather than zero, so the callback always reaches the main loop
+ * instead of running inside the pass that asked for it.
+ * ------------------------------------------------------------------------- */
+static void
+recur_arm_deadline(TaskApp *app, gint64 fire_ts)
+{
+    if (recur_timer != 0) {
+        g_source_remove(recur_timer);
+        recur_timer = 0;
+    }
+    recur_due_at = fire_ts;
+    if (app == NULL || fire_ts <= 0)
+        return;
+
+    gint64 delay = fire_ts - (gint64)time(NULL);
+    if (delay < 1)
+        delay = 1;
+    if (delay > RECUR_MAX_SLEEP_SEC)
+        delay = RECUR_MAX_SLEEP_SEC;
+    recur_timer = g_timeout_add_seconds((guint)delay, recur_deadline_cb, app);
+}
+
+/* recur_deadline_cb() — the deadline came round.  ONE-SHOT: the pass
+ * arms the next one itself, so the id is cleared BEFORE it runs and the
+ * source that is ending cannot take the fresh one with it.                 */
+static gboolean
+recur_deadline_cb(gpointer data)
+{
+    recur_timer = 0;
+    task_recur_pass(data);
+    return G_SOURCE_REMOVE;
+}
+
+/* task_recur_wake_by() — see recur.h.                                    */
+void
+task_recur_wake_by(TaskApp *app, gint64 fire_ts)
+{
+    if (app == NULL || fire_ts <= 0)
+        return;
+    /* Only a NEARER deadline needs anything done.  One that moved further
+     * out — a schedule slowed down, a recurring task deleted — is left
+     * alone deliberately: the timer fires, the pass finds nothing due and
+     * re-arms correctly.  Arming too early is free; only arming too late
+     * would be a bug, so this is the one direction worth wiring up.       */
+    if (recur_timer != 0 && recur_due_at > 0 && fire_ts >= recur_due_at)
+        return;
+    recur_arm_deadline(app, fire_ts);
+}
+
 /* task_recur_pass() — see recur.h.                                         */
 gint
 task_recur_pass(TaskApp *app)
@@ -541,6 +628,7 @@ task_recur_pass(TaskApp *app)
     gint64 nowts   = (gint64)time(NULL);
     gint   changed = 0;              /* rows actually rolled forward        */
     gint   reopened = 0;             /* of those, ones that were Done       */
+    gint64 soonest = 0;              /* earliest fire time still to come    */
 
     for (guint i = 0; i < tasks->len; i++) {
         Task *t = g_ptr_array_index(tasks, i);
@@ -551,7 +639,9 @@ task_recur_pass(TaskApp *app)
 
         gint64 lead = task_recur_lead_seconds(t);
         gint64 fire = 0, after = 0;
+        gint64 pending = next;       /* the occurrence still ahead of us    */
         if (recur_catch_up(t, next, nowts + lead, &fire, &after)) {
+            pending = after;
             gint due_min = TASK_DUE_TIME_DEFAULT;
             gint64 due   = recur_due_of(fire, &due_min);
             /* TWO independent halves, and either may be a no-op — the same
@@ -582,8 +672,24 @@ task_recur_pass(TaskApp *app)
              * updated_at bump.                                            */
             task_db_task_recur_set_next(app->db, t->id, next);
         }
+
+        /* When this row wants to be looked at again.  Both branches leave
+         * `pending` past nowts + lead — recur_catch_up guarantees it, and
+         * the non-firing branch is that condition — so every candidate is
+         * strictly in the FUTURE and the timer can never spin.  Computing
+         * it here rather than querying for it afterwards is what keeps the
+         * lead CLAMP spelled once, in C: the SQL for a MIN over
+         * `recur_next - recur_lead` would be a second copy of a rule whose
+         * subtlety has already cost one bug.                              */
+        gint64 wake = pending - lead;
+        if (soonest == 0 || wake < soonest)
+            soonest = wake;
     }
     task_ptr_array_free_tasks(tasks);
+
+    /* Come back when the first of them is due — or never, when nothing in
+     * the database recurs.                                                */
+    recur_arm_deadline(app, soonest);
 
     /* Silent when nothing moved: this runs every few minutes and has
      * nothing to say most times.  A roll-forward changes a due date and
@@ -617,24 +723,31 @@ recur_run(TaskApp *app, const gchar *db_path)
     task_recur_pass(app);
 }
 
-/* The GSource id lives HERE rather than on TaskApp: nothing outside this
- * file arms, disarms or reads it, and the scheduler only borrows the
- * pointer (task_worker.h).                                                 */
-static guint recur_timer = 0;
-
 static const TaskWorkerDef recur_worker = {
     .id               = "recurrence",
     /* Runs BEFORE the integrations (Notes is -10, Google 0): a task the
      * pass reopens should reach both in the same press of Sync rather
      * than waiting for the next one.                                      */
     .sort             = -20,
-    .enabled_key      = "recur_enabled",
-    .enabled_default  = TRUE,
-    .interval_key     = "recur_check_min",
-    .interval_default = TASK_RECUR_CHECK_DEFAULT,
+    /* NO master switch.  A schedule on a task IS the request to act on
+     * it, so a second thing to turn on could only ever leave a repeat set
+     * in the editor doing nothing with no hint on the task as to why.
+     * The cost of running unconditionally is nil in the case that used to
+     * justify the switch: with nothing recurring, the pass arms NO timer
+     * at all (recur_arm_deadline of 0) and the feature costs one query at
+     * launch.  recur_enabled was a key until 2026-09-08.                  */
+    .enabled_key      = NULL,
+    /* NO interval either: this worker is not periodic.  A NULL key with a 0
+     * default makes the scheduler install no timer of its own, which is
+     * exactly right — the pass arms its own deadline (recur_arm_deadline)
+     * for the earliest occurrence in the database instead of waking on a
+     * cadence.  The scheduler still owns `timer` below, so arming or
+     * disarming the worker disarms that deadline for us.                  */
+    .interval_key     = NULL,
+    .interval_default = 0,
     /* ALWAYS: occurrences that came due while the app was closed have to
-     * be applied at launch, and "check only when I ask" (interval 0) does
-     * not mean "ignore the week I was away".                              */
+     * be applied at launch — and with no interval it is also what puts
+     * the first deadline on the clock.                                    */
     .initial          = TASK_WORKER_INITIAL_ALWAYS,
     /* No `running` flag: the pass is synchronous on the main thread, so a
      * tick can never land on one already in flight.                       */
@@ -645,13 +758,6 @@ static const TaskWorkerDef recur_worker = {
     .on_arm           = NULL,
     .on_blocked       = NULL,
 };
-
-/* task_recur_auto_start() — see recur.h.                                   */
-void
-task_recur_auto_start(TaskApp *app, const gchar *db_path)
-{
-    task_worker_arm(app, &recur_worker, db_path);
-}
 
 /* task_recur_init() — see recur.h.                                         */
 void

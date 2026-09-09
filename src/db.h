@@ -132,9 +132,14 @@ typedef enum {
 /* Number of values, for the editor's combo and bounds checks.              */
 #define TASK_RECUR_N_UNITS 6
 
-/* The time of day a dated recurrence lands on, in minutes past local
- * midnight: 08:00.  Every preset (Daily, Weekly, Biweekly, Monthly) uses
- * it, and the editor seeds a custom schedule with it too.                  */
+/* The time of day a recurrence is anchored at, in minutes past local
+ * midnight: 08:00.  With recur_start it is the whole "starting Monday at
+ * 9:00 AM" — the DAY is recur_start, the o'clock is this.  For the dated
+ * units it is also the time every occurrence lands on (recur_step
+ * re-applies it); for the minute and hour units it PHASE-LOCKS the stride
+ * instead, so "starting at 09:00, every 3 hours" means 9, 12, 3 rather
+ * than three hours from whenever the task was saved.  One meaning, both
+ * halves of the unit range.                                                */
 #define TASK_RECUR_TIME_DEFAULT (8 * 60)
 
 /* The time of day a DUE DATE means, in minutes past local midnight: 08:00
@@ -146,9 +151,14 @@ typedef enum {
 #define TASK_DUE_TIME_DEFAULT (8 * 60)
 
 /* How long BEFORE an occurrence a completed task is reset to New, in
- * minutes: five days.  recur.c clamps it to shorter than the repeat
- * period, so an hourly schedule is not permanently inside its own lead.    */
-#define TASK_RECUR_LEAD_DEFAULT (5 * 24 * 60)
+ * minutes: ONE WEEK.  It is a CEILING rather than a flat default —
+ * task_recur_lead_default takes the lesser of this and half the repeat
+ * period, so a weekly task gets 3.5 days and an hourly one 30 minutes
+ * instead of a week that means nothing to either.  recur.c clamps the
+ * stored value to shorter than the period as well
+ * (task_recur_lead_seconds), which is the backstop for a lead typed by
+ * hand; half a period can never reach it.                                  */
+#define TASK_RECUR_LEAD_DEFAULT (7 * 24 * 60)
 
 /* One task list.  Strings are owned by the struct.                         */
 typedef struct {

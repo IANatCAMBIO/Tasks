@@ -5076,9 +5076,7 @@ float_bar_css(const GdkRGBA *bg)
  *
  * Returned as an overlay child (halign/valign END + 20 px margins do the
  * pinning); also stored as lw->float_bar, which compact_layout_apply
- * shows and hides.  The bar is NOT registered with
- * task_app_register_toolbar — it is icons-only by design and must not grow
- * labels when the toolbar style changes.
+ * shows and hides.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 compact_bar_new(TaskLibrary *lw)
@@ -5769,9 +5767,13 @@ task_library_window_new(TaskApp *app)
      * then the task pair — and the About button pushed to the far right.   */
     GtkWidget *toolbar = gtk_toolbar_new();
     lw->toolbar = toolbar;           /* Compact Layout hides it whole       */
-    /* Small-toolbar metrics — the Notes bar height.                       */
+    /* Small-toolbar metrics — the Notes bar height.  ICONS ONLY, set here
+     * because GTK's own default is text beside the icon: every button here
+     * carries a tooltip that says more than a one-word label would, and the
+     * bar has to stay the same height as Notes'.                          */
     gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
                               GTK_ICON_SIZE_SMALL_TOOLBAR);
+    gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), GTK_TOOLBAR_ICONS);
     tool_button(lw, GTK_TOOLBAR(toolbar), "sidebar",
                 "\xe2\x97\xa7", "Sidebar", "Show or hide the lists pane",
                 G_CALLBACK(on_toggle_sidebar));
@@ -5831,9 +5833,7 @@ task_library_window_new(TaskApp *app)
      *
      * A GtkSearchEntry rather than a plain GtkEntry: it brings the
      * magnifier, the clear icon, Escape, and the typing-pause delay that
-     * keeps a keystroke from rebuilding the pane.  It is NOT registered
-     * with task_app_register_toolbar — that system swaps icons for
-     * labels, and an entry has neither.                                    */
+     * keeps a keystroke from rebuilding the pane.                          */
     lw->search_entry = gtk_search_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(lw->search_entry),
                                    SEARCH_PLACEHOLDER);
@@ -5852,7 +5852,6 @@ task_library_window_new(TaskApp *app)
     gtk_container_add(GTK_CONTAINER(search_item), lw->search_entry);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), search_item, -1);
 
-    task_app_register_toolbar(app, toolbar);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
     /* Thin rule between the toolbar and the panes (Notes look).           */
     lw->toolbar_rule = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
