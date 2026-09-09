@@ -345,7 +345,8 @@ Also the Google Tasks plugin. Installed-app flow per RFC 8252: PKCE (S256, GLib 
 loopback `GSocketService` on an ephemeral port for the redirect, and
 `access_type=offline` for a refresh token. The client credentials
 resolve in order: a `client_secret….json` next to the binary (or in
-the user config dir) → legacy `google_client_id`/`google_client_secret`
+the shared `~/.local/share/tasks` directory, alongside the database and
+the ini) → legacy `google_client_id`/`google_client_secret`
 ini keys → a baked-in default from `client_credentials.mk`. The
 refresh token persists in `tasks.ini` (`gtasks_refresh_token`);
 access tokens live in memory only. The redirect listener redeems the

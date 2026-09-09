@@ -42,14 +42,12 @@ TYPE, not an old name — do not sweep them.  The sidebar has a collapsible
 `manual_order_group_<id>` and Google's own
 `/users/@me/lists` API paths all mean lists-the-data-type.
 
-The repo DIRECTORY is `~/salt_development/tasks` and the GitHub repo is
-`IANatCAMBIO/Tasks` — both renamed from `lists`/`Lists`, so a doc or note
-that still says `lists` is stale rather than describing something that
-exists.  The configured REMOTE URL is still the old
-`IANatCAMBIO/Lists.git`, and pushes work because GitHub redirects: every
-push prints "This repository moved" and then succeeds.  That is the one
-`Lists` spelling left, and it is a URL rather than a decision — point the
-remote at `IANatCAMBIO/Tasks.git` whenever it is convenient.
+The repo DIRECTORY is `~/salt_development/tasks`, the GitHub repo is
+`IANatCAMBIO/Tasks` and the remote URL names it — all renamed from
+`lists`/`Lists`, so a doc or note that still says `lists` is stale rather
+than describing something that exists.  The remote carried the old
+`Lists.git` path until 2026-09-09 and pushed fine on GitHub's redirect;
+nothing depends on that redirect any more.
 
 Public symbols are prefixed `task_`, types `Task`, macros `TASK_`.  These
 were `bt_`/`Bt`/`BT_` — "Blue Tasks", the app's first name — renamed on
@@ -1664,9 +1662,12 @@ is core code any more.
   GSocketService on an ephemeral port, `access_type=offline` +
   `prompt=consent`; refresh token persisted in the ini
   (`gtasks_refresh_token`), access tokens in memory only.  The OAuth
-  client resolves as: client-secret JSON file next to the binary (or
-  user config dir) → legacy ini keys `google_client_id`/`_secret` (no
-  UI writes them) → baked-in default via gitignored
+  client resolves as: client-secret JSON file next to the binary (or the
+  app's SHARED DIRECTORY, `<data dir>/tasks` — it was the user CONFIG dir
+  until 2026-09-09, the last thing living outside the one directory that
+  holds the database, the ini and the plugins) → legacy ini keys
+  `google_client_id`/`_secret` (no UI writes them) → baked-in default via
+  gitignored
   `client_credentials.mk`.  THIS machine bakes via
   client_credentials.mk ONLY — the JSON was deliberately deleted
   (2026-07-15); don't look for it or recreate it.  Objects and

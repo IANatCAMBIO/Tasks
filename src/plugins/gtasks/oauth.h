@@ -21,7 +21,8 @@
  *
  * The OAuth client (it identifies the app; it grants nothing by itself)
  * resolves in order: Google's client-secret JSON file next to the
- * binary or under the user config dir → the legacy ini keys
+ * binary or in the app's shared directory (<user data dir>/tasks,
+ * alongside the database and the ini) → the legacy ini keys
  * google_client_id / google_client_secret (no UI writes them) → the
  * client baked in at build time via client_credentials.mk.  The
  * registration is normally the developer's one-time job; users just

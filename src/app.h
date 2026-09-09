@@ -221,10 +221,16 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
                           const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
 
 /* ---------------------------------------------------------------------------
- * Config — same model as Notes: tasks.ini next to the binary
- * (portable mode) falling back to ~/.config/tasks/tasks.ini when that
- * directory is unwritable.  Loaded ONCE into memory; written through on
- * every change.  Keys used (see tasks.ini.defaults):
+ * Config — tasks.ini lives in the app's SHARED DIRECTORY,
+ * task_db_default_dir() (<user data dir>/tasks), with the database and
+ * the plugins.  Resolved ONCE, in three steps: that file if it EXISTS;
+ * else tasks.ini NEXT TO THE BINARY if it EXISTS (portable mode, so a
+ * source tree or a USB copy keeps the ini it came with); else CREATED in
+ * the shared directory.  Both tests are for EXISTENCE — a writability
+ * test is what used to let a development tree outrank the user's real
+ * settings.  There is no ~/.config/tasks fallback and no migration to
+ * one.  Loaded ONCE into memory; written through on every change.
+ * Keys used (see tasks.ini.defaults):
  *   sync       — google_sync_enabled, google_client_id,
  *                google_client_secret, gtasks_refresh_token,
  *                sync_interval_min, sync_toolbar_button

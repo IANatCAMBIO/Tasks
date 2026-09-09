@@ -79,8 +79,11 @@ static struct {
 } flow;
 
 /* The Google Cloud console's downloaded OAuth client file, looked for
- * next to the binary, then in the user config dir.  It is gitignored —
- * never commit it.                                                         */
+ * next to the binary, then in the app's shared directory — the same
+ * <user data dir>/tasks that holds the database, the ini and the
+ * plugins, so there is ONE place a user has to know about.  It used to
+ * be looked for under the user CONFIG dir, which was the last thing left
+ * outside that directory.  It is gitignored — never commit it.            */
 #define TASK_CLIENT_FILE "client_secret.apps.googleusercontent.com.json"
 
 /* ---------------------------------------------------------------------------
@@ -92,8 +95,15 @@ static struct {
 static gboolean
 load_client_file(gchar **id, gchar **secret)
 {
-    /* Two candidates: beside the binary, then the config subdirectory.     */
-    const gchar *dirs[2]    = { host->ui->exe_dir(), g_get_user_config_dir() };
+    /* Two candidates: beside the binary, then the shared directory.
+     *
+     * Built here rather than asked of the host: GLib is the shared floor
+     * (plugin.h), TASK_APP_DIR is a shared macro, and a host call for a
+     * path both sides can already spell would cost an ABI revision for
+     * nothing — the same reasoning that has this plugin build its own
+     * GtkFileChooserDialog.  The "tasks" segment is the part that could
+     * drift, and the macro is what stops it.                             */
+    const gchar *dirs[2]    = { host->ui->exe_dir(), g_get_user_data_dir() };
     const gchar *subdirs[2] = { NULL, TASK_APP_DIR };
     for (gsize i = 0; i < G_N_ELEMENTS(dirs); i++) {
         if (dirs[i] == NULL)
