@@ -849,7 +849,7 @@ editor_pick_date(TaskEditor *ed, GtkWidget *entry, const gchar *title)
     /* Preselect what the entry already holds, if anything.                 */
     gint64 cur = task_due_parse(gtk_entry_get_text(GTK_ENTRY(entry)));
     if (cur != 0) {
-        GDateTime *dt = g_date_time_new_from_unix_local(cur);
+        GDateTime *dt = task_local_dt(cur);
         gtk_calendar_select_month(GTK_CALENDAR(cal),
                                   (guint)g_date_time_get_month(dt) - 1,
                                   (guint)g_date_time_get_year(dt));

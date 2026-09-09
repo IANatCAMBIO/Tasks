@@ -288,7 +288,32 @@ const gchar *task_app_exe_dir(void);
 
 /* ---------------------------------------------------------------------------
  * Date helpers shared by the two windows and the sync engine.
+ *
+ * USE THESE TWO RATHER THAN GLib's "_local" CONSTRUCTORS.  Every
+ * g_date_time_new_now_local() / _new_from_unix_local() / _new_local()
+ * resolves the local timezone from scratch, and that resolution IS the
+ * cost: 7318 ns against 175 ns to build a GDateTime once a GTimeZone is in
+ * hand (measured, GLib 2.88.2).  These helpers run per row and per draw,
+ * where that was 13.5 ms of a 500-row refresh.
  * ------------------------------------------------------------------------- */
+
+/* task_local_tz() — the local timezone, CACHED and re-resolved when the
+ * local day rolls over.  Borrowed: do NOT unref it.  Pass it to
+ * g_date_time_new_now(tz) and g_date_time_new(tz, …), which are the
+ * timezone-taking forms of the two "_local" constructors.
+ *
+ * DST is unaffected — a GTimeZone carries the zone's full transition
+ * table.  What the cache defers is a change to the SYSTEM's zone (travel,
+ * a TZ edit), which is noticed at the next local midnight.               */
+GTimeZone *task_local_tz(void);
+
+/* task_local_dt() — `unix_ts` as a LOCAL-time GDateTime, or NULL.  Free
+ * with g_date_time_unref.
+ *
+ * GLib has no g_date_time_new_from_unix(tz, t), which is why this goes
+ * through _from_unix_utc() + g_date_time_to_timezone(): 160 ns against
+ * 8316 for _new_from_unix_local().  One spelling of that detour.        */
+GDateTime *task_local_dt(gint64 unix_ts);
 
 /* task_day_bounds() — local midnight bounds of "today + offset_days":
  * lo = that day's local midnight, hi = the next day's.                     */

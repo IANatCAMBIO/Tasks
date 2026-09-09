@@ -233,7 +233,7 @@ backup_thread(gpointer data)
      * manual press), so a suffix is appended until the name is free —
      * VACUUM INTO refuses an existing file, and silently overwriting one
      * is exactly what this module must never do.                          */
-    GDateTime *now = g_date_time_new_now_local();
+    GDateTime *now = g_date_time_new_now(task_local_tz());
     gchar *when = g_date_time_format(now, "%Y%m%d-%H%M%S");
     g_date_time_unref(now);
     gchar *dest = NULL;

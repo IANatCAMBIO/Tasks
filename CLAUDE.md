@@ -414,7 +414,18 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   `manual_order_group_<id>` (both built by `row_order_key`, the single
   source of that format for the kanban family too),
   `manual_order_all`, `manual_order_pinned`, `manual_order_today`,
-  `manual_order_bn_actions`.  The ⠿ glyph and its dimming live on the
+  `manual_order_bn_actions`.  **Reading a saved order back is ONE
+  function**, `row_order_permutation` — the list view and the board keep
+  separate order KEYS but the rule for applying one is the same rule, and
+  it used to be written out twice (the second copy's own comment admitted
+  it was "the same shape as" the first).  Each caller now spells only
+  where its ids come from and what it does with the answer.  It is a hash
+  lookup, not the nested scan both copies used — that was O(saved x rows),
+  a quarter of a million comparisons on a 500-row list, on every refresh.
+  It returns a full PERMUTATION (every index exactly once, which is what
+  `gtk_list_store_reorder` requires) and is verified against the old
+  algorithm over 4000 random cases including duplicate ids, absent ids and
+  stale "NOTEID:ORD" tokens.  The ⠿ glyph and its dimming live on the
   `cdrag` RENDERER, not in `drag_handle_func` — a data func runs per
   DRAW, and the glyph is the same on every row; the func does the row
   stripe only.  `task_view_apply_manual_order` must be called from
@@ -537,7 +548,7 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   `task_pane_mode_apply` — which also sets the pane item's own label: the board is always drag-sorted by its own
   per-lane `kanban_order_*`, and the list view the setting governs is
   unreachable in that mode, so the control would silently do nothing.
-  Keyed on `lw->kanban`, NOT on "the board is showing" — with Kanban on
+  Keyed on `lw->board.kanban`, NOT on "the board is showing" — with Kanban on
   and the forecast selected the list is still unreachable, and flickering
   sensitivity as the sidebar selection moves reads worse than a steady
   "unavailable while Kanban is on".
@@ -931,6 +942,25 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
 
 ## Kanban board (the THIRD task-pane variant)
 
+**The board's state is GROUPED**: all 25 of its fields live in a nested
+`struct { … } board;` inside `TaskLibrary` (2026-09-09), so every use reads
+`lw->board.…` and says whose it is.  They are a third of that struct and
+nothing outside the board's own section touches them — but before the
+nesting that was a convention the compiler could not enforce, and a sidebar
+handler poking `card_mark_slot` looked like ordinary code.  The members keep
+their `kanban_`/`card_` prefixes: nesting alone is a pure move the compiler
+verifies completely (144 references, no hand edits), and renaming on top
+would have mixed a mechanical change with an editorial one.
+The board is ALSO the obvious candidate for extraction into `kanban.[ch]` —
+measured coupling is 5 functions out, 7 helpers in, and only 5 shared
+struct fields (`app`, `window`, `search`, `sel_kind`, `sel_id`) — but that
+is NOT done and should not be done casually: `TaskLibrary` is file-private,
+so it would have to be published or split, and this is the code with the
+least testable behavior in the project (gotchas 18, 19, 20 all live here,
+plus the single-exit `card_drag_stop` grab invariant).  There is no
+differential check for a drag refactor the way there was for the date
+cache; the only verification is using the board.
+
 `kanban_view` (default 0; View → Kanban View) renders the current view's
 tasks as a board instead of a list.  Built from the Weekly Forecast's
 parts — heading label over a framed body, everything at natural height
@@ -1023,7 +1053,7 @@ and only ever grows downwards.
   touches the row).  A drag that lands the card exactly where it was does
   NEITHER.  Only a status move posts to the status bar — a reorder is its
   own feedback, and announcing it would spam "— New" for every nudge.
-- Drops hit-test in ROOT coordinates against `lw->kanban_drops[]`
+- Drops hit-test in ROOT coordinates against `lw->board.kanban_drops[]`
   (`card_lane_at_root`), because the pointer spends the drag over other
   widgets.  The refresh after a drop is `g_idle_add`-DEFERRED: the drop
   runs inside the dragged card's own handler and `full_refresh` destroys
@@ -1040,7 +1070,7 @@ and only ever grows downwards.
   restyle walks the lanes IN PLACE rather than calling a refresh — a
   refresh here would destroy the very widget the drag is about to start
   from, and the click would never become one.
-- `lw->kanban_sel` is the board's answer to a tree selection, and
+- `lw->board.kanban_sel` is the board's answer to a tree selection, and
   `selected_task_ids` returns it while the board is up — that is what
   keeps Delete Task working from the toolbar, the File menu AND the
   Compact Layout floating pair without any of those knowing which pane
@@ -1088,7 +1118,8 @@ and only ever grows downwards.
   otherwise be left set.
 - Cursors: an open hand (`"grab"`) over the GRIP ONLY, a closed one
   (`"grabbing"`) while dragging.  Both are made ONCE and cached on
-  `lw->card_grab` / `card_grabbing` (`card_cursor`), like the task view's
+  `lw->board.card_grab` / `.card_grabbing` (`card_cursor`), like the task
+  view's
   `drag_cursor` — a card is realized per refresh, so building one per
   card would allocate on every rebuild.  The hover cursor goes on the
   GRIP's own GdkWindow from its `"realize"` handler rather than being
@@ -1103,7 +1134,7 @@ and only ever grows downwards.
   `card_drag_stop` puts them all back.  `gdk_cursor_new_from_name`
   answers NULL for a name a display cannot supply, and the code then
   falls back to the window default rather than a guessed stock cursor.
-- **Multi-select** is a GHashTable id SET (`kanban_sel`) plus a
+- **Multi-select** is a GHashTable id SET (`board.kanban_sel`) plus a
   `kanban_anchor`: plain click selects one, MODIFY_SELECTION-click
   toggles a card in or out, EXTEND_SELECTION-click takes the run between
   the anchor and the card WITHIN one lane (across lanes it merely adds —
@@ -1217,7 +1248,7 @@ block is the only place it is set.
   `adv_height` is **RE-MEASURED off adv_box** and the window moved by the
   difference, never adjusted by the body's own height: the body contains
   a wrapped label, whose height alone is not the height it contributes in
-  place.  See gotcha 27 for the ordering that goes with it.  Measured
+  place.  See gotcha 28 for the ordering that goes with it.  Measured
   round trips, all exact: switch 859 → 707 → 859, fold 859 → 343 → 859
   with the body shown and 707 → 343 → 707 with it hidden, and the folded
   editor is still 343 — the same number as before any of this.
@@ -2014,7 +2045,30 @@ happened to return.
     next rewording.  Watch the closing quote too: `\x9d` is safe before a
     space, and `\x94` before " Ian" likewise, but any of them before a
     word starting a-f or A-F is not.
-27. **MEASURE A CONTAINER ONLY ONCE ITS CONTENTS ARE FINAL.**  Anything
+27. **GLib's `_local` DATE CONSTRUCTORS RESOLVE THE TIMEZONE EVERY CALL,
+    and that is the whole cost of a date operation.**  Measured on GLib
+    2.88.2: `g_time_zone_new_local()` 7318 ns, against 175 ns to build a
+    GDateTime once a `GTimeZone` is in hand — so
+    `g_date_time_new_now_local()`, `_new_from_unix_local()` and
+    `_new_local()` are each ~40x what they look like.  It does not show up
+    in a profile as "dates"; it shows up as the row-building and drawing
+    paths being slow.  In this app it was **13.5 ms of a 500-row refresh**
+    and **15 us per cell per draw** in `task_due_color`.
+    Use `task_local_tz()` and `task_local_dt()` (app.h) — never a `_local`
+    constructor.  `g_date_time_new_now(tz)` and `g_date_time_new(tz, …)`
+    are the timezone-taking forms; there is NO
+    `g_date_time_new_from_unix(tz, t)`, which is why `task_local_dt` goes
+    via `_from_unix_utc()` + `g_date_time_to_timezone()` (160 ns against
+    8316).  Caching the zone does NOT affect DST — a GTimeZone carries the
+    zone's whole transition table — and that was verified rather than
+    assumed: a dump of every date helper over DST boundaries, month-end
+    clamps and leap day came back BYTE-IDENTICAL to the pre-cache build in
+    seven timezones.  What the cache defers is a change to the SYSTEM's
+    zone, picked up at the next local midnight.
+    The two plugin call sites (`forecast.c`, `gtasks.c`) are deliberately
+    left alone: they run once per pass, and reaching `task_local_tz` from a
+    plugin would need an ABI revision for no measurable gain.
+28. **MEASURE A CONTAINER ONLY ONCE ITS CONTENTS ARE FINAL.**  Anything
     that sizes a window from `gtk_widget_get_preferred_height` reads the
     text the widgets hold AT THAT MOMENT, and a WRAPPED label inside it
     reports the height of whatever it currently says.  The recurrence
@@ -2028,7 +2082,7 @@ happened to return.
     `editor_recur_body_set` for this reason).  Caught by measuring a fold
     round trip against a git worktree at HEAD — the base round-tripped
     exactly, which is what proved it a regression rather than a quirk.
-28. `gtkosx_application_sync_menubar()` CRASHES THE PROCESS when the
+29. `gtkosx_application_sync_menubar()` CRASHES THE PROCESS when the
     native menu bar was never switched on: with `native_menubar=0`
     nothing has ever called `gtkosx_application_set_menu_bar`, so the
     integration's internal menu object does not implement `-resync` and

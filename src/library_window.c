@@ -78,65 +78,83 @@ typedef struct {
      * window was constructed has to be able to make its pane too.        */
     GHashTable   *panels;            /* const TaskView* -> GtkWidget*      */
     GtkWidget    *task_pane;         /* the box a new panel packs into     */
-    /* Kanban board — the THIRD task-pane variant, one lane per
+    /* ---------------------------------------------------------------------
+     * The Kanban board — the THIRD task-pane variant, one lane per
      * TaskStatus.  Lane INDEX IS the status value, which is what lets a
-     * drop read its target status straight off the lane it landed on.      */
-    GtkWidget    *kanban_box;        /* the board's outer scroller          */
-    GtkWidget    *kanban_labels[TASK_STATUS_N_VALUES];  /* lane headings    */
-    GtkWidget    *kanban_lanes[TASK_STATUS_N_VALUES];   /* card containers  */
-    GHashTable   *kanban_sel;        /* SET of selected task ids (keys are
-                                      * GSIZE_TO_POINTER'd) — the board's
-                                      * answer to the tree view's
-                                      * multi-selection, so Delete Task and
-                                      * the context menu have something to
-                                      * act on.  Created with the window;
-                                      * never NULL.                         */
-    gint64        kanban_anchor;     /* last plainly-clicked card: the fixed
-                                      * end of a shift-click range          */
-    gboolean      kanban;            /* the kanban_view config flag, cached
-                                      * like manual_sort; kanban_apply is
-                                      * the single writer                   */
-    gboolean      done_show_all;     /* the Done lane's "Show All" link has
-                                      * been clicked.  TRANSIENT — not a
-                                      * config key: it is reset whenever the
-                                      * sidebar selection moves, so leaving a
-                                      * list and coming back does not bring
-                                      * a thousand completed cards with it  */
-    GtkWidget    *kanban_drops[TASK_STATUS_N_VALUES];  /* lane hit boxes    */
-    guint         kanban_counts[TASK_STATUS_N_VALUES]; /* what each lane
-                                      * STOOD FOR at the last render (the
-                                      * heading's number, not the number of
-                                      * cards drawn — the Done lane is
-                                      * capped).  Half of the test that
-                                      * lets a refresh skip the rebuild;
-                                      * see kanban_plan_matches            */
-    GdkCursor    *card_grab;         /* "grab" — hovering a card            */
-    GdkCursor    *card_grabbing;     /* "grabbing" — dragging one.  Both
-                                      * made ONCE and kept, like
-                                      * drag_cursor: a card is realized per
-                                      * refresh, so building one per card
-                                      * would allocate on every rebuild     */
-    /* The hand-rolled card drag (GTK DnD is not used on the board — see
-     * the Kanban banner).  `card_armed` is the window between the press
-     * and the motion threshold, where it is still only a click.           */
-    GtkWidget    *card_drag_src;     /* card under the pointer, or NULL     */
-    GtkWidget    *card_drag_handle;  /* its ⠿ grip: the grab window and the
-                                      * only place a drag can start from    */
-    gint64        card_drag_id;      /* its task                            */
-    gboolean      card_armed;        /* pressed, not yet a drag             */
-    gboolean      card_dragging;     /* past the threshold, grab held       */
-    gint          card_hot_x;        /* pointer offset inside the card, so  */
-    gint          card_hot_y;        /* the ghost sits where it was picked  */
-    gdouble       card_press_rx;     /* press position in ROOT coords —     */
-    gdouble       card_press_ry;     /* the threshold is measured from it   */
-    GtkWidget    *card_ghost;        /* the floating translucent copy       */
-    GtkWidget    *card_mark;         /* insertion marker, or NULL           */
-    gint          card_mark_lane;    /* where the marker currently sits —   */
-    gint          card_mark_slot;    /* only a CHANGE moves it, so the
-                                      * pointer can wander inside a slot
-                                      * without any widget churn            */
-    gulong        card_key_handler;  /* Escape-cancels handler on the
-                                      * toplevel, live only while dragging  */
+     * drop read its target status straight off the lane it landed on.
+     *
+     * GROUPED so that ownership is stated rather than remembered: these
+     * are a THIRD of TaskLibrary's fields and NOTHING outside the board's
+     * own section reads them, but until they were nested that was a
+     * convention the compiler could not hold anyone to — a sidebar
+     * handler poking card_mark_slot looked exactly like legitimate code.
+     * `lw->board.` now says whose it is at every use.
+     *
+     * The members keep their kanban_/card_ prefixes even though the
+     * struct name now repeats them.  That is deliberate: nesting alone is
+     * a pure move the compiler verifies completely, and renaming on top
+     * of it would mix a mechanical change with an editorial one.  Dropping
+     * the prefixes later is its own equally mechanical step.
+     * ------------------------------------------------------------------- */
+    struct {
+        GtkWidget    *kanban_box;        /* the board's outer scroller          */
+        GtkWidget    *kanban_labels[TASK_STATUS_N_VALUES];  /* lane headings    */
+        GtkWidget    *kanban_lanes[TASK_STATUS_N_VALUES];   /* card containers  */
+        GHashTable   *kanban_sel;        /* SET of selected task ids (keys are
+                                          * GSIZE_TO_POINTER'd) — the board's
+                                          * answer to the tree view's
+                                          * multi-selection, so Delete Task and
+                                          * the context menu have something to
+                                          * act on.  Created with the window;
+                                          * never NULL.                         */
+        gint64        kanban_anchor;     /* last plainly-clicked card: the fixed
+                                          * end of a shift-click range          */
+        gboolean      kanban;            /* the kanban_view config flag, cached
+                                          * like manual_sort; kanban_apply is
+                                          * the single writer                   */
+        gboolean      done_show_all;     /* the Done lane's "Show All" link has
+                                          * been clicked.  TRANSIENT — not a
+                                          * config key: it is reset whenever the
+                                          * sidebar selection moves, so leaving a
+                                          * list and coming back does not bring
+                                          * a thousand completed cards with it  */
+        GtkWidget    *kanban_drops[TASK_STATUS_N_VALUES];  /* lane hit boxes    */
+        guint         kanban_counts[TASK_STATUS_N_VALUES]; /* what each lane
+                                          * STOOD FOR at the last render (the
+                                          * heading's number, not the number of
+                                          * cards drawn — the Done lane is
+                                          * capped).  Half of the test that
+                                          * lets a refresh skip the rebuild;
+                                          * see kanban_plan_matches            */
+        GdkCursor    *card_grab;         /* "grab" — hovering a card            */
+        GdkCursor    *card_grabbing;     /* "grabbing" — dragging one.  Both
+                                          * made ONCE and kept, like
+                                          * drag_cursor: a card is realized per
+                                          * refresh, so building one per card
+                                          * would allocate on every rebuild     */
+        /* The hand-rolled card drag (GTK DnD is not used on the board — see
+         * the Kanban banner).  `card_armed` is the window between the press
+         * and the motion threshold, where it is still only a click.           */
+        GtkWidget    *card_drag_src;     /* card under the pointer, or NULL     */
+        GtkWidget    *card_drag_handle;  /* its ⠿ grip: the grab window and the
+                                          * only place a drag can start from    */
+        gint64        card_drag_id;      /* its task                            */
+        gboolean      card_armed;        /* pressed, not yet a drag             */
+        gboolean      card_dragging;     /* past the threshold, grab held       */
+        gint          card_hot_x;        /* pointer offset inside the card, so  */
+        gint          card_hot_y;        /* the ghost sits where it was picked  */
+        gdouble       card_press_rx;     /* press position in ROOT coords —     */
+        gdouble       card_press_ry;     /* the threshold is measured from it   */
+        GtkWidget    *card_ghost;        /* the floating translucent copy       */
+        GtkWidget    *card_mark;         /* insertion marker, or NULL           */
+        gint          card_mark_lane;    /* where the marker currently sits —   */
+        gint          card_mark_slot;    /* only a CHANGE moves it, so the
+                                          * pointer can wander inside a slot
+                                          * without any widget churn            */
+        gulong        card_key_handler;  /* Escape-cancels handler on the
+                                          * toplevel, live only while dragging  */
+    } board;
+
     GtkWidget    *sidebar_box;       /* for the toolbar show/hide toggle    */
     GtkWidget    *toolbar;           /* hidden by Compact Layout            */
     GtkWidget    *toolbar_rule;      /* the thin rule under the toolbar     */
@@ -196,6 +214,11 @@ typedef struct {
                                           * is the single writer.          */
     gboolean             drag_active;    /* live task-row drag in progress  */
     GtkTreeRowReference *drag_row_ref;   /* auto-updating ref to drag row  */
+    gint64               drag_task_id;   /* … and that row's task, so the
+                                          * per-draw highlight can ask
+                                          * "is this it?" without building
+                                          * a GtkTreePath (see
+                                          * task_row_bg_func)              */
     GtkTreeRowReference *drag_lock_ref;  /* row just swapped; locked until
                                           * cursor re-enters drag row      */
     GdkCursor           *drag_cursor;    /* the "ns-resize" cursor, made
@@ -467,6 +490,8 @@ scroll_keep_queue(GtkWidget *view)
 static void     task_view_apply_manual_order(TaskLibrary *lw);
 static void     task_manual_sort_apply(TaskLibrary *lw);
 static gchar   *row_order_key(const gchar *family, gint kind, gint64 id);
+static gint    *row_order_permutation(const gint64 *ids, gint n,
+                                      const gchar *saved);
 static void     row_order_keys_drop(gint kind, gint64 id);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
 static void     on_toggle_kanban(GtkWidget *, gpointer);
@@ -1023,7 +1048,7 @@ static void
 on_handle_realize(GtkWidget *handle, gpointer data)
 {
     TaskLibrary *lw = data;
-    card_set_cursor(handle, card_cursor(handle, &lw->card_grab, "grab"));
+    card_set_cursor(handle, card_cursor(handle, &lw->board.card_grab, "grab"));
 }
 
 /* Defined below with the rest of the drag engine; on_card_press needs the
@@ -1076,14 +1101,14 @@ on_handle_press(GtkWidget *handle, GdkEventButton *ev, gpointer data)
     gint cx = 0, cy = 0;
     gtk_widget_translate_coordinates(handle, card, (gint)ev->x, (gint)ev->y,
                                      &cx, &cy);
-    lw->card_armed       = TRUE;
-    lw->card_drag_src    = card;
-    lw->card_drag_handle = handle;
-    lw->card_drag_id     = id;
-    lw->card_press_rx    = ev->x_root;
-    lw->card_press_ry    = ev->y_root;
-    lw->card_hot_x       = cx;
-    lw->card_hot_y       = cy;
+    lw->board.card_armed       = TRUE;
+    lw->board.card_drag_src    = card;
+    lw->board.card_drag_handle = handle;
+    lw->board.card_drag_id     = id;
+    lw->board.card_press_rx    = ev->x_root;
+    lw->board.card_press_ry    = ev->y_root;
+    lw->board.card_hot_x       = cx;
+    lw->board.card_hot_y       = cy;
     return FALSE;                    /* let the card select as well        */
 }
 
@@ -1101,8 +1126,8 @@ on_handle_press(GtkWidget *handle, GdkEventButton *ev, gpointer data)
 static gboolean
 card_sel_has(TaskLibrary *lw, gint64 id)
 {
-    return lw->kanban_sel != NULL &&
-           g_hash_table_contains(lw->kanban_sel,
+    return lw->board.kanban_sel != NULL &&
+           g_hash_table_contains(lw->board.kanban_sel,
                                  GSIZE_TO_POINTER((gsize)id));
 }
 
@@ -1110,19 +1135,19 @@ static void
 card_sel_add(TaskLibrary *lw, gint64 id)
 {
     if (id != 0)
-        g_hash_table_add(lw->kanban_sel, GSIZE_TO_POINTER((gsize)id));
+        g_hash_table_add(lw->board.kanban_sel, GSIZE_TO_POINTER((gsize)id));
 }
 
 static void
 card_sel_remove(TaskLibrary *lw, gint64 id)
 {
-    g_hash_table_remove(lw->kanban_sel, GSIZE_TO_POINTER((gsize)id));
+    g_hash_table_remove(lw->board.kanban_sel, GSIZE_TO_POINTER((gsize)id));
 }
 
 static guint
 card_sel_count(TaskLibrary *lw)
 {
-    return lw->kanban_sel != NULL ? g_hash_table_size(lw->kanban_sel) : 0;
+    return lw->board.kanban_sel != NULL ? g_hash_table_size(lw->board.kanban_sel) : 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1136,10 +1161,10 @@ static void
 card_restyle(TaskLibrary *lw)
 {
     for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
-        if (lw->kanban_lanes[s] == NULL)
+        if (lw->board.kanban_lanes[s] == NULL)
             continue;
         GList *kids =
-            gtk_container_get_children(GTK_CONTAINER(lw->kanban_lanes[s]));
+            gtk_container_get_children(GTK_CONTAINER(lw->board.kanban_lanes[s]));
         for (GList *k = kids; k != NULL; k = k->next) {
             GtkWidget *card = GTK_WIDGET(k->data);
             gint64 id = card_task_id(card);
@@ -1159,9 +1184,9 @@ card_restyle(TaskLibrary *lw)
 static void
 card_select(TaskLibrary *lw, gint64 id)
 {
-    g_hash_table_remove_all(lw->kanban_sel);
+    g_hash_table_remove_all(lw->board.kanban_sel);
     card_sel_add(lw, id);
-    lw->kanban_anchor = id;
+    lw->board.kanban_anchor = id;
     card_restyle(lw);
 }
 
@@ -1201,7 +1226,7 @@ card_sel_ids(TaskLibrary *lw)
 static void
 card_sel_range(TaskLibrary *lw, gint64 id)
 {
-    gint64 anchor = lw->kanban_anchor;
+    gint64 anchor = lw->board.kanban_anchor;
     if (anchor == 0 || anchor == id) {
         card_sel_add(lw, id);
         card_restyle(lw);
@@ -1270,7 +1295,7 @@ on_card_press(GtkWidget *card, GdkEventButton *ev, gpointer data)
          * kanban_box, never the card: an attached menu dies with its
          * widget, and every action here refreshes the board and destroys
          * the card underneath it.                                        */
-        return task_context_menu_popup(lw, lw->kanban_box, ev);
+        return task_context_menu_popup(lw, lw->board.kanban_box, ev);
     }
 
     if (ev->type == GDK_BUTTON_PRESS) {
@@ -1281,7 +1306,7 @@ on_card_press(GtkWidget *card, GdkEventButton *ev, gpointer data)
                 card_sel_remove(lw, id);
             else
                 card_sel_add(lw, id);
-            lw->kanban_anchor = id;
+            lw->board.kanban_anchor = id;
             card_restyle(lw);
         } else {
             /* A plain click INSIDE the selection keeps it: that is what
@@ -1297,7 +1322,7 @@ on_card_press(GtkWidget *card, GdkEventButton *ev, gpointer data)
             if (!card_sel_has(lw, id))
                 card_select(lw, id);
             else
-                lw->kanban_anchor = id;
+                lw->board.kanban_anchor = id;
         }
     }
 
@@ -1320,7 +1345,7 @@ static gint
 card_lane_at_root(TaskLibrary *lw, gint rx, gint ry)
 {
     for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
-        GtkWidget *box = lw->kanban_drops[s];
+        GtkWidget *box = lw->board.kanban_drops[s];
         if (box == NULL || !gtk_widget_get_mapped(box))
             continue;
         GdkWindow *win = gtk_widget_get_window(box);
@@ -1451,7 +1476,7 @@ card_ghost_new(GtkWidget *card, gint n_moving)
 static void
 card_drag_stop(TaskLibrary *lw)
 {
-    if (lw->card_dragging) {
+    if (lw->board.card_dragging) {
         GdkDisplay *dpy = gtk_widget_get_display(lw->window);
         gdk_seat_ungrab(gdk_display_get_default_seat(dpy));
         /* Put the window cursors back.  The card keeps the OPEN hand (the
@@ -1461,27 +1486,27 @@ card_drag_stop(TaskLibrary *lw)
         /* The grip keeps the OPEN hand (the pointer may still be over it);
          * the card loses its dimming.  Two different widgets, so two
          * different restorations.                                         */
-        if (lw->card_drag_handle != NULL)
-            card_set_cursor(lw->card_drag_handle,
-                            card_cursor(lw->card_drag_handle,
-                                        &lw->card_grab, "grab"));
-        if (lw->card_drag_src != NULL)
+        if (lw->board.card_drag_handle != NULL)
+            card_set_cursor(lw->board.card_drag_handle,
+                            card_cursor(lw->board.card_drag_handle,
+                                        &lw->board.card_grab, "grab"));
+        if (lw->board.card_drag_src != NULL)
             gtk_style_context_remove_class(
-                gtk_widget_get_style_context(lw->card_drag_src),
+                gtk_widget_get_style_context(lw->board.card_drag_src),
                 "task-card-dragging");
         card_lane_highlight(lw, -1);
         card_mark_clear(lw);
     }
-    if (lw->card_key_handler != 0) {
-        g_signal_handler_disconnect(lw->window, lw->card_key_handler);
-        lw->card_key_handler = 0;
+    if (lw->board.card_key_handler != 0) {
+        g_signal_handler_disconnect(lw->window, lw->board.card_key_handler);
+        lw->board.card_key_handler = 0;
     }
-    g_clear_pointer(&lw->card_ghost, gtk_widget_destroy);
-    lw->card_dragging    = FALSE;
-    lw->card_armed       = FALSE;
-    lw->card_drag_src    = NULL;
-    lw->card_drag_handle = NULL;
-    lw->card_drag_id     = 0;
+    g_clear_pointer(&lw->board.card_ghost, gtk_widget_destroy);
+    lw->board.card_dragging    = FALSE;
+    lw->board.card_armed       = FALSE;
+    lw->board.card_drag_src    = NULL;
+    lw->board.card_drag_handle = NULL;
+    lw->board.card_drag_id     = 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1513,11 +1538,7 @@ kanban_order_key(TaskLibrary *lw)
 
 /* ---------------------------------------------------------------------------
  * kanban_order_apply() — reorder `tasks` in place to match the saved
- * order: saved ids first in their saved sequence, then anything the saved
- * list does not mention (a task created since) appended in query order.
- *
- * The same shape as task_view_apply_manual_order, and forgiving in the
- * same way: an id that no longer exists simply matches nothing.
+ * card order for the current view (see row_order_permutation).
  * ------------------------------------------------------------------------- */
 static void
 kanban_order_apply(TaskLibrary *lw, GPtrArray *tasks)
@@ -1527,39 +1548,30 @@ kanban_order_apply(TaskLibrary *lw, GPtrArray *tasks)
         return;
     gchar *saved = task_app_config_get(key);
     g_free(key);
-    if (saved == NULL || *saved == '\0' || tasks->len < 2) {
+    if (saved == NULL || tasks->len < 2) {
         g_free(saved);
         return;
     }
 
-    GPtrArray *out    = g_ptr_array_sized_new(tasks->len);
-    gboolean  *placed = g_new0(gboolean, tasks->len);
-    gchar    **parts  = g_strsplit(saved, ",", -1);
+    gint    n   = (gint)tasks->len;
+    gint64 *ids = g_new(gint64, n);
+    for (gint i = 0; i < n; i++)
+        ids[i] = ((Task *)g_ptr_array_index(tasks, i))->id;
+    gint *order = row_order_permutation(ids, n, saved);
     g_free(saved);
-    for (gint i = 0; parts[i] != NULL; i++) {
-        gint64 id = g_ascii_strtoll(parts[i], NULL, 10);
-        if (id == 0)
-            continue;
-        for (guint j = 0; j < tasks->len; j++) {
-            Task *t = g_ptr_array_index(tasks, j);
-            if (!placed[j] && t->id == id) {
-                g_ptr_array_add(out, t);
-                placed[j] = TRUE;
-                break;
-            }
-        }
-    }
-    g_strfreev(parts);
-    for (guint j = 0; j < tasks->len; j++)
-        if (!placed[j])
-            g_ptr_array_add(out, g_ptr_array_index(tasks, j));
-    g_free(placed);
+    g_free(ids);
+    if (order == NULL)
+        return;
 
     /* Same elements, new sequence — the array does not own the tasks, so
-     * this is a pure permutation and nothing is freed.                     */
-    for (guint j = 0; j < tasks->len; j++)
-        tasks->pdata[j] = out->pdata[j];
-    g_ptr_array_free(out, TRUE);
+     * this is a pure permutation and nothing is freed.  The copy is what
+     * makes it safe to read and write pdata in one pass.                 */
+    gpointer *was = g_new(gpointer, n);
+    memcpy(was, tasks->pdata, sizeof(gpointer) * (gsize)n);
+    for (gint i = 0; i < n; i++)
+        tasks->pdata[i] = was[order[i]];
+    g_free(was);
+    g_free(order);
 }
 
 /* lane_card_ids() — the task ids currently shown in lane `s`, in display
@@ -1569,10 +1581,10 @@ static GArray *
 lane_card_ids(TaskLibrary *lw, gint s)
 {
     GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
-    if (lw->kanban_lanes[s] == NULL)
+    if (lw->board.kanban_lanes[s] == NULL)
         return ids;
     GList *kids = gtk_container_get_children(
-        GTK_CONTAINER(lw->kanban_lanes[s]));
+        GTK_CONTAINER(lw->board.kanban_lanes[s]));
     for (GList *k = kids; k != NULL; k = k->next) {
         gint64 id = card_task_id(GTK_WIDGET(k->data));
         if (id != 0)
@@ -1595,10 +1607,10 @@ static gint
 card_slot_at(TaskLibrary *lw, gint s, gint ry)
 {
     gint slot = 0;
-    if (lw->kanban_lanes[s] == NULL)
+    if (lw->board.kanban_lanes[s] == NULL)
         return 0;
     GList *kids = gtk_container_get_children(
-        GTK_CONTAINER(lw->kanban_lanes[s]));
+        GTK_CONTAINER(lw->board.kanban_lanes[s]));
     for (GList *k = kids; k != NULL; k = k->next) {
         GtkWidget *w = GTK_WIDGET(k->data);
         if (card_task_id(w) == 0)
@@ -1623,9 +1635,9 @@ card_slot_at(TaskLibrary *lw, gint s, gint ry)
 static void
 card_mark_clear(TaskLibrary *lw)
 {
-    g_clear_pointer(&lw->card_mark, gtk_widget_destroy);
-    lw->card_mark_lane = -1;
-    lw->card_mark_slot = -1;
+    g_clear_pointer(&lw->board.card_mark, gtk_widget_destroy);
+    lw->board.card_mark_lane = -1;
+    lw->board.card_mark_slot = -1;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1640,24 +1652,24 @@ card_mark_clear(TaskLibrary *lw)
 static void
 card_mark_place(TaskLibrary *lw, gint lane, gint slot)
 {
-    if (lane == lw->card_mark_lane && slot == lw->card_mark_slot)
+    if (lane == lw->board.card_mark_lane && slot == lw->board.card_mark_slot)
         return;
     card_mark_clear(lw);
     if (lane < 0 || lane >= TASK_STATUS_N_VALUES ||
-        lw->kanban_lanes[lane] == NULL)
+        lw->board.kanban_lanes[lane] == NULL)
         return;
 
     GtkWidget *mark = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_style_context_add_class(gtk_widget_get_style_context(mark),
                                 "task-card-mark");
     gtk_widget_set_size_request(mark, -1, CARD_MARK_H);
-    gtk_box_pack_start(GTK_BOX(lw->kanban_lanes[lane]), mark,
+    gtk_box_pack_start(GTK_BOX(lw->board.kanban_lanes[lane]), mark,
                        FALSE, FALSE, 0);
     /* Translate the CARD slot into a child index: the placeholder label
      * of an empty lane is a child too, so count real cards.               */
     gint child_idx = 0, seen = 0;
     GList *kids = gtk_container_get_children(
-        GTK_CONTAINER(lw->kanban_lanes[lane]));
+        GTK_CONTAINER(lw->board.kanban_lanes[lane]));
     for (GList *k = kids; k != NULL; k = k->next, child_idx++) {
         GtkWidget *w = GTK_WIDGET(k->data);
         if (w == mark)
@@ -1669,12 +1681,12 @@ card_mark_place(TaskLibrary *lw, gint lane, gint slot)
         }
     }
     g_list_free(kids);
-    gtk_box_reorder_child(GTK_BOX(lw->kanban_lanes[lane]), mark, child_idx);
+    gtk_box_reorder_child(GTK_BOX(lw->board.kanban_lanes[lane]), mark, child_idx);
     gtk_widget_show(mark);
 
-    lw->card_mark      = mark;
-    lw->card_mark_lane = lane;
-    lw->card_mark_slot = slot;
+    lw->board.card_mark      = mark;
+    lw->board.card_mark_lane = lane;
+    lw->board.card_mark_slot = slot;
 }
 
 /* card_lane_highlight() — mark the lane the card would land in, and only
@@ -1684,7 +1696,7 @@ static void
 card_lane_highlight(TaskLibrary *lw, gint lane)
 {
     for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
-        GtkWidget *box = lw->kanban_drops[s];
+        GtkWidget *box = lw->board.kanban_drops[s];
         if (box == NULL)
             continue;
         GtkStyleContext *sc = gtk_widget_get_style_context(box);
@@ -1701,9 +1713,9 @@ card_lane_highlight(TaskLibrary *lw, gint lane)
 static void
 card_drag_move(TaskLibrary *lw, gint rx, gint ry)
 {
-    if (lw->card_ghost != NULL)
-        gtk_window_move(GTK_WINDOW(lw->card_ghost),
-                        rx - lw->card_hot_x, ry - lw->card_hot_y);
+    if (lw->board.card_ghost != NULL)
+        gtk_window_move(GTK_WINDOW(lw->board.card_ghost),
+                        rx - lw->board.card_hot_x, ry - lw->board.card_hot_y);
     gint lane = card_lane_at_root(lw, rx, ry);
     card_lane_highlight(lw, lane);
     /* No insertion bar over Done: that lane sorts itself by completion, so
@@ -1876,10 +1888,10 @@ card_drop_apply(TaskLibrary *lw, GArray *moving, gint lane, gint slot)
                                 g_array_index(to_move, gint64, i), want);
 
     /* Keep the moved cards selected across the rebuild.                   */
-    g_hash_table_remove_all(lw->kanban_sel);
+    g_hash_table_remove_all(lw->board.kanban_sel);
     for (guint i = 0; i < to_move->len; i++)
         card_sel_add(lw, g_array_index(to_move, gint64, i));
-    lw->kanban_anchor = g_array_index(to_move, gint64, 0);
+    lw->board.kanban_anchor = g_array_index(to_move, gint64, 0);
 
     /* Only announce a STATUS move: a reorder is its own feedback (the
      * cards are visibly somewhere else) and would otherwise spam the
@@ -1920,28 +1932,28 @@ static gboolean
 on_card_motion(GtkWidget *w, GdkEventMotion *ev, gpointer data)
 {
     TaskLibrary *lw = data;
-    if (!lw->card_armed && !lw->card_dragging)
+    if (!lw->board.card_armed && !lw->board.card_dragging)
         return FALSE;
 
-    if (!lw->card_dragging) {
+    if (!lw->board.card_dragging) {
         if (!gtk_drag_check_threshold(w,
-                (gint)lw->card_press_rx, (gint)lw->card_press_ry,
+                (gint)lw->board.card_press_rx, (gint)lw->board.card_press_ry,
                 (gint)ev->x_root, (gint)ev->y_root))
             return FALSE;            /* still just a click                  */
 
         /* The ghost is a picture of the whole CARD; the grab goes on the
          * GRIP, which is the window the press came from and therefore the
          * one motion and release will be delivered to.                    */
-        GtkWidget *card = lw->card_drag_src;
+        GtkWidget *card = lw->board.card_drag_src;
         /* How many cards this drag will move: the whole selection when
          * the gripped card is in it, else just the one.                    */
-        gint n_moving = card_sel_has(lw, lw->card_drag_id)
+        gint n_moving = card_sel_has(lw, lw->board.card_drag_id)
                         ? (gint)card_sel_count(lw) : 1;
-        lw->card_ghost = card_ghost_new(card, n_moving);
+        lw->board.card_ghost = card_ghost_new(card, n_moving);
         GdkDisplay *dpy  = gtk_widget_get_display(w);
         GdkSeat    *seat = gdk_display_get_default_seat(dpy);
         GdkCursor  *grabbing =
-            card_cursor(w, &lw->card_grabbing, "grabbing");
+            card_cursor(w, &lw->board.card_grabbing, "grabbing");
         if (gdk_seat_grab(seat, gtk_widget_get_window(w),
                           GDK_SEAT_CAPABILITY_ALL_POINTING, FALSE,
                           grabbing, (GdkEvent *)ev, NULL,
@@ -1962,10 +1974,10 @@ on_card_motion(GtkWidget *w, GdkEventMotion *ev, gpointer data)
          * that would break the grab and end the drag on the spot.        */
         gtk_style_context_add_class(gtk_widget_get_style_context(card),
                                     "task-card-dragging");
-        lw->card_mark_lane = -1;     /* force the first placement          */
-        lw->card_mark_slot = -1;
-        lw->card_dragging  = TRUE;
-        lw->card_key_handler =
+        lw->board.card_mark_lane = -1;     /* force the first placement          */
+        lw->board.card_mark_slot = -1;
+        lw->board.card_dragging  = TRUE;
+        lw->board.card_key_handler =
             g_signal_connect(lw->window, "key-press-event",
                              G_CALLBACK(on_card_drag_key), lw);
     }
@@ -1978,29 +1990,29 @@ static gboolean
 on_card_release(GtkWidget *w, GdkEventButton *ev, gpointer data)
 {
     TaskLibrary *lw = data;
-    if (!lw->card_dragging) {
+    if (!lw->board.card_dragging) {
         /* A plain click that never became a drag.  The PRESS deliberately
          * left an existing multi-selection alone (so a drag could start
          * from any of its cards); now that we know it was only a click,
          * collapse to the clicked card — unless a modifier was held, which
          * means the press already did the right thing.                    */
-        if (lw->card_armed && lw->card_drag_id != 0 && ev->button == 1) {
+        if (lw->board.card_armed && lw->board.card_drag_id != 0 && ev->button == 1) {
             GdkModifierType mod = gtk_widget_get_modifier_mask(w,
                 GDK_MODIFIER_INTENT_MODIFY_SELECTION);
             GdkModifierType ext = gtk_widget_get_modifier_mask(w,
                 GDK_MODIFIER_INTENT_EXTEND_SELECTION);
             if ((ev->state & (mod | ext)) == 0 && card_sel_count(lw) > 1)
-                card_select(lw, lw->card_drag_id);
+                card_select(lw, lw->board.card_drag_id);
         }
-        lw->card_armed = FALSE;
+        lw->board.card_armed = FALSE;
         return FALSE;
     }
     gint   lane = card_lane_at_root(lw, (gint)ev->x_root, (gint)ev->y_root);
     /* Read the slot from the MARKER, not by re-measuring: the marker is
      * what the user was looking at, and re-measuring now would answer
      * against a lane whose geometry the marker itself has shifted.        */
-    gint   slot = (lane >= 0 && lane == lw->card_mark_lane)
-                  ? lw->card_mark_slot
+    gint   slot = (lane >= 0 && lane == lw->board.card_mark_lane)
+                  ? lw->board.card_mark_slot
                   : (lane >= 0 ? card_slot_at(lw, lane, (gint)ev->y_root)
                                : -1);
     /* WHAT moves: the whole selection when the gripped card is part of it,
@@ -2008,9 +2020,9 @@ on_card_release(GtkWidget *w, GdkEventButton *ev, gpointer data)
      * clears the drag state.                                              */
     GArray *moving = card_sel_ids(lw);
     if (moving->len == 0 ||
-        !card_sel_has(lw, lw->card_drag_id)) {
+        !card_sel_has(lw, lw->board.card_drag_id)) {
         g_array_set_size(moving, 0);
-        g_array_append_val(moving, lw->card_drag_id);
+        g_array_append_val(moving, lw->board.card_drag_id);
     }
     card_drag_stop(lw);              /* ungrab BEFORE touching the model   */
     if (card_drop_apply(lw, moving, lane, slot))
@@ -2262,8 +2274,8 @@ kanban_plan_matches(TaskLibrary *lw, GArray * const *plan,
                     const guint *per_lane)
 {
     for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
-        if (lw->kanban_lanes[s] == NULL ||
-            per_lane[s] != lw->kanban_counts[s])
+        if (lw->board.kanban_lanes[s] == NULL ||
+            per_lane[s] != lw->board.kanban_counts[s])
             return FALSE;
         /* lane_card_ids skips every child with no task id — the drag
          * marker, the empty-lane placeholder and the Done link — so none
@@ -2294,7 +2306,7 @@ kanban_plan_relabel(TaskLibrary *lw, GArray * const *plan)
 {
     for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
         GList *kids = gtk_container_get_children(
-            GTK_CONTAINER(lw->kanban_lanes[s]));
+            GTK_CONTAINER(lw->board.kanban_lanes[s]));
         guint i = 0;
         for (GList *k = kids; k != NULL; k = k->next) {
             GtkWidget *card = GTK_WIDGET(k->data);
@@ -2339,7 +2351,7 @@ on_done_link_activate(GtkLabel *lbl, gchar *uri, gpointer data)
 {
     (void)lbl; (void)uri;
     TaskLibrary *lw = data;
-    lw->done_show_all = !lw->done_show_all;
+    lw->board.done_show_all = !lw->board.done_show_all;
     g_idle_add(done_expand_idle, lw->app);
     return TRUE;                     /* handled; do not follow the href    */
 }
@@ -2368,7 +2380,7 @@ static void
 done_link_pack(TaskLibrary *lw, guint total)
 {
     GtkWidget *lbl = gtk_label_new(NULL);
-    if (lw->done_show_all) {
+    if (lw->board.done_show_all) {
         gtk_label_set_markup(GTK_LABEL(lbl), DONE_LABEL_TO_CAP);
     } else {
         gchar *m = g_strdup_printf(DONE_LABEL_TO_ALL, total);
@@ -2380,7 +2392,7 @@ done_link_pack(TaskLibrary *lw, guint total)
     gtk_widget_set_margin_bottom(lbl, 2);
     g_signal_connect(lbl, "activate-link",
                      G_CALLBACK(on_done_link_activate), lw);
-    gtk_box_pack_start(GTK_BOX(lw->kanban_lanes[TASK_STATUS_DONE]), lbl,
+    gtk_box_pack_start(GTK_BOX(lw->board.kanban_lanes[TASK_STATUS_DONE]), lbl,
                        FALSE, FALSE, 0);
 }
 
@@ -2440,7 +2452,7 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
      * shrank its own count would hide the fact that it is capped.         */
     g_ptr_array_sort(done, done_recent_cmp);
     guint done_total = done->len;
-    guint done_cap   = lw->done_show_all ? done_total
+    guint done_cap   = lw->board.done_show_all ? done_total
                                          : MIN(done_total, (guint)DONE_CAP);
     for (guint i = 0; i < done_cap; i++)
         card_plan_add(plan[TASK_STATUS_DONE],
@@ -2455,19 +2467,19 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
     }
 
     /* ---- The rebuild ------------------------------------------------- */
-    scroll_keep_queue_win(lw->kanban_box);
+    scroll_keep_queue_win(lw->board.kanban_box);
 
     /* A rebuild destroys the marker along with everything else; drop the
      * dangling pointer so card_mark_place does not reorder freed memory
      * if a refresh lands mid-drag (an editor autosave can do that).  The
      * fast path above returns BEFORE this, which is what lets a drag
      * survive the autosaves running underneath it.                        */
-    lw->card_mark      = NULL;
-    lw->card_mark_lane = -1;
-    lw->card_mark_slot = -1;
+    lw->board.card_mark      = NULL;
+    lw->board.card_mark_lane = -1;
+    lw->board.card_mark_slot = -1;
 
     for (gint s = 0; s < TASK_STATUS_N_VALUES; s++)
-        lane_clear(lw->kanban_lanes[s]);
+        lane_clear(lw->board.kanban_lanes[s]);
 
     /* Selections for tasks that have since vanished must not survive the
      * rebuild — Delete Task would act on a tombstone.  Collect the ones
@@ -2479,7 +2491,7 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
             gboolean selected = card_sel_has(lw, cp->id);
             if (selected)
                 g_hash_table_add(alive, GSIZE_TO_POINTER((gsize)cp->id));
-            gtk_box_pack_start(GTK_BOX(lw->kanban_lanes[s]),
+            gtk_box_pack_start(GTK_BOX(lw->board.kanban_lanes[s]),
                                kanban_card_new(lw, cp->id, cp->markup,
                                                selected),
                                FALSE, FALSE, 0);
@@ -2490,22 +2502,22 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
     kanban_plan_free(plan);
 
     /* Replace the selection with the survivors.                          */
-    g_hash_table_remove_all(lw->kanban_sel);
+    g_hash_table_remove_all(lw->board.kanban_sel);
     GHashTableIter it;
     gpointer key;
     g_hash_table_iter_init(&it, alive);
     while (g_hash_table_iter_next(&it, &key, NULL))
-        g_hash_table_add(lw->kanban_sel, key);
+        g_hash_table_add(lw->board.kanban_sel, key);
     g_hash_table_destroy(alive);
     if (card_sel_count(lw) == 0)
-        lw->kanban_anchor = 0;
+        lw->board.kanban_anchor = 0;
 
     for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
         gchar *hdr = g_strdup_printf(
             "<b>%s</b>\n<small><span alpha=\"60%%\">%u task%s</span>"
             "</small>", task_status_label((TaskStatus)s), per_lane[s],
             per_lane[s] == 1 ? "" : "s");
-        gtk_label_set_markup(GTK_LABEL(lw->kanban_labels[s]), hdr);
+        gtk_label_set_markup(GTK_LABEL(lw->board.kanban_labels[s]), hdr);
         g_free(hdr);
 
         /* An empty lane still needs to say so — and still needs to be a
@@ -2517,13 +2529,13 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
                 "<i><span alpha=\"55%\">Drop a task here</span></i>");
             gtk_widget_set_margin_top(empty, 10);
             gtk_widget_set_margin_bottom(empty, 10);
-            gtk_box_pack_start(GTK_BOX(lw->kanban_lanes[s]), empty,
+            gtk_box_pack_start(GTK_BOX(lw->board.kanban_lanes[s]), empty,
                                FALSE, FALSE, 0);
         }
-        gtk_widget_show_all(lw->kanban_lanes[s]);
+        gtk_widget_show_all(lw->board.kanban_lanes[s]);
     }
     /* What the lanes now stand for, for the next refresh to compare.      */
-    memcpy(lw->kanban_counts, per_lane, sizeof(per_lane));
+    memcpy(lw->board.kanban_counts, per_lane, sizeof(per_lane));
     return shown;
 }
 
@@ -2531,7 +2543,7 @@ refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx)
  * kanban_lane_new() — one lane: a heading label over a framed, padded
  * body that holds the cards and accepts drops.  Mirrors
  * forecast_day_section's shape (label + framed body, natural height, no
- * scroller of its own).  Fills lw->kanban_labels / kanban_lanes [status].
+ * scroller of its own).  Fills lw->board.kanban_labels / kanban_lanes [status].
  *
  * The drop target is an EVENT BOX wrapping the card box, not the card box
  * itself: a GtkBox is a no-window widget, and a drag destination needs a
@@ -2544,12 +2556,12 @@ kanban_lane_new(TaskLibrary *lw, TaskStatus status)
 {
     GtkWidget *col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
 
-    lw->kanban_labels[status] = gtk_label_new(NULL);
-    gtk_label_set_justify(GTK_LABEL(lw->kanban_labels[status]),
+    lw->board.kanban_labels[status] = gtk_label_new(NULL);
+    gtk_label_set_justify(GTK_LABEL(lw->board.kanban_labels[status]),
                           GTK_JUSTIFY_CENTER);
-    gtk_label_set_ellipsize(GTK_LABEL(lw->kanban_labels[status]),
+    gtk_label_set_ellipsize(GTK_LABEL(lw->board.kanban_labels[status]),
                             PANGO_ELLIPSIZE_END);
-    gtk_box_pack_start(GTK_BOX(col), lw->kanban_labels[status],
+    gtk_box_pack_start(GTK_BOX(col), lw->board.kanban_labels[status],
                        FALSE, FALSE, 2);
 
     GtkWidget *drop = gtk_event_box_new();
@@ -2559,14 +2571,14 @@ kanban_lane_new(TaskLibrary *lw, TaskStatus status)
     /* Remembered for the drop hit-test: card_lane_at_root measures the
      * pointer's ROOT position against each of these boxes.  No GTK drag
      * destination — the board owns its own drag (see the banner).         */
-    lw->kanban_drops[status] = drop;
+    lw->board.kanban_drops[status] = drop;
 
     /* The cards themselves.  Kept separate from the event box so
      * lane_clear can empty it without disturbing the drop target.          */
     GtkWidget *lane = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     pad_widget(lane, LANE_PAD);      /* cards off the lane's frame        */
     gtk_container_add(GTK_CONTAINER(drop), lane);
-    lw->kanban_lanes[status] = lane;
+    lw->board.kanban_lanes[status] = lane;
 
     GtkWidget *frame = gtk_frame_new(NULL);
     gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_IN);
@@ -2594,9 +2606,9 @@ task_pane_mode_apply(TaskLibrary *lw)
 {
     const TaskView *view  = sel_view(lw);
     gboolean        panel = task_view_is_panel(view);
-    gboolean        kanban = !panel && lw->kanban;
+    gboolean        kanban = !panel && lw->board.kanban;
     gtk_widget_set_visible(lw->task_scroll, !panel && !kanban);
-    gtk_widget_set_visible(lw->kanban_box,   kanban);
+    gtk_widget_set_visible(lw->board.kanban_box,   kanban);
     /* Exactly one panel at most: show the selected view's, hide the rest.
      * Pruned first, so a pane belonging to a view that has just been
      * unregistered is gone rather than merely hidden.                    */
@@ -2616,7 +2628,7 @@ task_pane_mode_apply(TaskLibrary *lw)
      * list view it governs is not reachable at all in that mode.  So grey
      * it out rather than leaving a control that silently does nothing.
      *
-     * Keyed on lw->kanban, NOT on `kanban` above: with the board on and
+     * Keyed on lw->board.kanban, NOT on `kanban` above: with the board on and
      * the Weekly Forecast selected the list view is still unreachable, and
      * flickering the item's sensitivity as the sidebar selection moves
      * would be worse than a steady "unavailable while Kanban is on".
@@ -2628,7 +2640,7 @@ task_pane_mode_apply(TaskLibrary *lw)
      * single place that answers "which pane is on screen" — so both the
      * menu label and the toolbar button's icon are set here rather than in
      * the handler, and a kanban flag changed by any other route still
-     * reaches them.  Keyed on lw->kanban like the greying below: the
+     * reaches them.  Keyed on lw->board.kanban like the greying below: the
      * forecast outranks the board without turning it off, so the controls
      * must still offer the way back to the list.
      *
@@ -2642,10 +2654,10 @@ task_pane_mode_apply(TaskLibrary *lw)
      * buttons wearing the same image read as one control.)              */
     if (lw->view_kanban_item != NULL)
         gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_kanban_item),
-            lw->kanban ? PANE_LABEL_TO_LIST : PANE_LABEL_TO_KANBAN);
+            lw->board.kanban ? PANE_LABEL_TO_LIST : PANE_LABEL_TO_KANBAN);
     if (lw->pane_item != NULL) {
         GtkWidget *icon = task_app_icon_image_rotated(lw->app, "menu", 24,
-            lw->kanban ? GDK_PIXBUF_ROTATE_NONE
+            lw->board.kanban ? GDK_PIXBUF_ROTATE_NONE
                        : GDK_PIXBUF_ROTATE_CLOCKWISE);
         if (icon != NULL) {
             gtk_widget_show(icon);
@@ -2653,21 +2665,21 @@ task_pane_mode_apply(TaskLibrary *lw)
                 GTK_TOOL_BUTTON(lw->pane_item), icon);
         }
         gtk_tool_button_set_label(GTK_TOOL_BUTTON(lw->pane_item),
-            lw->kanban ? "List" : "Kanban");
+            lw->board.kanban ? "List" : "Kanban");
         gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->pane_item),
-            lw->kanban ? "Show the tasks as a list"
+            lw->board.kanban ? "Show the tasks as a list"
                        : "Show the tasks as a Kanban board");
     }
 
     /* Two reasons the sort control can be unavailable, and they get
      * DIFFERENT tooltips: one control greyed for two unrelated causes is
      * only honest if it says which one is in force.                       */
-    gboolean sortable = !lw->kanban && lw->search == NULL;
+    gboolean sortable = !lw->board.kanban && lw->search == NULL;
     if (lw->view_manual_sort_item != NULL) {
         gtk_widget_set_sensitive(lw->view_manual_sort_item, sortable);
         gtk_widget_set_tooltip_text(lw->view_manual_sort_item,
             sortable      ? NULL
-            : lw->kanban  ? "The Kanban board is always drag-sorted \xe2\x80\x94 "
+            : lw->board.kanban  ? "The Kanban board is always drag-sorted \xe2\x80\x94 "
                             "turn Kanban View off to change list sorting"
                           : "A search hides rows, and saving an order from "
                             "a filtered list would lose the hidden tasks' "
@@ -2681,7 +2693,7 @@ task_pane_mode_apply(TaskLibrary *lw)
      * view has none — the Weekly Forecast owns its seven day views and
      * what goes in them.  So grey the box out there rather than leave a
      * control that silently does nothing, the same call the sort toggle
-     * makes above.  Keyed on `panel`, not on lw->kanban: unlike the board,
+     * makes above.  Keyed on `panel`, not on lw->board.kanban: unlike the board,
      * a panel is only ever up while its own row is selected, so the
      * sensitivity tracks something the user can see.                       */
     if (lw->search_entry != NULL) {
@@ -2707,7 +2719,7 @@ refresh_tasks(TaskLibrary *lw)
     const TaskView *panel_view = sel_view(lw);
     if (!task_view_is_panel(panel_view))
         panel_view = NULL;
-    gboolean kanban = panel_view == NULL && lw->kanban;
+    gboolean kanban = panel_view == NULL && lw->board.kanban;
     task_pane_mode_apply(lw);
     if (panel_view != NULL) {
         /* Drop the hidden regular pane's rows: a stale selection there
@@ -2723,7 +2735,7 @@ refresh_tasks(TaskLibrary *lw)
         scroll_keep_queue(lw->task_view);
     /* Cleared in BOTH modes, for the same reason the forecast clears it:
      * a selection left in the hidden list would still feed Delete Task.
-     * On the board that job belongs to lw->kanban_sel.                     */
+     * On the board that job belongs to lw->board.kanban_sel.                     */
     gtk_list_store_clear(lw->task_store);
 
     /* Collect the tasks of the current view.  A registered view answers
@@ -3121,7 +3133,7 @@ on_sidebar_changed(GtkTreeSelection *sel, gpointer data)
     gtk_tree_path_free(cursor);
     /* A new view starts with the Done lane capped again: an expansion
      * answers "show me more of THIS view", it is not a mode.              */
-    lw->done_show_all = FALSE;
+    lw->board.done_show_all = FALSE;
     refresh_tasks(lw);
 }
 
@@ -3160,7 +3172,7 @@ selected_task_ids(TaskLibrary *lw)
         return ids != NULL ? ids
                            : g_array_new(FALSE, FALSE, sizeof(gint64));
     }
-    if (lw->kanban)
+    if (lw->board.kanban)
         return card_sel_ids(lw);
     GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
     GtkTreeSelection *sel =
@@ -3237,17 +3249,21 @@ task_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
      * this adds is the drag highlight, which is the pane's own business. */
     const gchar *bg = task_rows_stripe_color(model, iter);
 
-    /* While dragging, paint the held row amber so it is easy to track.     */
-    if (lw && lw->drag_active && lw->drag_row_ref) {
-        GtkTreePath *drag_path =
-            gtk_tree_row_reference_get_path(lw->drag_row_ref);
-        if (drag_path) {
-            GtkTreePath *path = gtk_tree_model_get_path(model, iter);
-            if (gtk_tree_path_compare(path, drag_path) == 0)
-                bg = DRAG_ROW_TINT;
-            gtk_tree_path_free(path);
-            gtk_tree_path_free(drag_path);
-        }
+    /* While dragging, paint the held row amber so it is easy to track.
+     *
+     * By TASK ID, not by position.  This is a cell data func, so it runs
+     * per row per DRAW on every one of the pane's columns — and comparing
+     * positions meant building two GtkTreePaths each time (one off the row
+     * reference, one off the iter), twelve allocations per row per frame
+     * during exactly the gesture where frames are frequent.  The id is
+     * already in the model and identity is all the highlight needs;
+     * drag_row_ref stays for the motion handler, which genuinely needs the
+     * row's live POSITION as the store is reordered underneath it.        */
+    if (lw != NULL && lw->drag_active && lw->drag_task_id != 0) {
+        gint64 id = 0;
+        gtk_tree_model_get(model, iter, TL_ID, &id, -1);
+        if (id == lw->drag_task_id)
+            bg = DRAG_ROW_TINT;
     }
 
     g_object_set(cell, "cell-background", bg, NULL);
@@ -4323,7 +4339,8 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
                 if (gtk_tree_model_get_iter(model, &it, path))
                     gtk_tree_model_get(model, &it, TL_ID, &id, -1);
                 if (id != 0) {
-                    lw->drag_active = TRUE;
+                    lw->drag_active  = TRUE;
+                    lw->drag_task_id = id;
                     if (lw->drag_row_ref != NULL)
                         gtk_tree_row_reference_free(lw->drag_row_ref);
                     lw->drag_row_ref =
@@ -4571,12 +4588,12 @@ on_toggle_kanban(GtkWidget *w, gpointer data)
 {
     (void)w;
     TaskLibrary *lw = data;
-    lw->kanban = !lw->kanban;
-    task_app_config_set("kanban_view", lw->kanban ? "1" : "0");
+    lw->board.kanban = !lw->board.kanban;
+    task_app_config_set("kanban_view", lw->board.kanban ? "1" : "0");
     gtk_tree_selection_unselect_all(
         gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->task_view)));
-    g_hash_table_remove_all(lw->kanban_sel);
-    lw->kanban_anchor = 0;
+    g_hash_table_remove_all(lw->board.kanban_sel);
+    lw->board.kanban_anchor = 0;
     refresh_tasks(lw);
 }
 
@@ -5180,18 +5197,116 @@ on_library_destroy(GtkWidget *w, gpointer data)
     if (lw->drag_lock_ref != NULL)
         gtk_tree_row_reference_free(lw->drag_lock_ref);
     g_clear_object(&lw->drag_cursor);
-    g_clear_object(&lw->card_grab);
-    g_clear_object(&lw->card_grabbing);
+    g_clear_object(&lw->board.card_grab);
+    g_clear_object(&lw->board.card_grabbing);
     if (lw->group_expanded != NULL)
         g_hash_table_destroy(lw->group_expanded);
-    if (lw->kanban_sel != NULL)
-        g_hash_table_destroy(lw->kanban_sel);
+    if (lw->board.kanban_sel != NULL)
+        g_hash_table_destroy(lw->board.kanban_sel);
     g_free(lw);
 }
 
 /* ===========================================================================
- * Manual sort: order persistence, drag handlers, mode toggle.
+ * Row order: the saved-order helpers BOTH panes share, then manual sort's
+ * own persistence, drag handlers and mode toggle.
+ *
+ * row_order_permutation and row_order_key are the shared pair — the list
+ * view and the Kanban board keep separate order KEYS, but the spelling of
+ * a key and the rule for applying one are the same for both, so they live
+ * here rather than in either pane's section.  The permutation used to sit
+ * inside the board's, which is only where it happened to be written.
  * =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * row_order_permutation() — the display order a SAVED id list asks for,
+ * as indices into `ids`.
+ *
+ *   ids   — the ids currently on screen, in their current order
+ *   n     — how many
+ *   saved — the config value: ids, comma separated, in the order the user
+ *           dragged them into
+ *
+ * Returns a new gint[n] (g_free it) holding every index exactly once —
+ * a valid permutation, which is what gtk_list_store_reorder requires —
+ * or NULL when there is nothing to do.  Ids named by `saved` come first in
+ * its sequence; anything it does not mention (a task created since) keeps
+ * its current order at the tail.  It is FORGIVING by design: an id that no
+ * longer exists matches nothing, and a pre-mirror order still holding
+ * "NOTEID:ORD" tokens parses them to 0 and skips them.
+ *
+ * ONE function for BOTH panes.  The list view and the Kanban board keep
+ * separate order KEYS on purpose, but the rule for reading one back is the
+ * same rule, and it was written out twice — once over a GPtrArray of
+ * tasks and once over the tree model — with a comment on the second
+ * admitting it was "the same shape as" the first.  They differ only in
+ * where the ids come from and what the caller does with the answer, so
+ * that is all each caller now spells.
+ *
+ * The id lookup is a HASH, not the nested scan both copies used: that was
+ * O(saved x rows), a quarter of a million comparisons on a 500-row list,
+ * repeated on every refresh.  Keys point into `ids` itself, which outlives
+ * the call, so no key is allocated.
+ * ------------------------------------------------------------------------- */
+static gint *
+row_order_permutation(const gint64 *ids, gint n, const gchar *saved)
+{
+    if (ids == NULL || n <= 1 || saved == NULL || *saved == '\0')
+        return NULL;
+
+    /* id -> its FIRST index (+1, so a miss reads as NULL/0), plus a chain
+     * threading every LATER index carrying the same id.  Built backwards,
+     * so `head` ends on the lowest index and `next` runs forward from it.
+     *
+     * The chain is what makes this exactly the nested scan it replaces:
+     * that scan took the first index with a matching id THAT WAS NOT YET
+     * PLACED, so a saved list naming an id twice consumed two rows.  Ids
+     * in one pane are unique and it cannot arise today — but a hash that
+     * remembers only the first index would quietly diverge if that ever
+     * stopped being true, and the difference would be a lost drag order,
+     * not a crash.  Cheaper to be exact than to rely on the invariant.   */
+    GHashTable *head = g_hash_table_new(g_int64_hash, g_int64_equal);
+    gint       *next = g_new(gint, n);
+    for (gint i = n - 1; i >= 0; i--) {
+        gpointer v = g_hash_table_lookup(head, &ids[i]);
+        next[i] = v != NULL ? GPOINTER_TO_INT(v) - 1 : -1;
+        g_hash_table_insert(head, (gpointer)&ids[i], GINT_TO_POINTER(i + 1));
+    }
+
+    gint     *order  = g_new(gint, n);
+    gboolean *placed = g_new0(gboolean, n);
+    gint      fill   = 0;
+    gchar   **parts  = g_strsplit(saved, ",", -1);
+    for (gint i = 0; parts[i] != NULL; i++) {
+        gint64   id = g_ascii_strtoll(parts[i], NULL, 10);
+        gpointer v  = id != 0 ? g_hash_table_lookup(head, &id) : NULL;
+        if (v == NULL)
+            continue;
+        gint j = GPOINTER_TO_INT(v) - 1;
+        while (j >= 0 && placed[j])  /* rows this id already gave up       */
+            j = next[j];
+        if (j < 0)
+            continue;
+        order[fill++] = j;
+        placed[j]     = TRUE;
+        /* Advance the head so the NEXT mention of this id starts past the
+         * row just taken — the whole walk stays O(n) rather than
+         * re-traversing the chain from the top each time.               */
+        g_hash_table_insert(head, (gpointer)&ids[j],
+                            GINT_TO_POINTER(next[j] + 1));
+    }
+    g_strfreev(parts);
+    g_hash_table_destroy(head);
+    g_free(next);
+
+    /* Everything the saved list did not claim, in the order it already
+     * had.  This is what makes the result a permutation rather than a
+     * subset, however partial or stale `saved` turns out to be.          */
+    for (gint i = 0; i < n; i++)
+        if (!placed[i])
+            order[fill++] = i;
+    g_free(placed);
+    return order;
+}
 
 /* row_order_key() — the order key for a sidebar row that carries its own
  * task order: "<family>_list_<id>" for a real list, "<family>_group_<id>"
@@ -5269,8 +5384,11 @@ task_view_save_manual_order(TaskLibrary *lw)
 }
 
 /* task_view_apply_manual_order() — after refresh_tasks populates the store,
- * reorder rows to match the saved manual order for the current view.  Tasks
- * absent from the saved list appear at the tail; id=0 rows follow them.    */
+ * reorder rows to match the saved manual order for the current view.
+ *
+ * All this owns is where the ids come from (the model, in display order)
+ * and what to do with the answer; the rule itself is
+ * row_order_permutation, shared with the Kanban board.                     */
 static void
 task_view_apply_manual_order(TaskLibrary *lw)
 {
@@ -5278,7 +5396,7 @@ task_view_apply_manual_order(TaskLibrary *lw)
     if (key == NULL) return;
     gchar *saved = task_app_config_get(key);
     g_free(key);
-    if (saved == NULL || *saved == '\0') { g_free(saved); return; }
+    if (saved == NULL) return;
     GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
     gint n = gtk_tree_model_iter_n_children(model, NULL);
     if (n <= 1) { g_free(saved); return; }
@@ -5292,35 +5410,13 @@ task_view_apply_manual_order(TaskLibrary *lw)
         gtk_tree_model_iter_next(model, &iter);
     }
 
-    /* Build new_order: saved entries first (in saved sequence), remainder
-     * (new rows not yet in saved list) appended at tail.  A pre-mirror
-     * order may still hold "NOTEID:ORD" tokens; they parse to 0, match
-     * nothing, and are skipped.                                            */
-    gint     *new_order = g_new(gint, n);
-    gboolean *placed    = g_new0(gboolean, n);
-    gint      fill      = 0;
-    gchar   **parts     = g_strsplit(saved, ",", -1);
+    gint *order = row_order_permutation(ids, n, saved);
     g_free(saved);
-    for (gint i = 0; parts[i] != NULL; i++) {
-        gint64 id = g_ascii_strtoll(parts[i], NULL, 10);
-        if (id == 0)
-            continue;
-        for (gint j = 0; j < n; j++) {
-            if (ids[j] == id && !placed[j]) {
-                new_order[fill++] = j;
-                placed[j]         = TRUE;
-                break;
-            }
-        }
-    }
-    g_strfreev(parts);
-    for (gint i = 0; i < n; i++)
-        if (!placed[i])
-            new_order[fill++] = i;
-    gtk_list_store_reorder(lw->task_store, new_order);
-    g_free(new_order);
-    g_free(placed);
     g_free(ids);
+    if (order == NULL)
+        return;
+    gtk_list_store_reorder(lw->task_store, order);
+    g_free(order);
 }
 
 /* drag_handle_func() — cell data func for the drag handle column.  The row
@@ -5463,7 +5559,8 @@ on_task_drag_release(GtkWidget *widget, GdkEventButton *ev, gpointer data)
     (void)widget; (void)ev;
     TaskLibrary *lw = data;
     if (!lw->drag_active) return FALSE;
-    lw->drag_active = FALSE;
+    lw->drag_active  = FALSE;
+    lw->drag_task_id = 0;
     if (lw->drag_row_ref != NULL) {
         gtk_tree_row_reference_free(lw->drag_row_ref);
         lw->drag_row_ref = NULL;
@@ -5621,10 +5718,10 @@ task_library_window_new(TaskApp *app)
         task_app_config_get_bool("task_list_manual_sort", FALSE);
     /* Same reason: the View-menu check is built from this cache, and
      * refresh_tasks reads it before the menu handler ever runs.            */
-    lw->kanban = task_app_config_get_bool("kanban_view", FALSE);
+    lw->board.kanban = task_app_config_get_bool("kanban_view", FALSE);
     lw->sel_kind = SB_KIND_LIST;     /* refresh falls back to first list    */
     lw->group_expanded = g_hash_table_new(g_direct_hash, g_direct_equal);
-    lw->kanban_sel     = g_hash_table_new(NULL, NULL);   /* id set          */
+    lw->board.kanban_sel     = g_hash_table_new(NULL, NULL);   /* id set          */
 
     lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(lw->window), "Tasks");
@@ -5741,7 +5838,7 @@ task_library_window_new(TaskApp *app)
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           lw->view_compact_item);
     lw->view_kanban_item = gtk_menu_item_new_with_label(
-        lw->kanban ? PANE_LABEL_TO_LIST : PANE_LABEL_TO_KANBAN);
+        lw->board.kanban ? PANE_LABEL_TO_LIST : PANE_LABEL_TO_KANBAN);
     g_signal_connect(lw->view_kanban_item, "activate",
                      G_CALLBACK(on_toggle_kanban), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
@@ -6162,17 +6259,17 @@ task_library_window_new(TaskApp *app)
         gtk_box_pack_start(GTK_BOX(board),
                            kanban_lane_new(lw, (TaskStatus)s),
                            TRUE, TRUE, 0);
-    lw->kanban_box = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lw->kanban_box),
+    lw->board.kanban_box = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lw->board.kanban_box),
                                    GTK_POLICY_NEVER,
                                    GTK_POLICY_AUTOMATIC);
-    gtk_container_add(GTK_CONTAINER(lw->kanban_box), board);
+    gtk_container_add(GTK_CONTAINER(lw->board.kanban_box), board);
 
     GtkWidget *task_pane = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     lw->task_pane = task_pane;       /* panel_widget() packs into this     */
     gtk_box_pack_start(GTK_BOX(task_pane), lw->task_scroll,
                        TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(task_pane), lw->kanban_box,
+    gtk_box_pack_start(GTK_BOX(task_pane), lw->board.kanban_box,
                        TRUE, TRUE, 0);
     gtk_paned_pack2(GTK_PANED(paned), task_pane, TRUE, FALSE);
 

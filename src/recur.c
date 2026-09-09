@@ -71,13 +71,14 @@ recur_at_minute(gint64 ts, gint minutes)
         minutes = 0;
     if (minutes > 23 * 60 + 59)
         minutes = 23 * 60 + 59;
-    GDateTime *dt = g_date_time_new_from_unix_local(ts);
+    GDateTime *dt = task_local_dt(ts);
     if (dt == NULL)
         return ts;
-    GDateTime *out = g_date_time_new_local(g_date_time_get_year(dt),
-                                           g_date_time_get_month(dt),
-                                           g_date_time_get_day_of_month(dt),
-                                           minutes / 60, minutes % 60, 0.0);
+    GDateTime *out = g_date_time_new(task_local_tz(),
+                                     g_date_time_get_year(dt),
+                                     g_date_time_get_month(dt),
+                                     g_date_time_get_day_of_month(dt),
+                                     minutes / 60, minutes % 60, 0.0);
     g_date_time_unref(dt);
     if (out == NULL)
         return ts;
@@ -93,7 +94,7 @@ task_recur_advance(gint64 from, TaskRecurUnit unit, gint interval,
 {
     if (interval <= 0)
         return from;
-    GDateTime *dt = g_date_time_new_from_unix_local(from);
+    GDateTime *dt = task_local_dt(from);
     if (dt == NULL)
         return from;
     GDateTime *out = NULL;
@@ -337,7 +338,7 @@ task_recur_seed(const Task *t, gint64 now_ts)
 static gint
 recur_minute_of(gint64 ts)
 {
-    GDateTime *dt = g_date_time_new_from_unix_local(ts);
+    GDateTime *dt = task_local_dt(ts);
     if (dt == NULL)
         return -1;
     gint m = g_date_time_get_hour(dt) * 60 + g_date_time_get_minute(dt);
@@ -399,7 +400,7 @@ task_recur_phrase(const Task *t, gint64 next_ts)
                       : g_strdup_printf("Every %d days", n);
         break;
     case TASK_RECUR_WEEK: {
-        GDateTime *dt  = g_date_time_new_from_unix_local(next_ts);
+        GDateTime *dt  = task_local_dt(next_ts);
         gchar     *day = dt != NULL ? g_date_time_format(dt, "%A") : NULL;
         if (dt != NULL)
             g_date_time_unref(dt);
@@ -508,7 +509,7 @@ task_recur_describe(const Task *t, gint64 now_ts)
 static gint64
 recur_due_of(gint64 ts, gint *due_min)
 {
-    GDateTime *dt = g_date_time_new_from_unix_local(ts);
+    GDateTime *dt = task_local_dt(ts);
     if (dt == NULL)
         return 0;
     gint64 due = task_due_from_ymd(g_date_time_get_year(dt),
