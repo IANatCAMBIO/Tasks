@@ -42,9 +42,14 @@ TYPE, not an old name — do not sweep them.  The sidebar has a collapsible
 `manual_order_group_<id>` and Google's own
 `/users/@me/lists` API paths all mean lists-the-data-type.
 
-The repo DIRECTORY is still `~/salt_development/lists` and the git remote
-is still `IANatCAMBIO/Lists.git`.  Both are deliberate: GitHub redirects,
-so renaming the repo would only mean chasing every doc link.
+The repo DIRECTORY is `~/salt_development/tasks` and the GitHub repo is
+`IANatCAMBIO/Tasks` — both renamed from `lists`/`Lists`, so a doc or note
+that still says `lists` is stale rather than describing something that
+exists.  The configured REMOTE URL is still the old
+`IANatCAMBIO/Lists.git`, and pushes work because GitHub redirects: every
+push prints "This repository moved" and then succeeds.  That is the one
+`Lists` spelling left, and it is a URL rather than a decision — point the
+remote at `IANatCAMBIO/Tasks.git` whenever it is convenient.
 
 Public symbols are prefixed `task_`, types `Task`, macros `TASK_`.  These
 were `bt_`/`Bt`/`BT_` — "Blue Tasks", the app's first name — renamed on
@@ -1551,11 +1556,22 @@ are the post-mortem; none of them is optional.
   per from-version, never overwritten.  `ALTER TABLE … DROP COLUMN` (v7)
   rewrites the whole tasks table; doing that to someone's only copy with
   no backup is how this happened.
-- **The database routinely lives in a SYNC FOLDER** (iCloud Drive is the
-  user's normal setup).  Assume the file can be replaced, evicted or
-  re-generated underneath an open connection.  That is not a hypothetical
-  — it is the standing operating environment, so partial copies and
-  surprise generations are REALISTIC failures to design against.
+- **Assume the database file can be REPLACED, EVICTED or RE-GENERATED
+  underneath an open connection.**  This was written when the db lived in
+  iCloud Drive.  It no longer does — since 2026-09-09 the live file is on
+  local disk at `~/.local/share/tasks/tasks.db` and it is the BACKUPS that
+  are synced (`backup_dir` points into iCloud) — but the rule stands, and
+  the move is exactly why.  What happened that day: the iCloud folder
+  holding the database was moved to iCloud's trash while the app was
+  running.  The app kept writing to the deleted inode for another hour
+  (unix keeps the file alive for an open connection), the rotating backup
+  captured that state, and then the process exited and the inode went with
+  it.  Nothing was lost, and the ONLY reason is that an independent copy
+  existed somewhere else.  So: partial copies, vanishing directories and
+  surprise generations are REALISTIC failures to design against, the
+  backup's whole value is being in a DIFFERENT PLACE from the live file,
+  and a directory being there at startup is not a promise it will be there
+  at the next write.
 - **`task_app_switch_database` re-arms ALL THREE timers** (sync, Notes
   mirror, backup) on the new path.  Each captured the old path when
   installed, and that file has just been deleted — left alone the workers

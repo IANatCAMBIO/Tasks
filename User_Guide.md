@@ -309,22 +309,36 @@ Overdue and Weekly Forecast have no section of their own: their only
 setting would be whether to show their row, which is what their
 checkbox in the Plugins list already does.
 
-All changes apply live and persist (in `tasks.ini` next to the
-binary). Toolbar icons are PNGs bundled in `icons/` — replaceable by
-dropping in files.
+All changes apply live and persist (in `tasks.ini` — see
+[Storage](#storage) for where that is). Toolbar icons are PNGs bundled in
+`icons/` — replaceable by dropping in files.
 
 ## Storage
 
-Everything lives in a single SQLite database:
+One directory holds everything Tasks keeps for you:
+**`~/.local/share/tasks`** (GLib's user-data directory). There is one
+place to back up and one place to look.
 
-- `~/.local/share/tasks/tasks.db` (GLib's user-data directory).
-  Any standard SQLite tool can read it — the schema is documented in
+- `~/.local/share/tasks/tasks.db` — your tasks. Any standard SQLite tool
+  can read it; the schema is documented in
   [Internals](Internals.md). Back it up by copying the file while the
   app is closed.
-- Settings live in `tasks.ini` next to the binary (portable mode),
-  falling back to `~/.config/tasks/` when that directory is not
-  writable; it is seeded from `tasks.ini.defaults` on first launch
-  and rewritten by the app as you change things.
+- `~/.local/share/tasks/tasks.ini` — your settings, seeded from
+  `tasks.ini.defaults` on first launch and rewritten by the app as you
+  change things.
+- `~/.local/share/tasks/plugins/` — where add-on modules go, unless the
+  app finds a `plugins/` folder beside its own binary (which is what
+  makes a freshly built source tree run its own modules).
+
+**Portable mode.** If there is no `tasks.ini` in that directory but there
+*is* one next to the binary, the one beside the binary is used and
+written to instead — so a copy of Tasks on a USB stick, or a source tree
+you are working in, keeps the settings it came with. The app looks in the
+shared directory first, falls back to the one beside the binary, and only
+creates a new file in the shared directory when neither exists.
+
+To move an existing setup into the shared directory, quit Tasks and move
+`tasks.ini` there yourself; nothing is copied automatically.
 
 ### Backups
 
@@ -336,19 +350,22 @@ verified copy named `tasks-YYYYMMDD-HHMMSS.db` on your chosen interval,
 keeping only the most recent few. Set the interval to `0` to back up only
 when you press **Back Up Now**.
 
-If you don't choose a folder, backups go to the default database location
-in your home directory (`~/.local/share/tasks`) — so switching it on
-always does something. **Choose Folder…** points them somewhere else.
+If you don't choose a folder, backups go to `~/.local/share/tasks` — so
+switching it on always does something. That is also where your database
+lives, which Settings tells you, and it is the arrangement you most want
+to change: **Choose Folder…** points them somewhere else.
 
 Three things worth knowing:
 
-- **Point it at a disk independent of wherever your database lives.** If
-  the database is in iCloud Drive (or Dropbox, or a network share) and
-  the backups are too, one mishap can take both. An external drive is the
-  strongest choice; the home-directory default is already independent of
-  a synced database. If the backup folder ends up being the *same* folder
-  as the database, Settings says so — it is still a real, separate,
-  verified file, but it cannot survive losing that folder.
+- **Point it somewhere your database is not.** A backup's whole value is
+  being in a different place from the file it copies, and by default it
+  is not: both land in `~/.local/share/tasks`. Settings says so when the
+  two folders match — the backup is still a real, separate, verified
+  file, but it cannot survive losing that folder, and losing a folder is
+  the ordinary way this goes wrong. An external drive is the strongest
+  choice; a synced folder (iCloud Drive, Dropbox, a network share) is a
+  good one *provided the database is not in it too*, since one mishap
+  would otherwise take both.
 - **It cannot fill your disk.** The "keeping N files" setting is a hard
   cap, and old backups are only deleted *after* a new one has been
   written and verified — so a spell of failing backups can never eat the
