@@ -41,6 +41,21 @@
 GtkWidget *task_library_window_new(TaskApp *app);
 
 /* ---------------------------------------------------------------------------
+ * task_library_apply_kanban_shadow() — show or hide the Kanban cards'
+ * drop shadow, live, on the board currently on screen.  Driven by the
+ * "kanban_shadow" setting (default ON) from Settings -> Appearance; the
+ * caller writes the key, this applies it.  A no-op when no library window
+ * exists.
+ *
+ * It is needed because a plain refresh would NOT do it: refresh_kanban
+ * skips the rebuild while the same cards are showing, so the setting
+ * would look inert until the board changed for another reason.  The
+ * shadow's whole cost is its blur, so turning it off restores the
+ * pre-shadow paint time exactly (see gotcha 30).
+ * ------------------------------------------------------------------------- */
+void task_library_apply_kanban_shadow(TaskApp *app, gboolean on);
+
+/* ---------------------------------------------------------------------------
  * task_library_apply_native_menubar() — move the library menu into (or out
  * of) the native macOS menu bar.  A no-op unless built with HAVE_GTKOSX
  * (gtk-mac-integration-gtk3).  Driven by the "native_menubar" setting:

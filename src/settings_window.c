@@ -40,6 +40,21 @@ on_due_today_overdue_toggled(GtkWidget *w, gpointer data)
     task_app_notify_changed(sw->app);
 }
 
+/* on_kanban_shadow_toggled() — Appearance: the Kanban cards' drop shadow
+ * on/off, applied live.  It calls the APPLIER rather than notifying a
+ * refresh: the board skips its rebuild while the same cards are showing,
+ * so a notify would leave the setting looking inert.                      */
+static void
+on_kanban_shadow_toggled(GtkWidget *w, gpointer data)
+{
+    TaskSettings *sw = data;
+    if (sw->loading)
+        return;
+    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    task_app_config_set("kanban_shadow", on ? "1" : "0");
+    task_library_apply_kanban_shadow(sw->app, on);
+}
+
 static void
 on_bold_titles_toggled(GtkWidget *w, gpointer data)
 {
@@ -876,6 +891,19 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
     g_signal_connect(bold_check, "toggled",
                      G_CALLBACK(on_bold_titles_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), bold_check, FALSE, FALSE, 0);
+
+    GtkWidget *shadow_check = gtk_check_button_new_with_label(
+        "Show drop shadows on Kanban cards");
+    gtk_widget_set_tooltip_text(shadow_check,
+        "Lifts each card off its lane.  The shadow is blurred, and GTK "
+        "redraws that blur\nevery time the board paints \xe2\x80\x94 turning it "
+        "off costs the board nothing\nand gives back about 1 ms per lane "
+        "repaint.");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(shadow_check),
+        task_app_config_get_bool("kanban_shadow", TRUE));
+    g_signal_connect(shadow_check, "toggled",
+                     G_CALLBACK(on_kanban_shadow_toggled), sw);
+    gtk_box_pack_start(GTK_BOX(vbox), shadow_check, FALSE, FALSE, 0);
 
     GtkWidget *overdue_check = gtk_check_button_new_with_label(
         "Include all past-due tasks in the Due Today view");

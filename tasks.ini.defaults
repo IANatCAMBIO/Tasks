@@ -91,6 +91,14 @@ due_today_show_overdue=0
 # not hand-edited, and separate from the manual_order_* keys above so a
 # board drag never rearranges a hand-sorted list view.
 kanban_view=0
+# Kanban card drop shadow (1|0, default 1; Settings -> Appearance).  Lit
+# from the upper left, so it falls to the bottom and right of each card.
+# It is the one part of the board's look with a measurable price: GTK3
+# blurs every shadow itself, on every draw, with no cache, so the blur
+# costs about 1 ms per repaint of a lane's worth of visible cards.  Set
+# this to 0 to get exactly the pre-shadow paint time back — the card's
+# wrapper widget stays either way and is free.
+kanban_shadow=1
 # Manual task ordering (1|0, default 0; the toolbar sort-mode toggle or
 # View → Manual Sort): shows a drag handle and lets rows be dragged.
 # The order itself is stored per view in manual_order_list_<id>,

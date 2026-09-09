@@ -1154,6 +1154,27 @@ and only ever grows downwards.
   cards**, all of it the BLUR and none of it the extra widget.  Read
   gotcha 30 before trying to make that cheaper — the answer is not a
   bigger GPU.
+  It is therefore the one part of the board's look with a SETTING behind
+  it: **`kanban_shadow`** (default 1, Settings → Appearance, "Show drop
+  shadows on Kanban cards"), which exists to hand that millisecond back
+  on a machine that wants it.  Three things make it honest:
+  the WRAPPER IS BUILT EITHER WAY, so "off" is the pre-shadow paint time
+  exactly rather than approximately (a wrapper carrying no shadow class
+  measured 0.83 ms against the pre-shadow 0.82 over a 12-card lane) and
+  the board has ONE widget shape for `card_of` and the drag code to know
+  about instead of a tree that depends on a setting;
+  the flag is CACHED on `lw->board.card_shadow` like `manual_sort` and
+  `kanban`, because `kanban_card_new` reads it PER CARD;
+  and the handler calls **`task_library_apply_kanban_shadow`** rather than
+  notifying a refresh — `refresh_kanban` takes its FAST PATH while the
+  same cards are showing, so a notify would relabel, build nothing, and
+  leave the setting looking inert until the board changed for some other
+  reason.  That is the same trap the Google and Notes intervals have,
+  where writing the key without re-arming the worker defers it to the next
+  launch.  `card_shadow_restyle` walks the lanes in place, reading the id
+  off the CARD and writing the class onto its WRAPPER; a toggle mid-drag
+  cannot put a shadow back under the card in flight, since
+  `.task-card-shadow-flat` still wins.
 - Inner spacing is WIDGET MARGINS on the child (`pad_widget`, CARD_PAD 8
   / LANE_PAD 6), not CSS `padding` and not `border_width` — see gotcha
   18.  The card still paints its background and border at its own edge.

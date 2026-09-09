@@ -112,6 +112,12 @@ typedef struct {
         gboolean      kanban;            /* the kanban_view config flag, cached
                                           * like manual_sort; kanban_apply is
                                           * the single writer                   */
+        gboolean      card_shadow;       /* the kanban_shadow config flag,
+                                          * cached the same way: kanban_card_new
+                                          * reads it PER CARD, and a board is
+                                          * hundreds of them.
+                                          * task_library_apply_kanban_shadow is
+                                          * the single writer                   */
         gboolean      done_show_all;     /* the Done lane's "Show All" link has
                                           * been clicked.  TRANSIENT — not a
                                           * config key: it is reset whenever the
@@ -1246,6 +1252,47 @@ card_restyle(TaskLibrary *lw)
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * card_shadow_restyle() — add or remove .task-card-shadow on every card
+ * wrapper currently on the board, from the cached flag.
+ *
+ * Walks the lanes IN PLACE rather than asking for a refresh, and that is
+ * not an optimization: refresh_kanban takes its FAST PATH when the same
+ * cards are still showing (kanban_plan_matches), so a refresh would
+ * relabel and build nothing, and the setting would appear to do nothing
+ * until the board happened to change for some other reason.  The same
+ * trap the Google and Notes intervals have, where writing the key without
+ * re-arming the worker leaves it taking effect at the next launch.
+ *
+ * The class goes on the WRAPPER — the lane's child — while the task id
+ * lives on the CARD inside it, which is why this reads one and writes the
+ * other.  A card in flight is left alone by nothing here:
+ * .task-card-shadow-flat is listed after .task-card-shadow and still
+ * wins, so a toggle mid-drag cannot put a shadow back under the dragged
+ * card.
+ * ------------------------------------------------------------------------- */
+static void
+card_shadow_restyle(TaskLibrary *lw)
+{
+    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++) {
+        if (lw->board.kanban_lanes[s] == NULL)
+            continue;
+        GList *kids =
+            gtk_container_get_children(GTK_CONTAINER(lw->board.kanban_lanes[s]));
+        for (GList *k = kids; k != NULL; k = k->next) {
+            GtkWidget *wrap = GTK_WIDGET(k->data);
+            if (card_task_id(card_of(wrap)) == 0)
+                continue;            /* marker / placeholder / the link    */
+            GtkStyleContext *sc = gtk_widget_get_style_context(wrap);
+            if (lw->board.card_shadow)
+                gtk_style_context_add_class(sc, "task-card-shadow");
+            else
+                gtk_style_context_remove_class(sc, "task-card-shadow");
+        }
+        g_list_free(kids);
+    }
+}
+
 /* card_select() — collapse the selection to just `id`.                     */
 static void
 card_select(TaskLibrary *lw, gint64 id)
@@ -2247,8 +2294,16 @@ kanban_card_new(TaskLibrary *lw, gint64 id, const gchar *markup,
      * size and place it was before.  What it does cost is one indirection
      * for everything that walks a lane — hence card_of().               */
     GtkWidget *shadow = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_style_context_add_class(gtk_widget_get_style_context(shadow),
-                                "task-card-shadow");
+    /* The WRAPPER IS ALWAYS BUILT, shadow or no shadow, and that is what
+     * makes "off" genuinely give the old performance back: a wrapper
+     * carrying no shadow class measured 0.83 ms against the pre-shadow
+     * 0.82 over a 12-card lane, i.e. free — the whole cost was ever the
+     * BLUR (gotcha 30).  Building it either way also keeps ONE widget
+     * shape for card_of() and the drag code to know about, instead of a
+     * board whose tree depends on a setting.                             */
+    if (lw->board.card_shadow)
+        gtk_style_context_add_class(gtk_widget_get_style_context(shadow),
+                                    "task-card-shadow");
     g_object_set_data(G_OBJECT(shadow), "task-card", card);
     gtk_box_pack_start(GTK_BOX(shadow), card, FALSE, FALSE, 0);
     return shadow;
@@ -4830,6 +4885,22 @@ menu_item(GtkWidget *menu, const gchar *label, GCallback cb, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
+ * task_library_apply_kanban_shadow() — the single writer of the cached
+ * kanban_shadow flag, and the live applier behind the Settings check
+ * (see header).  Mirrors task_library_apply_native_menubar: the caller
+ * has already written the config key, this makes it true on screen.
+ * ------------------------------------------------------------------------- */
+void
+task_library_apply_kanban_shadow(TaskApp *app, gboolean on)
+{
+    TaskLibrary *lw = lib_of(app);
+    if (lw == NULL)                  /* the window may be gone             */
+        return;
+    lw->board.card_shadow = on;
+    card_shadow_restyle(lw);
+}
+
+/* ---------------------------------------------------------------------------
  * task_library_apply_native_menubar() — move the library menu into (or out
  * of) the native macOS menu bar (see header).  Mirrors Notes: the
  * SAME menu shell drives the macOS bar — the in-window widget just has
@@ -5822,6 +5893,11 @@ task_library_window_new(TaskApp *app)
     /* Same reason: the View-menu check is built from this cache, and
      * refresh_tasks reads it before the menu handler ever runs.            */
     lw->board.kanban = task_app_config_get_bool("kanban_view", FALSE);
+    /* Seeded before the first refresh builds any cards, since
+     * kanban_card_new reads it per card.  DEFAULT ON: the shadow is the
+     * board's look, and the setting exists to give the paint cost back on
+     * a machine that wants it, not as an opt-in.                          */
+    lw->board.card_shadow = task_app_config_get_bool("kanban_shadow", TRUE);
     lw->sel_kind = SB_KIND_LIST;     /* refresh falls back to first list    */
     lw->group_expanded = g_hash_table_new(g_direct_hash, g_direct_equal);
     lw->board.kanban_sel     = g_hash_table_new(NULL, NULL);   /* id set          */
