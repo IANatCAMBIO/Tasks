@@ -393,11 +393,17 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   items were all removed on 2026-09-08.  Every button carries a TOOLTIP
   that says more than its one-word label would, and the label survives
   only to name the item in the overflow menu and to accessibility — so
-  don't reintroduce a way to show it.  Layout (all left-packed): the Sidebar toggle, a drawn
-  divider, the completed-visibility toggle, the Manual Sort toggle,
-  the pane toggle, a second divider, then New Task and Delete Task —
+  don't reintroduce a way to show it.  Layout (all left-packed): the
+  Sidebar toggle, the completed-visibility toggle, the Manual Sort
+  toggle, the pane toggle, a divider, then New Task and Delete Task —
   and the CONTRIBUTED buttons behind their own rule, which is where the
   Notes and Google sync buttons live (the plugins', not the window's).
+  **ONE divider in the window's own block** (2026-09-14), before the task
+  pair: it separates the controls that change what the PANE SHOWS from the
+  buttons that ACT on a task.  The Sidebar toggle used to stand alone
+  behind a rule of its own, which made a group of one — it belongs with
+  the other three, since showing the lists pane is another change to what
+  is on screen rather than an action on a task.
   Notes' is FIRST (`sort` 5 against Google's 10), the order the two
   passes actually run in — the mirror is worker sort -10, ahead of the
   sync — so the toolbar reads the way one press of each would work.
@@ -433,6 +439,92 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   otherwise no way to ask which picture a state-swapping button is
   showing.  The rotation has to be part of that answer now that one file
   dresses both faces of the pane button.
+  **The Sidebar toggle is the ONE toggle here whose icon does not name the
+  action**: it wears **left-and-right.png**, a double-headed arrow, which
+  says "this moves the pane in and out" without naming a direction.  Set
+  ONCE where the button is built and never swapped — the glyph is
+  symmetric about its vertical axis, so mirroring it by state would change
+  nothing a user could see — so `sidebar_ui_sync` touches only the WORDS
+  (the button's tooltip, and the View menu label through the same call).
+  Five earlier faces are recorded so none is retried as a new idea, all
+  within three days of each other: `sidebar.png` (the original single
+  face); **right-arrow.png** mirrored by state, pointing right while the
+  pane was hidden and left while it was up (2026-09-13);
+  **filing-cabinet.png**, a single face naming the THING rather than the
+  action; **arrow.png** at 18 px (75% of the bar's 24), a solid disclosure
+  triangle pointing down while open and turned a quarter turn clockwise to
+  point left while closed; and **next.png**, a circled bar-and-triangle,
+  mirrored by state like right-arrow (all three 2026-09-14).
+  `task_app_icon_image_flipped` (plus `"task-icon-flip"` and the
+  three-spelling `icon_image_build` split behind them) came and went TWICE
+  with those mirrored faces and is currently DELETED, so a mirrored face
+  needs it written again rather than merely called.  **The lesson worth
+  keeping is about the transform, not the icons**: a horizontal MIRROR is
+  what "point the other way" means, and a 180-degree ROTATION only looks
+  the same for a glyph symmetric about its horizontal axis — so the mirror
+  is what to write even when both render identically.  A glyph symmetric
+  about its VERTICAL axis, like the double-headed arrow in force now,
+  cannot have a second face at all.
+  Of those five only `arrow.png` and `next.png` are still in `icons/`, both
+  unreferenced; `right-arrow.png` and `filing-cabinet.png` were removed and
+  were never committed, so they are gone rather than recoverable, and
+  `sidebar.png` was deleted but IS tracked.
+  **next.png is a LOCAL EDIT, not the file as downloaded**: its yellow
+  fill (249,199,110) was replaced with **rgb(84,112,118)** on 2026-09-14
+  to sit with the app's chrome.  The original is kept beside it as
+  `icons/Unused/next-yellow.png` — it was never committed either, so that
+  copy is the only one.  The recolour was done by DECOMPOSING each pixel
+  rather than swapping a flat colour: every non-flat pixel is a blend
+  `a*yellow + (1-a)*neutral` (the near-black outline, the white glyph, or
+  a gray between), chroma is linear in `a` and the neutral contributes
+  none, so `a = (max-min)/(max-min of the yellow)` recovers the blend and
+  the pixel is rebuilt against the new colour.  A flat match-and-replace
+  would have left a yellow FRINGE on every antialiased edge — 670
+  distinct colours in a four-colour-looking icon is what that number is
+  warning about.
+  **left-and-right.png is the same kind of local edit**, green
+  (99,206,142) to **rgb(226,228,232)** on 2026-09-14, by the same
+  decomposition, original kept as `icons/Unused/left-and-right-green.png`
+  and likewise never committed.  (It passed through rgb(84,112,118) —
+  next.png's colour — rgb(70,85,200) and rgb(226,238,232) the same day;
+  the two icons are NOT the same colour any more.)  That fill is a
+  NEAR-WHITE, within (20,17,12) of the toolbar's own `@theme_bg_color`, so
+  on a light theme the glyph reads as its black OUTLINE with a fill that
+  barely separates from the chrome, and on a dark theme it reads as a
+  solid pale arrow.
+  That is a deliberate choice and not a bug to fix, but it is the reason
+  this icon looks like two different pictures depending on the theme —
+  check both before changing it (rendered against Adwaita light and dark
+  when it landed).  Each recolour re-reads that GREEN ORIGINAL rather
+  than the file on disk: every pass rounds to 8 bits, and the slate it
+  held has a chroma of 34 against the green's 107, so decomposing the
+  slate would have amplified that error threefold.  Recolour from the
+  pristine copy, never from the last result.  Its diagnostic is worth recording because
+  it looks alarming and is not: the recovered neutral's channel SPREAD
+  reaches 64/255, but only on the 285 pixels whose `a` is 0.99 or above —
+  one unit off the flat fill, where dividing by `1-a` amplifies 8-bit
+  quantisation about a hundredfold.  Those pixels are 99% the new colour
+  whatever the neutral was, so the error is under one unit.  Across the
+  1540 pixels with `a < 0.9`, the ones the blend actually shows, the worst
+  spread is 4.8/255 — which is what confirms the model.  So judge that
+  number BY `a`, not on its own.
+  **add.png is DERIVED from remove.png** (2026-09-14) and is what BOTH
+  New Task buttons wear — the toolbar's and the Compact Layout float
+  bar's, the two sites that used to name `add2` and now name `add`.  It
+  is that
+  icon's circled X turned 45 degrees CLOCKWISE, which is what makes the
+  cross a PLUS while leaving the circle a circle, with the red fill
+  (247,72,80) decomposed to rgb(95,191,87).  Two things about the order
+  matter if it is ever remade: the RECOLOUR runs first, on the crisp
+  original, because the decomposition wants the flat palette rather than a
+  resampled one; and the 45-degree turn — unlike every rotation the app
+  does at runtime, which are whole quarter turns — RESAMPLES, so it is
+  done PREMULTIPLIED.  PIL filters each channel on its own, and on
+  straight alpha that drags the RGB of the fully transparent pixels
+  (0,0,0 here) into the outer ring and darkens it.  Premultiply, rotate,
+  divide the alpha back out.  It matches remove.png's weight exactly
+  because it IS remove.png, which `add2.png` — lighter, thinner — did
+  not; that file is still in `icons/` and now unreferenced.
   The completed-visibility toggle (`show_completed`, default 1) shows
   hidden.png while completed tasks are visible and visible.png while
   hidden (the icon names the ACTION), swapped live via
@@ -565,7 +657,7 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   emit "activate", where `set_active` on a check item would have; and the
   label is written by the SINGLE APPLIER for that state, never by the
   handler — `hide_done_icon_refresh`, `manual_sort_icon_refresh`,
-  `sidebar_menu_sync`, `compact_layout_apply` and `task_pane_mode_apply`
+  `sidebar_ui_sync`, `compact_layout_apply` and `task_pane_mode_apply`
   respectively, so a flag changed by any other route (the toolbar twin, a
   config load) still reaches the menu.  That is also why the Completed,
   Sorting and Sidebar items are wired STRAIGHT to their toolbar twins'
@@ -584,8 +676,8 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   "unavailable while Kanban is on".
   The sidebar item is the menu twin of the toolbar Sidebar button —
   both route through `sidebar_set_visible` (write-through
-  `sidebar_visible` + `sidebar_menu_sync`, which re-labels from the pane's
-  LIVE visibility).
+  `sidebar_visible` + `sidebar_ui_sync`, which re-labels the item AND
+  re-words the button's tooltip from the pane's LIVE visibility).
   **Compact Layout** (`compact_layout`, default 0) hides the whole
   toolbar and its rule, and shows `float_bar` instead:
   a two-button pill (New Task + Delete Task, icons only) added as a
@@ -1592,6 +1684,27 @@ block is the only place it is set.
   nearly the same.  MEASURED at SETTINGS_WIDTH 470: both land on x=444.
   `halign END` on the row, NOT `pack_end` into a full-width one — that
   reverses the pair, and the folder is chosen before the backup is taken.
+- **EVERY push button in this window comes from `small_button`, a
+  CONTRIBUTED section's included.**  It is reached from a plugin as
+  `host->settings->button` (TaskHostSettings, ABI revision 8) and from
+  the app's own sections directly, with `task_settings_section_button`
+  the one public spelling between them — the same bargain
+  `heading`/`note` already make, where the host owns the look and the
+  plugin wires and packs.  The reason it had to cross the ABI rather
+  than stay a private helper: a plugin that builds its own
+  `gtk_button_new_with_label` gets the THEME's default bulk, which is
+  half again the height of Update and Change Folder…, so its section
+  reads as the loudest block in a compact column (measured on the Notes
+  rules table and the Google sign-in pair, which were exactly that until
+  2026-09-13).  The SHA-256 row's button is still deliberately NOT one of
+  them — it strips its box entirely to keep the digest on the grid's
+  value column.  `small_spin` crosses at the same revision as
+  `task_settings_section_spin` / `host->settings->spin` and for the same
+  reason, and both plugins' interval spins go through it at 3 chars (720
+  is the widest value their range reaches) — a plugin left to shrink one
+  itself would find `gtk_entry_set_width_chars` moving it two pixels and
+  conclude the call was ignored, which is the measurement the host call
+  exists to spare it.
 
 ## Data safety (read this before touching the database file)
 
@@ -2327,3 +2440,26 @@ happened to return.
       shadow ONCE into a cached surface and 9-slice-blit it per card from
       the lane's `"draw"` — blits being exactly what XRender does
       accelerate.  Do not reach for that pre-emptively at ~1 ms.
+
+31. **`g_ptr_array_sort` HANDS ITS COMPARATOR POINTERS TO THE ELEMENTS**
+    (`gchar **` for an array of strings), so
+    `g_ptr_array_sort(a, (GCompareFunc)g_strcmp0)` compares the POINTER
+    VALUES as if they were the strings.  The cast is what hides it: the
+    compiler is satisfied, and the result is an ordering that looks
+    plausible and is arbitrary, so nothing ever complains.
+    It was live in `backup_list()` (backup.c) from the feature's first
+    commit until 2026-09-12, and that order is what the prune DELETES by —
+    so the retention window was quietly not "the most recent N".  MEASURED
+    on a four-file rotation with `backup_keep=3`: it removed the
+    SECOND-oldest and kept the oldest.  Found by running the rotation in
+    the sister Notes app, whose backup module is a port of this one;
+    reading the code did not find it in either app, and neither did
+    `-Wall -Wextra`.
+    Fix: a comparator that dereferences (`backup_name_cmp`), or
+    `g_ptr_array_sort_values`, whose whole point is that it passes the
+    elements (plugin_loader.c already uses it with `g_strcmp0`).  Every
+    hand-written comparator here — `entry_cmp`, `decor_cmp`, `view_cmp`,
+    `done_recent_cmp` — dereferences correctly; being hand-written is the
+    whole difference.  **The rule: never cast a function to
+    `GCompareFunc` to make a sort compile.**  If the types do not already
+    match, the comparator is wrong.

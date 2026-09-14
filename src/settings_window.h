@@ -75,6 +75,25 @@ GtkWidget *task_settings_section_heading(const gchar *text);
  * sits under a heading, in the same style.                                */
 GtkWidget *task_settings_section_note(const gchar *text);
 
+/* task_settings_section_button() — a push button in the window's own
+ * style: the compact one the app's own sections use, not the theme's
+ * full-size default.  It is the ONE spelling of a push button in this
+ * window, contributed sections included, so nothing in the column can end
+ * up a different height from Update or Change Folder….  Wire and
+ * pack it yourself; only the look comes from here.                        */
+GtkWidget *task_settings_section_button(const gchar *label);
+
+/* task_settings_section_spin() — a spin button no wider than the digits
+ * it can hold, the window's own compact one rather than the theme's.
+ *   lo, hi, step — the range; `chars` — digits to size the entry for,
+ *                  which must be sized to the RANGE (the widest value a
+ *                  user can reach still has to fit).
+ *
+ * Both levers are needed and neither alone works — see small_spin() in
+ * settings_window.c for the measurement.                                  */
+GtkWidget *task_settings_section_spin(gdouble lo, gdouble hi, gdouble step,
+                                      gint chars);
+
 /* ---------------------------------------------------------------------------
  * task_settings_remove_owner() — remove everything plugin `owner`
  * registered here.  Called when a plugin is switched off while the app is

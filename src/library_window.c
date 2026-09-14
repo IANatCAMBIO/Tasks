@@ -188,6 +188,7 @@ typedef struct {
     guint         listen_changed;    /* TaskApp event subscriptions —       */
     guint         listen_tasks;      /* dropped in on_library_destroy       */
     guint         listen_status;     /* BEFORE the editors close            */
+    GtkWidget    *sidebar_item;      /* lists-pane show/hide toggle button  */
     GtkWidget    *hide_done_item;    /* completed-visibility toggle button  */
     GtkWidget    *manual_sort_item;  /* manual-sort mode toggle button      */
     GtkWidget    *pane_item;         /* list <-> Kanban pane toggle button  */
@@ -3476,31 +3477,51 @@ sort_by_completed(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
  * Toolbar actions.
  * =========================================================================== */
 
-/* sidebar_menu_sync() — point the View menu's sidebar item at the ACTION
- * it offers, from the pane's LIVE visibility: "Hide Sidebar" while the
- * lists pane is up, "Show Sidebar" while it is not.  No handler blocking
- * is needed — an action item's label carries no state to feed back, and
- * set_label cannot emit "activate" (same protocol as
+/* sidebar_ui_sync() — point ALL of the sidebar's controls at the state
+ * the pane is in, from its LIVE visibility: the toolbar button's icon and
+ * tooltip, and the View menu item's matching LABEL ("Hide Sidebar" while
+ * the lists pane is up, "Show Sidebar" while it is not).
+ *
+ * The ICON is ONE face, left-and-right.png — a double-headed arrow, so it
+ * says "this moves the pane in and out" without naming a direction.  It
+ * is therefore set ONCE where the button is built and NOT swapped here:
+ * the glyph is symmetric about its vertical axis, so mirroring it by
+ * state would change nothing a user could see, and turning it would only
+ * point it at the wrong axis.
+ *
+ * That makes this the one toggle on the bar whose icon does not name the
+ * ACTION, unlike the completed and sort toggles beside it — the tooltip
+ * and the menu label are what say which way a click goes, which is why
+ * this function still runs on every change.
+ *
+ * No handler blocking is needed for any of them: an action item's label
+ * carries no state to feed back, and neither set_label nor swapping an
+ * icon widget can emit "activate" (same protocol as
  * hide_done_icon_refresh and manual_sort_icon_refresh).                    */
 static void
-sidebar_menu_sync(TaskLibrary *lw)
+sidebar_ui_sync(TaskLibrary *lw)
 {
-    if (lw->view_sidebar_item == NULL)
-        return;
-    gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_sidebar_item),
-        gtk_widget_get_visible(lw->sidebar_box) ? SIDEBAR_LABEL_TO_HIDE
-                                               : SIDEBAR_LABEL_TO_SHOW);
+    gboolean shown = gtk_widget_get_visible(lw->sidebar_box);
+
+    if (lw->sidebar_item != NULL)
+        gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->sidebar_item),
+            shown ? "Hide the lists pane" : "Show the lists pane");
+
+    if (lw->view_sidebar_item != NULL)
+        gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_sidebar_item),
+            shown ? SIDEBAR_LABEL_TO_HIDE : SIDEBAR_LABEL_TO_SHOW);
 }
 
 /* sidebar_set_visible() — show or hide the lists pane, persist the
- * choice in `sidebar_visible` and keep the View menu check in step.
- * Both the toolbar button and the menu item route through here.            */
+ * choice in `sidebar_visible` and point both of its controls at what a
+ * click now offers.  Both the toolbar button and the menu item route
+ * through here.                                                           */
 static void
 sidebar_set_visible(TaskLibrary *lw, gboolean show)
 {
     gtk_widget_set_visible(lw->sidebar_box, show);
     task_app_config_set("sidebar_visible", show ? "1" : "0");
-    sidebar_menu_sync(lw);
+    sidebar_ui_sync(lw);
 }
 
 /* ---------------------------------------------------------------------------
@@ -3533,7 +3554,7 @@ compact_layout_apply(TaskLibrary *lw)
     gtk_widget_set_visible(lw->float_bar,     compact);
     gtk_widget_set_visible(lw->sidebar_box,
         task_app_config_get_bool("sidebar_visible", FALSE));
-    sidebar_menu_sync(lw);
+    sidebar_ui_sync(lw);
 
     if (lw->view_compact_item != NULL)
         gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_compact_item),
@@ -5271,7 +5292,7 @@ compact_bar_new(TaskLibrary *lw)
      * same resolution the column headers use — hardcoding the light-theme
      * grays put a white slab over a dark theme's task rows.                */
     themed_bg_css_apply(bar, float_bar_css);
-    compact_bar_button(lw, bar, "add2", "+", "Create a task in the "
+    compact_bar_button(lw, bar, "add", "+", "Create a task in the "
                        "selected list", G_CALLBACK(on_new_task));
     compact_bar_button(lw, bar, "remove", "\xe2\x88\x92",
                        "Delete the selected task",
@@ -6030,9 +6051,12 @@ task_library_window_new(TaskApp *app)
 
     /* --- Toolbar ---------------------------------------------------------- */
     /* Icon names are icons/-relative paths; the curated set lives in
-     * icons/ (case-exact for Linux).  Layout: sidebar toggle, a drawn
-     * divider, Sync + the completed, sort and pane toggles, a divider,
-     * then the task pair — and the About button pushed to the far right.   */
+     * icons/ (case-exact for Linux).  Layout: the sidebar toggle, then the
+     * completed, sort and pane toggles, a divider, then the task pair —
+     * and the search box pushed to the far right.  ONE divider, before the
+     * task pair: it separates the controls that change what the pane SHOWS
+     * from the buttons that act on a task, and the sidebar toggle joins the
+     * first group rather than standing alone behind a rule of its own.     */
     GtkWidget *toolbar = gtk_toolbar_new();
     lw->toolbar = toolbar;           /* Compact Layout hides it whole       */
     /* Small-toolbar metrics — the Notes bar height.  ICONS ONLY, set here
@@ -6042,11 +6066,12 @@ task_library_window_new(TaskApp *app)
     gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
                               GTK_ICON_SIZE_SMALL_TOOLBAR);
     gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), GTK_TOOLBAR_ICONS);
-    tool_button(lw, GTK_TOOLBAR(toolbar), "sidebar",
-                "\xe2\x97\xa7", "Sidebar", "Show or hide the lists pane",
-                G_CALLBACK(on_toggle_sidebar));
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       gtk_separator_tool_item_new(), -1);
+    /* ONE face, set here and never swapped — a double-headed arrow names
+     * the MOVEMENT rather than a direction, and sidebar_ui_sync says
+     * which way the next click goes in the tooltip (see there).          */
+    lw->sidebar_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
+        "left-and-right", "\xe2\x97\xa7", "Sidebar",
+        "Show the lists pane", G_CALLBACK(on_toggle_sidebar)));
 
     lw->hide_done_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
         "hidden", "\xf0\x9f\x91\x81", "Completed",
@@ -6069,7 +6094,7 @@ task_library_window_new(TaskApp *app)
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
 
-    tool_button(lw, GTK_TOOLBAR(toolbar), "add2", NULL,
+    tool_button(lw, GTK_TOOLBAR(toolbar), "add", NULL,
                 "New Task", "Create a task in the selected list",
                 G_CALLBACK(on_new_task));
     tool_button(lw, GTK_TOOLBAR(toolbar), "remove", NULL,

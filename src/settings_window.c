@@ -511,8 +511,13 @@ on_settings_destroy(GtkWidget *w, gpointer data)
 /* ---------------------------------------------------------------------------
  * small_button() — a text button at about half the theme's default bulk,
  * and the one spelling of a PUSH BUTTON in this window: the Database
- * section's and the Plugins section's all come from here, so the two
- * cannot come to be two sizes.  (The SHA-256 row's is not one of them and
+ * section's, the Plugins section's and — through
+ * task_settings_section_button(), which a plugin reaches as
+ * host->settings->button — every CONTRIBUTED section's all come from
+ * here, so no two of them can come to be two sizes.  A plugin building
+ * its own gtk_button_new_with_label() is the one way to get a full-size
+ * button into this column, and it reads as a mistake beside the rest.
+ * (The SHA-256 row's is not one of them and
  * should not become one — it is a relief-less label that happens to be
  * clickable, and it strips its box entirely to keep the digest on the
  * grid's value column.)
@@ -699,6 +704,18 @@ GtkWidget *
 task_settings_section_note(const gchar *text)
 {
     return wrapped_label(text);
+}
+
+GtkWidget *
+task_settings_section_button(const gchar *label)
+{
+    return small_button(label);
+}
+
+GtkWidget *
+task_settings_section_spin(gdouble lo, gdouble hi, gdouble step, gint chars)
+{
+    return small_spin(lo, hi, step, chars);
 }
 
 /* ===========================================================================

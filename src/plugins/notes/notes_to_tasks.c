@@ -1008,9 +1008,9 @@ bn_thread(gpointer data)
     } else if (job->n_created == 0 && job->n_updated == 0 &&
                job->n_removed == 0 && job->n_pushed == 0 &&
                job->n_failed == 0) {
-        job->message = g_strdup("Action items up to date");
+        job->message = g_strdup("Action Items up to date");
     } else {
-        GString *s = g_string_new("Action items:");
+        GString *s = g_string_new("Action Items:");
         if (job->n_created > 0)
             g_string_append_printf(s, " %d added,", job->n_created);
         if (job->n_updated > 0)
@@ -2111,10 +2111,10 @@ bn_rules_build(TaskApp *app, GtkWidget *box)
     gtk_box_pack_start(GTK_BOX(box), sw, FALSE, FALSE, 0);
 
     GtkWidget *btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *add  = gtk_button_new_with_label("Add Rule");
-    ui->remove      = gtk_button_new_with_label("Remove Rule");
-    ui->up          = gtk_button_new_with_label("Move Up");
-    ui->down        = gtk_button_new_with_label("Move Down");
+    GtkWidget *add  = host->settings->button("Add Rule");
+    ui->remove      = host->settings->button("Remove Rule");
+    ui->up          = host->settings->button("Move Up");
+    ui->down        = host->settings->button("Move Down");
     gtk_widget_set_tooltip_text(ui->up,
         "The first rule that matches wins â this is how you say "
         "which");
@@ -2192,7 +2192,7 @@ bn_settings_section(TaskApp *app, GtkWidget *column, GtkWindow *window,
                      G_CALLBACK(on_bn_cli_focus_out), app);
     gtk_box_pack_start(GTK_BOX(cli_row), cli, TRUE, TRUE, 0);
 
-    GtkWidget *browse = gtk_button_new_with_label("Browse\xe2\x80\xa6");
+    GtkWidget *browse = host->settings->button("Browse\xe2\x80\xa6");
     gtk_widget_set_tooltip_text(browse,
         "Find the Notes program on disk \xe2\x80\x94 or type a path here, "
         "or a bare name to search your PATH");
@@ -2237,7 +2237,8 @@ bn_settings_section(TaskApp *app, GtkWidget *column, GtkWindow *window,
     gtk_box_pack_start(GTK_BOX(iv_row),
                        gtk_label_new("Sync action items every"),
                        FALSE, FALSE, 0);
-    GtkWidget *spin = gtk_spin_button_new_with_range(0, 720, 1);
+    /* 3 chars: 720 is the widest value the range can reach.          */
+    GtkWidget *spin = host->settings->spin(0, 720, 1, 3);
     gtk_widget_set_tooltip_text(spin, "0 = only when you press Sync");
     gchar *iv_v = host->config->get(self, "sync_interval_min");
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin),

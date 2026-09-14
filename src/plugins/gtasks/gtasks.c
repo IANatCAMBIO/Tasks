@@ -2305,12 +2305,12 @@ gtasks_settings(TaskApp *app, GtkWidget *column, GtkWindow *window,
     gtk_box_pack_start(GTK_BOX(box), check, FALSE, FALSE, 0);
 
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *signin = gtk_button_new_with_label(
+    GtkWidget *signin = host->settings->button(
         "Sign In to Google\xe2\x80\xa6");
     g_object_set_data(G_OBJECT(signin), GT_SET_BOX, box);
     g_signal_connect(signin, "clicked", G_CALLBACK(on_set_signin), app);
     gtk_box_pack_start(GTK_BOX(row), signin, FALSE, FALSE, 0);
-    GtkWidget *signout = gtk_button_new_with_label("Sign Out");
+    GtkWidget *signout = host->settings->button("Sign Out");
     g_object_set_data(G_OBJECT(signout), GT_SET_BOX, box);
     g_signal_connect(signout, "clicked", G_CALLBACK(on_set_signout), app);
     gtk_box_pack_start(GTK_BOX(row), signout, FALSE, FALSE, 0);
@@ -2321,7 +2321,8 @@ gtasks_settings(TaskApp *app, GtkWidget *column, GtkWindow *window,
     GtkWidget *iv = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start(GTK_BOX(iv), gtk_label_new("Auto-sync every"),
                        FALSE, FALSE, 0);
-    GtkWidget *spin = gtk_spin_button_new_with_range(0, 720, 1);
+    /* 3 chars: 720 is the widest value the range can reach.          */
+    GtkWidget *spin = host->settings->spin(0, 720, 1, 3);
     gtk_widget_set_tooltip_text(spin,
         "Minutes between automatic syncs while signed in; 0 disables "
         "the timer (the Sync button always works)");

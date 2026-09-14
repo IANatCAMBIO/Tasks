@@ -105,8 +105,13 @@
 /* 7: TaskUiMenuDef grew `menu_title` and TaskUiMenu grew
  * TASK_UI_MENU_OWN — a plugin can put an item in a TOP-LEVEL menu of its
  * own (see task_ui.h).  Additive in both directions: the new field is
- * read only under the new enum value, which an older plugin cannot name. */
-#define TASK_PLUGIN_ABI_REVISION 7u
+ * read only under the new enum value, which an older plugin cannot name.
+ * 8: TaskHostSettings grew `button` and `spin` — the compact controls
+ * the Settings window's own sections use, so a contributed section's
+ * buttons are the same height as Update and Change Folder… and its spins
+ * no wider than their digits.  Appends to the end of a group, which an
+ * older plugin never reads. */
+#define TASK_PLUGIN_ABI_REVISION 8u
 
 /* The directory plugins are loaded from, relative to the executable.       */
 #define TASK_PLUGIN_DIR "plugins"
@@ -455,6 +460,23 @@ typedef struct {
     void       (*add_section)(TaskSettingsSectionFn fn, gpointer user_data);
     GtkWidget *(*heading)(const gchar *text);
     GtkWidget *(*note)(const gchar *text);
+
+    /* A push button in the window's own style — since ABI 1.8.  The
+     * Settings column is compact (the theme's default button is half
+     * again the height of the app's own), so a contributed section that
+     * builds its own reads as the loudest thing in the window.  Same
+     * bargain as heading/note: the host owns the look, the plugin wires
+     * and packs it.                                                    */
+    GtkWidget *(*button)(const gchar *label);
+
+    /* A spin button sized to its own digits — since ABI 1.8.  `chars` is
+     * the width in digits and must be sized to the RANGE, so the widest
+     * value `hi` can reach still fits without the entry scrolling under
+     * the user.  The theme's default is enormous for a three-digit
+     * number, and trimming it needs TWO levers that look like one (see
+     * small_spin in settings_window.c) — which is the reason this is a
+     * host call rather than something a plugin is left to rediscover. */
+    GtkWidget *(*spin)(gdouble lo, gdouble hi, gdouble step, gint chars);
 } TaskHostSettings;
 
 /* ---------------------------------------------------------------------------

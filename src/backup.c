@@ -130,6 +130,32 @@ task_backup_ready(gchar **reason)
 }
 
 /* ---------------------------------------------------------------------------
+ * backup_name_cmp() — g_ptr_array_sort comparator over the paths themselves.
+ *
+ * NOT `(GCompareFunc)g_strcmp0`, which is what this was until 2026-09-12:
+ * g_ptr_array_sort hands its comparator POINTERS TO THE ELEMENTS (gchar **),
+ * so passing g_strcmp0 compares the POINTER VALUES as if they were the
+ * strings.  The cast silences the compiler and the result is an ordering
+ * that looks plausible and is arbitrary — nothing anywhere complains.
+ *
+ * That is load-bearing here and nowhere else in the app: this order is what
+ * the prune DELETES by.  MEASURED on a four-file rotation with keep=3 (in
+ * the sister Notes app, whose backup module is a port of this one), it
+ * removed the SECOND-oldest and kept the oldest — so the retention window
+ * silently stopped being "the most recent N".
+ *
+ * Every other comparator in this codebase (entry_cmp, decor_cmp, view_cmp,
+ * done_recent_cmp) dereferences correctly; they are hand-written, which is
+ * the whole difference.  `g_ptr_array_sort_values` is the other way out —
+ * it passes the elements, and plugin_loader.c uses it with g_strcmp0.
+ * ------------------------------------------------------------------------- */
+static gint
+backup_name_cmp(gconstpointer a, gconstpointer b)
+{
+    return g_strcmp0(*(const gchar * const *)a, *(const gchar * const *)b);
+}
+
+/* ---------------------------------------------------------------------------
  * backup_list() — every backup file in `dir`, sorted oldest first.
  *
  * Matched by our own PREFIX and SUFFIX only, so nothing else the user
@@ -154,7 +180,7 @@ backup_list(const gchar *dir)
     }
     g_dir_close(d);
     /* Lexical == chronological, by construction of the filename.           */
-    g_ptr_array_sort(out, (GCompareFunc)g_strcmp0);
+    g_ptr_array_sort(out, backup_name_cmp);
     return out;
 }
 

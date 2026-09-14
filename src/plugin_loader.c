@@ -268,6 +268,8 @@ static const TaskHostSettings host_settings = {
     .add_section = task_settings_add_section,
     .heading     = task_settings_section_heading,
     .note        = task_settings_section_note,
+    .button      = task_settings_section_button,
+    .spin        = task_settings_section_spin,
 };
 
 static const TaskHostRows host_rows = {
