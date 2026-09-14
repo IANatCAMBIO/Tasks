@@ -393,17 +393,20 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   items were all removed on 2026-09-08.  Every button carries a TOOLTIP
   that says more than its one-word label would, and the label survives
   only to name the item in the overflow menu and to accessibility — so
-  don't reintroduce a way to show it.  Layout (all left-packed): the
-  Sidebar toggle, the completed-visibility toggle, the Manual Sort
-  toggle, the pane toggle, a divider, then New Task and Delete Task —
-  and the CONTRIBUTED buttons behind their own rule, which is where the
+  don't reintroduce a way to show it.  Layout (all left-packed): New Task
+  and Delete Task, a divider, then the Sidebar toggle, the
+  completed-visibility toggle, the Manual Sort toggle and the pane toggle
+  — and the CONTRIBUTED buttons behind their own rule, which is where the
   Notes and Google sync buttons live (the plugins', not the window's).
-  **ONE divider in the window's own block** (2026-09-14), before the task
-  pair: it separates the controls that change what the PANE SHOWS from the
-  buttons that ACT on a task.  The Sidebar toggle used to stand alone
-  behind a rule of its own, which made a group of one — it belongs with
-  the other three, since showing the lists pane is another change to what
-  is on screen rather than an action on a task.
+  **ONE divider in the window's own block** (2026-09-14), after the task
+  pair: it separates the buttons that ACT on a task from the controls that
+  change what the PANE SHOWS.  The TASK VERBS LEAD (2026-09-14) because
+  they are what the window is for; the toggles read as the modifiers they
+  are once the two actions are past them.  The four toggles are ONE group
+  behind that rule — the Sidebar toggle used to stand alone behind a rule
+  of its own, which made a group of one, and it belongs with the other
+  three since showing the lists pane is another change to what is on
+  screen rather than an action on a task.
   Notes' is FIRST (`sort` 5 against Google's 10), the order the two
   passes actually run in — the mirror is worker sort -10, ahead of the
   sync — so the toolbar reads the way one press of each would work.
@@ -943,7 +946,10 @@ midnight, `TASK_DUE_TIME_DEFAULT` = 480 / 08:00).
   notifies.
 - Editor: 600 ms debounced write-through saves; status/pinned save
   immediately.  The first row is `Status: [combo]` … `Due: [entry] at
-  [HH:MM]` — **the due entry IS its own date picker** (a left click opens
+  [HH:MM]`, and that combo is sized from `theme_field_height` so its
+  plate matches the two entries rather than filling the row (gotcha 32 —
+  a no-op under Adwaita, which already lines them up).  **The due entry
+  IS its own date picker** (a left click opens
   the calendar, `on_due_entry_press`), so there is no 📅 button beside it
   and there must not be one again: the button and the entry were two
   controls for one field, and the click a user tries first is the one on
@@ -2463,3 +2469,42 @@ happened to return.
     whole difference.  **The rule: never cast a function to
     `GCompareFunc` to make a sort compile.**  If the types do not already
     match, the comparator is wrong.
+
+32. **A GtkComboBox DOES NOT LINE UP WITH THE GtkEntrys BESIDE IT under
+    every theme, and the row is not what is wrong.**  A theme may ask for
+    more height on an `entry` than it PAINTS, leaving a transparent gutter
+    for a focus ring: Mojave-Light (a macOS-imitation theme, and what this
+    Mac runs) gives `entry` `min-height: 20px; padding: 2px; border: 3px
+    solid transparent` and then draws the field as a `border-image` INSIDE
+    that border — a 30 px request, a 26 px plate.  A combo is a BUTTON, a
+    button FILLS its allocation, and `combobox button.combo` zeroes the
+    `min-height` the theme gives a plain button — so in a row whose height
+    the entry set, the combo paints all 30 and reads 4 px taller than the
+    field next to it.  MEASURED off the rendered pixels, not the
+    allocations, which are identical (30) and say nothing: plate rows
+    46..75 for the combo against 48..73 for the entry.
+    **Adwaita has no gutter and is already correct** (both 34), which is
+    why this cannot be checked on the reference look alone — render the
+    row under `GTK_THEME=<the user's>` as well.
+    The portable fix is to ASK THE THEME rather than hardcode an inset:
+    a PLAIN `gtk_button_new` is what a theme sizes to match its own entry
+    plate (measured: Mojave-Light 26 against a 26 px plate, Adwaita 34
+    against 34), so `theme_field_height()` measures one in a throwaway
+    offscreen window — an unparented widget has no style to resolve
+    against and answers 0 — and `combo_match_fields()` hands that to the
+    combo with `valign CENTER`, which is what makes the request stick
+    (left at the default FILL it takes the tallest child's height, which
+    IS the problem).  It is a NO-OP wherever the two already agree, so
+    Adwaita renders byte-identically; verified over both themes, and no
+    row's height moves in either (the Status/Due row stays 30, the
+    recurrence rows 26), so the editor's geometry and `adv_height` round
+    trips are untouched.  All three of the editor's combos go through it
+    off ONE probe (0.2 ms each, measured).
+    Rejected on the way, so they are not retried: `valign CENTER` alone
+    (the combo then draws its own natural 21 — short in the other
+    direction), and a 2 px CSS margin on the combo (exact under
+    Mojave-Light, but under Adwaita it GROWS the row to 38 and the entry,
+    which fills there, grows with it).  General rule: when a control looks
+    the wrong size next to another, compare the PAINTED plates, not the
+    allocations — and fix it by asking the theme for a number, never by
+    writing one down.

@@ -5264,8 +5264,15 @@ float_bar_css(const GdkRGBA *bg)
         "box {"
         "  background-color: %s;"
         "  border: 1px solid shade(%s, %s);"
+        /* 4px top and bottom against 2px at the ends: the buttons are
+         * 24 px icons in relief-less buttons, which carry their own
+         * horizontal padding and none worth speaking of vertically, so
+         * an even pad reads tight above and below.  MEASURED on the
+         * plate (gotcha 18's lesson — a discarded padding looks exactly
+         * like one too small): 2px gives a 30 px plate, 4px 2px gives
+         * 34.  GtkBox honors CSS padding; GtkEventBox does not.        */
         "  border-radius: 8px;"
-        "  padding: 2px;"
+        "  padding: 4px 2px;"
         "}",
         c, c, lum > 0.5 ? "0.80" : "1.35");
     g_free(c);
@@ -6051,12 +6058,15 @@ task_library_window_new(TaskApp *app)
 
     /* --- Toolbar ---------------------------------------------------------- */
     /* Icon names are icons/-relative paths; the curated set lives in
-     * icons/ (case-exact for Linux).  Layout: the sidebar toggle, then the
-     * completed, sort and pane toggles, a divider, then the task pair —
-     * and the search box pushed to the far right.  ONE divider, before the
-     * task pair: it separates the controls that change what the pane SHOWS
-     * from the buttons that act on a task, and the sidebar toggle joins the
-     * first group rather than standing alone behind a rule of its own.     */
+     * icons/ (case-exact for Linux).  Layout: the task pair, a divider,
+     * then the sidebar, completed, sort and pane toggles — and the search
+     * box pushed to the far right.  ONE divider in this block, after the
+     * task pair: it separates the buttons that ACT on a task from the
+     * controls that change what the pane SHOWS.  The task verbs lead
+     * because they are what the window is for; the four toggles are one
+     * group behind the rule, the sidebar toggle among them rather than
+     * standing alone behind a rule of its own.  The contributed block adds
+     * its own divider after all of this (see ui_tools_build).             */
     GtkWidget *toolbar = gtk_toolbar_new();
     lw->toolbar = toolbar;           /* Compact Layout hides it whole       */
     /* Small-toolbar metrics — the Notes bar height.  ICONS ONLY, set here
@@ -6066,6 +6076,15 @@ task_library_window_new(TaskApp *app)
     gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
                               GTK_ICON_SIZE_SMALL_TOOLBAR);
     gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), GTK_TOOLBAR_ICONS);
+    tool_button(lw, GTK_TOOLBAR(toolbar), "add", NULL,
+                "New Task", "Create a task in the selected list",
+                G_CALLBACK(on_new_task));
+    tool_button(lw, GTK_TOOLBAR(toolbar), "remove", NULL,
+                "Delete Task", "Delete the selected task",
+                G_CALLBACK(on_delete_task));
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
+                       gtk_separator_tool_item_new(), -1);
+
     /* ONE face, set here and never swapped — a double-headed arrow names
      * the MOVEMENT rather than a direction, and sidebar_ui_sync says
      * which way the next click goes in the tooltip (see there).          */
@@ -6091,15 +6110,6 @@ task_library_window_new(TaskApp *app)
     lw->pane_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
         "menu", "\xe2\x96\xa6", "Kanban",
         "Show the tasks as a Kanban board", G_CALLBACK(on_toggle_kanban)));
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       gtk_separator_tool_item_new(), -1);
-
-    tool_button(lw, GTK_TOOLBAR(toolbar), "add", NULL,
-                "New Task", "Create a task in the selected list",
-                G_CALLBACK(on_new_task));
-    tool_button(lw, GTK_TOOLBAR(toolbar), "remove", NULL,
-                "Delete Task", "Delete the selected task",
-                G_CALLBACK(on_delete_task));
 
     /* Contributed toolbar items (see task_ui.h) sit LAST among the
      * buttons, behind their own divider.  ui_tools_build owns that block

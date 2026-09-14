@@ -1603,6 +1603,56 @@ editor_has_advanced_content(TaskEditor *ed)
 }
 
 /* ---------------------------------------------------------------------------
+ * theme_field_height() — the height the THEME gives a plain push button.
+ *
+ * Used to line a GtkComboBox up with the GtkEntrys beside it, which it
+ * does NOT do by itself under every theme.  The mechanism, measured
+ * rather than assumed: a theme may ask for more height on an entry than
+ * it PAINTS, leaving a transparent gutter for a focus ring — Mojave-Light
+ * gives `entry` `min-height: 20px; padding: 2px; border: 3px solid
+ * transparent` and then draws the field as a border-image INSIDE that
+ * border, so a 30 px request comes out as a 26 px plate.  A combo is a
+ * button, a button FILLS its allocation, and combobox CSS zeroes the
+ * button min-height the theme would otherwise give it — so in a row whose
+ * height the entry set, the combo paints all 30 and reads 4 px taller
+ * than the field next to it.
+ *
+ * A PLAIN button is what the theme sizes to match its own entry plate
+ * (measured: Mojave-Light 26 against a 26 px plate, Adwaita 34 against
+ * 34), so asking one is the portable answer — no hardcoded inset, and
+ * NOTHING CHANGES on a theme where the two already agree.
+ *
+ * Output: the natural height in pixels.  It must be measured inside a
+ * toplevel — an unparented widget has no style to resolve against and
+ * answers 0 — hence the throwaway offscreen window.  0.2 ms per call
+ * (measured), so it is called ONCE per editor and handed to each combo.
+ * ------------------------------------------------------------------------- */
+static gint
+theme_field_height(void)
+{
+    GtkWidget *win = gtk_offscreen_window_new();
+    GtkWidget *btn = gtk_button_new_with_label("X");
+    gtk_container_add(GTK_CONTAINER(win), btn);
+    gtk_widget_show_all(win);
+    gint min_h, nat_h;
+    gtk_widget_get_preferred_height(btn, &min_h, &nat_h);
+    gtk_widget_destroy(win);
+    return nat_h;
+}
+
+/* combo_match_fields() — size `combo` to `height` (theme_field_height's
+ * answer) and stop the row stretching it past that, so its plate matches
+ * the entries and spin buttons sharing the row.  CENTER is what makes the
+ * size request stick: a combo left at the default FILL takes whatever the
+ * tallest child asked for, which is the whole problem.                     */
+static void
+combo_match_fields(GtkWidget *combo, gint height)
+{
+    gtk_widget_set_valign(combo, GTK_ALIGN_CENTER);
+    gtk_widget_set_size_request(combo, -1, height);
+}
+
+/* ---------------------------------------------------------------------------
  * editor_open_common() — build an editor window for a task.  Mirrored
  * Notes items are ordinary tasks, so there is no longer a reduced
  * variant: they get notes, subtasks and attachments like anything else.
@@ -1666,6 +1716,9 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
      * silently widen every editor, while an extra row costs one row of
      * height and nothing else.                                             */
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    /* Every combo in this window shares a row with entries or spin
+     * buttons; one probe sizes all three (see theme_field_height).       */
+    gint field_h = theme_field_height();
     gtk_box_pack_start(GTK_BOX(row), gtk_label_new("Status:"),
                        FALSE, FALSE, 0);
     /* One row per TaskStatus, appended IN ENUM ORDER — the active
@@ -1679,6 +1732,7 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                              (gint)TASK_STATUS_NEW);
     g_signal_connect(ed->status_combo, "changed",
                      G_CALLBACK(on_toggle_changed), ed);
+    combo_match_fields(ed->status_combo, field_h);
     gtk_box_pack_start(GTK_BOX(row), ed->status_combo, FALSE, FALSE, 0);
 
     /* The time of day that due date means.  pack_end puts the FIRST-packed
@@ -2083,6 +2137,7 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                 task_recur_unit_label((TaskRecurUnit)i));
         gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_unit_combo),
                                  (gint)TASK_RECUR_DAY);
+        combo_match_fields(ed->recur_unit_combo, field_h);
         gtk_box_pack_start(GTK_BOX(r_every), ed->recur_unit_combo,
                            FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(body), r_every, FALSE, FALSE, 0);
@@ -2121,6 +2176,7 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
                 task_recur_unit_label((TaskRecurUnit)i));
         gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_lead_unit),
                                  (gint)TASK_RECUR_DAY);
+        combo_match_fields(ed->recur_lead_unit, field_h);
         gtk_box_pack_start(GTK_BOX(r3), ed->recur_lead_unit,
                            FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(r3), gtk_label_new("beforehand"),
