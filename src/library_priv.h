@@ -58,6 +58,14 @@ typedef struct {
                                       * refused by reverting                */
     GtkWidget           *sb_view;    /* the GtkListView                     */
     GtkWidget           *sidebar_box;/* the pane the toolbar toggle shows   */
+    /* List drag-reorder: hand-rolled on GtkGestureDrag.  The row is not
+     * moved until release; CSS classes on the source/mark widgets give
+     * live feedback.  Only SB_KIND_LIST rows drag.                        */
+    gboolean             sb_drag_active;
+    gint64               sb_drag_list_id;   /* list being dragged           */
+    guint                sb_drag_flat_from; /* flat sb_tree position        */
+    GtkWidget           *sb_drag_src_wgt;   /* wearing task-sb-drag-src     */
+    GtkWidget           *sb_drag_mark_wgt;  /* wearing task-sb-drag-mark    */
 
     /* --- Task list (task_list.c) — a GtkColumnView over a GListStore ---- */
     GListStore          *task_store; /* TaskRows, rebuilt per refresh as ONE

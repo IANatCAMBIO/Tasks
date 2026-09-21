@@ -108,6 +108,13 @@ sb_css_install(void)
         /* The top-padding strip painted in the same shade.                  */
         "box.task-sidebar-pad {"
         "  background-color: shade(@window_bg_color, " SB_BG_SHADE ");"
+        "}"
+        /* Drag-reorder feedback classes.                                     */
+        ".task-sb-drag-src {"
+        "  background-color: alpha(@accent_color, 0.15);"
+        "}"
+        ".task-sb-drag-mark {"
+        "  border-top: 2px solid @accent_color;"
         "}");
 }
 
@@ -161,6 +168,202 @@ sb_set_row_expanded(TaskLibrary *lw, gint kind, gint64 id, gboolean expand)
 static void on_sb_row_pressed(GtkGestureClick *gesture, gint n_press,
                                gdouble x, gdouble y, gpointer data);
 
+/* ---------------------------------------------------------------------------
+ * Sidebar list drag-reorder.
+ *
+ * A GtkGestureDrag on the expander widget drives this.  "task-sb-item" object
+ * data on the expander maps back to the GtkListItem, letting every handler
+ * read the current row (kind, id) even after factory recycling.
+ *
+ * Only SB_KIND_LIST rows drag.  The row is not moved until drag-end; CSS
+ * classes on the source and target widgets give live feedback.  On release
+ * all list ids are collected in their new flat display order from sb_tree
+ * and persisted via task_db_lists_reorder, then lib_full_refresh rebuilds.
+ * ------------------------------------------------------------------------- */
+
+/* sb_drag_row_of() — walk up from `hit` to find the expander with
+ * "task-sb-item" data (set in on_sb_setup).  Returns NULL if not found.   */
+static GtkWidget *
+sb_drag_row_of(GtkWidget *sb_view, GtkWidget *hit)
+{
+    while (hit != NULL && hit != sb_view) {
+        if (g_object_get_data(G_OBJECT(hit), "task-sb-item") != NULL)
+            return hit;
+        hit = gtk_widget_get_parent(hit);
+    }
+    return NULL;
+}
+
+/* sb_drag_list_id_of() — list id of the row widget (0 if not SB_KIND_LIST). */
+static gint64
+sb_drag_list_id_of(GtkWidget *row_wgt)
+{
+    GtkListItem *item =
+        g_object_get_data(G_OBJECT(row_wgt), "task-sb-item");
+    if (item == NULL) return 0;
+    GObject *obj = G_OBJECT(gtk_list_item_get_item(item));
+    if (!GTK_IS_TREE_LIST_ROW(obj)) return 0;
+    TaskSbRow *srow =
+        TASK_SB_ROW(gtk_tree_list_row_get_item(GTK_TREE_LIST_ROW(obj)));
+    return (srow->kind == SB_KIND_LIST) ? srow->id : 0;
+}
+
+/* sb_drag_clear_mark() — remove the CSS mark class from the current target. */
+static void
+sb_drag_clear_mark(TaskLibrary *lw)
+{
+    if (lw->sb_drag_mark_wgt != NULL) {
+        gtk_widget_remove_css_class(lw->sb_drag_mark_wgt, "task-sb-drag-mark");
+        lw->sb_drag_mark_wgt = NULL;
+    }
+}
+
+static void
+on_sb_drag_begin(GtkGestureDrag *gesture, gdouble sx, gdouble sy, gpointer data)
+{
+    (void)sx; (void)sy;
+    TaskLibrary *lw     = data;
+    GtkWidget   *expander =
+        gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    gint64 list_id = sb_drag_list_id_of(expander);
+    if (list_id == 0) {
+        gtk_gesture_set_state(GTK_GESTURE(gesture),
+                               GTK_EVENT_SEQUENCE_DENIED);
+        return;
+    }
+    GtkListItem *item = g_object_get_data(G_OBJECT(expander), "task-sb-item");
+    lw->sb_drag_active    = TRUE;
+    lw->sb_drag_list_id   = list_id;
+    lw->sb_drag_flat_from = gtk_list_item_get_position(item);
+    lw->sb_drag_src_wgt   = expander;
+    lw->sb_drag_mark_wgt  = NULL;
+    gtk_widget_add_css_class(expander, "task-sb-drag-src");
+}
+
+static void
+on_sb_drag_update(GtkGestureDrag *gesture, gdouble offset_x, gdouble offset_y,
+                  gpointer data)
+{
+    (void)offset_x;
+    TaskLibrary *lw      = data;
+    if (!lw->sb_drag_active) return;
+
+    GtkWidget *expander = gtk_event_controller_get_widget(
+                              GTK_EVENT_CONTROLLER(gesture));
+    gdouble sx, sy;
+    gtk_gesture_drag_get_start_point(gesture, &sx, &sy);
+
+    graphene_point_t src = { (float)(sx + offset_x), (float)(sy + offset_y) };
+    graphene_point_t dst;
+    if (!gtk_widget_compute_point(expander, lw->sb_view, &src, &dst))
+        return;
+
+    GtkWidget *hit = gtk_widget_pick(lw->sb_view, dst.x, dst.y,
+                                     GTK_PICK_DEFAULT);
+    GtkWidget *target = sb_drag_row_of(lw->sb_view, hit);
+    if (target == NULL || target == lw->sb_drag_src_wgt ||
+        sb_drag_list_id_of(target) == 0)
+        return;
+
+    if (target != lw->sb_drag_mark_wgt) {
+        sb_drag_clear_mark(lw);
+        lw->sb_drag_mark_wgt = target;
+        gtk_widget_add_css_class(target, "task-sb-drag-mark");
+    }
+}
+
+static void
+on_sb_drag_end(GtkGestureDrag *gesture, gdouble offset_x, gdouble offset_y,
+               gpointer data)
+{
+    (void)gesture; (void)offset_x; (void)offset_y;
+    TaskLibrary *lw = data;
+    if (!lw->sb_drag_active) return;
+
+    /* Determine where the dropped row lands: the flat sb_tree position of
+     * the mark widget.                                                      */
+    guint to_pos = GTK_INVALID_LIST_POSITION;
+    if (lw->sb_drag_mark_wgt != NULL) {
+        GtkListItem *mark_item = g_object_get_data(G_OBJECT(lw->sb_drag_mark_wgt),
+                                                    "task-sb-item");
+        if (mark_item != NULL)
+            to_pos = gtk_list_item_get_position(mark_item);
+    }
+
+    /* Clean up CSS before the refresh.                                     */
+    if (lw->sb_drag_src_wgt != NULL) {
+        gtk_widget_remove_css_class(lw->sb_drag_src_wgt, "task-sb-drag-src");
+        lw->sb_drag_src_wgt = NULL;
+    }
+    sb_drag_clear_mark(lw);
+    lw->sb_drag_active  = FALSE;
+    lw->sb_drag_list_id = 0;
+
+    if (to_pos == GTK_INVALID_LIST_POSITION ||
+        to_pos == lw->sb_drag_flat_from)
+        return;
+
+    /* Walk the FLAT sb_tree to collect all list ids in their current order,
+     * then move the dragged id from sb_drag_flat_from to to_pos.           */
+    guint n = g_list_model_get_n_items(G_LIST_MODEL(lw->sb_tree));
+    GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+    for (guint i = 0; i < n; i++) {
+        GtkTreeListRow *trow =
+            g_list_model_get_item(G_LIST_MODEL(lw->sb_tree), i);
+        TaskSbRow *srow =
+            TASK_SB_ROW(gtk_tree_list_row_get_item(trow));
+        if (srow->kind == SB_KIND_LIST)
+            g_array_append_val(ids, srow->id);
+        g_object_unref(trow);
+    }
+
+    /* Find the dragged id's index in the ids array and move it.            */
+    gint64 drag_id = lw->sb_drag_list_id;
+    gint   from_i  = -1, to_i = -1;
+    /* to_pos is a FLAT sb_tree index; count how many list rows appear
+     * before to_pos to get the target list-array index.                    */
+    guint list_before_to = 0;
+    for (guint i = 0; i < n && i < to_pos; i++) {
+        GtkTreeListRow *trow =
+            g_list_model_get_item(G_LIST_MODEL(lw->sb_tree), i);
+        TaskSbRow *srow =
+            TASK_SB_ROW(gtk_tree_list_row_get_item(trow));
+        if (srow->kind == SB_KIND_LIST) list_before_to++;
+        g_object_unref(trow);
+    }
+    for (guint i = 0; i < ids->len; i++) {
+        if (g_array_index(ids, gint64, i) == drag_id) { from_i = (gint)i; break; }
+    }
+    to_i = (gint)list_before_to;
+    if (to_i >= (gint)ids->len) to_i = (gint)ids->len - 1;
+
+    if (from_i >= 0 && from_i != to_i) {
+        /* Splice: remove from_i, insert at to_i.                           */
+        GArray *reordered = g_array_new(FALSE, FALSE, sizeof(gint64));
+        if (from_i < to_i) {
+            for (guint i = 0; i < ids->len; i++) {
+                if ((gint)i == from_i) continue;
+                g_array_append_val(reordered, g_array_index(ids, gint64, i));
+                if ((gint)i == to_i)
+                    g_array_insert_val(reordered, reordered->len - 1,
+                                       g_array_index(ids, gint64, from_i));
+            }
+        } else {
+            for (guint i = 0; i < ids->len; i++) {
+                if ((gint)i == to_i)
+                    g_array_append_val(reordered, g_array_index(ids, gint64, from_i));
+                if ((gint)i == from_i) continue;
+                g_array_append_val(reordered, g_array_index(ids, gint64, i));
+            }
+        }
+        task_db_lists_reorder(lw->app->db,
+                              (const gint64 *)reordered->data, reordered->len);
+        g_array_unref(reordered);
+        lib_full_refresh(lw);
+    }
+    g_array_unref(ids);
+}
+
 /* on_sb_setup() — "setup" signal: build the per-row widget tree and attach
  * the right-click gesture.  Called once per list item widget.               */
 static void
@@ -190,6 +393,16 @@ on_sb_setup(GtkListItemFactory *factory, GtkListItem *item, gpointer data)
     g_object_set_data(G_OBJECT(click), "task-sb-item", item);
     g_signal_connect(click, "pressed", G_CALLBACK(on_sb_row_pressed), lw);
     gtk_widget_add_controller(expander, GTK_EVENT_CONTROLLER(click));
+
+    /* Drag gesture for list reorder — on the expander so the whole row
+     * area is a drag handle.  "task-sb-item" on the expander lets every
+     * drag handler find the row kind and id.                               */
+    g_object_set_data(G_OBJECT(expander), "task-sb-item", item);
+    GtkGesture *drag = gtk_gesture_drag_new();
+    g_signal_connect(drag, "drag-begin",  G_CALLBACK(on_sb_drag_begin),  lw);
+    g_signal_connect(drag, "drag-update", G_CALLBACK(on_sb_drag_update), lw);
+    g_signal_connect(drag, "drag-end",    G_CALLBACK(on_sb_drag_end),    lw);
+    gtk_widget_add_controller(expander, GTK_EVENT_CONTROLLER(drag));
 }
 
 /* on_sb_bind() — "bind" signal: update the row widget from the current item.
