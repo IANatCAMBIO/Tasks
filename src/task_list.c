@@ -1128,17 +1128,16 @@ cmp_completed(gconstpointer a, gconstpointer b, gpointer data)
 
 /*
  * col_new() — build a GtkColumnViewColumn, attach a sorter and add it to
- * the view.  The view holds a ref; the returned column is unref'd here and
- * must not be used after col_new returns unless the caller held a ref.
- * `key` and `label` are static strings and outlive the column.
+ * the view.  The view holds a ref on the returned column.
  *
  * Inputs:
  *   cv     — the GtkColumnView to add the column to
  *   title  — column header title (may be NULL for the drag handle)
- *   f      — the factory (ref NOT transferred — caller keeps its own)
+ *   f      — the factory [transfer full]: gtk_column_view_column_new()
+ *             takes ownership, so do NOT unref f after calling col_new
  *   cmp    — the comparator for GtkCustomSorter (NULL for unsortable)
  *   expand — TRUE to make the column expand to fill available space
- * Output: the column (g_object_unref by caller when done, or store it).
+ * Output: the column (the view holds one ref; store it if you need it).
  */
 static GtkColumnViewColumn *
 col_new(GtkColumnView *cv, const gchar *title, GtkListItemFactory *f,
@@ -1194,49 +1193,45 @@ task_list_build(TaskLibrary *lw)
     /* Drag handle column — shown only in manual-sort mode.
      * The ⠿ glyph and its dimming are set once in setup; only drag-state
      * CSS classes change in bind.  Width is fixed at 26 px.               */
-    GtkListItemFactory *f_drag = task_row_factory_new(
-        G_CALLBACK(on_drag_handle_setup),
-        G_CALLBACK(on_drag_handle_bind),
-        lw);
-    lw->col_drag = col_new(cv, NULL, f_drag, NULL, FALSE);
+    /* gtk_column_view_column_new() is [transfer full] for the factory: the
+     * column takes ownership of our reference.  Do NOT g_object_unref the
+     * factory after passing it — that would be a double-free.               */
+    lw->col_drag = col_new(cv, NULL,
+        task_row_factory_new(G_CALLBACK(on_drag_handle_setup),
+                             G_CALLBACK(on_drag_handle_bind), lw),
+        NULL, FALSE);
     gtk_column_view_column_set_fixed_width(lw->col_drag, 26);
-    g_object_unref(f_drag);
 
     /* Done (✓) column — a GtkCheckButton view of the status column.        */
-    GtkListItemFactory *f_done = task_row_factory_new(
-        G_CALLBACK(on_done_setup), G_CALLBACK(on_done_bind), lw);
-    GtkColumnViewColumn *cdone = col_new(cv, "\xe2\x9c\x93", f_done,
-                                         cmp_done, FALSE);
-    g_object_unref(f_done);
+    GtkColumnViewColumn *cdone = col_new(cv, "\xe2\x9c\x93",
+        task_row_factory_new(G_CALLBACK(on_done_setup),
+                             G_CALLBACK(on_done_bind), lw),
+        cmp_done, FALSE);
 
     /* Task description column — the tall multi-line markup label with a
      * right-click gesture for the context menu.                            */
-    GtkListItemFactory *f_task = task_row_factory_new(
-        G_CALLBACK(on_task_rclick_setup),
-        G_CALLBACK(on_task_rclick_bind),
-        lw);
-    GtkColumnViewColumn *cdesc = col_new(cv, "Task", f_task, cmp_title, TRUE);
-    g_object_unref(f_task);
+    GtkColumnViewColumn *cdesc = col_new(cv, "Task",
+        task_row_factory_new(G_CALLBACK(on_task_rclick_setup),
+                             G_CALLBACK(on_task_rclick_bind), lw),
+        cmp_title, TRUE);
 
     /* Status column — "New" / "In Progress" / "Done", sorted by enum.     */
-    GtkListItemFactory *f_status = task_row_factory_new(
-        G_CALLBACK(on_status_setup), G_CALLBACK(on_status_bind), lw);
-    GtkColumnViewColumn *cstatus = col_new(cv, "Status", f_status,
-                                            cmp_status, FALSE);
-    g_object_unref(f_status);
+    GtkColumnViewColumn *cstatus = col_new(cv, "Status",
+        task_row_factory_new(G_CALLBACK(on_status_setup),
+                             G_CALLBACK(on_status_bind), lw),
+        cmp_status, FALSE);
 
     /* Due Date column — urgency-tinted, soonest first, undated last.       */
-    GtkListItemFactory *f_due = task_row_factory_new(
-        G_CALLBACK(on_due_setup), G_CALLBACK(on_due_bind), lw);
-    GtkColumnViewColumn *cdue = col_new(cv, "Due Date", f_due, cmp_due, FALSE);
-    g_object_unref(f_due);
+    GtkColumnViewColumn *cdue = col_new(cv, "Due Date",
+        task_row_factory_new(G_CALLBACK(on_due_setup),
+                             G_CALLBACK(on_due_bind), lw),
+        cmp_due, FALSE);
 
     /* Completed column — sortable, incomplete rows last.                   */
-    GtkListItemFactory *f_comp = task_row_factory_new(
-        G_CALLBACK(on_completed_setup), G_CALLBACK(on_completed_bind), lw);
-    GtkColumnViewColumn *ccompleted = col_new(cv, "Completed", f_comp,
-                                               cmp_completed, FALSE);
-    g_object_unref(f_comp);
+    GtkColumnViewColumn *ccompleted = col_new(cv, "Completed",
+        task_row_factory_new(G_CALLBACK(on_completed_setup),
+                             G_CALLBACK(on_completed_bind), lw),
+        cmp_completed, FALSE);
 
     /* Tag columns on the view so install_actions and manual_sort_apply can
      * reach them without walking the column model every time.              */

@@ -480,6 +480,19 @@ add a second idiom.
   (caller must unref); the prior `GtkCalendar`-specific output params are
   gone.
 
+- **D19 · 2026-09-21 — `gtk_column_view_column_new(title, factory)` is
+  `[transfer full]` for the factory parameter.** The column takes
+  ownership of the caller's reference — do NOT call `g_object_unref` on
+  the factory after passing it to `gtk_column_view_column_new` or
+  `col_new`.  Doing so is a double-free: the factory's refcount drops to
+  zero and the allocation is reused by the next `task_row_factory_new`
+  call, so all six columns end up sharing the same (freed) factory address
+  and the next `g_object_new_valist` for a list item crashes with "invalid
+  unclassed object pointer for value type 'GtkListItemFactory'".
+  Confirmed by the address-reuse pattern in debug output and by reading the
+  GTK4 API annotation.  Fix: pass `task_row_factory_new(…)` inline to
+  `col_new` — no local variable, no unref.
+
 ## Session log
 
 One line per session: date, phase, item, outcome.
@@ -491,3 +504,6 @@ One line per session: date, phase, item, outcome.
 - 2026-09-21 — Phase 3 (per-file GTK4 pass) done; D15–D18; commit 2c95d93.
   `make` clean, 333 KB binary, libgtk-4 only; `make run-dev` opens the
   window with toolbar, column headers, and empty task list visible.
+- 2026-09-21 — Phase 4 begun; D19 (factory transfer-full crash); sandbox
+  shows working main window with task list, toolbar, status bar, integrity
+  check passing.
