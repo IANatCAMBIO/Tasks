@@ -316,7 +316,6 @@ on_sb_row_pressed(GtkGestureClick *gesture, gint n_press,
     g_object_unref(section);
 
     task_app_menu_popup(widget, G_MENU_MODEL(menu), x, y);
-    g_object_unref(menu);
 }
 
 /* ---------------------------------------------------------------------------
