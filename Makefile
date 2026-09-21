@@ -80,6 +80,9 @@ SRCS     := src/main.c \
             src/backup.c \
             src/recur.c \
             src/library_window.c \
+            src/sidebar.c \
+            src/task_list.c \
+            src/kanban.c \
             src/editor_window.c \
             src/settings_window.c
 
@@ -128,6 +131,26 @@ compile_commands.json: Makefile VERSION
 # Build and launch the application.
 run: $(BIN)
 	./$(BIN)
+
+# --- Development sandbox -----------------------------------------------------
+# `make run-dev` runs the freshly built binary against a throwaway data
+# directory under dev/, never the real ~/.local/share/tasks.  It needs no
+# code: task_db_default_dir() goes through g_get_user_data_dir(), which
+# honours XDG_DATA_HOME on every platform, so the database, the ini and the
+# backups all land in $(DEV_DATA)/tasks.
+#
+# A ZERO-BYTE tasks.db is seeded so the launch skips the first-run dialog
+# and exercises the fresh-schema path (CLAUDE.md gotcha 21).  Delete it to
+# test the first-run dialog itself; delete dev/ to start over.
+DEV_DIR  := dev
+DEV_DATA := $(DEV_DIR)/data
+
+$(DEV_DATA)/tasks/tasks.db:
+	mkdir -p $(dir $@)
+	: > $@
+
+run-dev: $(BIN) $(DEV_DATA)/tasks/tasks.db
+	XDG_DATA_HOME=$(CURDIR)/$(DEV_DATA) ./$(BIN)
 
 # Remove all build artifacts.
 clean:
@@ -200,4 +223,4 @@ app: $(BIN)
 	  > "$(APP_DIR)/Contents/Info.plist"
 	@echo "built $(APP_DIR)"
 
-.PHONY: all run clean app
+.PHONY: all run run-dev clean app
