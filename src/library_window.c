@@ -62,63 +62,8 @@ lib_of(TaskApp *app)
 }
 
 /* ===========================================================================
- * Chrome that has to match the window background (@theme_bg_color).
+ * Per-module CSS (installed once at display priority via task_app_css_install).
  * =========================================================================== */
-
-/* on_themed_style_updated() — the theme moved: recompute from the builder
- * stashed on the widget.                                                   */
-static void
-on_themed_style_updated(GtkWidget *w, gpointer data)
-{
-    (void)data;
-    lib_themed_bg_css_apply(w, (ThemedCssFunc)g_object_get_data(
-                               G_OBJECT(w), "task-themed-build"));
-}
-
-void
-lib_themed_bg_css_apply(GtkWidget *w, ThemedCssFunc build)
-{
-    if (build == NULL)
-        return;
-    GdkRGBA bg;                      /* the window/status-bar background    */
-    if (!gtk_style_context_lookup_color(gtk_widget_get_style_context(w),
-                                        "theme_bg_color", &bg))
-        return;
-
-    GdkRGBA *last = g_object_get_data(G_OBJECT(w), "task-themed-rgba");
-    if (last != NULL && gdk_rgba_equal(last, &bg))
-        return;                      /* unchanged — and ends the recursion  */
-
-    GtkCssProvider *provider =
-        g_object_get_data(G_OBJECT(w), "task-themed-css");
-    if (provider == NULL) {
-        provider = gtk_css_provider_new();
-        gtk_style_context_add_provider(gtk_widget_get_style_context(w),
-            GTK_STYLE_PROVIDER(provider),
-            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-        g_object_set_data_full(G_OBJECT(w), "task-themed-css", provider,
-                               g_object_unref);
-        g_object_set_data(G_OBJECT(w), "task-themed-build", (gpointer)build);
-        g_signal_connect(w, "style-updated",
-                         G_CALLBACK(on_themed_style_updated), NULL);
-    }
-    g_object_set_data_full(G_OBJECT(w), "task-themed-rgba",
-                           gdk_rgba_copy(&bg),
-                           (GDestroyNotify)gdk_rgba_free);
-    gchar *css = build(&bg);
-    gtk_css_provider_load_from_data(provider, css, -1, NULL);
-    g_free(css);
-}
-
-/* lib_rgb_of() — a GdkRGBA as a CSS "rgb(r,g,b)" literal (new string).         */
-gchar *
-lib_rgb_of(const GdkRGBA *c)
-{
-    return g_strdup_printf("rgb(%d,%d,%d)",
-                           (gint)(c->red   * 255 + 0.5),
-                           (gint)(c->green * 255 + 0.5),
-                           (gint)(c->blue  * 255 + 0.5));
-}
 
 /* ===========================================================================
  * Refreshes.
@@ -275,19 +220,14 @@ task_pane_mode_apply(TaskLibrary *lw)
      * buttons wearing the same image read as one control.)              */
     lib_menu_pair_sync(lw, "pane-list", "pane-kanban", lw->board.kanban);
     if (lw->pane_item != NULL) {
-        GtkWidget *icon = task_app_icon_image_rotated(lw->app, "menu", 24,
-            lw->board.kanban ? GDK_PIXBUF_ROTATE_NONE
-                       : GDK_PIXBUF_ROTATE_CLOCKWISE);
-        if (icon != NULL) {
-            gtk_widget_show(icon);
-            gtk_tool_button_set_icon_widget(
-                GTK_TOOL_BUTTON(lw->pane_item), icon);
-        }
-        gtk_tool_button_set_label(GTK_TOOL_BUTTON(lw->pane_item),
-            lw->board.kanban ? "List" : "Kanban");
-        gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->pane_item),
+        /* board.png is derived ONCE from menu.png by a quarter-turn clockwise,
+         * so the two faces cannot drift apart.  No runtime rotation needed.  */
+        task_app_tool_item_set_icon(lw->app, lw->pane_item,
+            lw->board.kanban ? "menu" : "board",
+            "\xe2\x96\xa6");
+        task_app_set_tooltip(lw->pane_item,
             lw->board.kanban ? "Show the tasks as a list"
-                       : "Show the tasks as a Kanban board");
+                             : "Show the tasks as a Kanban board");
     }
 
     /* Two reasons the sort control can be unavailable, and they get
@@ -300,10 +240,10 @@ task_pane_mode_apply(TaskLibrary *lw)
     lib_app_action_set_enabled(lw, "sort-manual", sortable && !lw->manual_sort);
     lib_app_action_set_enabled(lw, "sort-auto",   sortable &&  lw->manual_sort);
     if (lw->manual_sort_item != NULL) {
-        gtk_widget_set_sensitive(GTK_WIDGET(lw->manual_sort_item), sortable);
+        gtk_widget_set_sensitive(lw->manual_sort_item, sortable);
         /* The reason rides on the toolbar button, since a menu item from a
          * model carries no tooltip.                                        */
-        gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->manual_sort_item),
+        task_app_set_tooltip(lw->manual_sort_item,
             sortable      ? manual_sort_tooltip(lw)
             : lw->board.kanban  ? "The Kanban board is always drag-sorted \xe2\x80\x94 "
                             "turn Kanban View off to change list sorting"
@@ -331,7 +271,7 @@ lib_refresh_tasks(TaskLibrary *lw)
     /* Cleared in BOTH modes: a selection left in the hidden list would
      * still feed Delete Task.  On the board that job belongs to
      * lw->board.kanban_sel.                                                */
-    gtk_list_store_clear(lw->task_store);
+    g_list_store_remove_all(lw->task_store);
 
     /* Collect the tasks of the current view.  A registered view answers
      * for itself (see task_view.h); anything else is a real list.          */
@@ -465,7 +405,7 @@ on_search_changed(GtkWidget *entry, gpointer data)
 {
     TaskLibrary *lw = data;
     task_search_free(lw->search);
-    lw->search = task_search_parse(gtk_entry_get_text(GTK_ENTRY(entry)));
+    lw->search = task_search_parse(gtk_editable_get_text(GTK_EDITABLE(entry)));
     /* Hand-sorting is suspended while a filter is up and comes back when
      * it clears (lib_manual_sort_live says why), so the ⠿ handle column has to
      * be re-applied on the way through — BEFORE the rows are rebuilt, so
@@ -482,7 +422,7 @@ static void
 on_search_stopped(GtkWidget *entry, gpointer data)
 {
     (void)data;
-    gtk_entry_set_text(GTK_ENTRY(entry), "");
+    gtk_editable_set_text(GTK_EDITABLE(entry), "");
 }
 
 /* hide_done_icon_refresh() — point the completed-visibility toggle's
@@ -494,14 +434,9 @@ static void
 hide_done_icon_refresh(TaskLibrary *lw)
 {
     gboolean show = task_app_config_get_bool("show_completed", TRUE);
-    GtkWidget *icon = task_app_icon_image_sized(lw->app,
-        show ? "hidden" : "visible", 24);
-    if (icon != NULL) {
-        gtk_widget_show(icon);
-        gtk_tool_button_set_icon_widget(
-            GTK_TOOL_BUTTON(lw->hide_done_item), icon);
-    }
-    gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->hide_done_item),
+    task_app_tool_item_set_icon(lw->app, lw->hide_done_item,
+        show ? "hidden" : "visible", "\xf0\x9f\x91\x81");
+    task_app_set_tooltip(lw->hide_done_item,
         show ? "Hide completed tasks" : "Show completed tasks");
     /* The menu twin says the same thing in words: the hidden-when pair.   */
     lib_menu_pair_sync(lw, "done-hide", "done-show", show);
@@ -542,15 +477,9 @@ static void
 manual_sort_icon_refresh(TaskLibrary *lw)
 {
     gboolean manual = lw->manual_sort;   /* every caller applies first      */
-    GtkWidget *icon = task_app_icon_image_sized(lw->app,
-        manual ? "automatic" : "manual", 24);
-    if (icon) {
-        gtk_widget_show(icon);
-        gtk_tool_button_set_icon_widget(
-            GTK_TOOL_BUTTON(lw->manual_sort_item), icon);
-    }
-    gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->manual_sort_item),
-                                   manual_sort_tooltip(lw));
+    task_app_tool_item_set_icon(lw->app, lw->manual_sort_item,
+        manual ? "automatic" : "manual", "\xe2\x89\x8b");
+    task_app_set_tooltip(lw->manual_sort_item, manual_sort_tooltip(lw));
     /* The menu pair is NOT set here: task_pane_mode_apply owns it, since
      * the greying it applies is part of the same answer.                  */
 }
@@ -598,67 +527,20 @@ notify_tasks_hook(TaskApp *app, gpointer user_data)
 }
 
 /* ---------------------------------------------------------------------------
- * Status-bar fade: 3 s hold then a 1 s fade-out (20 × 50 ms).
+ * Status-bar visibility: show the message on a GtkRevealer, crossfade it
+ * away after a 3 s hold.  GTK4 has no alpha markup for labels; the
+ * GtkRevealer with CROSSFADE does the equivalent without 20 timer steps.
  * ------------------------------------------------------------------------- */
-#define STATUS_FADE_STEPS    20
-
-#define STATUS_FADE_INTERVAL 50   /* ms */
-
-#define STATUS_FADE_HOLD     3000 /* ms before fade starts */
-
-static void
-status_fade_cancel(TaskLibrary *lw)
-{
-    if (lw->status_fade_source != 0) {
-        g_source_remove(lw->status_fade_source);
-        lw->status_fade_source = 0;
-    }
-    if (lw->status_fade_step_source != 0) {
-        g_source_remove(lw->status_fade_step_source);
-        lw->status_fade_step_source = 0;
-    }
-    lw->status_fade_step = 0;
-    g_clear_pointer(&lw->status_fade_text, g_free);
-}
+#define STATUS_HOLD_SECONDS 3
 
 static gboolean
-status_fade_step_cb(gpointer data)
-{
-    TaskLibrary *lw = lib_of((TaskApp *)data);
-    if (lw == NULL || lw->status_fade_text == NULL) {
-        if (lw != NULL)
-            lw->status_fade_step_source = 0;
-        return G_SOURCE_REMOVE;
-    }
-    lw->status_fade_step++;
-    if (lw->status_fade_step >= STATUS_FADE_STEPS) {
-        gtk_label_set_text(GTK_LABEL(lw->status_right), "");
-        lw->status_fade_step_source = 0;
-        g_clear_pointer(&lw->status_fade_text, g_free);
-        return G_SOURCE_REMOVE;
-    }
-    gint alpha = 100 - (lw->status_fade_step * 100 / STATUS_FADE_STEPS);
-    gchar *escaped = g_markup_escape_text(lw->status_fade_text, -1);
-    gchar *markup  = g_strdup_printf("<span alpha=\"%d%%\">%s</span>",
-                                     alpha, escaped);
-    g_free(escaped);
-    gtk_label_set_markup(GTK_LABEL(lw->status_right), markup);
-    g_free(markup);
-    return G_SOURCE_CONTINUE;
-}
-
-static gboolean
-status_fade_start_cb(gpointer data)
+on_status_hide(gpointer data)
 {
     TaskLibrary *lw = lib_of((TaskApp *)data);
     if (lw == NULL)
         return G_SOURCE_REMOVE;
-    lw->status_fade_source = 0;
-    lw->status_fade_text   = g_strdup(gtk_label_get_text(
-                                          GTK_LABEL(lw->status_right)));
-    lw->status_fade_step   = 0;
-    lw->status_fade_step_source =
-        g_timeout_add(STATUS_FADE_INTERVAL, status_fade_step_cb, data);
+    lw->status_hide_source = 0;
+    gtk_revealer_set_reveal_child(GTK_REVEALER(lw->status_reveal), FALSE);
     return G_SOURCE_REMOVE;
 }
 
@@ -669,10 +551,14 @@ notify_status_hook(TaskApp *app, const gchar *message, gpointer user_data)
     TaskLibrary *lw = lib_of(app);
     if (lw == NULL)
         return;
-    status_fade_cancel(lw);
+    if (lw->status_hide_source != 0) {
+        g_source_remove(lw->status_hide_source);
+        lw->status_hide_source = 0;
+    }
     gtk_label_set_text(GTK_LABEL(lw->status_right), message);
-    lw->status_fade_source =
-        g_timeout_add(STATUS_FADE_HOLD, status_fade_start_cb, app);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(lw->status_reveal), TRUE);
+    lw->status_hide_source =
+        g_timeout_add_seconds(STATUS_HOLD_SECONDS, on_status_hide, app);
 }
 
 /* ===========================================================================
@@ -698,20 +584,21 @@ selected_task_ids(TaskLibrary *lw)
     if (lw->board.kanban)
         return lib_card_sel_ids(lw);
     GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
-    GtkTreeSelection *sel =
-        gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->task_view));
-    GtkTreeModel *model = NULL;
-    GList *rows = gtk_tree_selection_get_selected_rows(sel, &model);
-    for (GList *l = rows; l != NULL; l = l->next) {
-        GtkTreeIter iter;
-        if (gtk_tree_model_get_iter(model, &iter, l->data)) {
-            gint64 id;
-            gtk_tree_model_get(model, &iter, TL_ID, &id, -1);
-            if (id != 0)
-                g_array_append_val(ids, id);
+    GtkBitset *sel = gtk_selection_model_get_selection(
+        GTK_SELECTION_MODEL(lw->task_sel));
+    GtkBitsetIter iter;
+    guint pos;
+    gboolean ok = gtk_bitset_iter_init_first(&iter, sel, &pos);
+    while (ok) {
+        TaskRow *row = g_list_model_get_item(
+            G_LIST_MODEL(lw->task_sorted), pos);
+        if (row != NULL) {
+            if (row->id != 0)
+                g_array_append_val(ids, row->id);
+            g_object_unref(row);
         }
+        ok = gtk_bitset_iter_next(&iter, &pos);
     }
-    g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
     return ids;
 }
 
@@ -762,7 +649,7 @@ compact_layout_apply(TaskLibrary *lw)
      * clear a search.  Only when there is one: an unconditional set_text
      * would refresh the pane on every layout toggle.                       */
     if (compact && lw->search != NULL && lw->search_entry != NULL)
-        gtk_entry_set_text(GTK_ENTRY(lw->search_entry), "");
+        gtk_editable_set_text(GTK_EDITABLE(lw->search_entry), "");
 }
 
 /* on_new_task() — create an empty task in the selected list and open its
@@ -791,6 +678,36 @@ on_new_task(TaskLibrary *lw)
     task_editor_open_new(lw->app, id);  /* the Save / Cancel variant        */
 }
 
+/* on_delete_confirm() — the async confirmation callback for on_delete_task. */
+typedef struct {
+    TaskApp *app;
+    GArray  *ids;
+} DeleteConfirmCtx;
+
+static void
+on_delete_confirm(gboolean yes, gpointer data)
+{
+    DeleteConfirmCtx *ctx = data;
+    if (yes) {
+        for (guint i = 0; i < ctx->ids->len; i++) {
+            gint64 id = g_array_index(ctx->ids, gint64, i);
+            GtkWindow *editor =
+                g_hash_table_lookup(ctx->app->editors, &id);
+            if (editor != NULL)
+                gtk_window_destroy(editor);
+            task_db_task_delete(ctx->app->db, id);
+        }
+        TaskLibrary *lw = lib_of(ctx->app);
+        if (lw != NULL) {
+            lib_full_refresh(lw);
+            task_app_status(ctx->app, "Deleted %u task%s", ctx->ids->len,
+                            ctx->ids->len == 1 ? "" : "s");
+        }
+    }
+    g_array_unref(ctx->ids);
+    g_free(ctx);
+}
+
 /* on_delete_task() — confirm + tombstone the selected task.                */
 static void
 on_delete_task(TaskLibrary *lw)
@@ -802,7 +719,7 @@ on_delete_task(TaskLibrary *lw)
         return;
     }
 
-    gboolean yes;                    /* confirmed?                          */
+    gchar *title, *message;
     if (ids->len == 1) {
         Task *t = task_db_task_get(lw->app->db,
                                    g_array_index(ids, gint64, 0));
@@ -810,30 +727,26 @@ on_delete_task(TaskLibrary *lw)
             g_array_unref(ids);
             return;
         }
-        yes = task_app_confirm(GTK_WINDOW(lw->window), "Delete Task",
+        title   = g_strdup("Delete Task");
+        message = g_strdup_printf(
             "Delete \xe2\x80\x9c%s\xe2\x80\x9d%s?",
             *t->title != '\0' ? t->title : "Untitled Task",
             t->parent_id == 0 ? " and its subtasks" : "");
         task_free(t);
     } else {
-        yes = task_app_confirm(GTK_WINDOW(lw->window), "Delete Tasks",
+        title   = g_strdup("Delete Tasks");
+        message = g_strdup_printf(
             "Delete the %u selected tasks (and their subtasks)?",
             ids->len);
     }
-    if (yes) {
-        for (guint i = 0; i < ids->len; i++) {
-            gint64 id = g_array_index(ids, gint64, i);
-            GtkWindow *editor =
-                g_hash_table_lookup(lw->app->editors, &id);
-            if (editor != NULL)
-                gtk_widget_destroy(GTK_WIDGET(editor));
-            task_db_task_delete(lw->app->db, id);
-        }
-        lib_full_refresh(lw);
-        task_app_status(lw->app, "Deleted %u task%s", ids->len,
-                        ids->len == 1 ? "" : "s");
-    }
-    g_array_unref(ids);
+
+    DeleteConfirmCtx *ctx = g_new0(DeleteConfirmCtx, 1);
+    ctx->app = lw->app;
+    ctx->ids = ids;              /* ownership transferred to ctx            */
+    task_app_confirm(GTK_WINDOW(lw->window), title, message,
+                     on_delete_confirm, ctx);
+    g_free(title);
+    g_free(message);
 }
 
 /* ===========================================================================
@@ -973,7 +886,7 @@ menu_item_bool(GMenu *section, const gchar *label, const gchar *action,
  * Returns TRUE when a menu was shown (the click is consumed).
  * ------------------------------------------------------------------------- */
 gboolean
-task_context_menu_popup(TaskLibrary *lw, GdkEventButton *event)
+task_context_menu_popup(TaskLibrary *lw, GtkWidget *at, gdouble x, gdouble y)
 {
     GArray *ids = selected_task_ids(lw);
     if (ids->len == 0) {
@@ -1063,7 +976,8 @@ task_context_menu_popup(TaskLibrary *lw, GdkEventButton *event)
 
     task_free(t);
     g_array_unref(ids);
-    task_app_menu_popup(lw->window, G_MENU_MODEL(menu), event);
+    task_app_menu_popup(at != NULL ? at : lw->window,
+                        G_MENU_MODEL(menu), x, y);
     return TRUE;
 }
 
@@ -1076,6 +990,27 @@ static void
 on_menu_settings(TaskLibrary *lw)
 {
     task_settings_window_open(lw->app, GTK_WINDOW(lw->window), lw->app->db->path);
+}
+
+/* on_clear_confirm() — async callback for on_menu_clear_completed.         */
+typedef struct {
+    TaskApp *app;
+    gint64   list_id;
+} ClearConfirmCtx;
+
+static void
+on_clear_confirm(gboolean yes, gpointer data)
+{
+    ClearConfirmCtx *ctx = data;
+    if (yes) {
+        guint n = task_ops_clear_completed(ctx->app, ctx->list_id);
+        task_app_status(ctx->app, "Cleared %u completed task%s", n,
+                        n == 1 ? "" : "s");
+        TaskLibrary *lw = lib_of(ctx->app);
+        if (lw != NULL)
+            lib_full_refresh(lw);
+    }
+    g_free(ctx);
 }
 
 /* on_menu_clear_completed() — File → Clear Completed Tasks: archive the
@@ -1092,90 +1027,29 @@ on_menu_clear_completed(TaskLibrary *lw)
     TaskList *l = task_db_list_get(lw->app->db, id);
     if (l == NULL)
         return;
-    if (task_app_confirm(GTK_WINDOW(lw->window), "Clear Completed",
-                         "Remove all completed tasks from \xe2\x80\x9c%s"
-                       "\xe2\x80\x9d?", l->name)) {
-        guint n = task_ops_clear_completed(lw->app, id);
-        task_app_status(lw->app, "Cleared %u completed task%s", n,
-                        n == 1 ? "" : "s");
-        lib_full_refresh(lw);
-    }
+    gchar *message = g_strdup_printf(
+        "Remove all completed tasks from \xe2\x80\x9c%s\xe2\x80\x9d?",
+        l->name);
     task_list_free(l);
-}
-
-/* find_gtk_image() — first GtkImage in a widget subtree (depth-first).
- * Used to reach GtkAboutDialog's internal logo image, which the public
- * API only feeds with a plain (blurry-on-Retina) GdkPixbuf.                */
-static GtkWidget *
-find_gtk_image(GtkWidget *widget)
-{
-    if (GTK_IS_IMAGE(widget))
-        return widget;
-    GtkWidget *hit = NULL;           /* first image found in the subtree    */
-    if (GTK_IS_CONTAINER(widget)) {
-        GList *kids = gtk_container_get_children(GTK_CONTAINER(widget));
-        for (GList *l = kids; l != NULL && hit == NULL; l = l->next)
-            hit = find_gtk_image(l->data);
-        g_list_free(kids);
-    }
-    return hit;
+    ClearConfirmCtx *ctx = g_new0(ClearConfirmCtx, 1);
+    ctx->app     = lw->app;
+    ctx->list_id = id;
+    task_app_confirm(GTK_WINDOW(lw->window), "Clear Completed", message,
+                     on_clear_confirm, ctx);
+    g_free(message);
 }
 
 /* ---------------------------------------------------------------------------
  * on_open_db() — File → Open Database File…: pick a .db file and open it as
- * the new default or for this session only.
+ * the new default (Yes) or for this session only (No).  ASYNC: GTK4 has no
+ * blocking dialogs.  Two async hops: file pick → confirm (Yes/No default).
  * ------------------------------------------------------------------------- */
+
+/* open_db_do() — commit the switch after both dialogs have resolved.       */
 static void
-on_open_db(TaskLibrary *lw)
+open_db_do(TaskApp *app, const gchar *file_path, gboolean set_default)
 {
-    TaskApp *app = lw->app;
-
-    GtkWidget *chooser = gtk_file_chooser_dialog_new(
-        "Open Database", GTK_WINDOW(lw->window),
-        GTK_FILE_CHOOSER_ACTION_OPEN,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Open",   GTK_RESPONSE_ACCEPT,
-        NULL);
-    GtkFileFilter *ff = gtk_file_filter_new();
-    gtk_file_filter_set_name(ff, "SQLite Database (*.db)");
-    gtk_file_filter_add_pattern(ff, "*.db");
-    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), ff);
-
-    gchar *file_path = NULL;
-    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
-        file_path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
-    gtk_widget_destroy(chooser);
-    if (file_path == NULL)
-        return;
-
-    if (g_strcmp0(file_path, app->db->path) == 0) { /* already open         */
-        g_free(file_path);
-        return;
-    }
-
-    /* Ask: permanent default or this session only? */
-    gchar *display = g_path_get_basename(file_path);
-    GtkWidget *dlg = gtk_message_dialog_new(
-        GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
-        GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
-        "Open \xe2\x80\x9c%s\xe2\x80\x9d as your new default database, "
-        "or for this session only?", display);
-    g_free(display);
-    gtk_window_set_title(GTK_WINDOW(dlg), "Tasks - Open Database");
-    gtk_dialog_add_buttons(GTK_DIALOG(dlg),
-        "_Cancel",         GTK_RESPONSE_CANCEL,
-        "_Session Only",   1,
-        "Set as _Default", 2,
-        NULL);
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
-
-    if (resp == GTK_RESPONSE_CANCEL || resp == GTK_RESPONSE_DELETE_EVENT) {
-        g_free(file_path);
-        return;
-    }
-    gboolean set_default = (resp == 2);
-
+    TaskLibrary *lw = lib_of(app);
     task_editor_close_all(app);
     gchar *old_path = g_strdup(app->db->path);
     task_db_close(app->db);
@@ -1183,7 +1057,7 @@ on_open_db(TaskLibrary *lw)
     app->db = task_db_open(file_path, &gerr);
 
     if (app->db == NULL) {
-        task_app_notice(GTK_WINDOW(lw->window), GTK_MESSAGE_ERROR,
+        task_app_notice(lw != NULL ? GTK_WINDOW(lw->window) : NULL,
                         "Tasks - Database Error",
                         "Could not open:\n%s\n\n%s",
                         file_path,
@@ -1191,11 +1065,10 @@ on_open_db(TaskLibrary *lw)
         g_clear_error(&gerr);
         app->db = task_db_open(old_path, &gerr); /* revert                  */
         if (app->db == NULL)
-            g_critical("on_open_db: cannot revert to %s: %s", old_path,
+            g_critical("open_db_do: cannot revert to %s: %s", old_path,
                        gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
         g_free(old_path);
-        g_free(file_path);
         return;
     }
 
@@ -1206,18 +1079,67 @@ on_open_db(TaskLibrary *lw)
         task_app_config_set("db_dir", dir);
         g_free(dir);
     }
-
     g_free(old_path);
-    g_free(file_path);
 
     /* Every timer carries the db path it was armed with, so opening
      * another database must re-arm all of them or a worker keeps writing
      * to the file we just left.  This is now the ONLY site that opens a
-     * different database (gotcha 14); it used to name the timers one by
-     * one and had silently fallen one short.                             */
+     * different database (gotcha 14).                                    */
     task_worker_arm_all(app, app->db->path);
     task_app_notify_changed(app);
     task_app_status(app, "Opened %s", app->db->path);
+}
+
+typedef struct {
+    TaskApp *app;
+    gchar   *file_path;
+} OpenDbCtx;
+
+static void
+on_open_db_confirm(gboolean set_default, gpointer data)
+{
+    OpenDbCtx *ctx = data;
+    open_db_do(ctx->app, ctx->file_path, set_default);
+    g_free(ctx->file_path);
+    g_free(ctx);
+}
+
+static void
+on_open_db_picked(gchar *file_path, gpointer data)
+{
+    TaskApp *app = data;
+    if (file_path == NULL)
+        return;
+    if (g_strcmp0(file_path, app->db->path) == 0) { /* already open        */
+        g_free(file_path);
+        return;
+    }
+
+    gchar *display = g_path_get_basename(file_path);
+    gchar *message = g_strdup_printf(
+        "Set \xe2\x80\x9c%s\xe2\x80\x9d as your new default database?\n\n"
+        "Yes = use as default from now on.\n"
+        "No = open for this session only.", display);
+    g_free(display);
+
+    OpenDbCtx *ctx = g_new0(OpenDbCtx, 1);
+    ctx->app       = app;
+    ctx->file_path = file_path;
+    TaskLibrary *lw = lib_of(app);
+    task_app_confirm(lw != NULL ? GTK_WINDOW(lw->window) : NULL,
+                     "Tasks - Open Database", message,
+                     on_open_db_confirm, ctx);
+    g_free(message);
+}
+
+static void
+on_open_db(TaskLibrary *lw)
+{
+    task_app_pick_path(GTK_WINDOW(lw->window), "Open Database",
+                       TASK_PICK_OPEN, "_Open",
+                       "SQLite Database (*.db)", "*.db",
+                       NULL,
+                       on_open_db_picked, lw->app);
 }
 
 /* The View menu's Completed, Sorting and Sidebar items are wired straight
@@ -1250,8 +1172,7 @@ on_toggle_kanban(TaskLibrary *lw)
 {
     lw->board.kanban = !lw->board.kanban;
     task_app_config_set("kanban_view", lw->board.kanban ? "1" : "0");
-    gtk_tree_selection_unselect_all(
-        gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->task_view)));
+    gtk_selection_model_unselect_all(GTK_SELECTION_MODEL(lw->task_sel));
     g_hash_table_remove_all(lw->board.kanban_sel);
     lw->board.kanban_anchor = 0;
     lib_refresh_tasks(lw);
@@ -1270,64 +1191,28 @@ on_menu_toggle_compact(TaskLibrary *lw)
     compact_layout_apply(lw);
 }
 
-/* on_menu_about() — File → About and the toolbar About button: the
- * standard about dialog with the app logo, version, database vitals and
- * a link to the BSD license (the Notes About, retinted).                  */
+/* on_menu_about() — File → About: the standard about dialog.  GTK4 has no
+ * blocking dialogs; task_app_icon_paintable gives a sharp HiDPI logo.     */
 static void
 on_menu_about(TaskLibrary *lw)
 {
-    /* 128x128-logical logo from document.png, decoded at the display's
-     * scale factor so it stays sharp on Retina.                            */
-    gint sf = gtk_widget_get_scale_factor(lw->window);
-    gchar *icon_path = g_build_filename(lw->app->icons_dir,
-                                        "document.png", NULL);
-    GdkPixbuf *logo = gdk_pixbuf_new_from_file_at_size(icon_path,
-                                                       128 * sf, 128 * sf,
-                                                       NULL);
-    g_free(icon_path);
-
+    GdkPaintable *logo = task_app_icon_paintable(lw->app, "document", 128);
     const gchar *authors[] = { "Ian Campbell", "Claude", NULL };
 
     GtkWidget *dialog = gtk_about_dialog_new();
     gtk_window_set_transient_for(GTK_WINDOW(dialog),
                                  GTK_WINDOW(lw->window));
-    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog),
-                                      "Tasks");
+    gtk_about_dialog_set_program_name(GTK_ABOUT_DIALOG(dialog), "Tasks");
     gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(dialog), TASK_VERSION);
     if (logo != NULL) {
-        /* set_logo() first (it makes the internal image visible and
-         * sized), then swap that image's content for a cairo surface
-         * with the device scale — the pixbuf API renders 1 buffer px
-         * per logical px and looks soft on HiDPI.                          */
-        GdkPixbuf *at_128 = (sf > 1)
-            ? gdk_pixbuf_scale_simple(logo, 128, 128, GDK_INTERP_BILINEAR)
-            : g_object_ref(logo);
-        gtk_about_dialog_set_logo(GTK_ABOUT_DIALOG(dialog), at_128);
-        g_object_unref(at_128);
-
-        if (sf > 1) {
-            GtkWidget *img = find_gtk_image(
-                gtk_dialog_get_content_area(GTK_DIALOG(dialog)));
-            if (img != NULL) {
-                cairo_surface_t *surface =
-                    gdk_cairo_surface_create_from_pixbuf(logo, sf, NULL);
-                gtk_image_set_from_surface(GTK_IMAGE(img), surface);
-                cairo_surface_destroy(surface);
-            }
-        }
+        gtk_about_dialog_set_logo(GTK_ABOUT_DIALOG(dialog), logo);
         g_object_unref(logo);
     }
     gtk_about_dialog_set_authors(GTK_ABOUT_DIALOG(dialog), authors);
 
-    /* No database vitals here.  The path, the task and list counts and the
-     * on-disk size all moved to File -> Settings... -> Database, where
-     * they sit with the database's health and with the controls that act
-     * on the file.  Two places answering "how big is my database?" is one
-     * place too many, and About is the one that cannot also offer to
-     * check it or move it.
-     *
-     * __DATE__/__TIME__ expand when this file is compiled — the closest
-     * portable thing to a "last compiled" stamp.                           */
+    /* No database vitals here — they live in File → Settings… → Database,
+     * with the health check and the controls that act on the file.
+     * __DATE__/__TIME__ expand when this file is compiled.                 */
     gtk_about_dialog_set_comments(GTK_ABOUT_DIALOG(dialog),
         "Gettin' shit done since 2026!\n\n"
         "Compiled " __DATE__ " " __TIME__);
@@ -1337,34 +1222,31 @@ on_menu_about(TaskLibrary *lw)
                                  "https://opensource.org/license/bsd-3-clause");
     gtk_about_dialog_set_website_label(GTK_ABOUT_DIALOG(dialog),
                                        "BSD License");
-
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
+    gtk_window_present(GTK_WINDOW(dialog));
 }
 
 /* on_menu_quit() — File → Quit.                                            */
 static void
 on_menu_quit(TaskLibrary *lw)
 {
-    gtk_widget_destroy(lw->window);
+    gtk_window_destroy(GTK_WINDOW(lw->window));
 }
 
 /* ===========================================================================
  * Construction.
  * =========================================================================== */
 
-/* tool_button() — a style-aware toolbar button (local icon + label)
- * wired to `cb` and appended to `bar`.                                     */
-static GtkToolItem *
-tool_button(TaskLibrary *lw, GtkToolbar *bar, const gchar *icon,
+/* tool_button() — a toolbar button (local icon + label) appended to `bar`.
+ * Returns the button so the caller can keep a reference for later updates.  */
+static GtkWidget *
+tool_button(TaskLibrary *lw, GtkWidget *bar, const gchar *icon,
             const gchar *fallback_markup, const gchar *label,
             const gchar *tooltip, const gchar *action)
 {
-    GtkToolItem *item = task_app_tool_item_new(lw->app, icon,
-                                               fallback_markup, label,
-                                               tooltip);
+    GtkWidget *item = task_app_tool_item_new(lw->app, FALSE, icon,
+                                             fallback_markup, label, tooltip);
     gtk_actionable_set_detailed_action_name(GTK_ACTIONABLE(item), action);
-    gtk_toolbar_insert(bar, item, -1);
+    gtk_box_append(GTK_BOX(bar), item);
     return item;
 }
 
@@ -1382,63 +1264,40 @@ compact_bar_button(TaskLibrary *lw, GtkWidget *box, const gchar *icon,
         image = gtk_label_new(NULL);
         gtk_label_set_markup(GTK_LABEL(image), fallback_markup);
     }
-    gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
-    gtk_container_add(GTK_CONTAINER(btn), image);
-    gtk_widget_set_tooltip_text(btn, tooltip);
+    gtk_button_set_has_frame(GTK_BUTTON(btn), FALSE);
+    gtk_button_set_child(GTK_BUTTON(btn), image);
+    task_app_set_tooltip(btn, tooltip);
     gtk_actionable_set_detailed_action_name(GTK_ACTIONABLE(btn), action);
-    gtk_box_pack_start(GTK_BOX(box), btn, FALSE, FALSE, 0);
-}
-
-/* float_bar_css() — the floating pill's plate: the window background, with
- * a border shaded off the same color so it reads as a raised object in
- * either a light or a dark theme.                                          */
-static gchar *
-float_bar_css(const GdkRGBA *bg)
-{
-    /* Light themes want a DARKER border than the plate, dark themes a
-     * lighter one — pick the direction from the plate's own luminance so
-     * the edge stays visible either way.                                   */
-    gdouble lum = 0.299 * bg->red + 0.587 * bg->green + 0.114 * bg->blue;
-    gchar *c   = lib_rgb_of(bg);
-    gchar *css = g_strdup_printf(
-        "box {"
-        "  background-color: %s;"
-        "  border: 1px solid shade(%s, %s);"
-        /* 4px top and bottom against 2px at the ends: the buttons are
-         * 24 px icons in relief-less buttons, which carry their own
-         * horizontal padding and none worth speaking of vertically, so
-         * an even pad reads tight above and below.  MEASURED on the
-         * plate (gotcha 18's lesson — a discarded padding looks exactly
-         * like one too small): 2px gives a 30 px plate, 4px 2px gives
-         * 34.  GtkBox honors CSS padding; GtkEventBox does not.        */
-        "  border-radius: 8px;"
-        "  padding: 4px 2px;"
-        "}",
-        c, c, lum > 0.5 ? "0.80" : "1.35");
-    g_free(c);
-    return css;
+    gtk_box_append(GTK_BOX(box), btn);
 }
 
 /* ---------------------------------------------------------------------------
  * compact_bar_new() — Compact Layout's floating toolbar: New Task and
  * Delete Task as a two-button pill pinned 20 px in from the bottom and
- * right edges of the task area.  Same icons and actions as the top
- * toolbar's pair, so the compact window keeps both task verbs.
+ * right edges of the task area.
  *
- * Returned as an overlay child (halign/valign END + 20 px margins do the
- * pinning); also stored as lw->float_bar, which compact_layout_apply
- * shows and hides.
+ * The plate's background and border come from the theme via the global CSS
+ * class .task-float-bar installed once here: @theme_bg_color and a shade()
+ * of it both resolve at render time, so a light/dark switch is handled by
+ * GTK's CSS engine without any C callback.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 compact_bar_new(TaskLibrary *lw)
 {
+    static gboolean css_done = FALSE;
+    if (!css_done) {
+        css_done = TRUE;
+        task_app_css_install(
+            ".task-float-bar {"
+            "  background-color: @theme_bg_color;"
+            "  border: 1px solid shade(@theme_bg_color, 0.85);"
+            "  border-radius: 8px;"
+            "  padding: 4px 2px;"
+            "}");
+    }
+
     GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
-    /* A rounded, bordered plate so the buttons read as one floating
-     * object over the task rows rather than two loose glyphs.  Both colors
-     * come from the theme's @theme_bg_color (the border a shade of it), the
-     * same resolution the column headers use — hardcoding the light-theme
-     * grays put a white slab over a dark theme's task rows.                */
-    lib_themed_bg_css_apply(bar, float_bar_css);
+    gtk_widget_add_css_class(bar, "task-float-bar");
     compact_bar_button(lw, bar, "add", "+", "Create a task in the "
                        "selected list", "win.new-task");
     compact_bar_button(lw, bar, "remove", "\xe2\x88\x92",
@@ -1468,14 +1327,16 @@ on_paned_position(GObject *paned, GParamSpec *pspec, gpointer data)
         lw->sb_width = pos;
 }
 
-/* on_library_configure() — track the live client size for persistence.     */
+/* on_library_close() — "close-request": capture the live client size just
+ * before the window closes, for persistence.  Returns FALSE so GTK proceeds
+ * with the close.                                                           */
 static gboolean
-on_library_configure(GtkWidget *w, GdkEventConfigure *event, gpointer data)
+on_library_close(GtkWindow *w, gpointer data)
 {
-    (void)w; (void)event;
     TaskLibrary *lw = data;
-    gtk_window_get_size(GTK_WINDOW(lw->window), &lw->win_w, &lw->win_h);
-    return FALSE;                    /* propagate                           */
+    lw->win_w = gtk_widget_get_width(GTK_WIDGET(w));
+    lw->win_h = gtk_widget_get_height(GTK_WIDGET(w));
+    return FALSE;
 }
 
 /* on_library_destroy() — tear down: editors first (flushing saves).        */
@@ -1515,16 +1376,16 @@ on_library_destroy(GtkWidget *w, gpointer data)
     task_app_unlisten(lw->app, lw->listen_status);
     lw->listen_changed = lw->listen_tasks = lw->listen_status = 0;
     lw->app->library_window = NULL;
-    status_fade_cancel(lw);
+    /* Cancel the status hide timer before the revealer is destroyed.        */
+    if (lw->status_hide_source != 0) {
+        g_source_remove(lw->status_hide_source);
+        lw->status_hide_source = 0;
+    }
     /* A card drag in flight holds a POINTER GRAB and owns a ghost window.
      * Both must come down before the library does, or the grab outlives
      * the widget it was taken on and the pointer is dead app-wide.        */
     lib_card_drag_stop(lw);
     task_editor_close_all(lw->app);
-    if (lw->drag_row_ref  != NULL)
-        gtk_tree_row_reference_free(lw->drag_row_ref);
-    if (lw->drag_lock_ref != NULL)
-        gtk_tree_row_reference_free(lw->drag_lock_ref);
     g_clear_object(&lw->drag_cursor);
     g_clear_object(&lw->board.card_grab);
     g_clear_object(&lw->board.card_grabbing);
@@ -1824,11 +1685,7 @@ task_library_window_new(TaskApp *app)
                                 w > 0 ? w : 980, hgt > 0 ? hgt : 640);
     g_free(ww);
     g_free(wh);
-    g_signal_connect(lw->window, "configure-event",
-                     G_CALLBACK(on_library_configure), lw);
-
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_container_add(GTK_CONTAINER(lw->window), vbox);
 
     /* --- Menubar ---------------------------------------------------------- */
     /* A model over the "app." actions, rendered by GTK: in the native
@@ -1839,82 +1696,61 @@ task_library_window_new(TaskApp *app)
     g_object_unref(menubar);
 
     /* --- Toolbar ---------------------------------------------------------- */
-    /* Icon names are icons/-relative paths; the curated set lives in
-     * icons/ (case-exact for Linux).  Layout: the task pair, a divider,
-     * then the sidebar, completed, sort and pane toggles — and the search
-     * box pushed to the far right.  ONE divider in this block, after the
-     * task pair: it separates the buttons that ACT on a task from the
-     * controls that change what the pane SHOWS.  The task verbs lead
-     * because they are what the window is for; the four toggles are one
-     * group behind the rule, the sidebar toggle among them rather than
-     * standing alone behind a rule of its own.                            */
-    GtkWidget *toolbar = gtk_toolbar_new();
+    /* A GtkBox with the "toolbar" style class replaces GtkToolbar (gone in
+     * GTK4).  Layout: the task pair, a vertical separator, then the sidebar,
+     * completed, sort and pane toggles, an expanding spacer, then the search
+     * box at the right edge.  ONE separator in the window's own block after
+     * the task pair: it separates the buttons that ACT on a task from the
+     * controls that change what the pane SHOWS.  The task verbs lead because
+     * they are what the window is for; the four toggles are one group behind
+     * the rule, the sidebar toggle among them.                              */
+    GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(toolbar, "toolbar");
     lw->toolbar = toolbar;           /* Compact Layout hides it whole       */
-    /* Small-toolbar metrics — the Notes bar height.  ICONS ONLY, set here
-     * because GTK's own default is text beside the icon: every button here
-     * carries a tooltip that says more than a one-word label would, and the
-     * bar has to stay the same height as Notes'.                          */
-    gtk_toolbar_set_icon_size(GTK_TOOLBAR(toolbar),
-                              GTK_ICON_SIZE_SMALL_TOOLBAR);
-    gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), GTK_TOOLBAR_ICONS);
-    tool_button(lw, GTK_TOOLBAR(toolbar), "add", NULL,
+
+    tool_button(lw, toolbar, "add", NULL,
                 "New Task", "Create a task in the selected list",
                 "win.new-task");
-    tool_button(lw, GTK_TOOLBAR(toolbar), "remove", NULL,
+    tool_button(lw, toolbar, "remove", NULL,
                 "Delete Task", "Delete the selected task",
                 "win.delete-task");
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
-                       gtk_separator_tool_item_new(), -1);
+    gtk_box_append(GTK_BOX(toolbar),
+                   gtk_separator_new(GTK_ORIENTATION_VERTICAL));
 
     /* ONE face, set here and never swapped — a double-headed arrow names
      * the MOVEMENT rather than a direction, and lib_sidebar_ui_sync says
      * which way the next click goes in the tooltip (see there).          */
-    lw->sidebar_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
+    lw->sidebar_item = tool_button(lw, toolbar,
         "left-and-right", "\xe2\x97\xa7", "Sidebar",
-        "Show the lists pane", "win.toggle-sidebar"));
+        "Show the lists pane", "win.toggle-sidebar");
 
-    lw->hide_done_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
+    lw->hide_done_item = tool_button(lw, toolbar,
         "hidden", "\xf0\x9f\x91\x81", "Completed",
-        "Hide completed tasks", "win.toggle-done"));
+        "Hide completed tasks", "win.toggle-done");
     hide_done_icon_refresh(lw);      /* the persisted state's icon          */
-    lw->manual_sort_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
+    lw->manual_sort_item = tool_button(lw, toolbar,
         "manual", "\xe2\x89\x8b", "Sort Mode",
-        "Switch to manual drag sorting", "win.toggle-sort"));
+        "Switch to manual drag sorting", "win.toggle-sort");
     manual_sort_icon_refresh(lw);    /* the persisted state's tooltip       */
-    /* The pane toggle sits with the sort toggle, not with the task
-     * buttons: both of them change how the tasks are PRESENTED rather than
-     * acting on a task, and the sort toggle is the control it is most
-     * often used with (the board is always drag-sorted, which is why that
-     * one greys out while this one is on).  task_pane_mode_apply gives it
-     * its icon, label and tooltip — it is called after the
-     * construction-time show_all.                                        */
-    lw->pane_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
+    /* The pane toggle sits with the sort toggle: both change how the tasks
+     * are PRESENTED rather than acting on a task.  task_pane_mode_apply
+     * gives it its icon and tooltip.                                       */
+    lw->pane_item = tool_button(lw, toolbar,
         "menu", "\xe2\x96\xa6", "Kanban",
-        "Show the tasks as a Kanban board", "win.toggle-pane"));
+        "Show the tasks as a Kanban board", "win.toggle-pane");
 
-    /* Expanding blank separator pushes the search box to the right edge
-     * (the Notes layout, which keeps its own search box there).           */
-    GtkToolItem *spacer = gtk_separator_tool_item_new();
-    gtk_separator_tool_item_set_draw(GTK_SEPARATOR_TOOL_ITEM(spacer),
-                                     FALSE);
-    gtk_tool_item_set_expand(spacer, TRUE);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), spacer, -1);
+    /* Expanding spacer pushes the search box to the right edge.             */
+    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(spacer, TRUE);
+    gtk_box_append(GTK_BOX(toolbar), spacer);
 
-    /* The search box at the far right, where Notes keeps its own.  It took
-     * the About button's place rather than crowding in beside it: the
-     * button was a SECOND way to reach a dialog File → About Tasks
-     * already opens, and a search box is worth more at the one spot on the
-     * toolbar a user's eye goes looking for one.  Nothing was lost with it
-     * — the menu item is unchanged, and on_menu_about still serves it.
-     *
-     * A GtkSearchEntry rather than a plain GtkEntry: it brings the
-     * magnifier, the clear icon, Escape, and the typing-pause delay that
-     * keeps a keystroke from rebuilding the pane.                          */
+    /* The search box at the far right.  A GtkSearchEntry brings the
+     * magnifier, the clear icon, Escape, and the typing-pause delay.      */
     lw->search_entry = gtk_search_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(lw->search_entry),
-                                   SEARCH_PLACEHOLDER);
-    gtk_widget_set_tooltip_text(lw->search_entry, SEARCH_TOOLTIP);
-    gtk_entry_set_width_chars(GTK_ENTRY(lw->search_entry), 18);
+    gtk_editable_set_width_chars(GTK_EDITABLE(lw->search_entry), 18);
+    g_object_set(lw->search_entry,
+                 "placeholder-text", SEARCH_PLACEHOLDER, NULL);
+    task_app_set_tooltip(lw->search_entry, SEARCH_TOOLTIP);
     /* 5 px of air between the box and the window edge (Notes' spacing).    */
     gtk_widget_set_margin_end(lw->search_entry, 5);
     g_signal_connect(lw->search_entry, "search-changed",
@@ -1923,31 +1759,37 @@ task_library_window_new(TaskApp *app)
                      G_CALLBACK(on_search_changed), lw);
     g_signal_connect(lw->search_entry, "stop-search",
                      G_CALLBACK(on_search_stopped), lw);
+    gtk_box_append(GTK_BOX(toolbar), lw->search_entry);
 
-    GtkToolItem *search_item = gtk_tool_item_new();
-    gtk_container_add(GTK_CONTAINER(search_item), lw->search_entry);
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), search_item, -1);
-
-    gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), toolbar);
     /* Thin rule between the toolbar and the panes (Notes look).           */
     lw->toolbar_rule = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_box_pack_start(GTK_BOX(vbox), lw->toolbar_rule, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), lw->toolbar_rule);
 
     /* --- Paned: sidebar | tasks ------------------------------------------ */
     /* The panes sit in a GtkOverlay so Compact Layout's floating button
-     * pair can hover over the bottom-right corner of the task area.  The
+     * pair can hover over the bottom-right corner of the task area, and
+     * so the board's card ghost can slide across the whole pane.  The
      * overlay wraps the panes rather than the whole window box so the
      * float never covers the status bar's event messages.                  */
     GtkWidget *overlay = gtk_overlay_new();
-    gtk_box_pack_start(GTK_BOX(vbox), overlay, TRUE, TRUE, 0);
+    lw->overlay = overlay;
+    gtk_widget_set_vexpand(overlay, TRUE);
+    gtk_box_append(GTK_BOX(vbox), overlay);
+
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     /* A 6 px divider: wide-handle switches GtkPaned off its hairline
      * style, and the exact width comes from CSS on the handle's own
      * `separator` node (the horizontal paned's separator is vertical, so
-     * min-WIDTH is the lever).                                             */
+     * min-WIDTH is the lever).  Global CSS provider — GTK4 removed
+     * per-widget CSS providers.                                           */
     gtk_paned_set_wide_handle(GTK_PANED(paned), TRUE);
-    task_app_widget_add_css(paned,
-        "paned > separator { min-width: 6px; }");
+    gtk_widget_add_css_class(paned, "task-paned");
+    static gboolean paned_css_done = FALSE;
+    if (!paned_css_done) {
+        paned_css_done = TRUE;
+        task_app_css_install(".task-paned > separator { min-width: 6px; }");
+    }
     gchar *sbw = task_app_config_get("sidebar_width");
     lw->sb_width = sbw != NULL ? atoi(sbw) : 220;
     g_free(sbw);
@@ -1956,7 +1798,15 @@ task_library_window_new(TaskApp *app)
     gtk_paned_set_position(GTK_PANED(paned), lw->sb_width);
     g_signal_connect(paned, "notify::position",
                      G_CALLBACK(on_paned_position), lw);
-    gtk_container_add(GTK_CONTAINER(overlay), paned);
+    gtk_overlay_set_child(GTK_OVERLAY(overlay), paned);
+
+    /* The ghost layer: a GtkFixed overlay child the board moves card ghosts
+     * around on.  can_target = FALSE so it never intercepts pointer events. */
+    lw->ghost_layer = gtk_fixed_new();
+    gtk_widget_set_can_target(lw->ghost_layer, FALSE);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), lw->ghost_layer);
+
+    /* The Compact Layout float bar; compact_bar_new() is below.             */
     gtk_overlay_add_overlay(GTK_OVERLAY(overlay), compact_bar_new(lw));
 
     task_sidebar_build(lw, paned);
@@ -1964,31 +1814,50 @@ task_library_window_new(TaskApp *app)
     task_kanban_build(lw);
 
     GtkWidget *task_pane = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_box_pack_start(GTK_BOX(task_pane), lw->task_scroll,
-                       TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(task_pane), lw->board.kanban_box,
-                       TRUE, TRUE, 0);
-    gtk_paned_pack2(GTK_PANED(paned), task_pane, TRUE, FALSE);
+    gtk_widget_set_vexpand(lw->task_scroll,     TRUE);
+    gtk_widget_set_vexpand(lw->board.kanban_box, TRUE);
+    gtk_box_append(GTK_BOX(task_pane), lw->task_scroll);
+    gtk_box_append(GTK_BOX(task_pane), lw->board.kanban_box);
+    gtk_paned_set_end_child(GTK_PANED(paned), task_pane);
+    gtk_paned_set_resize_end_child(GTK_PANED(paned), TRUE);
+    gtk_paned_set_shrink_end_child(GTK_PANED(paned), FALSE);
 
     /* --- Status bar -------------------------------------------------------- */
     /* Same geometry as the Notes status bar: 8 px side margins,
      * 3 px top/bottom (a border_width would add a pixel more on every
      * edge and read visibly taller).                                       */
+    gtk_box_append(GTK_BOX(vbox),
+                   gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+
     GtkWidget *status = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_widget_set_margin_start(status, 8);
     gtk_widget_set_margin_end(status, 8);
     gtk_widget_set_margin_top(status, 3);
     gtk_widget_set_margin_bottom(status, 3);
+
     lw->status_left = gtk_label_new("");
     gtk_label_set_ellipsize(GTK_LABEL(lw->status_left),
                             PANGO_ELLIPSIZE_END);
     gtk_widget_set_halign(lw->status_left, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(status), lw->status_left, TRUE, TRUE, 0);
+    gtk_widget_set_hexpand(lw->status_left, TRUE);
+    gtk_box_append(GTK_BOX(status), lw->status_left);
+
+    /* The event-message label lives in a GtkRevealer so it crossfades in
+     * and out.  CROSSFADE is the closest GTK4 equivalent to the GTK3 Pango
+     * alpha fade; the 3 s hold + revealer transition drives the cycle.      */
     lw->status_right = gtk_label_new("");
     gtk_label_set_ellipsize(GTK_LABEL(lw->status_right),
                             PANGO_ELLIPSIZE_END);
     gtk_widget_set_halign(lw->status_right, GTK_ALIGN_END);
-    gtk_box_pack_end(GTK_BOX(status), lw->status_right, FALSE, FALSE, 0);
+    lw->status_reveal = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(lw->status_reveal),
+                                     GTK_REVEALER_TRANSITION_TYPE_CROSSFADE);
+    gtk_revealer_set_transition_duration(GTK_REVEALER(lw->status_reveal),
+                                         1000);
+    gtk_revealer_set_child(GTK_REVEALER(lw->status_reveal),
+                           lw->status_right);
+    gtk_box_append(GTK_BOX(status), lw->status_reveal);
+
     /* Both labels 85% of the UI font (Notes size).  CSS font-size: 85%
      * can resolve to zero on Linux when the per-widget provider has no
      * explicit base size in scope; Pango scale attributes are always
@@ -1998,13 +1867,11 @@ task_library_window_new(TaskApp *app)
     gtk_label_set_attributes(GTK_LABEL(lw->status_left),  small_attrs);
     gtk_label_set_attributes(GTK_LABEL(lw->status_right), small_attrs);
     pango_attr_list_unref(small_attrs);
-    gtk_box_pack_end(GTK_BOX(vbox), status, FALSE, FALSE, 0);
-    /* Matching thin rule above the status bar.                             */
-    gtk_box_pack_end(GTK_BOX(vbox),
-                     gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                     FALSE, FALSE, 0);
+
+    gtk_box_append(GTK_BOX(vbox), status);
 
     /* --- Hooks + first population ------------------------------------------ */
+    gtk_window_set_child(GTK_WINDOW(lw->window), vbox);
     app->library_window = lw->window;
     g_object_set_data(G_OBJECT(lw->window), "task-library", lw);
     lw->listen_changed = task_app_listen_changed(app, notify_changed_hook,
@@ -2012,19 +1879,22 @@ task_library_window_new(TaskApp *app)
     lw->listen_tasks   = task_app_listen_tasks(app, notify_tasks_hook, NULL);
     lw->listen_status  = task_app_listen_status(app, notify_status_hook,
                                                 NULL);
+    g_signal_connect(lw->window, "close-request",
+                     G_CALLBACK(on_library_close), lw);
     g_signal_connect(lw->window, "destroy",
                      G_CALLBACK(on_library_destroy), lw);
 
     lib_refresh_sidebar(lw);
     lib_refresh_tasks(lw);
-    gtk_widget_show_all(lw->window);
-    /* show_all made the whole chrome visible — apply the persisted
-     * Compact Layout state, which also settles the lists pane (HIDDEN by
-     * default; the Sidebar button and View → Show Sidebar bring it back)
-     * and hides the floating button pair outside compact mode.             */
+
+    /* Apply persisted layout states before presenting the window, so the
+     * user never sees the default then a shift.  compact_layout_apply also
+     * settles the lists pane (HIDDEN by default) and hides the float pair
+     * outside compact mode.  task_pane_mode_apply puts the list / Kanban
+     * choice back.                                                          */
     compact_layout_apply(lw);
-    /* show_all made BOTH task-pane variants visible — put the list /
-     * Kanban choice back.                                                  */
     task_pane_mode_apply(lw);
+
+    gtk_window_present(GTK_WINDOW(lw->window));
     return lw->window;
 }

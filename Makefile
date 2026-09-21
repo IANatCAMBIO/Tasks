@@ -59,6 +59,7 @@ SRCS     := src/main.c \
             src/task_ops.c \
             src/task_worker.c \
             src/task_view.c \
+            src/list_rows.c \
             src/task_rows.c \
             src/search.c \
             src/core_views.c \

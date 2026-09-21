@@ -1,263 +1,13 @@
 /* ===========================================================================
- * task_list.c — the library window's task LIST pane: the tree view and its
- * columns, the header menu, the manual-sort row drag and the persisted row
- * orders (see library_priv.h).
+ * task_list.c — the library window's task LIST pane: the GtkColumnView and its
+ * columns, the header visibility menu, the manual-sort row drag and the
+ * persisted row orders (see library_priv.h).
  * =========================================================================== */
 
 #include "library_priv.h"
 #include "editor_window.h"
 #include <stdlib.h>
 #include <string.h>
-
-/* header_flatten_css() — the column-header CSS: the flat background plus
- * shades of it for :hover / :active, so a sortable header still gives
- * feedback instead of jumping back to the theme's button color.  Quartz
- * only, like its one caller — otherwise it is an unused static.            */
-#ifdef GDK_WINDOWING_QUARTZ
-static gchar *
-header_flatten_css(const GdkRGBA *bg)
-{
-    gchar *c   = lib_rgb_of(bg);
-    gchar *css = g_strdup_printf(
-        "button {"
-        "  background-image: none;"
-        "  background-color: %s;"
-        "}"
-        "button:hover {"
-        "  background-image: none;"
-        "  background-color: shade(%s, 0.94);"
-        "}"
-        "button:active {"
-        "  background-image: none;"
-        "  background-color: shade(%s, 0.88);"
-        "}",
-        c, c, c);
-    g_free(c);
-    return css;
-}
-
-#endif /* GDK_WINDOWING_QUARTZ */
-
-/* ---------------------------------------------------------------------------
- * header_button_flatten() — paint a tree-view column header the same color
- * as the status bar.  macOS (quartz) ONLY: elsewhere the platform theme
- * owns the header's look and we leave it completely alone.
- *
- * The status bar sets no background of its own: it shows the window's,
- * which the theme paints from @theme_bg_color.  Headers, by contrast, are
- * real GtkButtons and come with the quartz theme's button gradient, so
- * they read lighter than the rest of the chrome.
- *
- * The provider goes on the header BUTTON, not the tree view: a provider
- * added to a widget's style context styles that widget only, and the
- * header buttons are separate widgets from the view.
- *
- * Gated on GDK_WINDOWING_QUARTZ rather than __APPLE__: the reason to
- * restyle is how the quartz backend draws buttons, so an X11 build on a
- * Mac correctly keeps its GTK theme.
- * ------------------------------------------------------------------------- */
-static void
-header_button_flatten(GtkWidget *hbtn)
-{
-#ifndef GDK_WINDOWING_QUARTZ
-    (void)hbtn;                      /* Linux/X11: the GTK theme decides    */
-#else
-    lib_themed_bg_css_apply(hbtn, header_flatten_css);
-#endif
-}
-
-static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
-
-/* on_task_activated() — double-click opens the editor window.  Mirrored
- * Notes items are ordinary tasks, so they open the ordinary editor.      */
-static void
-on_task_activated(GtkTreeView *view, GtkTreePath *path,
-                  GtkTreeViewColumn *col, gpointer data)
-{
-    (void)col;
-    TaskLibrary *lw = data;
-    GtkTreeModel *model = gtk_tree_view_get_model(view);
-    GtkTreeIter iter;
-    if (!gtk_tree_model_get_iter(model, &iter, path))
-        return;
-    gint64 id;
-    gtk_tree_model_get(model, &iter, TL_ID, &id, -1);
-    if (id == 0)                     /* the forecast's "No tasks due"
-                                      * placeholder rows                    */
-        return;
-    task_editor_open(lw->app, id);
-}
-
-/* ---------------------------------------------------------------------------
- * on_task_done_toggled() — the ✓ column.  The checkbox is a VIEW of the
- * status, not a field of its own: it shows ticked exactly when the status
- * is Done, and clicking it writes a status back through
- * task_status_apply_done's rule — ticking means Done, unticking means In
- * Progress (a task that was ticked has plainly been worked on, so
- * dropping it back to New would lose that).  New is reachable only from
- * the editor's dropdown.
- * ------------------------------------------------------------------------- */
-static void
-on_task_done_toggled(GtkCellRendererToggle *cell, gchar *path_str,
-                     gpointer data)
-{
-    (void)cell;
-    TaskLibrary *lw = data;
-    GtkTreeIter iter;
-    if (gtk_tree_model_get_iter_from_string(GTK_TREE_MODEL(lw->task_store),
-                                            &iter, path_str))
-        task_rows_toggle_done(lw->app, lw->task_store, &iter);
-}
-
-/* task_row_bg_func() — cell data function giving list rows alternating
- * white / light-blue backgrounds regardless of theme (the Notes
- * notes-list stripes).  data is TaskLibrary * for the task pane columns so
- * the dragged row can be highlighted; NULL is safe (forecast day views).   */
-static void
-task_row_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
-                 GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
-{
-    (void)col;
-    TaskLibrary *lw = data;            /* may be NULL for forecast day views */
-    /* The stripe itself is the renderer's (task_rows.h) — one rule, so a
-     * panel and the task pane cannot end up striping differently.  All
-     * this adds is the drag highlight, which is the pane's own business. */
-    const gchar *bg = task_rows_stripe_color(model, iter);
-
-    /* While dragging, paint the held row amber so it is easy to track.
-     *
-     * By TASK ID, not by position.  This is a cell data func, so it runs
-     * per row per DRAW on every one of the pane's columns — and comparing
-     * positions meant building two GtkTreePaths each time (one off the row
-     * reference, one off the iter), twelve allocations per row per frame
-     * during exactly the gesture where frames are frequent.  The id is
-     * already in the model and identity is all the highlight needs;
-     * drag_row_ref stays for the motion handler, which genuinely needs the
-     * row's live POSITION as the store is reordered underneath it.        */
-    if (lw != NULL && lw->drag_active && lw->drag_task_id != 0) {
-        gint64 id = 0;
-        gtk_tree_model_get(model, iter, TL_ID, &id, -1);
-        if (id == lw->drag_task_id)
-            bg = DRAG_ROW_TINT;
-    }
-
-    g_object_set(cell, "cell-background", bg, NULL);
-}
-
-/* due_color_func() — tint the Due cell by urgency at draw time (rolls
- * over at midnight).  Undated rows must reset foreground-set — the
- * renderer is shared.  Also applies the row stripe: a column gets ONE
- * cell data func per renderer, so this one does both jobs.                 */
-static void
-due_color_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
-               GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
-{
-    task_row_bg_func(col, cell, model, iter, data);
-    gint64 due;
-    gtk_tree_model_get(model, iter, TL_DUE_RAW, &due, -1);
-    const gchar *color = task_due_color(due);
-    if (color == NULL)
-        g_object_set(cell, "foreground-set", FALSE, NULL);
-    else
-        g_object_set(cell, "foreground", color, NULL);
-}
-
-/* sort_by_due() — soonest first; undated rows always last.                 */
-static gint
-sort_by_due(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
-            gpointer data)
-{
-    (void)data;
-    gint64 da, db;
-    gtk_tree_model_get(model, a, TL_DUE_RAW, &da, -1);
-    gtk_tree_model_get(model, b, TL_DUE_RAW, &db, -1);
-    if (da == 0) da = G_MAXINT64;
-    if (db == 0) db = G_MAXINT64;
-    return (da > db) - (da < db);
-}
-
-/* sort_by_completed() — oldest-completed first; incomplete rows last.      */
-static gint
-sort_by_completed(GtkTreeModel *model, GtkTreeIter *a, GtkTreeIter *b,
-                  gpointer data)
-{
-    (void)data;
-    gint64 da, db;
-    gtk_tree_model_get(model, a, TL_COMPLETED_RAW, &da, -1);
-    gtk_tree_model_get(model, b, TL_COMPLETED_RAW, &db, -1);
-    if (da == 0) da = G_MAXINT64;
-    if (db == 0) db = G_MAXINT64;
-    return (da > db) - (da < db);
-}
-
-/* ---------------------------------------------------------------------------
- * on_task_button_press() — right-click on a task row: keep an existing
- * multi-selection when clicked inside it (else select just that row)
- * and show the context menu, whose actions apply to the whole
- * selection.
- * ------------------------------------------------------------------------- */
-static gboolean
-on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
-{
-    TaskLibrary *lw = data;
-
-    /* Left-click in the drag handle column starts a manual reorder.
-     * lib_manual_sort_live, not the raw flag: a search hides rows, and the
-     * order writer would drop every hidden one (see lib_manual_sort_live).  */
-    if (event->button == 1 && lib_manual_sort_live(lw)) {
-        GtkTreePath      *path = NULL;
-        GtkTreeViewColumn *col = NULL;
-        if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view),
-            (gint)event->x, (gint)event->y, &path, &col, NULL, NULL)) {
-            GtkTreeViewColumn *cdrag =
-                g_object_get_data(G_OBJECT(lw->task_view), "task-cdrag");
-            if (col == cdrag) {
-                GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
-                GtkTreeIter it;
-                gint64 id = 0;
-                if (gtk_tree_model_get_iter(model, &it, path))
-                    gtk_tree_model_get(model, &it, TL_ID, &id, -1);
-                if (id != 0) {
-                    lw->drag_active  = TRUE;
-                    lw->drag_task_id = id;
-                    if (lw->drag_row_ref != NULL)
-                        gtk_tree_row_reference_free(lw->drag_row_ref);
-                    lw->drag_row_ref =
-                        gtk_tree_row_reference_new(model, path);
-                    gtk_widget_queue_draw(view); /* paint amber highlight   */
-                    gtk_tree_path_free(path);
-                    return TRUE;       /* consume — don't change selection  */
-                }
-            }
-            gtk_tree_path_free(path);
-        }
-    }
-
-    /* Right-click in the header area: event->window is the header GdkWindow,
-     * not the bin_window, regardless of column clickability.  Detect this
-     * by window identity and route to the column/sort menu.                */
-    if (event->button == 3 &&
-        event->window != gtk_tree_view_get_bin_window(GTK_TREE_VIEW(view)))
-        return on_column_header_press(view, event, lw);
-
-    if (event->button != 3)
-        return FALSE;
-
-    GtkTreePath *path = NULL;
-    if (!gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(view),
-                                       (gint)event->x, (gint)event->y,
-                                       &path, NULL, NULL, NULL))
-        return FALSE;
-    GtkTreeSelection *sel =
-        gtk_tree_view_get_selection(GTK_TREE_VIEW(view));
-    if (!gtk_tree_selection_path_is_selected(sel, path)) {
-        gtk_tree_selection_unselect_all(sel);
-        gtk_tree_selection_select_path(sel, path);
-    }
-    gtk_tree_path_free(path);
-
-    return task_context_menu_popup(lw, event);
-}
 
 /* ---------------------------------------------------------------------------
  * lib_row_order_permutation() — the display order a SAVED id list asks for,
@@ -269,25 +19,20 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
  *           dragged them into
  *
  * Returns a new gint[n] (g_free it) holding every index exactly once —
- * a valid permutation, which is what gtk_list_store_reorder requires —
- * or NULL when there is nothing to do.  Ids named by `saved` come first in
- * its sequence; anything it does not mention (a task created since) keeps
- * its current order at the tail.  It is FORGIVING by design: an id that no
- * longer exists matches nothing, and a pre-mirror order still holding
- * "NOTEID:ORD" tokens parses them to 0 and skips them.
+ * a valid permutation — or NULL when there is nothing to do.  Ids named by
+ * `saved` come first in its sequence; anything it does not mention (a task
+ * created since) keeps its current order at the tail.  It is FORGIVING by
+ * design: an id that no longer exists matches nothing, and a pre-mirror
+ * order still holding "NOTEID:ORD" tokens parses them to 0 and skips them.
  *
  * ONE function for BOTH panes.  The list view and the Kanban board keep
  * separate order KEYS on purpose, but the rule for reading one back is the
- * same rule, and it was written out twice — once over a GPtrArray of
- * tasks and once over the tree model — with a comment on the second
- * admitting it was "the same shape as" the first.  They differ only in
- * where the ids come from and what the caller does with the answer, so
- * that is all each caller now spells.
+ * same rule.
  *
- * The id lookup is a HASH, not the nested scan both copies used: that was
- * O(saved x rows), a quarter of a million comparisons on a 500-row list,
- * repeated on every refresh.  Keys point into `ids` itself, which outlives
- * the call, so no key is allocated.
+ * The id lookup is a HASH, not the nested scan the original code used: that
+ * was O(saved × rows), a quarter of a million comparisons on a 500-row
+ * list, repeated on every refresh.  Keys point into `ids` itself, which
+ * outlives the call, so no key is allocated.
  * ------------------------------------------------------------------------- */
 gint *
 lib_row_order_permutation(const gint64 *ids, gint n, const gchar *saved)
@@ -295,17 +40,9 @@ lib_row_order_permutation(const gint64 *ids, gint n, const gchar *saved)
     if (ids == NULL || n <= 1 || saved == NULL || *saved == '\0')
         return NULL;
 
-    /* id -> its FIRST index (+1, so a miss reads as NULL/0), plus a chain
+    /* id → its FIRST index (+1, so a miss reads as NULL/0), plus a chain
      * threading every LATER index carrying the same id.  Built backwards,
-     * so `head` ends on the lowest index and `next` runs forward from it.
-     *
-     * The chain is what makes this exactly the nested scan it replaces:
-     * that scan took the first index with a matching id THAT WAS NOT YET
-     * PLACED, so a saved list naming an id twice consumed two rows.  Ids
-     * in one pane are unique and it cannot arise today — but a hash that
-     * remembers only the first index would quietly diverge if that ever
-     * stopped being true, and the difference would be a lost drag order,
-     * not a crash.  Cheaper to be exact than to rely on the invariant.   */
+     * so `head` ends on the lowest index and `next` runs forward from it.  */
     GHashTable *head = g_hash_table_new(g_int64_hash, g_int64_equal);
     gint       *next = g_new(gint, n);
     for (gint i = n - 1; i >= 0; i--) {
@@ -330,9 +67,6 @@ lib_row_order_permutation(const gint64 *ids, gint n, const gchar *saved)
             continue;
         order[fill++] = j;
         placed[j]     = TRUE;
-        /* Advance the head so the NEXT mention of this id starts past the
-         * row just taken — the whole walk stays O(n) rather than
-         * re-traversing the chain from the top each time.               */
         g_hash_table_insert(head, (gpointer)&ids[j],
                             GINT_TO_POINTER(next[j] + 1));
     }
@@ -340,9 +74,7 @@ lib_row_order_permutation(const gint64 *ids, gint n, const gchar *saved)
     g_hash_table_destroy(head);
     g_free(next);
 
-    /* Everything the saved list did not claim, in the order it already
-     * had.  This is what makes the result a permutation rather than a
-     * subset, however partial or stale `saved` turns out to be.          */
+    /* Everything the saved list did not claim, in the order it already had. */
     for (gint i = 0; i < n; i++)
         if (!placed[i])
             order[fill++] = i;
@@ -350,15 +82,21 @@ lib_row_order_permutation(const gint64 *ids, gint n, const gchar *saved)
     return order;
 }
 
-/* lib_row_order_key() — the order key for a sidebar row that carries its own
- * task order: "<family>_list_<id>" for a real list, "<family>_group_<id>"
- * for a group's aggregate.  NULL for any other row kind.
+/*
+ * lib_row_order_key — the config key for a sidebar row's task order.
+ *
+ * "<family>_list_<id>" for a real list, "<family>_group_<id>" for a group's
+ * aggregate.  NULL for any other row kind.  New string (g_free).
  *
  * Both families (manual_order and kanban_order) and both key deleters go
- * through here, so the ini spelling exists in ONE place — on_delete_list
- * and on_sb_ctx_delete_group have to name the very keys the pane wrote,
- * and a second copy of the format is how those drift.  New string
- * (g_free).                                                                */
+ * through here, so the ini spelling exists in ONE place.
+ *
+ * Inputs:
+ *   family — "manual_order" or "kanban_order"
+ *   kind   — SB_KIND_LIST or SB_KIND_GROUP
+ *   id     — the list or group id
+ * Output: new key string, or NULL (g_free).
+ */
 gchar *
 lib_row_order_key(const gchar *family, gint kind, gint64 id)
 {
@@ -370,9 +108,18 @@ lib_row_order_key(const gchar *family, gint kind, gint64 id)
     return g_strdup_printf("%s_%s_%" G_GINT64_FORMAT, family, noun, id);
 }
 
-/* lib_row_order_keys_drop() — remove BOTH order keys of a sidebar row that is
- * going away.  Nothing else ever would, so the ini otherwise grows a dead
- * entry per family for every list and group ever deleted.                  */
+/*
+ * lib_row_order_keys_drop — remove BOTH order keys of a sidebar row that is
+ * going away (both manual_order and kanban_order families).
+ *
+ * Nothing else removes them, so the ini would otherwise grow one dead entry
+ * per family for every list and group ever deleted.
+ *
+ * Inputs:
+ *   kind — SB_KIND_LIST or SB_KIND_GROUP
+ *   id   — the list or group id
+ * Output: none
+ */
 void
 lib_row_order_keys_drop(gint kind, gint64 id)
 {
@@ -397,307 +144,210 @@ view_order_key(TaskLibrary *lw)
     return task_view_order_key(lib_sel_view(lw), "manual_order");
 }
 
-/* task_view_save_manual_order() — serialize the task pane's current row
- * order to config as a comma-separated list of task ids.  Every row is a
- * real task now (mirrored Notes items included), so the old
- * "NOTEID:ORD" token form is gone; a saved order still holding those
- * tokens simply finds no match and those entries drop out.                 */
+/*
+ * task_view_save_manual_order — serialize the task pane's current row order
+ * to config as a comma-separated list of task ids.
+ *
+ * Iterates task_store (which equals the display order when the sorter is
+ * NULL in manual-sort mode).
+ *
+ * Inputs: lw — the library window
+ * Output: none
+ */
 static void
 task_view_save_manual_order(TaskLibrary *lw)
 {
     gchar *key = view_order_key(lw);
-    if (key == NULL) return;
-    GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
-    GString      *s     = g_string_new(NULL);
-    GtkTreeIter   iter;
-    if (gtk_tree_model_get_iter_first(model, &iter)) {
-        do {
-            gint64 id;
-            gtk_tree_model_get(model, &iter, TL_ID, &id, -1);
-            if (id != 0) {
-                if (s->len > 0) g_string_append_c(s, ',');
-                g_string_append_printf(s, "%" G_GINT64_FORMAT, id);
+    if (key == NULL)
+        return;
+    guint  n = g_list_model_get_n_items(G_LIST_MODEL(lw->task_store));
+    GString *s = g_string_new(NULL);
+    for (guint i = 0; i < n; i++) {
+        TaskRow *row = TASK_ROW(g_list_model_get_item(
+                                    G_LIST_MODEL(lw->task_store), i));
+        if (row != NULL) {
+            if (row->id != 0) {
+                if (s->len > 0)
+                    g_string_append_c(s, ',');
+                g_string_append_printf(s, "%" G_GINT64_FORMAT, row->id);
             }
-        } while (gtk_tree_model_iter_next(model, &iter));
+            g_object_unref(row);
+        }
     }
     task_app_config_set(key, s->str);
     g_string_free(s, TRUE);
     g_free(key);
 }
 
-/* task_view_apply_manual_order() — after lib_refresh_tasks populates the store,
+/*
+ * task_view_apply_manual_order — after a refresh populates the store,
  * reorder rows to match the saved manual order for the current view.
  *
- * All this owns is where the ids come from (the model, in display order)
- * and what to do with the answer; the rule itself is
- * lib_row_order_permutation, shared with the Kanban board.                     */
+ * All this owns is where the ids come from (the store, in its current order)
+ * and what to do with the answer; the rule itself is lib_row_order_permutation,
+ * shared with the Kanban board.
+ *
+ * Inputs: lw — the library window
+ * Output: none
+ */
 void
 task_view_apply_manual_order(TaskLibrary *lw)
 {
     gchar *key = view_order_key(lw);
-    if (key == NULL) return;
+    if (key == NULL)
+        return;
     gchar *saved = task_app_config_get(key);
     g_free(key);
-    if (saved == NULL) return;
-    GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
-    gint n = gtk_tree_model_iter_n_children(model, NULL);
-    if (n <= 1) { g_free(saved); return; }
+    if (saved == NULL)
+        return;
 
-    /* Snapshot current row IDs (in display order). */
-    gint64  *ids  = g_new(gint64, n);
-    GtkTreeIter  iter;
-    gtk_tree_model_get_iter_first(model, &iter);
-    for (gint i = 0; i < n; i++) {
-        gtk_tree_model_get(model, &iter, TL_ID, &ids[i], -1);
-        gtk_tree_model_iter_next(model, &iter);
+    guint n = g_list_model_get_n_items(G_LIST_MODEL(lw->task_store));
+    if (n <= 1) {
+        g_free(saved);
+        return;
     }
 
-    gint *order = lib_row_order_permutation(ids, n, saved);
+    /* Snapshot current row ids (in display order) and collect the items. */
+    gint64  *ids   = g_new(gint64, n);
+    gpointer *items = g_new(gpointer, n);
+    for (guint i = 0; i < n; i++) {
+        TaskRow *row = TASK_ROW(g_list_model_get_item(
+                                    G_LIST_MODEL(lw->task_store), i));
+        ids[i]   = row ? row->id : 0;
+        items[i] = row;              /* holds the ref                       */
+    }
+
+    gint *order = lib_row_order_permutation(ids, (gint)n, saved);
     g_free(saved);
     g_free(ids);
-    if (order == NULL)
+
+    if (order != NULL) {
+        /* Build a new items array in the permuted order, then splice
+         * the whole store at once.                                         */
+        gpointer *new_items = g_new(gpointer, n);
+        for (guint i = 0; i < n; i++)
+            new_items[i] = items[order[i]];
+        g_free(order);
+
+        g_list_store_splice(lw->task_store, 0, n, new_items, n);
+        g_free(new_items);
+    }
+
+    for (guint i = 0; i < n; i++)
+        if (items[i])
+            g_object_unref(items[i]);
+    g_free(items);
+}
+
+/* ---------------------------------------------------------------------------
+ * CSS installed once for the task pane.
+ * ------------------------------------------------------------------------- */
+
+/* task_list_install_css() — install the task-list stylesheet once per
+ * process.  Stripes, urgency tints and drag-state classes all live here
+ * so they apply to every column in the view automatically.                  */
+static void
+task_list_install_css(void)
+{
+    static gboolean done = FALSE;
+    if (done)
         return;
-    gtk_list_store_reorder(lw->task_store, order);
-    g_free(order);
-}
+    done = TRUE;
 
-/* drag_handle_func() — cell data func for the drag handle column.  The row
- * stripe is all it does: the ⠿ glyph and its dimming are constants, so they
- * are set once on the renderer at construction instead of on every draw.
- * Kept as its own function (rather than pointing the column straight at
- * task_row_bg_func) because the column is where a per-row "this row cannot
- * move" state would land if one is ever added.                             */
-static void
-drag_handle_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
-                 GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
-{
-    task_row_bg_func(col, cell, model, iter, data);
+    /* Row stripes: even rows get the pale-blue tint, but NEVER over the
+     * selection highlight (the blue would clash).  Urgency tints are on
+     * the GtkLabel in the Due Date cell, so they do not bleed to other
+     * columns.  Drag classes sit on the handle GtkLabel: task-drag-src
+     * (the row being dragged) gets the amber highlight; task-drag-mark
+     * (the target row) gets a top border showing where it would land.
+     * No focus ring or pressed shadow on rows (same rationale as Notes). */
+    GtkCssProvider *prov = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(prov,
+        /* Row stripes */
+        "columnview.task-list > listview > row:nth-child(even)"
+        ":not(:selected) { background-color: " ROW_TINT "; }"
+        /* No focus ring */
+        "columnview.task-list > listview > row:focus:focus-visible"
+        " { outline-width: 0; transition: none; }"
+        /* No pressed-state shadow */
+        "columnview.task-list > listview > row:active"
+        " { box-shadow: none; }"
+        /* Due urgency tints */
+        "columnview.task-list label.task-overdue   { color: #c01c28; }"
+        "columnview.task-list label.task-due-today { color: #d19a00; }"
+        "columnview.task-list label.task-due-ahead { color: #26a269; }"
+        /* Drag source: amber handle */
+        "columnview.task-list label.task-drag-src"
+        " { background: " DRAG_ROW_TINT "; }"
+        /* Drag marker: 2 px top rule at target position */
+        "columnview.task-list label.task-drag-mark"
+        " { border-top: 2px solid @theme_fg_color; }"
+        /* Column headers: bottom rule only, no left border doubling */
+        "columnview.task-list > header > button"
+        " { border-left: none; }");
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(),
+        GTK_STYLE_PROVIDER(prov),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(prov);
 }
 
 /* ---------------------------------------------------------------------------
- * task_drag_set_cursor() — update the cursor on the task view's GdkWindow:
- * "ns-resize" while over the drag handle column or while dragging, else
- * reset to the window default.
+ * Column visibility — stateful "win.column-<key>" actions whose state is the
+ * column's visibility; the header menu's items name them.  The change-state
+ * path is the ONE writer of both the column and its col_<key>_visible key.
+ * An `activate` handler on a stateful action does not flip the state, so
+ * the check mark would never move — hence change-state.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * on_column_change_state — toggle a column's visibility and persist it.
  *
- * Runs on EVERY motion event over the task view, so it holds no allocation:
- * the manual-sort flag comes from lw->manual_sort rather than the ini, and
- * the cursor is made once and kept on lw (created lazily — the display is
- * only reachable from a realized widget).
- * ------------------------------------------------------------------------- */
-static void
-task_drag_set_cursor(GtkWidget *widget, TaskLibrary *lw, gdouble x, gdouble y)
-{
-    GdkWindow  *win = gtk_widget_get_window(widget);
-    if (win == NULL) return;
-    gboolean want_resize = lw->drag_active;
-    if (!want_resize && lib_manual_sort_live(lw)) {
-        GtkTreeViewColumn *over = NULL;
-        gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
-            (gint)x, (gint)y, NULL, &over, NULL, NULL);
-        GtkTreeViewColumn *cdrag =
-            g_object_get_data(G_OBJECT(lw->task_view), "task-cdrag");
-        want_resize = (over != NULL && over == cdrag);
-    }
-    if (want_resize && lw->drag_cursor == NULL)
-        lw->drag_cursor = gdk_cursor_new_from_name(
-            gtk_widget_get_display(widget), "ns-resize");
-    /* NULL restores the window default — and is also what a display that
-     * cannot supply "ns-resize" leaves us with, which is the right
-     * fallback rather than a guessed stock cursor.                         */
-    gdk_window_set_cursor(win, want_resize ? lw->drag_cursor : NULL);
-}
-
-/* on_task_leave_notify() — restore the default cursor when the pointer
- * leaves the task view (e.g. moving to another widget).                    */
-static gboolean
-on_task_leave_notify(GtkWidget *widget, GdkEventCrossing *ev, gpointer data)
-{
-    (void)ev; (void)data;
-    GdkWindow *win = gtk_widget_get_window(widget);
-    if (win) gdk_window_set_cursor(win, NULL);
-    return FALSE;
-}
-
-/* on_task_drag_motion() — when the pointer enters a different row, swap
- * that row with the dragged row so the dragged item ends up under the
- * cursor.  Uses get_path_at_pos (no hysteresis) so the swap fires the
- * moment the pointer crosses a row boundary.                               */
-static gboolean
-on_task_drag_motion(GtkWidget *widget, GdkEventMotion *ev, gpointer data)
-{
-    TaskLibrary *lw = data;
-    task_drag_set_cursor(widget, lw, ev->x, ev->y);
-    if (!lw->drag_active || lw->drag_row_ref == NULL)
-        return FALSE;
-
-    GtkTreePath *at_path = NULL;
-    gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(widget),
-        1, (gint)ev->y, &at_path, NULL, NULL, NULL);
-    if (at_path == NULL)
-        return FALSE;
-
-    GtkTreePath *drag_path =
-        gtk_tree_row_reference_get_path(lw->drag_row_ref);
-    if (drag_path == NULL) { gtk_tree_path_free(at_path); return FALSE; }
-
-    if (gtk_tree_path_compare(at_path, drag_path) == 0) {
-        /* Cursor is back on the dragged row — clear the anti-flicker lock
-         * so the next row the cursor enters will swap normally.            */
-        if (lw->drag_lock_ref != NULL) {
-            gtk_tree_row_reference_free(lw->drag_lock_ref);
-            lw->drag_lock_ref = NULL;
-        }
-    } else {
-        /* Check whether this is the row we just swapped with.  Row refs
-         * auto-update through moves, so lock_path tracks the locked row
-         * even after surrounding rows have shifted.                        */
-        GtkTreePath *lock_path = lw->drag_lock_ref
-            ? gtk_tree_row_reference_get_path(lw->drag_lock_ref) : NULL;
-        gboolean locked = lock_path &&
-            gtk_tree_path_compare(at_path, lock_path) == 0;
-        if (lock_path) gtk_tree_path_free(lock_path);
-
-        if (!locked) {
-            GtkTreeIter  at_it, drag_it;
-            GtkTreeModel *model = GTK_TREE_MODEL(lw->task_store);
-            if (gtk_tree_model_get_iter(model, &at_it,   at_path) &&
-                gtk_tree_model_get_iter(model, &drag_it, drag_path)) {
-                gint64 at_id;
-                gtk_tree_model_get(model, &at_it, TL_ID, &at_id, -1);
-
-                /* Every row carries a real id now — mirrored Notes
-                 * items included — so the old "skip past the contiguous
-                 * BN section" dance is gone: any row is a swap target.    */
-                if (at_id != 0) {
-                    gint drag_idx = gtk_tree_path_get_indices(drag_path)[0];
-                    gint at_idx   = gtk_tree_path_get_indices(at_path)[0];
-                    /* Lock the target BEFORE the move; the row ref will
-                     * auto-update to track it at its new position.         */
-                    if (lw->drag_lock_ref != NULL)
-                        gtk_tree_row_reference_free(lw->drag_lock_ref);
-                    lw->drag_lock_ref =
-                        gtk_tree_row_reference_new(model, at_path);
-                    if (at_idx < drag_idx)
-                        gtk_list_store_move_before(lw->task_store,
-                                                  &drag_it, &at_it);
-                    else
-                        gtk_list_store_move_after(lw->task_store,
-                                                 &drag_it, &at_it);
-                }
-            }
-        }
-    }
-
-    gtk_tree_path_free(at_path);
-    gtk_tree_path_free(drag_path);
-    return FALSE;
-}
-
-/* on_task_drag_release() — button released: end the drag and persist the
- * new row order.                                                           */
-static gboolean
-on_task_drag_release(GtkWidget *widget, GdkEventButton *ev, gpointer data)
-{
-    (void)widget; (void)ev;
-    TaskLibrary *lw = data;
-    if (!lw->drag_active) return FALSE;
-    lw->drag_active  = FALSE;
-    lw->drag_task_id = 0;
-    if (lw->drag_row_ref != NULL) {
-        gtk_tree_row_reference_free(lw->drag_row_ref);
-        lw->drag_row_ref = NULL;
-    }
-    if (lw->drag_lock_ref != NULL) {
-        gtk_tree_row_reference_free(lw->drag_lock_ref);
-        lw->drag_lock_ref = NULL;
-    }
-    task_view_save_manual_order(lw);
-    gtk_widget_queue_draw(widget);   /* clear the amber highlight           */
-    GdkWindow *win = gtk_widget_get_window(widget);
-    if (win) gdk_window_set_cursor(win, NULL);
-    return FALSE;
-}
-
-/* task_manual_sort_apply() — sync the task view to the current
- * task_list_manual_sort config: show/hide drag handle, enable/disable
- * column-header click-to-sort, and clear any active sort indicator.
- * ALSO the single writer of lw->manual_sort, the cached copy the
- * per-motion and per-refresh paths read instead of the ini — every writer
- * of the config key calls this straight afterwards, so the cache cannot
- * drift.                                                                   */
-void
-task_manual_sort_apply(TaskLibrary *lw)
-{
-    lw->manual_sort =
-        task_app_config_get_bool("task_list_manual_sort", FALSE);
-    /* What the COLUMNS show is what is actually on offer, which a search
-     * suspends (see lib_manual_sort_live) — so the ⠿ handle goes and the
-     * headers become clickable again, giving the filtered view the sorting
-     * it can still do.  The cached SETTING above is untouched: clearing the
-     * box must bring hand-sorting back, not turn it off.                  */
-    gboolean manual = lib_manual_sort_live(lw);
-    GtkTreeViewColumn *cdrag =
-        g_object_get_data(G_OBJECT(lw->task_view), "task-cdrag");
-    GtkTreeViewColumn *cdone =
-        g_object_get_data(G_OBJECT(lw->task_view), "task-cdone");
-    GtkTreeViewColumn *cdesc =
-        g_object_get_data(G_OBJECT(lw->task_view), "task-cdesc");
-    GtkTreeViewColumn *cstatus =
-        g_object_get_data(G_OBJECT(lw->task_view), "task-cstatus");
-    GtkTreeViewColumn *cdue  =
-        g_object_get_data(G_OBJECT(lw->task_view), "task-cdue");
-    GtkTreeViewColumn *ccompleted =
-        g_object_get_data(G_OBJECT(lw->task_view), "task-ccompleted");
-    if (cdrag)      gtk_tree_view_column_set_visible(cdrag, manual);
-    if (cdone)      gtk_tree_view_column_set_clickable(cdone,      !manual);
-    if (cdesc)      gtk_tree_view_column_set_clickable(cdesc,      !manual);
-    if (cstatus)    gtk_tree_view_column_set_clickable(cstatus,    !manual);
-    if (cdue)       gtk_tree_view_column_set_clickable(cdue,       !manual);
-    if (ccompleted) gtk_tree_view_column_set_clickable(ccompleted, !manual);
-    if (manual)
-        gtk_tree_sortable_set_sort_column_id(
-            GTK_TREE_SORTABLE(lw->task_store),
-            GTK_TREE_SORTABLE_UNSORTED_SORT_COLUMN_ID,
-            GTK_SORT_ASCENDING);
-}
-
-/* ---------------------------------------------------------------------------
- * The hidable columns as STATEFUL "win.column-<key>" actions: the state is
- * the column's visibility, the header menu's check items name them, and
- * the change-state path is the ONE writer of both the column and its
- * col_<key>_visible key.  An `activate` handler on a stateful action does
- * not flip the state, so the check mark would never move — hence
- * change-state, and g_simple_action_set_state called here.
- * ------------------------------------------------------------------------- */
+ * Inputs:
+ *   action — the stateful GSimpleAction being toggled
+ *   value  — the new GVariant(bool) state
+ *   data   — unused (column is stored on the action)
+ * Output: none
+ */
 static void
 on_column_change_state(GSimpleAction *action, GVariant *value, gpointer data)
 {
     (void)data;
-    GtkTreeViewColumn *col = g_object_get_data(G_OBJECT(action), "task-col");
-    const gchar       *key = g_object_get_data(G_OBJECT(col), "task-colkey");
+    GtkColumnViewColumn *col = g_object_get_data(G_OBJECT(action), "task-col");
+    const gchar         *key = g_object_get_data(G_OBJECT(col), "task-colkey");
     gboolean vis = g_variant_get_boolean(value);
     g_simple_action_set_state(action, value);
-    gtk_tree_view_column_set_visible(col, vis);
+    gtk_column_view_column_set_visible(col, vis);
     gchar *cfg = g_strdup_printf("col_%s_visible", key);
     task_app_config_set(cfg, vis ? "1" : "0");
     g_free(cfg);
 }
 
-/* ---------------------------------------------------------------------------
- * task_list_install_actions() — one column action per hidable column,
- * seeded from the ini and applied to the column at once (see
- * library_priv.h).  Called from task_list_build, once the columns exist.
- * Status defaults to HIDDEN: the ✓ column already says what most rows
+/* column_action_name() — "column-<key>" name for the GAction.  New string. */
+static gchar *
+column_action_name(const gchar *key)
+{
+    return g_strdup_printf("column-%s", key);
+}
+
+/*
+ * task_list_install_actions — one visibility action per hidable column,
+ * seeded from the ini and applied to the column at once.
+ *
+ * Status defaults to HIDDEN: the ✓ column already conveys what most rows
  * need, and the header right-click menu is where anyone who wants the
  * third state on screen turns it on.
- * ------------------------------------------------------------------------- */
+ *
+ * Inputs: lw — the library window (columns must already be built)
+ * Output: none
+ */
 void
 task_list_install_actions(TaskLibrary *lw)
 {
     static const struct {
-        const gchar *data_key;       /* the column, as stored on the view   */
-        const gchar *key;            /* the ini key's middle: col_<key>_… */
-        gboolean     def;
+        const gchar *data_key;       /* column stored on the view           */
+        const gchar *key;            /* ini key's middle: col_<key>_…      */
+        gboolean     def;            /* default visibility                  */
     } COLUMNS[] = {
         { "task-cdone",      "done",      TRUE  },
         { "task-cstatus",    "status",    FALSE },
@@ -705,15 +355,14 @@ task_list_install_actions(TaskLibrary *lw)
         { "task-ccompleted", "completed", TRUE  },
     };
     for (gsize i = 0; i < G_N_ELEMENTS(COLUMNS); i++) {
-        GtkTreeViewColumn *col =
-            g_object_get_data(G_OBJECT(lw->task_view), COLUMNS[i].data_key);
+        GtkColumnViewColumn *col = g_object_get_data(G_OBJECT(lw->task_view),
+                                                      COLUMNS[i].data_key);
         gchar *cfg  = g_strdup_printf("col_%s_visible", COLUMNS[i].key);
-        gchar *name = g_strdup_printf("column-%s", COLUMNS[i].key);
+        gchar *name = column_action_name(COLUMNS[i].key);
         gboolean vis = task_app_config_get_bool(cfg, COLUMNS[i].def);
-        gtk_tree_view_column_set_visible(col, vis);
-        GSimpleAction *action =
-            g_simple_action_new_stateful(name, NULL,
-                                         g_variant_new_boolean(vis));
+        gtk_column_view_column_set_visible(col, vis);
+        GSimpleAction *action = g_simple_action_new_stateful(
+            name, NULL, g_variant_new_boolean(vis));
         g_object_set_data(G_OBJECT(action), "task-col", col);
         g_signal_connect(action, "change-state",
                          G_CALLBACK(on_column_change_state), lw);
@@ -722,173 +371,882 @@ task_list_install_actions(TaskLibrary *lw)
         g_free(name);
         g_free(cfg);
     }
-}
 
-/* on_column_header_press() — right-click on any column header pops a menu
- * of check items for the hidable columns (Done, Status, Due Date and
- * Completion Date; Task always shows and has no entry).                    */
-static gboolean
-on_column_header_press(GtkWidget *btn, GdkEventButton *ev, gpointer data)
-{
-    (void)btn;
-    if (ev->button != 3) return FALSE;
-    TaskLibrary *lw = data;
-
-    /* One check item per hidable column, in column order, each naming its
-     * stateful action — the check mark is the action's state.             */
+    /* Build the shared header menu (same menu on every column) and install
+     * it.  Each item names "win.column-<key>" and carries a check mark
+     * from the action's state.                                             */
+    GListModel *cols = gtk_column_view_get_columns(
+                           GTK_COLUMN_VIEW(lw->task_view));
+    guint ncols = g_list_model_get_n_items(cols);
     GMenu *menu = g_menu_new();
-    GList *cols = gtk_tree_view_get_columns(GTK_TREE_VIEW(lw->task_view));
-    for (GList *l = cols; l; l = l->next) {
-        GtkTreeViewColumn *col   = l->data;
-        const gchar       *key   =
-            g_object_get_data(G_OBJECT(col), "task-colkey");
-        const gchar       *label =
-            g_object_get_data(G_OBJECT(col), "task-collabel");
-        if (!key) continue;
-        gchar *action = g_strdup_printf("win.column-%s", key);
-        g_menu_append(menu, label, action);
+    for (gsize i = 0; i < G_N_ELEMENTS(COLUMNS); i++) {
+        gchar *action = g_strdup_printf("win.column-%s", COLUMNS[i].key);
+        /* The label is the collabel stored on the column. */
+        GtkColumnViewColumn *col = g_object_get_data(G_OBJECT(lw->task_view),
+                                                      COLUMNS[i].data_key);
+        const gchar *label = g_object_get_data(G_OBJECT(col), "task-collabel");
+        g_menu_append(menu, label != NULL ? label : COLUMNS[i].key, action);
         g_free(action);
     }
-    g_list_free(cols);
-    task_app_menu_popup(lw->window, G_MENU_MODEL(menu), ev);
-    return TRUE;
+    for (guint i = 0; i < ncols; i++) {
+        GtkColumnViewColumn *col = g_list_model_get_item(cols, i);
+        gtk_column_view_column_set_header_menu(col, G_MENU_MODEL(menu));
+        g_object_unref(col);
+    }
+    g_object_unref(menu);
 }
 
 /* ---------------------------------------------------------------------------
- * task_list_build() — build the task list, its columns and lw->task_scroll (see library_priv.h).
+ * task_manual_sort_apply() — sync the task view to the current
+ * task_list_manual_sort config.
+ *
+ * When manual sort is active: set the sort model's sorter to NULL (so the
+ * store order becomes the display order), and show the drag handle column.
+ * When off: reconnect the column view's header sorter.
+ *
+ * This is the SINGLE writer of lw->manual_sort, so the cached copy the
+ * per-motion and per-refresh paths read cannot drift.
  * ------------------------------------------------------------------------- */
+void
+task_manual_sort_apply(TaskLibrary *lw)
+{
+    lw->manual_sort =
+        task_app_config_get_bool("task_list_manual_sort", FALSE);
+    /* lib_manual_sort_live, not the raw flag: a search suspends dragging.   */
+    gboolean manual = lib_manual_sort_live(lw);
+    if (lw->col_drag)
+        gtk_column_view_column_set_visible(lw->col_drag, manual);
+    /* In manual mode, disconnect the header sorter so the store order is
+     * used directly; in automatic mode, reconnect it so header clicks sort. */
+    GtkSorter *sorter = manual
+        ? NULL
+        : gtk_column_view_get_sorter(GTK_COLUMN_VIEW(lw->task_view));
+    gtk_sort_list_model_set_sorter(lw->task_sorted, sorter);
+}
+
+/* ---------------------------------------------------------------------------
+ * Factory callbacks — the per-column setup/bind pairs that build and fill
+ * each cell widget.  "setup" runs once per recycled slot; "bind" runs on
+ * every item change (and again via "changed" when task_row_touch fires).
+ * ------------------------------------------------------------------------- */
+
+/* --- Drag handle column (col_drag) ----------------------------------------
+ * A GtkLabel carrying the ⠿ glyph, with a GtkGestureDrag attached.
+ * Visible only in manual-sort mode; drives the row-reorder gesture.        */
+
+static void on_handle_drag_begin(GtkGestureDrag *, gdouble, gdouble, gpointer);
+static void on_handle_drag_update(GtkGestureDrag *, gdouble, gdouble, gpointer);
+static void on_handle_drag_end(GtkGestureDrag *, gdouble, gdouble, gpointer);
+static void on_done_toggled(GtkCheckButton *, gpointer);
+
+/*
+ * on_drag_handle_setup — create the handle label and attach the drag gesture.
+ * Inputs: standard GtkSignalListItemFactory "setup" arguments + TaskLibrary *
+ * Output: none
+ */
+static void
+on_drag_handle_setup(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f;
+    TaskLibrary *lw = data;
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(label),
+                         "<span alpha=\"55%\">\xe2\xa0\xbf</span>");
+    gtk_widget_set_margin_top(label, 8);
+    gtk_widget_set_margin_bottom(label, 8);
+    gtk_widget_set_margin_start(label, 4);
+    gtk_widget_set_margin_end(label, 4);
+    gtk_widget_set_size_request(label, 26, -1);
+
+    /* Cursor: ns-resize while hovered — built once and kept.               */
+    if (lw->drag_cursor == NULL)
+        lw->drag_cursor = gdk_cursor_new_from_name("ns-resize", NULL);
+    gtk_widget_set_cursor(label, lw->drag_cursor);
+
+    GtkGesture *drag = gtk_gesture_drag_new();
+    g_signal_connect(drag, "drag-begin",
+                     G_CALLBACK(on_handle_drag_begin),  lw);
+    g_signal_connect(drag, "drag-update",
+                     G_CALLBACK(on_handle_drag_update), lw);
+    g_signal_connect(drag, "drag-end",
+                     G_CALLBACK(on_handle_drag_end),    lw);
+    gtk_widget_add_controller(label, GTK_EVENT_CONTROLLER(drag));
+
+    gtk_list_item_set_child(item, label);
+}
+
+/*
+ * on_drag_handle_bind — update the handle label's drag-state CSS classes.
+ *
+ * The dragged row wears task-drag-src (amber); the current target row wears
+ * task-drag-mark (top border separator).  Both are removed first so a stale
+ * class from a previous bind is never left on a recycled slot.
+ *
+ * Inputs: standard GtkSignalListItemFactory "bind" arguments + TaskLibrary *
+ * Output: none
+ */
+static void
+on_drag_handle_bind(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f;
+    TaskLibrary *lw  = data;
+    GtkWidget   *lbl = gtk_list_item_get_child(item);
+    TaskRow     *row = TASK_ROW(gtk_list_item_get_item(item));
+    guint        pos = gtk_list_item_get_position(item);
+
+    /* Record position so drag-begin can find it.                           */
+    g_object_set_data(G_OBJECT(lbl), "task-drag-pos", GUINT_TO_POINTER(pos));
+
+    gtk_widget_remove_css_class(lbl, "task-drag-src");
+    gtk_widget_remove_css_class(lbl, "task-drag-mark");
+    if (lw->drag_active && row != NULL) {
+        if (row->id == lw->drag_task_id)
+            gtk_widget_add_css_class(lbl, "task-drag-src");
+        if ((gint)pos == lw->drag_mark_pos)
+            gtk_widget_add_css_class(lbl, "task-drag-mark");
+    }
+}
+
+/* find_widget_at_task_y() — walk up from the widget found by gtk_widget_pick
+ * at (task_view_x, task_view_y) to the first ancestor that carries the
+ * "task-drag-pos" object data.  Returns the widget or NULL.                */
+static GtkWidget *
+find_widget_at_task_y(GtkWidget *task_view, gdouble vx, gdouble vy)
+{
+    GtkWidget *hit = gtk_widget_pick(task_view, vx, vy, GTK_PICK_DEFAULT);
+    while (hit != NULL && hit != task_view) {
+        if (g_object_get_data(G_OBJECT(hit), "task-drag-pos") != NULL)
+            return hit;
+        hit = gtk_widget_get_parent(hit);
+    }
+    return NULL;
+}
+
+/* touch_row_at() — emit task_row_touch for the item at `pos` in task_store
+ * so its bound factories rebind (which updates drag-state CSS classes).     */
+static void
+touch_row_at(TaskLibrary *lw, guint pos)
+{
+    guint n = g_list_model_get_n_items(G_LIST_MODEL(lw->task_store));
+    if (pos >= n)
+        return;
+    TaskRow *row = TASK_ROW(g_list_model_get_item(G_LIST_MODEL(lw->task_store),
+                                                   pos));
+    if (row != NULL) {
+        task_row_touch(lw->task_store, row);
+        g_object_unref(row);
+    }
+}
+
+/*
+ * on_handle_drag_begin — arm the manual-sort row drag.
+ *
+ * Records the dragged task id and its starting position; sets drag_active.
+ * The row is NOT moved yet — it only moves on drag-end.
+ *
+ * Inputs:
+ *   gesture — the GtkGestureDrag on the handle label
+ *   sx, sy  — press position in the label's coordinates
+ *   data    — TaskLibrary *
+ * Output: none
+ */
+static void
+on_handle_drag_begin(GtkGestureDrag *gesture, gdouble sx, gdouble sy,
+                     gpointer data)
+{
+    (void)sx; (void)sy;
+    TaskLibrary *lw  = data;
+    GtkWidget   *lbl = gtk_event_controller_get_widget(
+                           GTK_EVENT_CONTROLLER(gesture));
+    guint pos = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(lbl),
+                                                    "task-drag-pos"));
+    guint n   = g_list_model_get_n_items(G_LIST_MODEL(lw->task_store));
+    if (pos >= n)
+        return;
+
+    TaskRow *row = TASK_ROW(g_list_model_get_item(G_LIST_MODEL(lw->task_store),
+                                                   pos));
+    if (row == NULL || row->id == 0) {
+        g_clear_object(&row);
+        return;
+    }
+    gint64 id = row->id;
+    g_object_unref(row);
+
+    /* lib_manual_sort_live, not the raw setting: a search suspends drags.  */
+    if (!lib_manual_sort_live(lw))
+        return;
+
+    lw->drag_active   = TRUE;
+    lw->drag_task_id  = id;
+    lw->drag_from     = pos;
+    lw->drag_mark_pos = (gint)pos;
+    lw->drag_mark_row = NULL;
+
+    /* Highlight the dragged row immediately.                               */
+    touch_row_at(lw, pos);
+}
+
+/*
+ * on_handle_drag_update — track pointer movement and update the drop marker.
+ *
+ * Converts the cumulative drag offset to the column view's coordinate
+ * space, hit-tests for the handle widget there, and updates drag_mark_pos
+ * to show where the row would land.
+ *
+ * Inputs:
+ *   gesture       — the GtkGestureDrag
+ *   offset_x/y    — cumulative offset from the press point, in label coords
+ *   data          — TaskLibrary *
+ * Output: none
+ */
+static void
+on_handle_drag_update(GtkGestureDrag *gesture, gdouble offset_x, gdouble offset_y,
+                      gpointer data)
+{
+    (void)offset_x;
+    TaskLibrary *lw = data;
+    if (!lw->drag_active)
+        return;
+
+    GtkWidget *lbl = gtk_event_controller_get_widget(
+                         GTK_EVENT_CONTROLLER(gesture));
+    gdouble sx, sy;
+    gtk_gesture_drag_get_start_point(gesture, &sx, &sy);
+
+    /* Convert to task_view coordinates.                                    */
+    graphene_point_t src = { (float)(sx + offset_x), (float)(sy + offset_y) };
+    graphene_point_t dst;
+    if (!gtk_widget_compute_point(lbl, lw->task_view, &src, &dst))
+        return;
+    gdouble vx = dst.x, vy = dst.y;
+
+    GtkWidget *target = find_widget_at_task_y(lw->task_view, vx, vy);
+    if (target == NULL)
+        return;
+
+    guint tpos = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(target),
+                                                      "task-drag-pos"));
+    gint old_mark = lw->drag_mark_pos;
+    lw->drag_mark_pos = (gint)tpos;
+
+    if (lw->drag_mark_pos != old_mark) {
+        /* Rebind the old and new mark rows to update their CSS classes.    */
+        if (old_mark >= 0)
+            touch_row_at(lw, (guint)old_mark);
+        touch_row_at(lw, tpos);
+    }
+}
+
+/*
+ * on_handle_drag_end — commit the row move and persist the new order.
+ *
+ * Moves the row from drag_from to drag_mark_pos in task_store via a single
+ * g_list_store_splice, which keeps the change atomic.
+ *
+ * Inputs:
+ *   gesture       — the GtkGestureDrag
+ *   offset_x/y    — final cumulative offset (not used for the move)
+ *   data          — TaskLibrary *
+ * Output: none
+ */
+static void
+on_handle_drag_end(GtkGestureDrag *gesture, gdouble offset_x, gdouble offset_y,
+                   gpointer data)
+{
+    (void)gesture; (void)offset_x; (void)offset_y;
+    TaskLibrary *lw = data;
+    if (!lw->drag_active)
+        return;
+
+    guint from   = lw->drag_from;
+    gint  to_int = lw->drag_mark_pos;
+
+    lw->drag_active   = FALSE;
+    lw->drag_task_id  = 0;
+    lw->drag_mark_pos = -1;
+    lw->drag_mark_row = NULL;
+
+    if (to_int < 0)
+        goto clear_drag;
+    guint to = (guint)to_int;
+    guint n  = g_list_model_get_n_items(G_LIST_MODEL(lw->task_store));
+
+    if (from >= n || to >= n || from == to)
+        goto clear_drag;
+
+    /* Move: remove the item at `from` and reinsert at `to`.               */
+    TaskRow *row = TASK_ROW(g_list_model_get_item(G_LIST_MODEL(lw->task_store),
+                                                   from));
+    if (row == NULL)
+        goto clear_drag;
+
+    /* Splice the row out, then back in at the target.  Build a temp array
+     * of ALL items in the new order to do it as one atomic replace.        */
+    gpointer *new_items = g_new(gpointer, n);
+    guint fill = 0;
+    if (from < to) {
+        for (guint i = 0; i < n; i++) {
+            if (i == from) continue;
+            new_items[fill++] = g_list_model_get_item(G_LIST_MODEL(lw->task_store), i);
+            if (i == to)
+                new_items[fill++] = g_object_ref(row);
+        }
+    } else {
+        for (guint i = 0; i < n; i++) {
+            if (i == to)
+                new_items[fill++] = g_object_ref(row);
+            if (i == from) continue;
+            new_items[fill++] = g_list_model_get_item(G_LIST_MODEL(lw->task_store), i);
+        }
+    }
+    g_object_unref(row);
+    g_list_store_splice(lw->task_store, 0, n, new_items, fill);
+    /* Release the extra refs taken by get_item above.                      */
+    for (guint i = 0; i < fill; i++)
+        g_object_unref(new_items[i]);
+    g_free(new_items);
+
+    task_view_save_manual_order(lw);
+
+clear_drag:
+    /* Clear the drag-state CSS on the former source row.                   */
+    touch_row_at(lw, from);
+}
+
+/* --- Done column ----------------------------------------------------------
+ * A GtkCheckButton: ticked = Done, unticked = In Progress.                 */
+
+/*
+ * on_done_setup — create the checkbox for the ✓ column.
+ * Inputs: standard factory "setup" arguments + TaskLibrary *
+ * Output: none
+ */
+static void
+on_done_setup(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f;
+    TaskLibrary *lw = data;
+    GtkWidget *cb = gtk_check_button_new();
+    gtk_widget_set_margin_top(cb, 8);
+    gtk_widget_set_margin_bottom(cb, 8);
+    gtk_widget_set_margin_start(cb, 4);
+    gtk_widget_set_margin_end(cb, 4);
+    gtk_list_item_set_child(item, cb);
+    task_app_select_on_press(cb, item);
+    /* Connect once in setup so the handler is not re-connected on every
+     * bind.  The item pointer itself is stored on the checkbox in bind. */
+    g_signal_connect(cb, "toggled", G_CALLBACK(on_done_toggled), lw);
+}
+
+/*
+ * on_done_toggled — the user clicked the checkbox; route through toggle_done.
+ * Inputs: cb — the GtkCheckButton; data — TaskLibrary *
+ * Output: none
+ */
+static void
+on_done_toggled(GtkCheckButton *cb, gpointer data)
+{
+    TaskLibrary *lw  = data;
+    GtkWidget   *list_item_parent = gtk_widget_get_ancestor(GTK_WIDGET(cb),
+                                                              GTK_TYPE_LIST_ITEM);
+    (void)list_item_parent;          /* the item is on the cb as object data */
+    GtkListItem *item = g_object_get_data(G_OBJECT(cb), "task-list-item");
+    if (item == NULL)
+        return;
+    TaskRow *row = TASK_ROW(gtk_list_item_get_item(item));
+    if (row == NULL)
+        return;
+    task_rows_toggle_done(lw->app, row);
+}
+
+/*
+ * on_done_bind — sync the checkbox with the row's done state.
+ * Inputs: standard factory "bind" arguments + TaskLibrary *
+ * Output: none
+ */
+static void
+on_done_bind(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f;
+    TaskLibrary *lw  = data;
+    GtkWidget   *cb  = gtk_list_item_get_child(item);
+    TaskRow     *row = TASK_ROW(gtk_list_item_get_item(item));
+
+    /* Store the list item on the checkbox so on_done_toggled can reach it. */
+    g_object_set_data(G_OBJECT(cb), "task-list-item", item);
+
+    /* Block the toggled signal while we set the state programmatically, so
+     * a bind does not fire a write.                                         */
+    g_signal_handlers_block_by_func(cb, on_done_toggled, lw);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(cb),
+                                row != NULL && task_row_done(row));
+    g_signal_handlers_unblock_by_func(cb, on_done_toggled, lw);
+}
+
+/* --- Task description column ----------------------------------------------
+ * A GtkLabel showing the tall multi-line Pango markup.                     */
+
+/*
+ * on_task_activated — Enter or double-click opens the editor.
+ *
+ * Connected to the GtkColumnView "activate" signal; position indexes
+ * task_sorted (the displayed order), not task_store.
+ *
+ * Inputs: view — the GtkColumnView; position — display index; data — lw
+ * Output: none
+ */
+static void
+on_task_activated(GtkColumnView *view, guint position, gpointer data)
+{
+    (void)view;
+    TaskLibrary *lw = data;
+    GListModel  *model = G_LIST_MODEL(lw->task_sorted);
+    TaskRow     *row   = TASK_ROW(g_list_model_get_item(model, position));
+    if (row == NULL)
+        return;
+    if (row->id != 0)
+        task_editor_open(lw->app, row->id);
+    g_object_unref(row);
+}
+
+/* --- Status column --------------------------------------------------------
+ * A GtkLabel showing "New" / "In Progress" / "Done".                       */
+
+/*
+ * on_status_setup — create the label for the Status column.
+ * Inputs: standard factory "setup" + unused
+ * Output: none
+ */
+static void
+on_status_setup(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f; (void)data;
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_widget_set_margin_top(label, 8);
+    gtk_widget_set_margin_bottom(label, 8);
+    gtk_widget_set_margin_start(label, 4);
+    gtk_widget_set_margin_end(label, 4);
+    gtk_list_item_set_child(item, label);
+    task_app_select_on_press(label, item);
+}
+
+/*
+ * on_status_bind — fill the Status label.
+ * Inputs: standard factory "bind" + unused
+ * Output: none
+ */
+static void
+on_status_bind(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f; (void)data;
+    GtkWidget *label = gtk_list_item_get_child(item);
+    TaskRow   *row   = TASK_ROW(gtk_list_item_get_item(item));
+    gtk_label_set_text(GTK_LABEL(label),
+                       row != NULL && row->status_text != NULL
+                           ? row->status_text : "");
+}
+
+/* --- Due Date column ------------------------------------------------------
+ * A GtkLabel with urgency tints via CSS classes.                           */
+
+/*
+ * on_due_setup — create the label for the Due Date column.
+ * Inputs: standard factory "setup" + unused
+ * Output: none
+ */
+static void
+on_due_setup(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f; (void)data;
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_widget_set_margin_top(label, 8);
+    gtk_widget_set_margin_bottom(label, 8);
+    gtk_widget_set_margin_start(label, 4);
+    gtk_widget_set_margin_end(label, 4);
+    gtk_list_item_set_child(item, label);
+    task_app_select_on_press(label, item);
+}
+
+/* DUE_CLASSES[i] — the urgency class for tint index i (task_due_color
+ * returns a colour string we match against the canonical palette).          */
+static const gchar *const DUE_CLASSES[] = {
+    "task-overdue",       /* #c01c28 */
+    "task-due-today",     /* #d19a00 */
+    "task-due-ahead",     /* #26a269 */
+};
+
+/*
+ * on_due_bind — fill the Due Date label and apply the urgency CSS class.
+ *
+ * task_due_color returns one of three colour strings, or NULL for no tint.
+ * Map each colour to its CSS class; clear all three first so a recycled
+ * widget never keeps a stale class.
+ *
+ * Inputs: standard factory "bind" + unused
+ * Output: none
+ */
+static void
+on_due_bind(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f; (void)data;
+    GtkWidget  *label = gtk_list_item_get_child(item);
+    TaskRow    *row   = TASK_ROW(gtk_list_item_get_item(item));
+
+    /* Clear all urgency classes first.                                     */
+    for (gsize i = 0; i < G_N_ELEMENTS(DUE_CLASSES); i++)
+        gtk_widget_remove_css_class(label, DUE_CLASSES[i]);
+
+    const gchar *text  = "";
+    gint64       due_instant = 0;
+    if (row != NULL) {
+        if (row->due_text != NULL)
+            text = row->due_text;
+        due_instant = row->due_instant;
+    }
+    gtk_label_set_text(GTK_LABEL(label), text);
+
+    const gchar *color = task_due_color(due_instant);
+    if (color == NULL)
+        return;
+    /* Match the canonical palette strings to classes.                      */
+    if (strcmp(color, "#c01c28") == 0)
+        gtk_widget_add_css_class(label, DUE_CLASSES[0]);
+    else if (strcmp(color, "#d19a00") == 0)
+        gtk_widget_add_css_class(label, DUE_CLASSES[1]);
+    else if (strcmp(color, "#26a269") == 0)
+        gtk_widget_add_css_class(label, DUE_CLASSES[2]);
+}
+
+/* --- Completed column -----------------------------------------------------
+ * A GtkLabel showing the completion date.                                  */
+
+/*
+ * on_completed_setup — create the label for the Completed column.
+ * Inputs: standard factory "setup" + unused
+ * Output: none
+ */
+static void
+on_completed_setup(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f; (void)data;
+    GtkWidget *label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_widget_set_margin_top(label, 8);
+    gtk_widget_set_margin_bottom(label, 8);
+    gtk_widget_set_margin_start(label, 4);
+    gtk_widget_set_margin_end(label, 4);
+    gtk_list_item_set_child(item, label);
+    task_app_select_on_press(label, item);
+}
+
+/*
+ * on_completed_bind — fill the Completed label.
+ * Inputs: standard factory "bind" + unused
+ * Output: none
+ */
+static void
+on_completed_bind(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f; (void)data;
+    GtkWidget *label = gtk_list_item_get_child(item);
+    TaskRow   *row   = TASK_ROW(gtk_list_item_get_item(item));
+    gtk_label_set_text(GTK_LABEL(label),
+                       row != NULL && row->completed_text != NULL
+                           ? row->completed_text : "");
+}
+
+/* ---------------------------------------------------------------------------
+ * Right-click context menu on the task list.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * on_task_right_click — show the context menu; select the clicked row if it
+ * is not already part of the selection.
+ *
+ * Attached to each task description label's GtkGestureClick (SECONDARY,
+ * CAPTURE phase).
+ *
+ * Inputs:
+ *   gesture — the click gesture
+ *   n, x, y — press count and position in the label's coordinates
+ *   data    — TaskLibrary *
+ * Output: none
+ */
+static void
+on_task_right_click(GtkGestureClick *gesture, gint n, gdouble x, gdouble y,
+                    gpointer data)
+{
+    (void)n;
+    TaskLibrary *lw   = data;
+    GtkWidget   *lbl  = gtk_event_controller_get_widget(
+                            GTK_EVENT_CONTROLLER(gesture));
+    GtkListItem *item = g_object_get_data(G_OBJECT(lbl), "task-rclick-item");
+    if (item == NULL)
+        return;
+
+    guint pos = gtk_list_item_get_position(item);
+    if (!gtk_selection_model_is_selected(
+            GTK_SELECTION_MODEL(lw->task_sel), pos))
+        gtk_selection_model_select_item(
+            GTK_SELECTION_MODEL(lw->task_sel), pos, TRUE);
+
+    /* Convert label coordinates to window (attachment widget) coordinates. */
+    graphene_point_t lsrc = { (float)x, (float)y };
+    graphene_point_t ldst;
+    if (gtk_widget_compute_point(lbl, lw->window, &lsrc, &ldst))
+        task_context_menu_popup(lw, lw->window, ldst.x, ldst.y);
+}
+
+/*
+ * on_task_right_click_setup — attach a right-click gesture to a Task label.
+ * Inputs: standard factory "setup" + TaskLibrary *
+ * Output: none; called from on_task_setup via the existing setup chain
+ *
+ * NOTE: This is called from a separate factory "setup" callback for the
+ * description column — the gesture is installed in on_task_setup_rclick
+ * which on_task_setup delegates to.
+ */
+
+/*
+ * on_task_rclick_setup — create the Task label with both select-on-press and
+ * the right-click gesture.
+ * Inputs: standard factory "setup" + TaskLibrary *
+ * Output: none
+ */
+static void
+on_task_rclick_setup(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f;
+    TaskLibrary *lw   = data;
+    GtkWidget   *label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_margin_top(label, 8);
+    gtk_widget_set_margin_bottom(label, 8);
+    gtk_widget_set_margin_start(label, 4);
+    gtk_widget_set_hexpand(label, TRUE);
+    gtk_list_item_set_child(item, label);
+    task_app_select_on_press(label, item);
+
+    GtkGesture *click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
+                                   GDK_BUTTON_SECONDARY);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click),
+                                               GTK_PHASE_CAPTURE);
+    g_signal_connect(click, "pressed", G_CALLBACK(on_task_right_click), lw);
+    gtk_widget_add_controller(label, GTK_EVENT_CONTROLLER(click));
+}
+
+/*
+ * on_task_rclick_bind — fill the Task label and store the list item for
+ * right-click use.
+ * Inputs: standard factory "bind" + TaskLibrary *
+ * Output: none
+ */
+static void
+on_task_rclick_bind(GtkListItemFactory *f, GtkListItem *item, gpointer data)
+{
+    (void)f; (void)data;
+    GtkWidget *label = gtk_list_item_get_child(item);
+    TaskRow   *row   = TASK_ROW(gtk_list_item_get_item(item));
+    /* Store item for the right-click handler.                              */
+    g_object_set_data(G_OBJECT(label), "task-rclick-item", item);
+    gtk_label_set_markup(GTK_LABEL(label),
+                         row != NULL && row->markup != NULL ? row->markup : "");
+}
+
+/* ---------------------------------------------------------------------------
+ * Column comparators — GCompareDataFunc for GtkCustomSorter.
+ * a and b are TaskRow * (from the GListStore); data is unused.
+ * ------------------------------------------------------------------------- */
+
+/* cmp_title — sort by plain title, case-insensitive.                       */
+static gint
+cmp_title(gconstpointer a, gconstpointer b, gpointer data)
+{
+    (void)data;
+    const TaskRow *ra = a;
+    const TaskRow *rb = b;
+    gchar *fa = ra->title ? g_utf8_casefold(ra->title, -1) : g_strdup("");
+    gchar *fb = rb->title ? g_utf8_casefold(rb->title, -1) : g_strdup("");
+    gint cmp = strcmp(fa, fb);
+    g_free(fa);
+    g_free(fb);
+    return cmp;
+}
+
+/* cmp_done — sort Done after non-Done.                                     */
+static gint
+cmp_done(gconstpointer a, gconstpointer b, gpointer data)
+{
+    (void)data;
+    gboolean da = task_row_done((const TaskRow *)a);
+    gboolean db = task_row_done((const TaskRow *)b);
+    return (da > db) - (da < db);
+}
+
+/* cmp_status — sort by status enum (New < In Progress < Done).             */
+static gint
+cmp_status(gconstpointer a, gconstpointer b, gpointer data)
+{
+    (void)data;
+    gint sa = (gint)((const TaskRow *)a)->status;
+    gint sb = (gint)((const TaskRow *)b)->status;
+    return (sa > sb) - (sa < sb);
+}
+
+/* cmp_due — soonest first; undated rows always last.                       */
+static gint
+cmp_due(gconstpointer a, gconstpointer b, gpointer data)
+{
+    (void)data;
+    gint64 da = ((const TaskRow *)a)->due_instant;
+    gint64 db = ((const TaskRow *)b)->due_instant;
+    if (da == 0) da = G_MAXINT64;
+    if (db == 0) db = G_MAXINT64;
+    return (da > db) - (da < db);
+}
+
+/* cmp_completed — oldest-completed first; incomplete rows last.            */
+static gint
+cmp_completed(gconstpointer a, gconstpointer b, gpointer data)
+{
+    (void)data;
+    gint64 da = ((const TaskRow *)a)->completed_at;
+    gint64 db = ((const TaskRow *)b)->completed_at;
+    if (da == 0) da = G_MAXINT64;
+    if (db == 0) db = G_MAXINT64;
+    return (da > db) - (da < db);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_list_build() — build the task list, its columns and lw->task_scroll.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * col_new() — build a GtkColumnViewColumn, attach a sorter and add it to
+ * the view.  The view holds a ref; the returned column is unref'd here and
+ * must not be used after col_new returns unless the caller held a ref.
+ * `key` and `label` are static strings and outlive the column.
+ *
+ * Inputs:
+ *   cv     — the GtkColumnView to add the column to
+ *   title  — column header title (may be NULL for the drag handle)
+ *   f      — the factory (ref NOT transferred — caller keeps its own)
+ *   cmp    — the comparator for GtkCustomSorter (NULL for unsortable)
+ *   expand — TRUE to make the column expand to fill available space
+ * Output: the column (g_object_unref by caller when done, or store it).
+ */
+static GtkColumnViewColumn *
+col_new(GtkColumnView *cv, const gchar *title, GtkListItemFactory *f,
+        GCompareDataFunc cmp, gboolean expand)
+{
+    GtkColumnViewColumn *col = gtk_column_view_column_new(title, f);
+    if (cmp != NULL) {
+        GtkSorter *sorter = GTK_SORTER(gtk_custom_sorter_new(cmp, NULL, NULL));
+        gtk_column_view_column_set_sorter(col, sorter);
+        g_object_unref(sorter);
+    }
+    gtk_column_view_column_set_resizable(col, title != NULL);
+    gtk_column_view_column_set_expand(col, expand);
+    gtk_column_view_append_column(cv, col);
+    return col;                        /* view holds ref; caller stores it  */
+}
+
+/*
+ * task_list_build — build the task column view, its store chain, all columns
+ * and the scroll container.  Called once from task_library_window_new.
+ *
+ * Inputs: lw — the library window (fields filled in here)
+ * Output: none (lw->task_scroll is ready to pack)
+ */
 void
 task_list_build(TaskLibrary *lw)
 {
-    /* Task pane.                                                           */
-    lw->task_store = gtk_list_store_new(TL_N_COLS, G_TYPE_INT64,
-                                        G_TYPE_BOOLEAN, G_TYPE_STRING,
-                                        G_TYPE_STRING, G_TYPE_INT64,
-                                        G_TYPE_STRING, G_TYPE_STRING,
-                                        G_TYPE_INT64, G_TYPE_INT,
-                                        G_TYPE_STRING);
-    lw->task_view = gtk_tree_view_new_with_model(
-        GTK_TREE_MODEL(lw->task_store));
-    g_object_unref(lw->task_store);
-    gtk_tree_view_set_enable_search(GTK_TREE_VIEW(lw->task_view), FALSE);
-    /* Multi-select: Ctrl-click (Cmd on macOS — GTK maps the platform's
-     * modify-selection modifier) and Shift-click extend; the context
-     * menu's actions apply to the whole selection.                         */
-    gtk_tree_selection_set_mode(
-        gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->task_view)),
-        GTK_SELECTION_MULTIPLE);
-    g_signal_connect(lw->task_view, "row-activated",
-                     G_CALLBACK(on_task_activated), lw);
-    g_signal_connect(lw->task_view, "button-press-event",
-                     G_CALLBACK(on_task_button_press), lw);
+    task_list_install_css();
 
-    /* Drag handle column — shown only in manual sort mode.  The glyph comes
-     * from the renderer itself, not the model and not the data func: it is
-     * the same on every row, and a data func runs per DRAW, so setting it
-     * there was two property notifications per visible row per redraw.
-     * Dimming is Pango `alpha` on the markup, never a fixed gray — a gray
-     * is unreadable on the blue selection, while alpha rides whatever
-     * foreground the row already has.                                      */
-    GtkCellRenderer   *drag_cell = gtk_cell_renderer_text_new();
-    g_object_set(drag_cell, "ypad", 8, "xpad", 4,
-                 "markup",                       /* ⠿ handle glyph          */
-                 "<span alpha=\"55%\">\xe2\xa0\xbf</span>", NULL);
-    GtkTreeViewColumn *cdrag     = gtk_tree_view_column_new();
-    gtk_tree_view_column_set_title(cdrag, "");
-    gtk_tree_view_column_pack_start(cdrag, drag_cell, FALSE);
-    gtk_tree_view_column_set_cell_data_func(cdrag, drag_cell,
-                                            drag_handle_func, lw, NULL);
-    gtk_tree_view_column_set_clickable(cdrag, FALSE);
-    gtk_tree_view_column_set_sizing(cdrag, GTK_TREE_VIEW_COLUMN_FIXED);
-    gtk_tree_view_column_set_fixed_width(cdrag, 26);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdrag);
+    /* Store chain: GListStore → GtkSortListModel → GtkMultiSelection →
+     * GtkColumnView.  The sort model's sorter is driven by the column view's
+     * header click sorter; in manual-sort mode task_manual_sort_apply sets
+     * it to NULL so the store order is used directly.                       */
+    lw->task_store  = g_list_store_new(TASK_TYPE_ROW);
+    lw->task_sorted = gtk_sort_list_model_new(
+        G_LIST_MODEL(g_object_ref(lw->task_store)), NULL);
+    lw->task_sel    = gtk_multi_selection_new(
+        G_LIST_MODEL(g_object_ref(lw->task_sorted)));
 
-    /* Done checkbox column — a convenience VIEW of the status column two
-     * places to its right: ticked means Done, and a click writes Done or
-     * In Progress back (on_task_done_toggled).  Every column's renderer
-     * also runs the stripe data func — the alternating background must
-     * span the row.                                                        */
-    GtkCellRenderer *done_cell = gtk_cell_renderer_toggle_new();
-    g_signal_connect(done_cell, "toggled",
-                     G_CALLBACK(on_task_done_toggled), lw);
-    GtkTreeViewColumn *cdone =
-        gtk_tree_view_column_new_with_attributes("\xe2\x9c\x93",
-            done_cell, "active", TL_DONE, NULL);
-    gtk_tree_view_column_set_cell_data_func(cdone, done_cell,
-                                            task_row_bg_func, lw, NULL);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdone);
+    GtkColumnView *cv = GTK_COLUMN_VIEW(
+        gtk_column_view_new(GTK_SELECTION_MODEL(g_object_ref(lw->task_sel))));
+    lw->task_view = GTK_WIDGET(cv);
+    gtk_widget_add_css_class(lw->task_view, "task-list");
+    gtk_column_view_set_reorderable(cv, FALSE);
 
-    /* Task description column — the tall multi-line markup cell.           */
-    GtkCellRenderer *desc_cell = gtk_cell_renderer_text_new();
-    g_object_set(desc_cell,
-                 "ypad", 8,
-                 "ellipsize", PANGO_ELLIPSIZE_END,
-                 NULL);
-    GtkTreeViewColumn *cdesc =
-        gtk_tree_view_column_new_with_attributes("Task", desc_cell,
-            "markup", TL_DESC, NULL);
-    gtk_tree_view_column_set_cell_data_func(cdesc, desc_cell,
-                                            task_row_bg_func, lw, NULL);
-    gtk_tree_view_column_set_expand(cdesc, TRUE);
-    gtk_tree_view_column_set_resizable(cdesc, TRUE);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdesc);
+    /* Wire the column view's combined sorter into the sort model.           */
+    gtk_sort_list_model_set_sorter(lw->task_sorted,
+                                   gtk_column_view_get_sorter(cv));
 
-    /* Status column — New / In Progress / Done, sorted by the enum
-     * (TL_STATUS) rather than the label, so the order is the workflow's
-     * and not the alphabet's.                                              */
-    GtkCellRenderer *status_cell = gtk_cell_renderer_text_new();
-    GtkTreeViewColumn *cstatus =
-        gtk_tree_view_column_new_with_attributes("Status", status_cell,
-            "text", TL_STATUS_TEXT, NULL);
-    gtk_tree_view_column_set_cell_data_func(cstatus, status_cell,
-                                            task_row_bg_func, lw, NULL);
-    gtk_tree_view_column_set_resizable(cstatus, TRUE);
-    gtk_tree_view_column_set_sort_column_id(cstatus, TL_STATUS);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cstatus);
+    /* Activate (double-click or Enter) opens the editor.                    */
+    g_signal_connect(cv, "activate", G_CALLBACK(on_task_activated), lw);
 
-    /* Due Date column, urgency-tinted, sortable (undated last).            */
-    GtkCellRenderer *due_cell = gtk_cell_renderer_text_new();
-    GtkTreeViewColumn *cdue =
-        gtk_tree_view_column_new_with_attributes("Due Date", due_cell,
-            "text", TL_DUE, NULL);
-    gtk_tree_view_column_set_cell_data_func(cdue, due_cell,
-                                            due_color_func, lw, NULL);
-    gtk_tree_view_column_set_resizable(cdue, TRUE);
-    gtk_tree_sortable_set_sort_func(
-        GTK_TREE_SORTABLE(lw->task_store), TL_DUE_RAW,
-        sort_by_due, NULL, NULL);
-    gtk_tree_view_column_set_sort_column_id(cdue, TL_DUE_RAW);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), cdue);
+    /* Drag handle column — shown only in manual-sort mode.
+     * The ⠿ glyph and its dimming are set once in setup; only drag-state
+     * CSS classes change in bind.  Width is fixed at 26 px.               */
+    GtkListItemFactory *f_drag = task_row_factory_new(
+        G_CALLBACK(on_drag_handle_setup),
+        G_CALLBACK(on_drag_handle_bind),
+        lw);
+    lw->col_drag = col_new(cv, NULL, f_drag, NULL, FALSE);
+    gtk_column_view_column_set_fixed_width(lw->col_drag, 26);
+    g_object_unref(f_drag);
 
-    /* Completed column — sortable (incomplete rows last).                  */
-    GtkCellRenderer *completed_cell = gtk_cell_renderer_text_new();
-    GtkTreeViewColumn *ccompleted =
-        gtk_tree_view_column_new_with_attributes("Completed", completed_cell,
-            "text", TL_COMPLETED, NULL);
-    gtk_tree_view_column_set_cell_data_func(ccompleted, completed_cell,
-                                            task_row_bg_func, lw, NULL);
-    gtk_tree_view_column_set_resizable(ccompleted, TRUE);
-    gtk_tree_sortable_set_sort_func(
-        GTK_TREE_SORTABLE(lw->task_store), TL_COMPLETED_RAW,
-        sort_by_completed, NULL, NULL);
-    gtk_tree_view_column_set_sort_column_id(ccompleted, TL_COMPLETED_RAW);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(lw->task_view), ccompleted);
+    /* Done (✓) column — a GtkCheckButton view of the status column.        */
+    GtkListItemFactory *f_done = task_row_factory_new(
+        G_CALLBACK(on_done_setup), G_CALLBACK(on_done_bind), lw);
+    GtkColumnViewColumn *cdone = col_new(cv, "\xe2\x9c\x93", f_done,
+                                         cmp_done, FALSE);
+    g_object_unref(f_done);
 
-    /* Make Done and Task columns sortable by header click.  Task sorts by
-     * the raw title string (TL_TITLE), not the Pango markup (TL_DESC).    */
-    gtk_tree_view_column_set_sort_column_id(cdone, TL_DONE);
-    gtk_tree_view_column_set_sort_column_id(cdesc, TL_TITLE);
+    /* Task description column — the tall multi-line markup label with a
+     * right-click gesture for the context menu.                            */
+    GtkListItemFactory *f_task = task_row_factory_new(
+        G_CALLBACK(on_task_rclick_setup),
+        G_CALLBACK(on_task_rclick_bind),
+        lw);
+    GtkColumnViewColumn *cdesc = col_new(cv, "Task", f_task, cmp_title, TRUE);
+    g_object_unref(f_task);
 
-    /* Column hide/show via header right-click.  Done, Status, Due Date and
-     * Completed are hidable (Task always shows); task-colkey/task-collabel
-     * drive the menu.  Store column refs on the view for task_columns_apply
-     * and the realize-time header-button connection.                       */
-    g_object_set_data(G_OBJECT(lw->task_view), "task-cdrag",      cdrag);
+    /* Status column — "New" / "In Progress" / "Done", sorted by enum.     */
+    GtkListItemFactory *f_status = task_row_factory_new(
+        G_CALLBACK(on_status_setup), G_CALLBACK(on_status_bind), lw);
+    GtkColumnViewColumn *cstatus = col_new(cv, "Status", f_status,
+                                            cmp_status, FALSE);
+    g_object_unref(f_status);
+
+    /* Due Date column — urgency-tinted, soonest first, undated last.       */
+    GtkListItemFactory *f_due = task_row_factory_new(
+        G_CALLBACK(on_due_setup), G_CALLBACK(on_due_bind), lw);
+    GtkColumnViewColumn *cdue = col_new(cv, "Due Date", f_due, cmp_due, FALSE);
+    g_object_unref(f_due);
+
+    /* Completed column — sortable, incomplete rows last.                   */
+    GtkListItemFactory *f_comp = task_row_factory_new(
+        G_CALLBACK(on_completed_setup), G_CALLBACK(on_completed_bind), lw);
+    GtkColumnViewColumn *ccompleted = col_new(cv, "Completed", f_comp,
+                                               cmp_completed, FALSE);
+    g_object_unref(f_comp);
+
+    /* Tag columns on the view so install_actions and manual_sort_apply can
+     * reach them without walking the column model every time.              */
     g_object_set_data(G_OBJECT(lw->task_view), "task-cdone",      cdone);
     g_object_set_data(G_OBJECT(lw->task_view), "task-cdesc",      cdesc);
     g_object_set_data(G_OBJECT(lw->task_view), "task-cstatus",    cstatus);
     g_object_set_data(G_OBJECT(lw->task_view), "task-cdue",       cdue);
     g_object_set_data(G_OBJECT(lw->task_view), "task-ccompleted", ccompleted);
+
+    /* Collabels for the header menu.                                        */
     g_object_set_data(G_OBJECT(cdone),      "task-colkey",   (gpointer)"done");
     g_object_set_data(G_OBJECT(cdone),      "task-collabel", (gpointer)"Done");
     g_object_set_data(G_OBJECT(cstatus),    "task-colkey",   (gpointer)"status");
@@ -896,33 +1254,19 @@ task_list_build(TaskLibrary *lw)
     g_object_set_data(G_OBJECT(cdue),       "task-colkey",   (gpointer)"due");
     g_object_set_data(G_OBJECT(cdue),       "task-collabel", (gpointer)"Due Date");
     g_object_set_data(G_OBJECT(ccompleted), "task-colkey",   (gpointer)"completed");
-    g_object_set_data(G_OBJECT(ccompleted), "task-collabel", (gpointer)"Completion Date");
-    GtkTreeViewColumn *header_cols[] = { cdrag, cdone, cdesc, cstatus, cdue,
-                                         ccompleted };
-    for (gsize i = 0; i < G_N_ELEMENTS(header_cols); i++) {
-        GtkWidget *hbtn = gtk_tree_view_column_get_button(header_cols[i]);
-        if (hbtn) {
-            g_signal_connect(hbtn, "button-press-event",
-                             G_CALLBACK(on_column_header_press), lw);
-            header_button_flatten(hbtn);   /* match the status bar          */
-        }
-    }
+    g_object_set_data(G_OBJECT(ccompleted), "task-collabel",
+                       (gpointer)"Completion Date");
+
+    /* Visibility actions and the shared header menu.                        */
     task_list_install_actions(lw);
-    task_manual_sort_apply(lw);   /* show/hide cdrag per persisted setting  */
 
-    /* Motion, release, and leave events for live-drag reorder + cursor. */
-    gtk_widget_add_events(lw->task_view,
-                          GDK_POINTER_MOTION_MASK | GDK_LEAVE_NOTIFY_MASK);
-    g_signal_connect(lw->task_view, "motion-notify-event",
-                     G_CALLBACK(on_task_drag_motion), lw);
-    g_signal_connect(lw->task_view, "button-release-event",
-                     G_CALLBACK(on_task_drag_release), lw);
-    g_signal_connect(lw->task_view, "leave-notify-event",
-                     G_CALLBACK(on_task_leave_notify), lw);
+    /* Manual sort: show/hide col_drag per persisted setting.               */
+    task_manual_sort_apply(lw);
 
-    lw->task_scroll = gtk_scrolled_window_new(NULL, NULL);
+    lw->task_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lw->task_scroll),
                                    GTK_POLICY_AUTOMATIC,
                                    GTK_POLICY_AUTOMATIC);
-    gtk_container_add(GTK_CONTAINER(lw->task_scroll), lw->task_view);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(lw->task_scroll),
+                                  lw->task_view);
 }
