@@ -732,32 +732,115 @@ on_done_setup(GtkListItemFactory *f, GtkListItem *item, gpointer data)
     gtk_widget_set_margin_bottom(cb, 8);
     gtk_widget_set_margin_start(cb, 4);
     gtk_widget_set_margin_end(cb, 4);
+    /* Clicking the checkbox should not trigger row selection — that causes a
+     * white→blue flash on unselected rows: GtkColumnView selects the row on
+     * press, then the post-toggle refresh clears selection, producing a
+     * one-frame blue flicker.  With selectable=FALSE the internal selection
+     * gesture is skipped for this cell; the row is still selected (and the
+     * CSS :selected state still applies here) when the user clicks any other
+     * column's cell.                                                        */
+    gtk_list_item_set_selectable(item, FALSE);
     gtk_list_item_set_child(item, cb);
-    task_app_select_on_press(cb, item);
-    /* Connect once in setup so the handler is not re-connected on every
-     * bind.  The item pointer itself is stored on the checkbox in bind. */
     g_signal_connect(cb, "toggled", G_CALLBACK(on_done_toggled), lw);
 }
 
 /*
- * on_done_toggled — the user clicked the checkbox; route through toggle_done.
+ * on_done_toggled — write the status change, then update the affected row.
+ *
+ * The row's GObject is updated IN PLACE and task_row_touch() is called.
+ * task_row_touch() emits "changed" (re-running the bind function for every
+ * column widget via row_factory_bind_again) and then calls
+ * g_list_model_items_changed so a sorted model can re-sort if needed.
+ *
+ * Because the GObject identity does not change, GtkColumnView finds
+ * item == old_item and skips its own internal unbind+rebind.  Only the
+ * row_factory_bind_again trampolines run — no GTK CSS state is reset, so
+ * the row's :hover background is preserved throughout the update.
+ *
+ * A full notify_changed is still triggered when the task must DISAPPEAR
+ * (Done + show_completed off) — the row is going away anyway.
+ *
  * Inputs: cb — the GtkCheckButton; data — TaskLibrary *
  * Output: none
  */
 static void
 on_done_toggled(GtkCheckButton *cb, gpointer data)
 {
-    TaskLibrary *lw  = data;
-    GtkWidget   *list_item_parent = gtk_widget_get_ancestor(GTK_WIDGET(cb),
-                                                              GTK_TYPE_LIST_ITEM);
-    (void)list_item_parent;          /* the item is on the cb as object data */
+    TaskLibrary *lw   = data;
     GtkListItem *item = g_object_get_data(G_OBJECT(cb), "task-list-item");
     if (item == NULL)
         return;
     TaskRow *row = TASK_ROW(gtk_list_item_get_item(item));
-    if (row == NULL)
+    if (row == NULL || row->id == 0)
         return;
-    task_rows_toggle_done(lw->app, row);
+
+    gint64     task_id    = row->id;
+    gboolean   was_done   = task_row_done(row);
+    TaskStatus new_status = was_done ? TASK_STATUS_IN_PROGRESS
+                                     : TASK_STATUS_DONE;
+
+    task_db_task_set_status(lw->app->db, task_id, new_status);
+
+    if (!was_done)
+        task_app_status(lw->app,
+                        "\xe2\x80\x9c%s\xe2\x80\x9d \xe2\x80\x94 Completed",
+                        *row->title != '\0' ? row->title : "Untitled Task");
+
+    /* If the task should now be hidden (Done + show_completed=off), a full
+     * refresh is needed to remove the row.                                  */
+    gboolean show_done = task_app_config_get_bool("show_completed", TRUE);
+    if (!show_done && new_status == TASK_STATUS_DONE) {
+        task_app_notify_changed(lw->app);
+        return;
+    }
+
+    /* Re-fetch to get the updated completed_at, then rebuild the markup.    */
+    Task *t = task_db_task_get(lw->app->db, task_id);
+    if (t == NULL) {
+        task_app_notify_changed(lw->app);
+        return;
+    }
+
+    const TaskView *sel_view = lib_sel_view(lw);
+    gboolean virtual_view = (sel_view != NULL) ? sel_view->virtual_rows
+                          : (lw->sel_kind == SB_KIND_GROUP);
+
+    TaskRowCtx ctx;
+    task_row_ctx_init(lw->app, &ctx, virtual_view);
+
+    GPtrArray *subs = t->parent_id == 0
+        ? g_hash_table_lookup(ctx.subs_by_parent, GINT_TO_POINTER(t->id))
+        : NULL;
+    const gchar *list_name = ctx.list_names != NULL
+        ? g_hash_table_lookup(ctx.list_names, GINT_TO_POINTER(t->list_id))
+        : NULL;
+    gint att_count = GPOINTER_TO_INT(
+        g_hash_table_lookup(ctx.att_counts, GINT_TO_POINTER(t->id)));
+
+    /* Update existing row's fields in place.  Title and due do not change
+     * on a status toggle.                                                    */
+    row->status = t->status;
+    g_free(row->status_text);
+    row->status_text  = g_strdup(task_status_label(t->status));
+    g_free(row->markup);
+    row->markup       = task_rows_desc_markup(t, list_name, att_count,
+                                              subs, &ctx);
+    row->completed_at = t->completed_at;
+    g_free(row->completed_text);
+    row->completed_text = task_due_format(t->completed_at);
+
+    task_row_ctx_clear(&ctx);
+    task_free(t);
+
+    /* Touch the row: emits "changed" (rebinds every column widget in place
+     * via row_factory_bind_again) and tells the store so a sort model can
+     * re-order when status is the active sort key.  GtkColumnView skips its
+     * own unbind+rebind because the GObject identity is unchanged — hover
+     * and selection survive.                                                 */
+    task_row_touch(lw->task_store, row);
+
+    /* Notify editors (a completed subtask may have started its parent).    */
+    task_editor_refresh_all(lw->app);
 }
 
 /*
