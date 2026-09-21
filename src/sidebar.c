@@ -280,8 +280,11 @@ on_sb_drag_end(GtkGestureDrag *gesture, gdouble offset_x, gdouble offset_y,
     TaskLibrary *lw = data;
     if (!lw->sb_drag_active) return;
 
+    /* Save state before cleanup — drag_id MUST be read before we zero it.  */
+    gint64 drag_id = lw->sb_drag_list_id;
+
     /* Determine where the dropped row lands: the flat sb_tree position of
-     * the mark widget.                                                      */
+     * the mark widget (read before sb_drag_clear_mark NULLs it).           */
     guint to_pos = GTK_INVALID_LIST_POSITION;
     if (lw->sb_drag_mark_wgt != NULL) {
         GtkListItem *mark_item = g_object_get_data(G_OBJECT(lw->sb_drag_mark_wgt),
@@ -296,72 +299,67 @@ on_sb_drag_end(GtkGestureDrag *gesture, gdouble offset_x, gdouble offset_y,
         lw->sb_drag_src_wgt = NULL;
     }
     sb_drag_clear_mark(lw);
+    guint from_flat     = lw->sb_drag_flat_from;
     lw->sb_drag_active  = FALSE;
     lw->sb_drag_list_id = 0;
 
-    if (to_pos == GTK_INVALID_LIST_POSITION ||
-        to_pos == lw->sb_drag_flat_from)
+    if (to_pos == GTK_INVALID_LIST_POSITION || to_pos == from_flat)
         return;
 
-    /* Walk the FLAT sb_tree to collect all list ids in their current order,
-     * then move the dragged id from sb_drag_flat_from to to_pos.           */
+    /* Walk the flat sb_tree to collect all list ids in display order.      */
     guint n = g_list_model_get_n_items(G_LIST_MODEL(lw->sb_tree));
     GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
     for (guint i = 0; i < n; i++) {
         GtkTreeListRow *trow =
             g_list_model_get_item(G_LIST_MODEL(lw->sb_tree), i);
-        TaskSbRow *srow =
-            TASK_SB_ROW(gtk_tree_list_row_get_item(trow));
+        TaskSbRow *srow = TASK_SB_ROW(gtk_tree_list_row_get_item(trow));
         if (srow->kind == SB_KIND_LIST)
             g_array_append_val(ids, srow->id);
         g_object_unref(trow);
     }
 
-    /* Find the dragged id's index in the ids array and move it.            */
-    gint64 drag_id = lw->sb_drag_list_id;
-    gint   from_i  = -1, to_i = -1;
-    /* to_pos is a FLAT sb_tree index; count how many list rows appear
-     * before to_pos to get the target list-array index.                    */
+    /* Find from_i (index of dragged id) and to_i (index of the list row
+     * at flat position to_pos — the item the dragged row drops "before").  */
+    gint from_i = -1, to_i = -1;
+    for (guint i = 0; i < ids->len; i++) {
+        if (g_array_index(ids, gint64, i) == drag_id) { from_i = (gint)i; break; }
+    }
     guint list_before_to = 0;
     for (guint i = 0; i < n && i < to_pos; i++) {
         GtkTreeListRow *trow =
             g_list_model_get_item(G_LIST_MODEL(lw->sb_tree), i);
-        TaskSbRow *srow =
-            TASK_SB_ROW(gtk_tree_list_row_get_item(trow));
+        TaskSbRow *srow = TASK_SB_ROW(gtk_tree_list_row_get_item(trow));
         if (srow->kind == SB_KIND_LIST) list_before_to++;
         g_object_unref(trow);
-    }
-    for (guint i = 0; i < ids->len; i++) {
-        if (g_array_index(ids, gint64, i) == drag_id) { from_i = (gint)i; break; }
     }
     to_i = (gint)list_before_to;
     if (to_i >= (gint)ids->len) to_i = (gint)ids->len - 1;
 
-    if (from_i >= 0 && from_i != to_i) {
-        /* Splice: remove from_i, insert at to_i.                           */
-        GArray *reordered = g_array_new(FALSE, FALSE, sizeof(gint64));
-        if (from_i < to_i) {
-            for (guint i = 0; i < ids->len; i++) {
-                if ((gint)i == from_i) continue;
-                g_array_append_val(reordered, g_array_index(ids, gint64, i));
-                if ((gint)i == to_i)
-                    g_array_insert_val(reordered, reordered->len - 1,
-                                       g_array_index(ids, gint64, from_i));
-            }
-        } else {
-            for (guint i = 0; i < ids->len; i++) {
-                if ((gint)i == to_i)
-                    g_array_append_val(reordered, g_array_index(ids, gint64, from_i));
-                if ((gint)i == from_i) continue;
-                g_array_append_val(reordered, g_array_index(ids, gint64, i));
-            }
-        }
-        task_db_lists_reorder(lw->app->db,
-                              (const gint64 *)reordered->data, reordered->len);
-        g_array_unref(reordered);
-        lib_full_refresh(lw);
+    if (from_i < 0 || from_i == to_i) {
+        g_array_unref(ids);
+        return;
     }
+
+    /* Build the reordered array: remove from_i, then insert drag_id just
+     * before to_i.  After removing from_i the insertion index shifts:
+     *   from_i < to_i → to_i decrements by 1 (removal shifted it left)
+     *   from_i > to_i → to_i unchanged                                      */
+    gint insert_at = (from_i < to_i) ? to_i - 1 : to_i;
+
+    GArray *reordered = g_array_new(FALSE, FALSE, sizeof(gint64));
+    for (guint i = 0; i < ids->len; i++) {
+        if ((gint)i == from_i) continue;
+        g_array_append_val(reordered, g_array_index(ids, gint64, i));
+    }
+    if (insert_at < 0) insert_at = 0;
+    if ((guint)insert_at > reordered->len) insert_at = (gint)reordered->len;
+    g_array_insert_val(reordered, (guint)insert_at, drag_id);
+
+    task_db_lists_reorder(lw->app->db,
+                          (const gint64 *)reordered->data, reordered->len);
+    g_array_unref(reordered);
     g_array_unref(ids);
+    lib_full_refresh(lw);
 }
 
 /* on_sb_setup() — "setup" signal: build the per-row widget tree and attach
