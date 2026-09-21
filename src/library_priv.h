@@ -14,6 +14,7 @@
 #include "library_window.h"
 #include "task_view.h"
 #include "task_rows.h"
+#include "list_rows.h"
 #include "search.h"
 
 /* Odd-row stripe tint of the task list (the Notes list palette).          */
@@ -30,181 +31,155 @@
  * pasted into two CSS declarations in task_library_window_new.             */
 #define SB_BG_SHADE "0.96"
 
-/* Sidebar row kinds (SB_KIND column).                                      */
+/* Sidebar row kinds (TaskSbRow.kind).                                      */
 enum {
-    SB_KIND_VIEW = 0,                /* a registered virtual view; SB_ID
-                                      * holds its registry INDEX, not a
+    SB_KIND_VIEW = 0,                /* a registered virtual view; the row's
+                                      * id holds its registry INDEX, not a
                                       * list id (see task_view.h)          */
     SB_KIND_HEADER,                  /* the "Lists" section header          */
     SB_KIND_LIST,                    /* a real list                         */
     SB_KIND_GROUP                    /* a list-group sub-header             */
 };
 
-/* Sidebar store columns.                                                   */
-enum {
-    SB_KIND = 0,                     /* gint: one of SB_KIND_*              */
-    SB_ID,                           /* gint64: list id (SB_KIND_LIST)      */
-    SB_LABEL,                        /* gchar*: display text                */
-    SB_WEIGHT,                       /* gint: Pango weight (bold metas)     */
-    SB_N_COLS
-};
-
 /* ---------------------------------------------------------------------------
  * TaskLibrary — the window's state.
  *   sel_kind/sel_id — current sidebar selection (survives refreshes).
- *   populating      — guards the sidebar changed handler during rebuilds.
+ *   populating      — guards the sidebar selection handler during rebuilds.
  * ------------------------------------------------------------------------- */
 typedef struct {
-    TaskApp        *app;
-    GtkWidget    *window;
-    GtkTreeStore *sb_store;
-    GtkWidget    *sb_view;
-    GtkListStore *task_store;
-    GtkWidget    *task_view;
-    GtkWidget    *task_scroll;       /* the regular task pane; swapped
-                                      * with the board (visibility)         */
-    /* ---------------------------------------------------------------------
-     * The Kanban board — the THIRD task-pane variant, one lane per
-     * TaskStatus.  Lane INDEX IS the status value, which is what lets a
-     * drop read its target status straight off the lane it landed on.
-     *
-     * GROUPED so that ownership is stated rather than remembered: these
-     * are a THIRD of TaskLibrary's fields and NOTHING outside the board's
-     * own section reads them, but until they were nested that was a
-     * convention the compiler could not hold anyone to — a sidebar
-     * handler poking card_mark_slot looked exactly like legitimate code.
-     * `lw->board.` now says whose it is at every use.
-     *
-     * The members keep their kanban_/card_ prefixes even though the
-     * struct name now repeats them.  That is deliberate: nesting alone is
-     * a pure move the compiler verifies completely, and renaming on top
-     * of it would mix a mechanical change with an editorial one.  Dropping
-     * the prefixes later is its own equally mechanical step.
-     * ------------------------------------------------------------------- */
+    TaskApp             *app;
+    GtkWidget           *window;     /* a GtkApplicationWindow              */
+
+    /* --- Sidebar (sidebar.c) — a GtkListView over a GtkTreeListModel --- */
+    GListStore          *sb_store;   /* the top-level TaskSbRows; a row's own
+                                      * `children` store is what expands   */
+    GtkTreeListModel    *sb_tree;    /* the flattened tree the view shows  */
+    GtkSingleSelection  *sb_sel;     /* one row, never none, header rows
+                                      * refused by reverting                */
+    GtkWidget           *sb_view;    /* the GtkListView                     */
+    GtkWidget           *sidebar_box;/* the pane the toolbar toggle shows   */
+
+    /* --- Task list (task_list.c) — a GtkColumnView over a GListStore ---- */
+    GListStore          *task_store; /* TaskRows, rebuilt per refresh as ONE
+                                      * splice; empty while the board is up */
+    GtkSortListModel    *task_sorted;/* driven by the column view's sorter  */
+    GtkMultiSelection   *task_sel;   /* Ctrl/Cmd- and Shift-click extend    */
+    GtkWidget           *task_view;  /* the GtkColumnView                   */
+    GtkWidget           *task_scroll;/* its scroller: the regular task pane,
+                                      * swapped with the board (visibility) */
+    GtkColumnViewColumn *col_drag;   /* the ⠿ handle column, visible only
+                                      * in manual sort mode                 */
+    gboolean             manual_sort;/* task_list_manual_sort, cached: read
+                                      * per motion event and per refresh;
+                                      * task_manual_sort_apply is the
+                                      * single writer                       */
+    /* The manual-sort row drag: hand-rolled on a GtkGestureDrag on the
+     * handle cell (see task_list.c).  The row is not moved until the
+     * release; the marker says where it would land.                       */
+    gboolean             drag_active;/* a row drag is in progress           */
+    gint64               drag_task_id;/* the task being dragged            */
+    guint                drag_from;  /* its position in task_store          */
+    gint                 drag_mark_pos;/* where the marker sits: the index
+                                      * the row would take, -1 for none     */
+    GtkWidget           *drag_mark_row;/* the row widget wearing the marker
+                                      * class, or NULL                      */
+    GdkCursor           *drag_cursor;/* the "ns-resize" cursor, made once   */
+
+    /* --- The Kanban board (kanban.c) — the THIRD task-pane variant ------- */
+    /* One lane per TaskStatus; lane INDEX IS the status value, which is
+     * what lets a drop read its target status straight off the lane it
+     * landed on.  GROUPED so ownership is stated: nothing outside the
+     * board's own file touches these.  The card drag is hand-rolled on a
+     * GtkGestureDrag on the ⠿ grip; the ghost is an OVERLAY CHILD (a
+     * GtkPicture of a static snapshot of the card, on `ghost_layer`), and
+     * every position is in the OVERLAY's coordinate space.               */
     struct {
-        GtkWidget    *kanban_box;        /* the board's outer scroller          */
-        GtkWidget    *kanban_labels[TASK_STATUS_N_VALUES];  /* lane headings    */
-        GtkWidget    *kanban_lanes[TASK_STATUS_N_VALUES];   /* card containers  */
-        GHashTable   *kanban_sel;        /* SET of selected task ids (keys are
-                                          * GSIZE_TO_POINTER'd) — the board's
-                                          * answer to the tree view's
-                                          * multi-selection, so Delete Task and
-                                          * the context menu have something to
-                                          * act on.  Created with the window;
-                                          * never NULL.                         */
-        gint64        kanban_anchor;     /* last plainly-clicked card: the fixed
-                                          * end of a shift-click range          */
-        gboolean      kanban;            /* the kanban_view config flag, cached
-                                          * like manual_sort; kanban_apply is
-                                          * the single writer                   */
-        gboolean      card_shadow;       /* the kanban_shadow config flag,
-                                          * cached the same way: kanban_card_new
-                                          * reads it PER CARD, and a board is
-                                          * hundreds of them.
-                                          * task_library_apply_kanban_shadow is
-                                          * the single writer                   */
-        gboolean      done_show_all;     /* the Done lane's "Show All" link has
-                                          * been clicked.  TRANSIENT — not a
-                                          * config key: it is reset whenever the
-                                          * sidebar selection moves, so leaving a
-                                          * list and coming back does not bring
-                                          * a thousand completed cards with it  */
-        GtkWidget    *kanban_drops[TASK_STATUS_N_VALUES];  /* lane hit boxes    */
-        guint         kanban_counts[TASK_STATUS_N_VALUES]; /* what each lane
-                                          * STOOD FOR at the last render (the
-                                          * heading's number, not the number of
-                                          * cards drawn — the Done lane is
-                                          * capped).  Half of the test that
-                                          * lets a refresh skip the rebuild;
-                                          * see kanban_plan_matches            */
-        GdkCursor    *card_grab;         /* "grab" — hovering a card            */
-        GdkCursor    *card_grabbing;     /* "grabbing" — dragging one.  Both
-                                          * made ONCE and kept, like
-                                          * drag_cursor: a card is realized per
-                                          * refresh, so building one per card
-                                          * would allocate on every rebuild     */
-        /* The hand-rolled card drag (GTK DnD is not used on the board — see
-         * the Kanban banner).  `card_armed` is the window between the press
-         * and the motion threshold, where it is still only a click.           */
-        GtkWidget    *card_drag_src;     /* card under the pointer, or NULL     */
-        GtkWidget    *card_drag_handle;  /* its ⠿ grip: the grab window and the
-                                          * only place a drag can start from    */
-        gint64        card_drag_id;      /* its task                            */
-        gboolean      card_armed;        /* pressed, not yet a drag             */
-        gboolean      card_dragging;     /* past the threshold, grab held       */
-        gint          card_hot_x;        /* pointer offset inside the card, so  */
-        gint          card_hot_y;        /* the ghost sits where it was picked  */
-        gdouble       card_press_rx;     /* press position in ROOT coords —     */
-        gdouble       card_press_ry;     /* the threshold is measured from it   */
-        GtkWidget    *card_ghost;        /* the floating translucent copy       */
-        GtkWidget    *card_mark;         /* insertion marker, or NULL           */
-        gint          card_mark_lane;    /* where the marker currently sits —   */
-        gint          card_mark_slot;    /* only a CHANGE moves it, so the
-                                          * pointer can wander inside a slot
-                                          * without any widget churn            */
-        gulong        card_key_handler;  /* Escape-cancels handler on the
-                                          * toplevel, live only while dragging  */
+        GtkWidget    *kanban_box;    /* the board's outer scroller          */
+        GtkWidget    *kanban_labels[TASK_STATUS_N_VALUES];  /* lane headings */
+        GtkWidget    *kanban_lanes[TASK_STATUS_N_VALUES];   /* card boxes   */
+        GtkWidget    *kanban_drops[TASK_STATUS_N_VALUES];   /* lane bodies:
+                                      * the drop targets, hit-tested by
+                                      * bounds in the overlay's space       */
+        guint         kanban_counts[TASK_STATUS_N_VALUES];  /* what each lane
+                                      * STOOD FOR at the last render (the
+                                      * heading's number); half of the test
+                                      * that lets a refresh skip the rebuild */
+        GHashTable   *kanban_sel;    /* SET of selected task ids (keys are
+                                      * GSIZE_TO_POINTER'd) — the board's
+                                      * answer to the list's multi-selection.
+                                      * Created with the window; never NULL */
+        gint64        kanban_anchor; /* last plainly-clicked card: the fixed
+                                      * end of a shift-click range          */
+        gboolean      kanban;        /* the kanban_view config flag, cached;
+                                      * on_toggle_kanban is the single writer*/
+        gboolean      card_shadow;   /* the kanban_shadow config flag,
+                                      * cached: kanban_card_new reads it PER
+                                      * CARD; task_library_apply_kanban_shadow
+                                      * is the single writer                */
+        gboolean      done_show_all; /* the Done lane's "Show All" link was
+                                      * clicked.  TRANSIENT — reset when the
+                                      * sidebar selection moves             */
+        GdkCursor    *card_grab;     /* "grab" — hovering a grip            */
+        GdkCursor    *card_grabbing; /* "grabbing" — dragging one.  Both made
+                                      * ONCE and kept: a card is realized per
+                                      * refresh                             */
+        GtkWidget    *card_drag_src; /* the card in flight, or NULL         */
+        gint64        card_drag_id;  /* its task                            */
+        gboolean      card_dragging; /* past the threshold                  */
+        gdouble       card_hot_x;    /* pointer offset inside the card, so  */
+        gdouble       card_hot_y;    /* the ghost sits where it was gripped */
+        gdouble       card_press_x;  /* press position in OVERLAY coords —  */
+        gdouble       card_press_y;  /* the threshold is measured from it   */
+        GtkWidget    *card_ghost;    /* the translucent copy on ghost_layer,
+                                      * or NULL                             */
+        GtkWidget    *card_mark;     /* insertion marker, or NULL           */
+        gint          card_mark_lane;/* where the marker currently sits —   */
+        gint          card_mark_slot;/* only a CHANGE moves it              */
+        GtkEventController *card_key;/* the Escape controller on the window,
+                                      * added at drag start, removed at
+                                      * card_drag_stop                      */
     } board;
+    GtkWidget           *overlay;    /* the GtkOverlay around the paned,
+                                      * host of the compact float bar AND
+                                      * of ghost_layer                      */
+    GtkWidget           *ghost_layer;/* a GtkFixed overlay child, can_target
+                                      * FALSE, that the board's ghost is
+                                      * moved around on                     */
 
-    GtkWidget    *sidebar_box;       /* for the toolbar show/hide toggle    */
-    GtkWidget    *toolbar;           /* hidden by Compact Layout            */
-    GtkWidget    *toolbar_rule;      /* the thin rule under the toolbar     */
-    GtkWidget    *float_bar;         /* Compact Layout's floating New /
-                                      * Delete Task pair (overlay child)    */
-    GtkWidget    *search_entry;      /* the toolbar's search box, at the
-                                      * right edge where Notes keeps its    */
-    TaskSearch   *search;            /* its parsed query, or NULL for "no
-                                      * filter" — the ONE test for whether
-                                      * a search is active (see search.h)   */
-    GtkWidget    *status_left;       /* selection info label                */
-    GtkWidget    *status_right;      /* latest event message label          */
-    guint         listen_changed;    /* TaskApp event subscriptions —       */
-    guint         listen_tasks;      /* dropped in on_library_destroy       */
-    guint         listen_status;     /* BEFORE the editors close            */
-    GtkWidget    *sidebar_item;      /* lists-pane show/hide toggle button  */
-    GtkWidget    *hide_done_item;    /* completed-visibility toggle button  */
-    GtkWidget    *manual_sort_item;  /* manual-sort mode toggle button      */
-    GtkWidget    *pane_item;         /* list <-> Kanban pane toggle button  */
-    gint          sel_kind;
-    gint64        sel_id;
-    gboolean      populating;
-    gboolean      sb_populated;      /* first population expands Lists      */
-    gboolean      pinned_row_shown;  /* Pinned Tasks row exists (hidden
+    /* --- Chrome (library_window.c) --------------------------------------- */
+    GtkWidget           *toolbar;    /* a GtkBox.toolbar; hidden by Compact
+                                      * Controls                            */
+    GtkWidget           *toolbar_rule;/* the thin rule under it             */
+    GtkWidget           *float_bar;  /* Compact Controls' floating New /
+                                      * Delete pair (overlay child)         */
+    GtkWidget           *search_entry;/* the toolbar's search box           */
+    TaskSearch          *search;     /* its parsed query, or NULL for "no
+                                      * filter" — the ONE test for whether a
+                                      * search is active (see search.h)     */
+    GtkWidget           *status_left;/* selection info label                */
+    GtkWidget           *status_right;/* latest event message label         */
+    GtkWidget           *status_reveal;/* the GtkRevealer around it: shown
+                                      * on a message, crossfaded away after
+                                      * the hold                            */
+    guint                status_hide_source;/* the hold timer, or 0         */
+    guint                listen_changed;/* TaskApp event subscriptions —    */
+    guint                listen_tasks;  /* dropped in on_library_destroy    */
+    guint                listen_status; /* BEFORE the editors close         */
+    GtkWidget           *sidebar_item;  /* lists-pane show/hide button      */
+    GtkWidget           *hide_done_item;/* completed-visibility button      */
+    GtkWidget           *manual_sort_item;/* manual-sort mode button        */
+    GtkWidget           *pane_item;     /* list <-> Kanban pane button      */
+    gint                 sel_kind;
+    gint64               sel_id;
+    gboolean             populating;
+    gboolean             sb_populated;  /* first population expands Lists   */
+    gboolean             pinned_row_shown;/* Favorites row exists (hidden
                                       * while nothing is pinned)            */
-    GHashTable   *group_expanded;    /* group id (ptr) → expanded gboolean  */
-    gint          sb_width;          /* live divider position (persisted
+    GHashTable          *group_expanded;/* group id (ptr) → expanded gboolean*/
+    gint                 sb_width;      /* live divider position (persisted
                                       * at close as sidebar_width)          */
-    gint          win_w, win_h;      /* live client size (persisted at
-                                      * close as the next launch's size)    */
-    gboolean             manual_sort;    /* task_list_manual_sort, cached:
-                                          * read per motion event and per
-                                          * refresh, so it must not cost a
-                                          * GKeyFile lookup + strdup each
-                                          * time.  task_manual_sort_apply
-                                          * is the single writer.          */
-    gboolean             drag_active;    /* live task-row drag in progress  */
-    GtkTreeRowReference *drag_row_ref;   /* auto-updating ref to drag row  */
-    gint64               drag_task_id;   /* … and that row's task, so the
-                                          * per-draw highlight can ask
-                                          * "is this it?" without building
-                                          * a GtkTreePath (see
-                                          * task_row_bg_func)              */
-    GtkTreeRowReference *drag_lock_ref;  /* row just swapped; locked until
-                                          * cursor re-enters drag row      */
-    GdkCursor           *drag_cursor;    /* the "ns-resize" cursor, made
-                                          * once (owned; the motion path
-                                          * would otherwise allocate one
-                                          * per event)                     */
-    gint                 pending_fades;       /* active fade-out animations */
-    guint                status_fade_source;  /* delay before fade starts   */
-    guint                status_fade_step_source; /* per-step fade timer    */
-    gint                 status_fade_step;    /* current step               */
-    gchar               *status_fade_text;   /* plain text being faded      */
+    gint                 win_w, win_h;  /* live size (persisted at close)   */
 } TaskLibrary;
-
-/* ThemedCssFunc — build a widget's CSS from the resolved background color.
- * New string (the caller g_frees it).                                      */
-typedef gchar *(*ThemedCssFunc)(const GdkRGBA *bg);
 
 /* Every toggling View-menu item names the thing a click DOES, not the state
  * in force — the same idiom as the completed-visibility toolbar button,
@@ -319,7 +294,6 @@ void lib_on_toggle_sidebar(TaskLibrary *lw);
 guint lib_refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx);
 void lib_refresh_sidebar(TaskLibrary *lw);
 void lib_refresh_tasks(TaskLibrary *lw);
-gchar *lib_rgb_of(const GdkRGBA *c);
 gchar *lib_row_order_key(const gchar *family, gint kind, gint64 id);
 void lib_row_order_keys_drop(gint kind, gint64 id);
 gint *lib_row_order_permutation(const gint64 *ids, gint n, const gchar *saved);
@@ -330,28 +304,12 @@ gint64 lib_selected_list_id(TaskLibrary *lw);
 gboolean lib_sidebar_show_pinned(TaskLibrary *lw);
 void lib_sidebar_ui_sync(TaskLibrary *lw);
 
-/* ---------------------------------------------------------------------------
- *lib_themed_bg_css_apply() — style `w` from the theme's @theme_bg_color, and
- * keep it in step when the theme changes (a macOS light/dark switch, or a
- * GTK theme swap on Linux).
- *
- * Resolving the NAMED color rather than hardcoding a gray is the whole
- * point: it is what makes these widgets match the window and the status
- * bar, whatever the theme paints them.  A theme that doesn't name the
- * color is the one case we leave alone rather than guess — the widget
- * keeps its default look.
- *
- * The provider is created once and RELOADED in place, kept on the widget as
- * object data: task_app_widget_add_css would stack a fresh provider on every
- * theme change.  The last color written is stored alongside it, which is
- * also what stops the recursion — our own reload re-emits "style-updated",
- * and the second pass resolves the same color and returns without writing.
- * (@theme_bg_color comes from the theme's provider, not ours, so the
- * resolved value really is stable across our own reload.)
- * ------------------------------------------------------------------------- */
-void lib_themed_bg_css_apply(GtkWidget *w, ThemedCssFunc build);
 gboolean lib_view_refuse(TaskLibrary *lw, const gchar *alternative);
-gboolean task_context_menu_popup(TaskLibrary *lw, GdkEventButton *event);
+/* task_context_menu_popup() — the task context menu for the CURRENT
+ * selection, at (x, y) in `at`'s coordinates (a GtkGestureClick press).
+ * Returns TRUE when a menu was shown.                                     */
+gboolean task_context_menu_popup(TaskLibrary *lw, GtkWidget *at,
+                                 gdouble x, gdouble y);
 void task_manual_sort_apply(TaskLibrary *lw);
 void task_view_apply_manual_order(TaskLibrary *lw);
 

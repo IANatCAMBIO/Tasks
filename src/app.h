@@ -4,8 +4,13 @@
  * A single TaskApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open task-editor windows, and hosts
  * the change-notification events the windows subscribe to.  Companion app
- * to Notes — same design language: plain C + GTK3 + SQLite, no
+ * to Notes — same design language: plain C + GTK4 + SQLite, no
  * HeaderBars, window titles "Tasks - <thing>".
+ *
+ * The GTK4 helpers below (dialogs, the icon theme, tool items, tooltips,
+ * popups, the list-row press and double-click helpers) are ports of the
+ * same-named on_app_* helpers in Notes (~/salt_development/notes/src/app.c),
+ * where each one's GTK4 measurement is recorded (its D-numbers).
  * =========================================================================== */
 
 #ifndef TASK_APP_H
@@ -81,11 +86,15 @@ typedef struct TaskApp {
 } TaskApp;
 
 /* ---------------------------------------------------------------------------
- * task_app_widget_add_css() — attach a one-off CSS snippet to a single
- * widget's style context (application priority).  The provider is owned
- * by the style context after this call.
+ * task_app_css_install() — add one stylesheet to the DISPLAY at application
+ * priority.  Each module installs its own once (a static guard at the call
+ * site); rules go on `task-*` classes, never on a per-widget provider,
+ * which GTK4 deprecated and which could not follow a theme change anyway.
+ * A colour name the theme does not define is NOT an error: it renders
+ * TRANSPARENT.  `@theme_bg_color` and `shade()` are both still defined by
+ * GTK 4.22's Default theme (Notes measured it).
  * ------------------------------------------------------------------------- */
-void task_app_widget_add_css(GtkWidget *widget, const gchar *css_text);
+void task_app_css_install(const gchar *css);
 
 /* ---------------------------------------------------------------------------
  * task_app_init_icons_dir() — locate the icons/ folder next to the
@@ -95,48 +104,77 @@ void task_app_widget_add_css(GtkWidget *widget, const gchar *css_text);
 void task_app_init_icons_dir(TaskApp *app);
 
 /* ---------------------------------------------------------------------------
- * task_app_icon_image_sized() — build a GtkImage for icon `name` from
- * "<icons_dir>/<name>.png" (or .svg), rendered at an explicit logical
- * pixel size, HiDPI-sharp (backing pixels scale with the display).
- * Returns NULL when no loadable file exists — callers fall back to a
- * text label.
+ * task_app_icon_image_sized() — a GtkImage showing icon `name`, at a
+ * LOGICAL pixel size.  The icons are the PNGs in the app-local icons/
+ * folder, which startup adds to the icon theme's search path: GTK picks
+ * them up by basename as unthemed icons, loads them at the display's
+ * scale factor (sharp on HiDPI), caches them, and draws at the logical
+ * size.  Swapping a PNG in icons/ still re-themes a button.
  *
- * The returned image carries `name` as the "task-icon-name" object data
- * and its rotation as "task-icon-rotation" (a GdkPixbufRotation, owned by
- * the image): it is surface-backed, so gtk_image_get_pixbuf answers NULL
- * and there is otherwise no way to ask which picture a widget is
- * currently showing.
+ * There is no rotated variant any more: the pane toggle's board face is
+ * its own file, icons/board.png, derived ONCE from menu.png by a quarter
+ * turn (the same rule as add.png from remove.png).  The returned image
+ * carries `name` as the "task-icon-name" object data, so a state-swapping
+ * button can be asked which picture it shows.
+ *   name — icon file basename without extension (e.g. "add").
+ *   size — logical pixel size to draw at.
+ * Returns a new GtkImage, or NULL if the theme has no such icon — callers
+ * fall back to a text label in that case.
  * ------------------------------------------------------------------------- */
 GtkWidget *task_app_icon_image_sized(TaskApp *app, const gchar *name,
                                      gint size);
 
 /* ---------------------------------------------------------------------------
- * task_app_icon_image_rotated() — as above, turned by whole quarter turns.
- *
- * `rotation` is a GdkPixbufRotation; GDK_PIXBUF_ROTATE_NONE is exactly
- * task_app_icon_image_sized.  The turn happens on the PIXBUF before the
- * surface is made, so a square icon comes back the same size, pixel-exact
- * and unresampled.  Use it where one image serves two states that differ
- * only in orientation — a horizontal list icon turned a quarter turn is a
- * columnar board icon, which is how the pane toggle dresses both of its
- * faces from menu.png alone.
+ * task_app_icon_paintable() — the same icon as a paintable, for uses that
+ * need one rather than a widget (the About dialog's logo).  Rendered at
+ * the display's scale factor.  Returns a new paintable (g_object_unref
+ * it), or NULL if the theme has no such icon.
  * ------------------------------------------------------------------------- */
-GtkWidget *task_app_icon_image_rotated(TaskApp *app, const gchar *name,
-                                       gint size,
-                                       GdkPixbufRotation rotation);
+GdkPaintable *task_app_icon_paintable(TaskApp *app, const gchar *name,
+                                      gint size);
 
 /* ---------------------------------------------------------------------------
- * task_app_tool_item_new() — create a toolbar button: `icon_name` names a
- * local icon file (see task_app_icon_image_sized), `fallback_markup` is
- * Pango markup rendered as the "icon" when that file is missing (NULL
- * falls back to the plain label).  Toolbars are ICONS-ONLY, so `label`
- * never shows on the button itself — it names the item in the toolbar's
- * overflow menu and to accessibility; `tooltip` is what a user reads.
+ * task_app_tool_item_new() — create an icon toolbar button: a flat
+ * GtkButton (or GtkToggleButton) whose child is the icon widget.  GTK4
+ * has no GtkToolbar; a toolbar is a GtkBox with the "toolbar" style class
+ * holding these.  Buttons never take focus on click.
+ *   toggle          — TRUE for a GtkToggleButton, FALSE for a GtkButton.
+ *   icon_name       — local icon file (see task_app_icon_image_sized), or
+ *                     NULL for none.
+ *   fallback_markup — Pango markup rendered as the "icon" when the file is
+ *                     missing; NULL falls back to the plain label.
+ *   label           — the accessible name; also the icon stand-in when
+ *                     both the file and fallback_markup are absent.
+ *   tooltip         — hover help text (through task_app_set_tooltip).
+ * Returns the new button.
  * ------------------------------------------------------------------------- */
-GtkToolItem *task_app_tool_item_new(TaskApp *app, const gchar *icon_name,
-                                    const gchar *fallback_markup,
-                                    const gchar *label,
-                                    const gchar *tooltip);
+GtkWidget *task_app_tool_item_new(TaskApp *app, gboolean toggle,
+                                  const gchar *icon_name,
+                                  const gchar *fallback_markup,
+                                  const gchar *label,
+                                  const gchar *tooltip);
+
+/* ---------------------------------------------------------------------------
+ * task_app_tool_item_set_icon() — re-point an existing toolbar button at a
+ * different icon, for a button whose image names the ACTION it offers
+ * (the completed, sort and pane toggles).  Same icon-file-else-markup
+ * rule as task_app_tool_item_new; label and tooltip untouched.
+ * ------------------------------------------------------------------------- */
+void task_app_tool_item_set_icon(TaskApp *app, GtkWidget *button,
+                                 const gchar *icon_name,
+                                 const gchar *fallback_markup);
+
+/* ---------------------------------------------------------------------------
+ * task_app_set_tooltip() — THE way to give a widget a tooltip (NULL
+ * removes it).  A plain gtk_widget_set_tooltip_text is broken on macOS:
+ * GTK keeps ONE tooltip popup surface and the macOS backend's layer does
+ * not follow its resize while hidden (Notes D32 — the next tooltip comes
+ * out cut off), so this refuses a tooltip asked for within 550 ms of the
+ * previous one hiding and asks again after; and it shows NO tooltip in a
+ * window that is not the active one (Notes D35 — the popup would raise
+ * that window).  A no-op cost on other backends.
+ * ------------------------------------------------------------------------- */
+void task_app_set_tooltip(GtkWidget *widget, const gchar *text);
 
 /* ---------------------------------------------------------------------------
  * task_app_status() — post a one-line event message to the library window's
@@ -191,31 +229,141 @@ guint task_app_listen_status(TaskApp *app, TaskAppStatusFn fn,
 void  task_app_unlisten(TaskApp *app, guint id);
 
 /* ---------------------------------------------------------------------------
- * task_app_notice() — run a modal OK message dialog and destroy it.
+ * task_app_notice() — show a modal OK message (a GtkAlertDialog) over
+ * `parent` and return at once.  Fire-and-forget: GTK4 has no blocking
+ * dialogs, and no caller ever needed the dismissal.
+ *   parent — transient parent window, or NULL.
+ *   title  — the message's heading, or NULL for the plain message only.
+ *   fmt    — printf-style message.
  * ------------------------------------------------------------------------- */
-void task_app_notice(GtkWindow *parent, GtkMessageType type,
-                     const gchar *title, const gchar *fmt, ...)
-                   G_GNUC_PRINTF(4, 5);
+void task_app_notice(GtkWindow *parent, const gchar *title,
+                     const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
+
+/* task_app_confirm()'s completion: `yes` is TRUE when the user chose Yes;
+ * closing the dialog any other way (No, Escape, the close button) is FALSE.*/
+typedef void (*TaskConfirmFn)(gboolean yes, gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * task_app_confirm() — run a modal Yes/No question dialog; TRUE on Yes.
+ * task_app_confirm() — ask a modal Yes/No question (a GtkAlertDialog) and
+ * hand the answer to `done`.  ASYNCHRONOUS: returns as soon as the dialog
+ * is up; the rest of the caller's work lives in `done`, and anything it
+ * needs travels in `user_data` (a small struct the callback frees, or a
+ * ref'd object).  `message` is plain text, formatted by the caller.
+ *   parent  — transient parent window, or NULL.
+ *   title   — the question's heading (shown bold above the message).
+ *   message — the question.
+ *   done    — completion callback (always called, once).
  * ------------------------------------------------------------------------- */
-gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
-                          const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
+void task_app_confirm(GtkWindow *parent, const gchar *title,
+                      const gchar *message, TaskConfirmFn done,
+                      gpointer user_data);
+
+/* What task_app_pick_path() asks for.                                      */
+typedef enum {
+    TASK_PICK_OPEN,                  /* an existing file                    */
+    TASK_PICK_SAVE,                  /* a file name to write                */
+    TASK_PICK_FOLDER,                /* an existing directory               */
+} TaskPickKind;
+
+/* task_app_pick_path()'s completion: `path` is the chosen filesystem path
+ * (OWNED by the callback: g_free it) or NULL when the chooser was
+ * cancelled.                                                                */
+typedef void (*TaskPickFn)(gchar *path, gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * task_app_menu_popup() — show `model` as a context menu at the pointer.
- *   attach — a LONG-LIVED widget the menu is attached to and resolves its
- *            actions through (the library window).  Never the widget that
- *            was clicked: an attached menu dies with its widget, and a
- *            card or a row is often destroyed by the very action chosen.
- *   model  — the menu; ownership passes to this call.
- *   event  — the button press, for placement.
- * The menu destroys itself once it closes ("selection-done" fires AFTER
- * the chosen item's action, so the destroy never races it).
+ * task_app_pick_path() — run a modal file chooser (a GtkFileDialog) and
+ * hand the selection to `done`.  ASYNCHRONOUS, like task_app_confirm.
+ *   parent         — transient parent window, or NULL.
+ *   title          — dialog title.
+ *   kind           — what to pick (see TaskPickKind).
+ *   accept_label   — accept-button label (e.g. "_Open").
+ *   filter_name    — display name of a single file filter, or NULL for
+ *                    no filter (filter_pattern is ignored when NULL).
+ *   filter_pattern — glob the filter matches (e.g. "*.db").
+ *   start_dir      — folder the chooser opens in, or NULL for GTK's
+ *                    choice.
+ *   done           — completion callback (always called, once).
+ * ------------------------------------------------------------------------- */
+void task_app_pick_path(GtkWindow *parent, const gchar *title,
+                        TaskPickKind kind, const gchar *accept_label,
+                        const gchar *filter_name, const gchar *filter_pattern,
+                        const gchar *start_dir,
+                        TaskPickFn done, gpointer user_data);
+
+/* task_app_dialog_new()'s completion: `accepted` is TRUE for the accept
+ * button (or Enter on the default widget), FALSE for Cancel, Escape or the
+ * close button.  `dialog` is still alive, so the callback can read the
+ * widgets it stashed on it as object data; it is destroyed right after.   */
+typedef void (*TaskDialogFn)(gboolean accepted, GtkWindow *dialog,
+                             gpointer user_data);
+
+/* ---------------------------------------------------------------------------
+ * task_app_dialog_new() — build and present a modal dialog with custom
+ * content and a Cancel / <accept> pair: the list dialog, the group-name
+ * dialog, the calendar.  GtkDialog is deprecated; this is the one
+ * scaffold every custom dialog goes through.  Escape and the close button
+ * mean Cancel; Enter activates the dialog's default widget, which is the
+ * accept button unless the caller sets another.
+ *   parent       — transient parent window.
+ *   title        — window title ("Tasks - New List").
+ *   content      — the widget above the buttons (the dialog takes it).
+ *   accept_label — the accept button's label, with a mnemonic ("_Create").
+ *   done         — the completion (see TaskDialogFn).
+ * Returns the dialog window, already presented, so the caller can stash
+ * its widgets on it as object data before the callback needs them.
+ * ------------------------------------------------------------------------- */
+GtkWindow *task_app_dialog_new(GtkWindow *parent, const gchar *title,
+                               GtkWidget *content, const gchar *accept_label,
+                               TaskDialogFn done, gpointer user_data);
+
+/* ---------------------------------------------------------------------------
+ * task_app_menu_popup() — pop up a one-shot context menu built from a menu
+ * model, at a point in a widget.  THE transient-popup scaffold for every
+ * right-click menu in the app: a GtkPopoverMenu parented to the WINDOW's
+ * child box (never to `attach`: a list view or a card cannot take one,
+ * Notes D14), pointing at (x, y) translated into that box, that unparents
+ * and drops itself from an idle once closed.  Actions resolve through the
+ * window either way.
+ *   attach — the widget the press landed in (any widget in a window).
+ *   model  — the items; OWNERSHIP IS TAKEN (the popover keeps its own ref).
+ *   x, y   — the press position in `attach`'s coordinates (what a
+ *            GtkGestureClick "pressed" handler receives).
  * ------------------------------------------------------------------------- */
 void task_app_menu_popup(GtkWidget *attach, GMenuModel *model,
-                         GdkEventButton *event);
+                         gdouble x, gdouble y);
+
+/* ---------------------------------------------------------------------------
+ * task_app_double_click_watch() — call `cb` when `widget` is double-clicked
+ * with the primary button, counted by THIS app from the time and distance
+ * between two presses, never by GtkGestureClick's n_press: the macOS
+ * backend can hand GTK a buttonless motion inside a quick first click,
+ * which resets every click gesture in the window (Notes D34).  A
+ * capture-phase gesture on `widget`; on the second press it CLAIMS the
+ * sequence so GTK's own activation cannot fire a second time.
+ *   widget — the widget to watch (a list row or cell, a card).
+ *   cb     — called as cb(widget, data) on the double-click.
+ * ------------------------------------------------------------------------- */
+typedef void (*TaskDoubleClickFn)(GtkWidget *widget, gpointer data);
+void task_app_double_click_watch(GtkWidget *widget, TaskDoubleClickFn cb,
+                                 gpointer data);
+
+/* ---------------------------------------------------------------------------
+ * task_app_select_on_press() — make a list row select on the PRESS, not on
+ * the release (Notes D37): GTK4's row widget selects from its click
+ * gesture's "released", so a row looked unselected for the length of the
+ * click.  A capture-phase primary-button gesture on `widget` runs the
+ * view's own "list.select-item" action at press time with the modifiers
+ * GTK would read (Shift extends, Control — Command on macOS — toggles),
+ * except an unmodified press on a row that is ALREADY selected, which is
+ * left alone so a drag can carry a multi-selection; the release CLAIMS
+ * the sequence (cancelling the row's own gesture) and collapses to the
+ * pressed row when the deferred press's drag never came.  Anything in
+ * `widget` with a gesture of its own (a check button, an expander's
+ * arrow) must NOT be inside it — the claim cancels every gesture below.
+ *   widget — the cell or row child to watch.
+ *   item   — its GtkListItem (the position is read at press time).
+ * ------------------------------------------------------------------------- */
+void task_app_select_on_press(GtkWidget *widget, GtkListItem *item);
 
 /* ---------------------------------------------------------------------------
  * task_app_menu_section_end() — close the section being built into `menu`

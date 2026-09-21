@@ -1,12 +1,12 @@
 # =============================================================================
 # Tasks — Makefile
 #
-# Builds the Tasks application (a GTK3 + SQLite task-list app written
-# in plain C — the companion app to Notes).  Requires GTK3 and SQLite3,
-# discovered via pkg-config.
+# Builds the Tasks application (a GTK4 + SQLite task-list app written
+# in plain C — the companion app to Notes).  Requires GTK 4.10+ and
+# SQLite3, discovered via pkg-config.
 #
 # On macOS with MacPorts:
-#     sudo port install pkgconf gtk3 +quartz
+#     sudo port install pkgconf gtk4 +quartz
 #
 # Targets:
 #     make          — build the `tasks` binary
@@ -38,7 +38,11 @@ PKGCONF  := $(shell command -v pkg-config 2>/dev/null || echo /opt/local/bin/pkg
 # No network library: nothing in the app talks to one (checkable with
 # `otool -L tasks` / `ldd tasks`).  No gtk-mac-integration either: the
 # native macOS menu bar is GTK's own (gtk_application_set_menubar).
-PKGS     := gtk+-3.0 sqlite3
+#
+# NO deprecated GTK4 API is used, and no deprecation warning is
+# suppressed: -Wdeprecated-declarations is part of -Wall and the build
+# must stay clean under it (GTK4_MIGRATION.md).
+PKGS     := gtk4 sqlite3
 
 # Compiler flags: C11, broad warnings, debug symbols, plus the include
 # paths for the modules above.
