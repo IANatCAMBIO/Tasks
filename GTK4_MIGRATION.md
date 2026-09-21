@@ -198,24 +198,25 @@ shortcuts"; the record here is the "Actions" section of library_priv.h.
       the app menu GTK builds (About / Settings… / Quit), File with its one
       separator, and View with exactly one face per pair
 
-### Phase 3 — the per-file GTK4 pass (nothing links until every file is done)
+### Phase 3 — the per-file GTK4 pass — DONE 2026-09-21
 
 Makefile first: `PKGS := gtk4 sqlite3`, no deprecation suppression.  Then
 one agent per file against the mapping table below, each verified with
 `make build/<name>.o`, joined by one `make`.
 
-- [ ] Makefile
-- [ ] `app.c`, `main.c` (+ the shared helpers below, ported FIRST)
-- [ ] `list_rows.[ch]` (new: the item objects, `task_row_factory_new`,
+- [x] Makefile
+- [x] `app.c`, `main.c` (+ the shared helpers below, ported FIRST)
+- [x] `list_rows.[ch]` (new: the item objects, `task_row_factory_new`,
       `task_row_touch`)
-- [ ] `task_rows.c`
-- [ ] `settings_window.c`
-- [ ] `editor_window.c`
-- [ ] `sidebar.c`
-- [ ] `task_list.c`
-- [ ] `kanban.c`
-- [ ] `library_window.c`
-- [ ] `make` clean; branch compiles
+- [x] `task_rows.c`
+- [x] `settings_window.c`
+- [x] `editor_window.c`
+- [x] `sidebar.c`
+- [x] `task_list.c`
+- [x] `kanban.c`
+- [x] `library_window.c`
+- [x] `make` clean; branch compiles (333 KB binary, libgtk-4 only, no
+      libgtk-3 or gtk-mac-integration); `make run-dev` opens the window
 
 ### Phase 4 — runtime rounds in the sandbox
 
@@ -453,6 +454,31 @@ add a second idiom.
   change to know: "Move to List" is now OMITTED rather than greyed when
   nothing could move (a single selected subtask, or no other list) — a
   submenu from a model has no action of its own to grey through.
+- **D15 · 2026-09-21 — `gtk_widget_get_modifier_mask` and the
+  `GDK_MODIFIER_INTENT_*` constants were removed in GTK4.**  The
+  board's multi-select used them to get the platform's modify and extend
+  keys.  In GTK4 the mask is queried directly: MODIFY = `GDK_CONTROL_MASK |
+  GDK_META_MASK` (Ctrl on X11/Wayland, Cmd on macOS — GTK4 translates the
+  hardware key through `GDK_META_MASK`), EXTEND = `GDK_SHIFT_MASK`.
+  No helper needed; both values are compile-time constants.
+- **D16 · 2026-09-21 — `GtkWidgetPaintable *` vs `GdkPaintable *`: the
+  constructor returns `GtkWidgetPaintable *` but callers that treat it as
+  a paintable need `GdkPaintable *`.**  `gtk_widget_paintable_new` is typed
+  `GtkWidgetPaintable *`; a `GdkPaintable *` field takes `GDK_PAINTABLE(…)`
+  cast.  Both compile without warning; the cast is required at the
+  assignment site, not at every use.
+- **D17 · 2026-09-21 — `gtk_label_set_track_visited_links` was removed in
+  GTK4.**  The call in kanban.c (on the "Show All" link inside the Done
+  lane) was simply deleted.  GTK4 does not expose the visited-link colouring
+  knob on `GtkLabel`; the link renders correctly without it.
+- **D18 · 2026-09-21 — `gtk_entry_get/set_text` became
+  `gtk_editable_get/set_text(GTK_EDITABLE(entry), …)` and
+  `gtk_entry_set_width_chars` became `gtk_editable_set_width_chars` in
+  GTK4.**  `GtkEntry` implements `GtkEditable`; all six width-chars call
+  sites and every get/set_text in `editor_window.c` use the editable
+  interface.  `gtk_calendar_get_date()` returns `GDateTime *` in GTK4
+  (caller must unref); the prior `GtkCalendar`-specific output params are
+  gone.
 
 ## Session log
 
@@ -462,3 +488,6 @@ One line per session: date, phase, item, outcome.
   9b86b50) and Phase 1 (this file, run-dev, winshot, the library split)
   done.
 - 2026-09-21 — Phase 2 (actions and menus, on GTK3) done; D12–D14.
+- 2026-09-21 — Phase 3 (per-file GTK4 pass) done; D15–D18; commit 2c95d93.
+  `make` clean, 333 KB binary, libgtk-4 only; `make run-dev` opens the
+  window with toolbar, column headers, and empty task list visible.
