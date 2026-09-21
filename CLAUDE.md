@@ -1,5 +1,18 @@
 # Tasks — project guide
 
+> **THIS IS THE `gtk4` BRANCH — read `GTK4_MIGRATION.md` FIRST.**  It is
+> the running record of the GTK3 → GTK4 port: the phase checklist, the
+> API mapping table, and the append-only Decisions every session must
+> follow.  Two things below are already stale on this branch and will be
+> rewritten when the port lands (Phase 5): the PLUGIN system is gone (all
+> four plugins, the ABI, the loader — their features return later as
+> integrated code), and `library_window.c` is now four files
+> (`library_window.c`, `sidebar.c`, `task_list.c`, `kanban.c`) sharing
+> `library_priv.h`.  Everything else here still describes the code, and
+> the GTK3 gotchas are re-verdicted for GTK4 in the migration record's
+> "Gotchas that do not carry over" table.
+
+
 Task-list app in **plain C + GTK3 + SQLite**, the companion app to
 Notes.  Two window types: a Library (lists sidebar + tall task rows)
 and one editor window per task.  Two-way Google Tasks sync.  No GNOME
