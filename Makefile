@@ -34,35 +34,17 @@ CC       := cc
 # be on PATH in every shell, so fall back to the absolute path if needed.
 PKGCONF  := $(shell command -v pkg-config 2>/dev/null || echo /opt/local/bin/pkg-config)
 
-# Optional macOS menu-bar integration (MacPorts: gtk-osx-application-gtk3;
-# the pkg-config module is gtk-mac-integration-gtk3).  When present, the
-# Settings window offers moving the menu into the native macOS menu bar;
-# without it the option shows as unavailable.  After toggling the
-# dependency, run `make clean && make` so every object sees the new flags.
-#
-# Detected BEFORE the flags below because it joins the pkg-config module
-# list rather than appending a second --libs run: gtk-mac-integration
-# depends on GTK itself, so two separate runs hand the linker every GTK
-# library twice ("ld: warning: ignoring duplicate libraries").  One run
-# over all modules lets pkg-config collapse them.
-HAVE_GTKOSX := $(shell $(PKGCONF) --exists gtk-mac-integration-gtk3 && echo 1)
-
 # Every pkg-config module the build needs, resolved in a single query.
 # No network library: nothing in the app talks to one (checkable with
-# `otool -L tasks` / `ldd tasks`).
+# `otool -L tasks` / `ldd tasks`).  No gtk-mac-integration either: the
+# native macOS menu bar is GTK's own (gtk_application_set_menubar).
 PKGS     := gtk+-3.0 sqlite3
-ifeq ($(HAVE_GTKOSX),1)
-PKGS    += gtk-mac-integration-gtk3
-endif
 
 # Compiler flags: C11, broad warnings, debug symbols, plus the include
 # paths for the modules above.
 CFLAGS   := -std=c11 -Wall -Wextra -g -Isrc \
             -DTASK_VERSION='"$(VERSION)"' \
             $(shell $(PKGCONF) --cflags $(PKGS))
-ifeq ($(HAVE_GTKOSX),1)
-CFLAGS  += -DHAVE_GTKOSX
-endif
 
 # Linker flags: those same libraries, plus libm.
 LDFLAGS  := $(shell $(PKGCONF) --libs $(PKGS)) -lm
@@ -185,10 +167,10 @@ app: $(BIN)
 	rm -rf "$(APP_DIR)" "$(ICONSET)"
 	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" \
 	         "$(ICONSET)"
-	# The executable is named "Tasks": for NIB-less apps (the
-	# gtkosx menubar is built programmatically) macOS titles the app
-	# menu with the PROCESS name, not CFBundleName — the binary's
-	# filename is the only lever.  argv[0]-relative lookups (icons,
+	# The executable is named "Tasks": for NIB-less apps (GTK builds
+	# the menubar programmatically) macOS titles the app menu with the
+	# PROCESS name, not CFBundleName — the binary's filename is the
+	# only lever.  argv[0]-relative lookups (icons,
 	# ini) resolve by directory, so the rename is harmless.
 	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Tasks"
 	cp -R icons "$(APP_DIR)/Contents/MacOS/icons"

@@ -5,8 +5,8 @@
  * toolbar, sidebar | content pane, bottom status bar):
  *
  *   ┌──────────────────────────────────────────────────────────────┐
- *   │ menubar (File / Help)                                        │
- *   │ toolbar: Sidebar │ New Task  Delete Task  Sync  Show/Hide ✓  │
+ *   │ menubar (File / View) — GTK's, native on macOS               │
+ *   │ toolbar: New Task  Delete Task │ Sidebar ✓ Sort Pane  search │
  *   ├───────────────┬──────────────────────────────────────────────┤
  *   │ Pinned Tasks  │  ✓ │ Task (tall rows: title, notes preview,  │
  *   │ All Tasks     │    │ attachments, subtasks) │ Due │ Pinned   │
@@ -52,13 +52,5 @@ GtkWidget *task_library_window_new(TaskApp *app);
  * pre-shadow paint time exactly (see gotcha 30).
  * ------------------------------------------------------------------------- */
 void task_library_apply_kanban_shadow(TaskApp *app, gboolean on);
-
-/* ---------------------------------------------------------------------------
- * task_library_apply_native_menubar() — move the library menu into (or out
- * of) the native macOS menu bar.  A no-op unless built with HAVE_GTKOSX
- * (gtk-mac-integration-gtk3).  Driven by the "native_menubar" setting:
- * applied at startup by main() and live from the Settings window.
- * ------------------------------------------------------------------------- */
-void task_library_apply_native_menubar(TaskApp *app, gboolean native);
 
 #endif /* TASK_LIBRARY_WINDOW_H */

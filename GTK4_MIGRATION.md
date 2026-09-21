@@ -177,23 +177,26 @@ CLAUDE.md's gotchas were derived against GTK3.  On this branch:
       `task_list.c`, `kanban.c` with `library_priv.h` (mechanical, verified
       running)
 
-### Phase 2 — actions and menus (GTK3-legal; the branch still runs)
+### Phase 2 — actions and menus — DONE 2026-09-21 (GTK3-legal; the branch runs)
 
-GLib `GAction`/`GMenu` render on GTK3, so this lands and is tested before
-the toolkit flips.  Design: Notes CLAUDE.md "Actions, menus and
-shortcuts" and its `library_window.c:5067-5284`.
+GLib `GAction`/`GMenu` render on GTK3, so this landed and was tested
+before the toolkit flips.  Design: Notes CLAUDE.md "Actions, menus and
+shortcuts"; the record here is the "Actions" section of library_priv.h.
 
-- [ ] `win.` actions on the library window for every File/View item,
-      toolbar button and context-menu item; `app.` for the menubar items
-      that must outlive the window.  There are NO accelerators today; add
-      none.
-- [ ] Menubar as one `GMenu` → `gtk_application_set_menubar`;
+- [x] `app.` commands on the application for the menubar, `win.` on the
+      library window (now a GtkApplicationWindow) for the toolbar and the
+      context menus; both tables bind the same functions.  No accelerators.
+- [x] Menubar as one `GMenu` → `gtk_application_set_menubar`;
       gtk-mac-integration, `HAVE_GTKOSX`, `native_menubar`, gotcha 29 deleted
-- [ ] The five View items as `hidden-when=action-disabled` PAIRS (Notes
-      D10), enabled by the same single appliers that set labels today
-- [ ] Context menus as per-popup `GMenu`s through one `task_app_menu_popup`
-      (GTK3 body `gtk_menu_new_from_model` now); ids as action targets
-- [ ] Column-header hide/show as stateful `win.column-<key>` actions
+- [x] The five View items as `hidden-when=action-disabled` PAIRS, enabled
+      by the single appliers (`lib_menu_pair_sync`)
+- [x] Context menus as per-popup `GMenu`s through `task_app_menu_popup`
+      (GTK3 body `gtk_menu_new_from_model`); the task actions act on the
+      live selection, the group actions carry the group id as a target
+- [x] Column-header hide/show as stateful `win.column-<key>` actions
+- [x] Verified: the native macOS bar read back through System Events shows
+      the app menu GTK builds (About / Settings… / Quit), File with its one
+      separator, and View with exactly one face per pair
 
 ### Phase 3 — the per-file GTK4 pass (nothing links until every file is done)
 
@@ -422,6 +425,34 @@ add a second idiom.
   is GTK3-only; the property exists in 4.22 (checked in the gir) and
   reaches every scrolled window in the process, which was the whole point
   of the env var.
+- **D12 · 2026-09-21 — The native macOS menubar is GTK's own
+  (`gtk_application_set_menubar`), on GTK3 already** — INHERITED from
+  Notes D9, and confirmed here: with gtk-mac-integration gone the quartz
+  backend put the model in the native bar and built the application menu
+  from `app.about` / `app.preferences` / `app.quit`.  The one Gtk-CRITICAL
+  it prints on MacPorts' GTK (`gtk_menu_tracker_remove_items: assertion
+  '*change_point != NULL' failed`, Notes D10) is dropped by
+  `quartz_log_filter` in main.c, matched on both literal fragments so an
+  unrelated CRITICAL from that function still shows.  There is NO
+  `native_menubar` choice any more: native on macOS, drawn by the
+  GtkApplicationWindow on Linux, nothing to choose between.
+- **D13 · 2026-09-21 — A hidden-when pair has ONE writer, and the sort
+  pair's is `task_pane_mode_apply`, not `manual_sort_icon_refresh`.**  The
+  sort items are greyed while Kanban is on or a search is up, and "greyed"
+  is "neither face": the applier that knows the reason must be the one
+  that decides which face is on, or the two writers fight.  It runs last
+  on every path that changes the mode or the reason.  The greying's
+  explanatory tooltip moved to the toolbar button, since an item from a
+  menu model carries no tooltip.
+- **D14 · 2026-09-21 — Context-menu actions act on the CURRENT selection,
+  not on ids carried by the item.**  The menu is modal, so the selection
+  it opened on is the one its item acts on, whichever pane it came from;
+  the board's card selection already answers through `selected_task_ids`.
+  Group actions are the exception and carry the group id as an `x`
+  target, because the clicked group need not be selected.  Behaviour
+  change to know: "Move to List" is now OMITTED rather than greyed when
+  nothing could move (a single selected subtask, or no other list) — a
+  submenu from a model has no action of its own to grey through.
 
 ## Session log
 
@@ -430,3 +461,4 @@ One line per session: date, phase, item, outcome.
 - 2026-09-21 — plan agreed with the user; Phase 0 (plugin removal,
   9b86b50) and Phase 1 (this file, run-dev, winshot, the library split)
   done.
+- 2026-09-21 — Phase 2 (actions and menus, on GTK3) done; D12–D14.

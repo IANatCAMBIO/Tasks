@@ -542,11 +542,8 @@ on_card_press(GtkWidget *card, GdkEventButton *ev, gpointer data)
             card_select(lw, id);
         /* The SAME menu the list view's rows show, from the same function
          * against the same selection — so a multi-selection gets the
-         * multi variant ("Delete 3 Tasks") for free.  Anchored to
-         * kanban_box, never the card: an attached menu dies with its
-         * widget, and every action here refreshes the board and destroys
-         * the card underneath it.                                        */
-        return task_context_menu_popup(lw, lw->board.kanban_box, ev);
+         * multi variant ("Delete 3 Tasks") for free.                     */
+        return task_context_menu_popup(lw, ev);
     }
 
     if (ev->type == GDK_BUTTON_PRESS) {
@@ -1866,8 +1863,8 @@ kanban_lane_new(TaskLibrary *lw, TaskStatus status)
 /* ---------------------------------------------------------------------------
  * task_library_apply_kanban_shadow() — the single writer of the cached
  * kanban_shadow flag, and the live applier behind the Settings check
- * (see header).  Mirrors task_library_apply_native_menubar: the caller
- * has already written the config key, this makes it true on screen.
+ * (see header).  The caller has already written the config key; this
+ * makes it true on screen.
  * ------------------------------------------------------------------------- */
 void
 task_library_apply_kanban_shadow(TaskApp *app, gboolean on)

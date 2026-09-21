@@ -63,21 +63,6 @@ on_bold_titles_toggled(GtkWidget *w, gpointer data)
     task_app_notify_changed(sw->app);
 }
 
-#ifdef HAVE_GTKOSX
-/* on_native_menubar_toggled() — move the library menu into (or out of)
- * the native macOS menu bar, live, and persist the choice.                 */
-static void
-on_native_menubar_toggled(GtkToggleButton *check, gpointer data)
-{
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    gboolean native = gtk_toggle_button_get_active(check);
-    task_app_config_set("native_menubar", native ? "1" : "0");
-    task_library_apply_native_menubar(sw->app, native);
-}
-#endif /* HAVE_GTKOSX */
-
 /* ---------------------------------------------------------------------------
  * DbSection — widgets of the Database settings block, kept alive so
  * handlers can update them after a location switch.
@@ -748,24 +733,6 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
                      G_CALLBACK(on_due_today_overdue_toggled), sw);
     gtk_box_pack_start(GTK_BOX(vbox), overdue_check, FALSE, FALSE, 0);
 
-#ifdef __APPLE__
-    GtkWidget *mac_check = gtk_check_button_new_with_label(
-        "Use the native macOS menu bar (hide the in-window menu)");
-#ifdef HAVE_GTKOSX
-    gtk_toggle_button_set_active(
-        GTK_TOGGLE_BUTTON(mac_check),
-        task_app_config_get_bool("native_menubar", FALSE));
-    g_signal_connect(mac_check, "toggled",
-                     G_CALLBACK(on_native_menubar_toggled), sw);
-#else
-    gtk_widget_set_sensitive(mac_check, FALSE);
-    gtk_widget_set_tooltip_text(mac_check,
-        "Requires the gtk-mac-integration library:\n"
-        "sudo port install gtk-osx-application-gtk3, then rebuild "
-        "(make clean && make)");
-#endif
-    gtk_box_pack_start(GTK_BOX(vbox), mac_check, FALSE, FALSE, 0);
-#endif /* __APPLE__ */
     gtk_box_pack_start(GTK_BOX(vbox),
                        gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                        FALSE, FALSE, 2);

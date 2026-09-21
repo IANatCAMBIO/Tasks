@@ -16,9 +16,40 @@
 #include "task_worker.h"
 #include "core_views.h"
 #include "library_window.h"
-#ifdef HAVE_GTKOSX
-#include <gtkosxapplication.h>
-#endif
+#include <string.h>
+
+#ifdef __APPLE__
+/* ---------------------------------------------------------------------------
+ * quartz_log_filter() — GLogFunc that drops ONE specific, benign message
+ * and hands everything else to the default handler.
+ *
+ * MacPorts' GTK carries a patch (patch-gtk-menu-crash.diff) that guards
+ * `*change_point != NULL` at the top of gtk_menu_tracker_remove_items(),
+ * and GTK's own gtk_application_set_menubar() trips it once per launch
+ * with a Gtk-CRITICAL that means nothing (the menu is built and works;
+ * measured in the sister Notes app, whose D10 records it).  The filter is
+ * installed before GTK initialises so it covers that first message, and
+ * it matches on the two literal fragments so an unrelated CRITICAL from
+ * the same function still gets through.
+ *   domain  — log domain ("Gtk" for the offending message).
+ *   level   — log level flags.
+ *   message — the formatted log text.
+ *   data    — unused.
+ * ------------------------------------------------------------------------- */
+static void
+quartz_log_filter(const gchar   *domain,
+                  GLogLevelFlags level,
+                  const gchar   *message,
+                  gpointer       data)
+{
+    (void)data;
+    if (message != NULL &&
+        strstr(message, "gtk_menu_tracker_remove_items") != NULL &&
+        strstr(message, "*change_point != NULL") != NULL)
+        return;                      /* MacPorts' misplaced tracker guard    */
+    g_log_default_handler(domain, level, message, data);
+}
+#endif /* __APPLE__ */
 
 /* ---------------------------------------------------------------------------
  * startup_integrity_check() — verify the database at launch and show a
@@ -146,17 +177,15 @@ on_activate(GtkApplication *gtk_app, gpointer data)
                                        theme_dir);
     g_free(theme_dir);
 
-    /* On Linux (and any non-macOS platform) the window manager shows a
-     * generic icon unless we set one explicitly.  Load document.png from
-     * the icons/ directory and register it as the default for all windows. */
-#ifndef HAVE_GTKOSX
+    /* The window manager shows a generic icon unless we set one
+     * explicitly.  Load document.png from the icons/ directory and
+     * register it as the default for all windows.                          */
     gchar *icon_path = g_build_filename(boot->app->icons_dir,
                                         "document.png", NULL);
     GError *icon_err = NULL;
     gtk_window_set_default_icon_from_file(icon_path, &icon_err);
     g_clear_error(&icon_err);
     g_free(icon_path);
-#endif
 
     /* PRAGMA integrity_check + foreign_key_check, EVERY launch and with no
      * setting to switch it off (removed 2026-09-09).  It is two PRAGMAs on
@@ -175,14 +204,6 @@ on_activate(GtkApplication *gtk_app, gpointer data)
     if (db_ok)
         task_app_status(boot->app, "DB at %s loaded, integrity check passed",
                         boot->app->db->path);
-
-#ifdef HAVE_GTKOSX
-    /* Honor the persisted native-menu-bar preference, then let the macOS
-     * integration finish its launch handshake.                             */
-    if (task_app_config_get_bool("native_menubar", FALSE))
-        task_library_apply_native_menubar(boot->app, TRUE);
-    gtkosx_application_ready(gtkosx_application_get());
-#endif
 }
 
 /* ---------------------------------------------------------------------------
@@ -193,6 +214,15 @@ main(int argc, char **argv)
 {
     /* Config first: everything else may read it.                           */
     task_app_config_init(argc > 0 ? argv[0] : NULL);
+
+#ifdef __APPLE__
+    /* The one benign Gtk-CRITICAL the MacPorts build prints (see
+     * quartz_log_filter).  Installed before GTK so it covers the launch.  */
+    g_log_set_handler("Gtk",
+                      G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_WARNING |
+                      G_LOG_FLAG_FATAL | G_LOG_FLAG_RECURSION,
+                      quartz_log_filter, NULL);
+#endif
 
     /* Classic full-width scrollbars everywhere instead of GTK's modern
      * overlay style, matching Notes.  This is the ONE lever: it is a

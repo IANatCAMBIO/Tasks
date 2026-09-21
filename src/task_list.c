@@ -256,7 +256,7 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
     }
     gtk_tree_path_free(path);
 
-    return task_context_menu_popup(lw, view, event);
+    return task_context_menu_popup(lw, event);
 }
 
 /* ---------------------------------------------------------------------------
@@ -661,52 +661,67 @@ task_manual_sort_apply(TaskLibrary *lw)
             GTK_SORT_ASCENDING);
 }
 
-/* on_column_toggled() — a column visibility check item was clicked: update
- * the column visibility and persist in config.                             */
+/* ---------------------------------------------------------------------------
+ * The hidable columns as STATEFUL "win.column-<key>" actions: the state is
+ * the column's visibility, the header menu's check items name them, and
+ * the change-state path is the ONE writer of both the column and its
+ * col_<key>_visible key.  An `activate` handler on a stateful action does
+ * not flip the state, so the check mark would never move — hence
+ * change-state, and g_simple_action_set_state called here.
+ * ------------------------------------------------------------------------- */
 static void
-on_column_toggled(GtkCheckMenuItem *item, gpointer data)
+on_column_change_state(GSimpleAction *action, GVariant *value, gpointer data)
 {
     (void)data;
-    GtkTreeViewColumn *col = g_object_get_data(G_OBJECT(item), "task-col");
-    TaskLibrary         *lw  = g_object_get_data(G_OBJECT(item), "task-lw");
-    if (!col || !lw) return;
-    const gchar *key = g_object_get_data(G_OBJECT(col), "task-colkey");
-    gboolean vis = gtk_check_menu_item_get_active(item);
+    GtkTreeViewColumn *col = g_object_get_data(G_OBJECT(action), "task-col");
+    const gchar       *key = g_object_get_data(G_OBJECT(col), "task-colkey");
+    gboolean vis = g_variant_get_boolean(value);
+    g_simple_action_set_state(action, value);
     gtk_tree_view_column_set_visible(col, vis);
-    if (key) {
-        gchar *cfg = g_strdup_printf("col_%s_visible", key);
-        task_app_config_set(cfg, vis ? "1" : "0");
-        g_free(cfg);
-    }
+    gchar *cfg = g_strdup_printf("col_%s_visible", key);
+    task_app_config_set(cfg, vis ? "1" : "0");
+    g_free(cfg);
 }
 
-/* task_columns_apply() — restore persisted column visibility.              */
-static void
-task_columns_apply(TaskLibrary *lw)
+/* ---------------------------------------------------------------------------
+ * task_list_install_actions() — one column action per hidable column,
+ * seeded from the ini and applied to the column at once (see
+ * library_priv.h).  Called from task_list_build, once the columns exist.
+ * Status defaults to HIDDEN: the ✓ column already says what most rows
+ * need, and the header right-click menu is where anyone who wants the
+ * third state on screen turns it on.
+ * ------------------------------------------------------------------------- */
+void
+task_list_install_actions(TaskLibrary *lw)
 {
-    GtkTreeViewColumn *cdone =
-        g_object_get_data(G_OBJECT(lw->task_view), "task-cdone");
-    GtkTreeViewColumn *cstatus =
-        g_object_get_data(G_OBJECT(lw->task_view), "task-cstatus");
-    GtkTreeViewColumn *cdue  =
-        g_object_get_data(G_OBJECT(lw->task_view), "task-cdue");
-    GtkTreeViewColumn *ccompleted =
-        g_object_get_data(G_OBJECT(lw->task_view), "task-ccompleted");
-    if (cdone)
-        gtk_tree_view_column_set_visible(cdone,
-            task_app_config_get_bool("col_done_visible", TRUE));
-    /* Status defaults to HIDDEN: the ✓ column already says what most
-     * rows need, and the header right-click menu is where anyone who
-     * wants the third state on screen turns it on.                        */
-    if (cstatus)
-        gtk_tree_view_column_set_visible(cstatus,
-            task_app_config_get_bool("col_status_visible", FALSE));
-    if (cdue)
-        gtk_tree_view_column_set_visible(cdue,
-            task_app_config_get_bool("col_due_visible", TRUE));
-    if (ccompleted)
-        gtk_tree_view_column_set_visible(ccompleted,
-            task_app_config_get_bool("col_completed_visible", TRUE));
+    static const struct {
+        const gchar *data_key;       /* the column, as stored on the view   */
+        const gchar *key;            /* the ini key's middle: col_<key>_… */
+        gboolean     def;
+    } COLUMNS[] = {
+        { "task-cdone",      "done",      TRUE  },
+        { "task-cstatus",    "status",    FALSE },
+        { "task-cdue",       "due",       TRUE  },
+        { "task-ccompleted", "completed", TRUE  },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS(COLUMNS); i++) {
+        GtkTreeViewColumn *col =
+            g_object_get_data(G_OBJECT(lw->task_view), COLUMNS[i].data_key);
+        gchar *cfg  = g_strdup_printf("col_%s_visible", COLUMNS[i].key);
+        gchar *name = g_strdup_printf("column-%s", COLUMNS[i].key);
+        gboolean vis = task_app_config_get_bool(cfg, COLUMNS[i].def);
+        gtk_tree_view_column_set_visible(col, vis);
+        GSimpleAction *action =
+            g_simple_action_new_stateful(name, NULL,
+                                         g_variant_new_boolean(vis));
+        g_object_set_data(G_OBJECT(action), "task-col", col);
+        g_signal_connect(action, "change-state",
+                         G_CALLBACK(on_column_change_state), lw);
+        g_action_map_add_action(G_ACTION_MAP(lw->window), G_ACTION(action));
+        g_object_unref(action);
+        g_free(name);
+        g_free(cfg);
+    }
 }
 
 /* on_column_header_press() — right-click on any column header pops a menu
@@ -718,8 +733,10 @@ on_column_header_press(GtkWidget *btn, GdkEventButton *ev, gpointer data)
     (void)btn;
     if (ev->button != 3) return FALSE;
     TaskLibrary *lw = data;
-    GtkWidget *menu = gtk_menu_new();
 
+    /* One check item per hidable column, in column order, each naming its
+     * stateful action — the check mark is the action's state.             */
+    GMenu *menu = g_menu_new();
     GList *cols = gtk_tree_view_get_columns(GTK_TREE_VIEW(lw->task_view));
     for (GList *l = cols; l; l = l->next) {
         GtkTreeViewColumn *col   = l->data;
@@ -728,20 +745,12 @@ on_column_header_press(GtkWidget *btn, GdkEventButton *ev, gpointer data)
         const gchar       *label =
             g_object_get_data(G_OBJECT(col), "task-collabel");
         if (!key) continue;
-        GtkWidget *item = gtk_check_menu_item_new_with_label(label);
-        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item),
-            gtk_tree_view_column_get_visible(col));
-        g_object_set_data(G_OBJECT(item), "task-col", col);
-        g_object_set_data(G_OBJECT(item), "task-lw",  lw);
-        g_signal_connect(item, "toggled",
-                         G_CALLBACK(on_column_toggled), NULL);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+        gchar *action = g_strdup_printf("win.column-%s", key);
+        g_menu_append(menu, label, action);
+        g_free(action);
     }
     g_list_free(cols);
-    gtk_widget_show_all(menu);
-    g_signal_connect(menu, "selection-done",
-                     G_CALLBACK(gtk_widget_destroy), NULL);
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
+    task_app_menu_popup(lw->window, G_MENU_MODEL(menu), ev);
     return TRUE;
 }
 
@@ -898,7 +907,7 @@ task_list_build(TaskLibrary *lw)
             header_button_flatten(hbtn);   /* match the status bar          */
         }
     }
-    task_columns_apply(lw);
+    task_list_install_actions(lw);
     task_manual_sort_apply(lw);   /* show/hide cdrag per persisted setting  */
 
     /* Motion, release, and leave events for live-drag reorder + cursor. */

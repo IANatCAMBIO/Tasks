@@ -7,7 +7,7 @@
  *
  * Sections:
  *   Appearance — bold task titles, Due Today's overdue rows, Kanban
- *     shadows, native macOS menubar.
+ *     shadows.
  *   Database — the health plate and the rotating backups.
  * =========================================================================== */
 

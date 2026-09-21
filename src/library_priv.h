@@ -165,15 +165,6 @@ typedef struct {
     GtkWidget    *hide_done_item;    /* completed-visibility toggle button  */
     GtkWidget    *manual_sort_item;  /* manual-sort mode toggle button      */
     GtkWidget    *pane_item;         /* list <-> Kanban pane toggle button  */
-    /* Every toggling View item is an ACTION item, not a check item: its
-     * LABEL is the action a click performs (see the *_LABEL_TO_* macros),
-     * so none of them carries the current state to read back — every
-     * handler flips the config or the cache instead.                      */
-    GtkWidget    *view_show_done_item;  /* Show / Hide Completed            */
-    GtkWidget    *view_kanban_item;     /* Kanban View / List View          */
-    GtkWidget    *view_manual_sort_item;/* Manual / Automatic Sorting       */
-    GtkWidget    *view_compact_item;    /* Compact / Full Controls          */
-    GtkWidget    *view_sidebar_item;    /* Show / Hide Sidebar              */
     gint          sel_kind;
     gint64        sel_id;
     gboolean      populating;
@@ -273,6 +264,48 @@ void task_list_build(TaskLibrary *lw);
 void task_kanban_build(TaskLibrary *lw);
 
 /* ---------------------------------------------------------------------------
+ * Actions.  Every command is a GAction: the menubar names "app." actions
+ * (they must work whichever window is focused — on macOS the native bar
+ * is the only bar), the toolbar and the context menus name "win." actions
+ * on the library window.  Menus, buttons and shortcuts only NAME actions;
+ * there are no GtkMenuItem callbacks and no toolbar "clicked" handlers.
+ * A dynamic menu label is TWO items with hidden-when=action-disabled, and
+ * lib_menu_pair_sync is what decides which one is on offer.
+ * ------------------------------------------------------------------------- */
+
+/* LibCommand — one parameterless command: the action name (without its
+ * "app." / "win." prefix) and what it does for the library window.        */
+typedef struct {
+    const gchar *name;
+    void       (*run)(TaskLibrary *lw);
+} LibCommand;
+
+/* lib_win_commands_install() — add `n` commands from `table` to the
+ * window's "win." group.  `table` must outlive the window (a static).     */
+void lib_win_commands_install(TaskLibrary *lw, const LibCommand *table,
+                              gsize n);
+
+/* lib_win_action_add() — add one PARAMETERISED "win." action; `activate`
+ * has the GSimpleAction "activate" signature and receives `lw`.          */
+void lib_win_action_add(TaskLibrary *lw, const gchar *name,
+                        const GVariantType *type, GCallback activate);
+
+/* lib_menu_pair_sync() — a hidden-when PAIR of "app." items: enable
+ * `when_on` and disable `when_off` while `on`, the reverse otherwise, so
+ * exactly one of the two is ever on the menu.                             */
+void lib_menu_pair_sync(TaskLibrary *lw, const gchar *when_on,
+                        const gchar *when_off, gboolean on);
+
+/* lib_app_action_set_enabled() — grey (or ungrey) one "app." action.     */
+void lib_app_action_set_enabled(TaskLibrary *lw, const gchar *name,
+                                gboolean enabled);
+
+/* The parts' own actions, installed by task_library_window_new before the
+ * panes are built.                                                        */
+void task_sidebar_install_actions(TaskLibrary *lw);
+void task_list_install_actions(TaskLibrary *lw);
+
+/* ---------------------------------------------------------------------------
  * Cross-file calls.  Each is documented at its definition.
  * ------------------------------------------------------------------------- */
 void lib_card_drag_stop(TaskLibrary *lw);
@@ -281,8 +314,8 @@ void lib_full_refresh(TaskLibrary *lw);
 gchar *lib_list_label(const TaskList *l);
 gboolean lib_manual_sort_live(TaskLibrary *lw);
 TaskLibrary *lib_of(TaskApp *app);          /* the TaskLibrary behind app->library_window */
-void lib_on_new_list(GtkWidget *w, gpointer data);
-void lib_on_toggle_sidebar(GtkWidget *widget, gpointer data);
+void lib_on_new_list(TaskLibrary *lw);
+void lib_on_toggle_sidebar(TaskLibrary *lw);
 guint lib_refresh_kanban(TaskLibrary *lw, GPtrArray *tasks, const TaskRowCtx *ctx);
 void lib_refresh_sidebar(TaskLibrary *lw);
 void lib_refresh_tasks(TaskLibrary *lw);
@@ -318,8 +351,7 @@ void lib_sidebar_ui_sync(TaskLibrary *lw);
  * ------------------------------------------------------------------------- */
 void lib_themed_bg_css_apply(GtkWidget *w, ThemedCssFunc build);
 gboolean lib_view_refuse(TaskLibrary *lw, const gchar *alternative);
-gboolean task_context_menu_popup(TaskLibrary *lw, GtkWidget *anchor,
-                                 GdkEventButton *event);
+gboolean task_context_menu_popup(TaskLibrary *lw, GdkEventButton *event);
 void task_manual_sort_apply(TaskLibrary *lw);
 void task_view_apply_manual_order(TaskLibrary *lw);
 

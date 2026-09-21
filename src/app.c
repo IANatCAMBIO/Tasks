@@ -194,6 +194,32 @@ task_app_confirm(GtkWindow *parent, const gchar *title, const gchar *fmt, ...)
 }
 
 /* ---------------------------------------------------------------------------
+ * task_app_menu_popup() — see app.h.
+ * ------------------------------------------------------------------------- */
+void
+task_app_menu_popup(GtkWidget *attach, GMenuModel *model,
+                    GdkEventButton *event)
+{
+    GtkWidget *menu = gtk_menu_new_from_model(model);
+    g_object_unref(model);           /* the menu holds its own reference    */
+    gtk_menu_attach_to_widget(GTK_MENU(menu), attach, NULL);
+    g_signal_connect(menu, "selection-done",
+                     G_CALLBACK(gtk_widget_destroy), NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_app_menu_section_end() — see app.h.
+ * ------------------------------------------------------------------------- */
+void
+task_app_menu_section_end(GMenu *menu, GMenu **section)
+{
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(*section));
+    g_object_unref(*section);
+    *section = g_menu_new();
+}
+
+/* ---------------------------------------------------------------------------
  * task_app_widget_add_css() — one-off CSS on a single widget (see app.h).
  * ------------------------------------------------------------------------- */
 void

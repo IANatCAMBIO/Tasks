@@ -318,9 +318,9 @@ lib_sidebar_ui_sync(TaskLibrary *lw)
         gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->sidebar_item),
             shown ? "Hide the lists pane" : "Show the lists pane");
 
-    if (lw->view_sidebar_item != NULL)
-        gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_sidebar_item),
-            shown ? SIDEBAR_LABEL_TO_HIDE : SIDEBAR_LABEL_TO_SHOW);
+    /* The menu twin is a hidden-when PAIR: offer the one that names what a
+     * click will do (see library_priv.h).                                 */
+    lib_menu_pair_sync(lw, "sidebar-hide", "sidebar-show", shown);
 }
 
 /* sidebar_set_visible() — show or hide the lists pane, persist the
@@ -339,10 +339,8 @@ sidebar_set_visible(TaskLibrary *lw, gboolean show)
  * the task view takes the whole window while it is hidden (mirrors the
  * Notes "Folders" toggle).                                                */
 void
-lib_on_toggle_sidebar(GtkWidget *widget, gpointer data)
+lib_on_toggle_sidebar(TaskLibrary *lw)
 {
-    (void)widget;
-    TaskLibrary *lw = data;
     sidebar_set_visible(lw, !gtk_widget_get_visible(lw->sidebar_box));
 }
 
@@ -477,34 +475,6 @@ run_list_dialog(TaskLibrary *lw, const gchar *title,
     return ok;
 }
 
-/* ---------------------------------------------------------------------------
- * Group context-menu actions (forward-declared; menu built in
- * on_sb_button_press below).
- * ------------------------------------------------------------------------- */
-static void
-on_sb_ctx_move_to_group(GtkWidget *item, gpointer data)
-{
-    TaskLibrary *lw   = data;
-    GArray    *ids  = g_object_get_data(G_OBJECT(item), "task-ids");
-    gint64 group_id = (gint64)(gintptr)
-        g_object_get_data(G_OBJECT(item), "task-group-id");
-    for (guint i = 0; i < ids->len; i++)
-        task_db_list_set_group(lw->app->db,
-                               g_array_index(ids, gint64, i), group_id);
-    lib_full_refresh(lw);
-}
-
-static void
-on_sb_ctx_remove_from_group(GtkWidget *item, gpointer data)
-{
-    TaskLibrary *lw = data;
-    GArray   *ids = g_object_get_data(G_OBJECT(item), "task-ids");
-    for (guint i = 0; i < ids->len; i++)
-        task_db_list_set_group(lw->app->db,
-                               g_array_index(ids, gint64, i), 0);
-    lib_full_refresh(lw);
-}
-
 /* run_group_name_dialog() — modal entry for a group name; fills *out and
  * returns TRUE on accept with non-empty text, FALSE otherwise.             */
 static gboolean
@@ -538,12 +508,73 @@ run_group_name_dialog(TaskLibrary *lw, const gchar *title, const gchar *button,
     return accepted;
 }
 
-static void
-on_sb_ctx_rename_group(GtkWidget *item, gpointer data)
+/* ---------------------------------------------------------------------------
+ * The sidebar's context menu and its actions.  Every item names a "win."
+ * action (see library_priv.h); the ones that act on lists read the
+ * sidebar's CURRENT selection, which is what the menu was opened on, and
+ * the ones that act on a group carry its id as the action target.
+ * ------------------------------------------------------------------------- */
+
+/* selected_list_ids() — the ids of every selected LIST row; a view, the
+ * header or a group row contributes nothing.  Free with g_array_unref.    */
+static GArray *
+selected_list_ids(TaskLibrary *lw)
 {
-    TaskLibrary *lw   = data;
-    gint64 group_id = (gint64)(gintptr)
-        g_object_get_data(G_OBJECT(item), "task-group-id");
+    GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+    GtkTreeSelection *sel =
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(lw->sb_view));
+    GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
+    GList *rows = gtk_tree_selection_get_selected_rows(sel, &model);
+    for (GList *r = rows; r != NULL; r = r->next) {
+        GtkTreeIter it;
+        if (!gtk_tree_model_get_iter(model, &it, r->data))
+            continue;
+        gint   k;
+        gint64 lid;
+        gtk_tree_model_get(model, &it, SB_KIND, &k, SB_ID, &lid, -1);
+        if (k == SB_KIND_LIST)
+            g_array_append_val(ids, lid);
+    }
+    g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
+    return ids;
+}
+
+/* lists_set_group() — file every selected list under `group_id` (0 =
+ * ungrouped), then refresh.                                                */
+static void
+lists_set_group(TaskLibrary *lw, gint64 group_id)
+{
+    GArray *ids = selected_list_ids(lw);
+    for (guint i = 0; i < ids->len; i++)
+        task_db_list_set_group(lw->app->db,
+                               g_array_index(ids, gint64, i), group_id);
+    g_array_unref(ids);
+    lib_full_refresh(lw);
+}
+
+/* on_move_to_group() — win.move-to-group(x): Move to Group → <group>.     */
+static void
+on_move_to_group(GSimpleAction *action, GVariant *param, gpointer data)
+{
+    (void)action;
+    lists_set_group(data, g_variant_get_int64(param));
+}
+
+/* on_remove_from_group() — win.remove-from-group.                         */
+static void
+on_remove_from_group(TaskLibrary *lw)
+{
+    lists_set_group(lw, 0);
+}
+
+/* on_rename_group() — win.rename-group(x): the group-name dialog, seeded
+ * with the current name.                                                   */
+static void
+on_rename_group(GSimpleAction *action, GVariant *param, gpointer data)
+{
+    (void)action;
+    TaskLibrary *lw = data;
+    gint64 group_id = g_variant_get_int64(param);
     TaskGroup *grp     = task_db_group_get(lw->app->db, group_id);
     gchar     *current = grp != NULL ? g_strdup(grp->name) : NULL;
     task_group_free(grp);
@@ -557,42 +588,49 @@ on_sb_ctx_rename_group(GtkWidget *item, gpointer data)
     g_free(current);
 }
 
+/* ---------------------------------------------------------------------------
+ * group_delete_confirm() — ask, then remove group `gid`: its lists become
+ * ungrouped, its aggregate's saved orders go with it, and a selection
+ * sitting on it falls back to the first list.  Both routes to removing a
+ * group come here — the context menu's Remove Group and Delete List with
+ * a group row selected.
+ * ------------------------------------------------------------------------- */
 static void
-on_sb_ctx_delete_group(GtkWidget *item, gpointer data)
+group_delete_confirm(TaskLibrary *lw, gint64 gid)
 {
-    TaskLibrary *lw   = data;
-    gint64 group_id = (gint64)(gintptr)
-        g_object_get_data(G_OBJECT(item), "task-group-id");
-    GtkWidget *dlg = gtk_message_dialog_new(
-        GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
-        GTK_MESSAGE_QUESTION, GTK_BUTTONS_OK_CANCEL,
-        "Remove this group? Its lists will become ungrouped.");
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
-    if (resp == GTK_RESPONSE_OK) {
-        if (lw->sel_kind == SB_KIND_GROUP && lw->sel_id == group_id) {
-            lw->sel_kind = SB_KIND_LIST;
-            lw->sel_id   = 0;
-        }
-        task_db_group_delete(lw->app->db, group_id);
-        /* The group's aggregate had orders of its own (see
-         * lib_row_order_key); its lists keep theirs and become ungrouped.     */
-        lib_row_order_keys_drop(SB_KIND_GROUP, group_id);
-        lib_full_refresh(lw);
+    if (!task_app_confirm(GTK_WINDOW(lw->window), "Remove Group",
+                          "Remove this group? Its lists will become "
+                          "ungrouped."))
+        return;
+    if (lw->sel_kind == SB_KIND_GROUP && lw->sel_id == gid) {
+        lw->sel_kind = SB_KIND_LIST;
+        lw->sel_id   = 0;
     }
+    task_db_group_delete(lw->app->db, gid);
+    lib_row_order_keys_drop(SB_KIND_GROUP, gid);
+    lib_full_refresh(lw);
 }
 
-static void on_new_group(GtkWidget *, gpointer);
+/* on_delete_group() — win.delete-group(x): the context menu's Remove
+ * Group.                                                                   */
+static void
+on_delete_group(GSimpleAction *action, GVariant *param, gpointer data)
+{
+    (void)action;
+    group_delete_confirm(data, g_variant_get_int64(param));
+}
 
-static void on_edit_list(GtkWidget *, gpointer);
+static void on_new_group(TaskLibrary *lw);
+static void on_edit_list(TaskLibrary *lw);
+static void on_delete_list(TaskLibrary *lw);
 
-static void on_delete_list(GtkWidget *, gpointer);
-
-/* on_sb_button_press() — right-click on the sidebar: always offers New List
- * and New Group; adds Edit/Delete for SB_KIND_LIST, Rename/Remove for
- * SB_KIND_GROUP, and group-assignment items when groups exist.  Right-clicking
- * inside an existing multi-selection keeps it; outside collapses to the
- * clicked row first.                                                       */
+/* ---------------------------------------------------------------------------
+ * on_sb_button_press() — right-click on the sidebar: select the row under
+ * the pointer (unless it is already part of the selection) and pop the
+ * context menu that fits its kind.  New List and New Group are always on
+ * it; a list row adds Edit / Delete and the group items; a group row adds
+ * Rename / Remove.
+ * ------------------------------------------------------------------------- */
 static gboolean
 on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
 {
@@ -620,119 +658,73 @@ on_sb_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
         gtk_tree_path_free(path);
     }
 
-    GtkWidget *menu = gtk_menu_new();
-    g_signal_connect(menu, "selection-done",
-                     G_CALLBACK(gtk_widget_destroy), NULL);
-
-    /* New List and New Group are always available. */
-    GtkWidget *new_list = gtk_menu_item_new_with_label("New List");
-    g_signal_connect(new_list, "activate", G_CALLBACK(lib_on_new_list), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), new_list);
-
-    GtkWidget *new_grp = gtk_menu_item_new_with_label("New Group");
-    g_signal_connect(new_grp, "activate", G_CALLBACK(on_new_group), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), new_grp);
+    GMenu *menu    = g_menu_new();
+    GMenu *section = g_menu_new();
+    g_menu_append(section, "New List",  "win.new-list");
+    g_menu_append(section, "New Group", "win.new-group");
+    task_app_menu_section_end(menu, &section);
 
     if (kind == SB_KIND_LIST) {
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                              gtk_separator_menu_item_new());
+        g_menu_append(section, "Edit List",   "win.edit-list");
+        g_menu_append(section, "Delete List", "win.delete-list");
+        task_app_menu_section_end(menu, &section);
 
-        GtkWidget *edit = gtk_menu_item_new_with_label("Edit List");
-        g_signal_connect(edit, "activate", G_CALLBACK(on_edit_list), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), edit);
-
-        GtkWidget *del = gtk_menu_item_new_with_label("Delete List");
-        g_signal_connect(del, "activate", G_CALLBACK(on_delete_list), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), del);
-
-        /* Collect selected list ids and group membership for move items. */
-        GtkTreeSelection *sel =
-            gtk_tree_view_get_selection(GTK_TREE_VIEW(widget));
-        GtkTreeModel *model = GTK_TREE_MODEL(lw->sb_store);
-        GList *rows = gtk_tree_selection_get_selected_rows(sel, &model);
-        GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+        /* The group items: Move to Group offers every group; Remove from
+         * Group appears when any selected list is in one.                  */
+        GArray *ids = selected_list_ids(lw);
         gboolean any_grouped = FALSE;
-        for (GList *r = rows; r; r = r->next) {
-            GtkTreeIter ri;
-            if (!gtk_tree_model_get_iter(model, &ri, r->data)) continue;
-            gint k; gint64 lid;
-            gtk_tree_model_get(model, &ri, SB_KIND, &k, SB_ID, &lid, -1);
-            if (k != SB_KIND_LIST) continue;
-            g_array_append_val(ids, lid);
-            TaskList *l = task_db_list_get(lw->app->db, lid);
-            if (l) {
-                if (l->group_id != 0) any_grouped = TRUE;
+        for (guint i = 0; i < ids->len; i++) {
+            TaskList *l = task_db_list_get(lw->app->db,
+                                           g_array_index(ids, gint64, i));
+            if (l != NULL) {
+                if (l->group_id != 0)
+                    any_grouped = TRUE;
                 task_list_free(l);
             }
         }
-        g_list_free_full(rows, (GDestroyNotify)gtk_tree_path_free);
-
-        GPtrArray *groups = task_db_groups(lw->app->db);
-        if (groups->len > 0 || any_grouped) {
-            gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                                  gtk_separator_menu_item_new());
-            if (groups->len > 0) {
-                GtkWidget *move = gtk_menu_item_new_with_label("Move to Group");
-                GtkWidget *sub  = gtk_menu_new();
-                for (guint i = 0; i < groups->len; i++) {
-                    TaskGroup *g = g_ptr_array_index(groups, i);
-                    GtkWidget *gi = gtk_menu_item_new_with_label(g->name);
-                    g_object_set_data_full(G_OBJECT(gi), "task-ids",
-                                           g_array_ref(ids),
-                                           (GDestroyNotify)g_array_unref);
-                    g_object_set_data(G_OBJECT(gi), "task-group-id",
-                                      (gpointer)(gintptr)g->id);
-                    g_signal_connect(gi, "activate",
-                                     G_CALLBACK(on_sb_ctx_move_to_group), lw);
-                    gtk_menu_shell_append(GTK_MENU_SHELL(sub), gi);
-                }
-                gtk_menu_item_set_submenu(GTK_MENU_ITEM(move), sub);
-                gtk_menu_shell_append(GTK_MENU_SHELL(menu), move);
-            }
-            if (any_grouped) {
-                GtkWidget *rem =
-                    gtk_menu_item_new_with_label("Remove from Group");
-                g_object_set_data_full(G_OBJECT(rem), "task-ids",
-                                       g_array_ref(ids),
-                                       (GDestroyNotify)g_array_unref);
-                g_signal_connect(rem, "activate",
-                                 G_CALLBACK(on_sb_ctx_remove_from_group), lw);
-                gtk_menu_shell_append(GTK_MENU_SHELL(menu), rem);
-            }
-        }
-        task_ptr_array_free_groups(groups);
         g_array_unref(ids);
-
+        GPtrArray *groups = task_db_groups(lw->app->db);
+        if (groups->len > 0) {
+            GMenu *sub = g_menu_new();
+            for (guint i = 0; i < groups->len; i++) {
+                TaskGroup *g = g_ptr_array_index(groups, i);
+                GMenuItem *gi = g_menu_item_new(g->name, NULL);
+                g_menu_item_set_action_and_target(gi, "win.move-to-group",
+                                                  "x", g->id);
+                g_menu_append_item(sub, gi);
+                g_object_unref(gi);
+            }
+            g_menu_append_submenu(section, "Move to Group",
+                                  G_MENU_MODEL(sub));
+            g_object_unref(sub);
+        }
+        if (any_grouped)
+            g_menu_append(section, "Remove from Group",
+                          "win.remove-from-group");
+        task_ptr_array_free_groups(groups);
+        if (g_menu_model_get_n_items(G_MENU_MODEL(section)) > 0)
+            task_app_menu_section_end(menu, &section);
     } else if (kind == SB_KIND_GROUP) {
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                              gtk_separator_menu_item_new());
-
-        GtkWidget *rename = gtk_menu_item_new_with_label("Rename Group");
-        g_object_set_data(G_OBJECT(rename), "task-group-id",
-                          (gpointer)(gintptr)id);
-        g_signal_connect(rename, "activate",
-                         G_CALLBACK(on_sb_ctx_rename_group), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), rename);
-
-        GtkWidget *del = gtk_menu_item_new_with_label("Remove Group");
-        g_object_set_data(G_OBJECT(del), "task-group-id",
-                          (gpointer)(gintptr)id);
-        g_signal_connect(del, "activate",
-                         G_CALLBACK(on_sb_ctx_delete_group), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), del);
+        GMenuItem *item = g_menu_item_new("Rename Group", NULL);
+        g_menu_item_set_action_and_target(item, "win.rename-group", "x", id);
+        g_menu_append_item(section, item);
+        g_object_unref(item);
+        item = g_menu_item_new("Remove Group", NULL);
+        g_menu_item_set_action_and_target(item, "win.delete-group", "x", id);
+        g_menu_append_item(section, item);
+        g_object_unref(item);
+        task_app_menu_section_end(menu, &section);
     }
+    g_object_unref(section);
 
-    gtk_widget_show_all(menu);
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+    task_app_menu_popup(lw->window, G_MENU_MODEL(menu), event);
     return TRUE;
 }
 
 /* on_new_group() — prompt for a name and create a new list group.          */
 static void
-on_new_group(GtkWidget *w, gpointer data)
+on_new_group(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     gchar *name = NULL;
     if (run_group_name_dialog(lw, "New Group", "Create", NULL, &name)) {
         gint64 gid = task_db_group_create(lw->app->db, name);
@@ -746,10 +738,8 @@ on_new_group(GtkWidget *w, gpointer data)
 
 /* lib_on_new_list() — prompt (name + optional emoji), create, select.          */
 void
-lib_on_new_list(GtkWidget *w, gpointer data)
+lib_on_new_list(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     gchar *name = NULL;              /* dialog in/out values                */
     gchar *emoji = NULL;
     if (run_list_dialog(lw, "New List", &name, &emoji)) {
@@ -771,10 +761,8 @@ lib_on_new_list(GtkWidget *w, gpointer data)
 
 /* on_edit_list() — change the selected list's name and/or emoji.           */
 static void
-on_edit_list(GtkWidget *w, gpointer data)
+on_edit_list(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     if (lib_view_refuse(lw, "edit the list each item lives in"))
         return;
     gint64 id = lib_selected_list_id(lw);
@@ -815,30 +803,16 @@ on_sidebar_activated(GtkTreeView *view, GtkTreePath *path,
     gint kind;
     gtk_tree_model_get(model, &iter, SB_KIND, &kind, -1);
     if (kind == SB_KIND_LIST)
-        on_edit_list(NULL, lw);
+        on_edit_list(lw);
 }
 
 /* on_delete_list() — confirm + tombstone the selected real list; when a
  * group is selected, delegate to on_sb_ctx_delete_group.                   */
 static void
-on_delete_list(GtkWidget *w, gpointer data)
+on_delete_list(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     if (lw->sel_kind == SB_KIND_GROUP) {
-        gint64 gid = lw->sel_id;
-        GtkWidget *dlg = gtk_message_dialog_new(
-            GTK_WINDOW(lw->window), GTK_DIALOG_MODAL,
-            GTK_MESSAGE_QUESTION, GTK_BUTTONS_OK_CANCEL,
-            "Remove this group? Its lists will become ungrouped.");
-        gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-        gtk_widget_destroy(dlg);
-        if (resp == GTK_RESPONSE_OK) {
-            lw->sel_kind = SB_KIND_LIST;
-            lw->sel_id   = 0;
-            task_db_group_delete(lw->app->db, gid);
-            lib_full_refresh(lw);
-        }
+        group_delete_confirm(lw, lw->sel_id);
         return;
     }
     if (lib_view_refuse(lw, "hide it in File \xe2\x86\x92 Settings\xe2\x80\xa6"))
@@ -965,4 +939,32 @@ task_sidebar_build(TaskLibrary *lw, GtkWidget *paned)
      * no matter what the scroll policy says — both are needed.            */
     gtk_paned_pack1(GTK_PANED(paned), sidebar_box, FALSE, TRUE);
     lw->sidebar_box = sidebar_box;   /* for the toolbar show/hide toggle    */
+}
+
+/* ---------------------------------------------------------------------------
+ * task_sidebar_install_actions() — the "win." actions the sidebar's
+ * context menu, the toolbar's Sidebar button and File → New List name
+ * (see library_priv.h).  Installed by task_library_window_new before any
+ * menu can be shown.
+ * ------------------------------------------------------------------------- */
+static const LibCommand SIDEBAR_COMMANDS[] = {
+    { "new-list",          lib_on_new_list       },
+    { "new-group",         on_new_group          },
+    { "edit-list",         on_edit_list          },
+    { "delete-list",       on_delete_list        },
+    { "remove-from-group", on_remove_from_group  },
+    { "toggle-sidebar",    lib_on_toggle_sidebar },
+};
+
+void
+task_sidebar_install_actions(TaskLibrary *lw)
+{
+    lib_win_commands_install(lw, SIDEBAR_COMMANDS,
+                             G_N_ELEMENTS(SIDEBAR_COMMANDS));
+    lib_win_action_add(lw, "move-to-group", G_VARIANT_TYPE_INT64,
+                       G_CALLBACK(on_move_to_group));
+    lib_win_action_add(lw, "rename-group",  G_VARIANT_TYPE_INT64,
+                       G_CALLBACK(on_rename_group));
+    lib_win_action_add(lw, "delete-group",  G_VARIANT_TYPE_INT64,
+                       G_CALLBACK(on_delete_group));
 }

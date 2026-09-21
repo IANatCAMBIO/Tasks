@@ -13,9 +13,6 @@
 #include "settings_window.h"
 #include <stdlib.h>
 #include <string.h>
-#ifdef HAVE_GTKOSX
-#include <gtkosxapplication.h>
-#endif
 
 /* ---------------------------------------------------------------------------
  * lib_manual_sort_live() — may rows be hand-reordered RIGHT NOW?
@@ -171,7 +168,11 @@ lib_scroll_keep_queue(GtkWidget *view)
  * lib_refresh_sidebar() — rebuild the sidebar and restore the selection.
  * ------------------------------------------------------------------------- */
 
-static void     on_toggle_kanban(GtkWidget *, gpointer);
+static void     on_toggle_kanban(TaskLibrary *lw);
+static void     on_new_task(TaskLibrary *lw);
+static void     on_delete_task(TaskLibrary *lw);
+static void     on_task_info(TaskLibrary *lw);
+static const gchar *manual_sort_tooltip(TaskLibrary *lw);
 
 /* lib_sel_view() — the registered view the sidebar is sitting on, or NULL
  * when the selection is a list or a group.                                 */
@@ -272,9 +273,7 @@ task_pane_mode_apply(TaskLibrary *lw)
      * whole quarter on the pixbuf so nothing is resampled.  (menu.png is
      * also why the sort button wears neither of its old pictures — two
      * buttons wearing the same image read as one control.)              */
-    if (lw->view_kanban_item != NULL)
-        gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_kanban_item),
-            lw->board.kanban ? PANE_LABEL_TO_LIST : PANE_LABEL_TO_KANBAN);
+    lib_menu_pair_sync(lw, "pane-list", "pane-kanban", lw->board.kanban);
     if (lw->pane_item != NULL) {
         GtkWidget *icon = task_app_icon_image_rotated(lw->app, "menu", 24,
             lw->board.kanban ? GDK_PIXBUF_ROTATE_NONE
@@ -295,10 +294,17 @@ task_pane_mode_apply(TaskLibrary *lw)
      * DIFFERENT tooltips: one control greyed for two unrelated causes is
      * only honest if it says which one is in force.                       */
     gboolean sortable = !lw->board.kanban && lw->search == NULL;
-    if (lw->view_manual_sort_item != NULL) {
-        gtk_widget_set_sensitive(lw->view_manual_sort_item, sortable);
-        gtk_widget_set_tooltip_text(lw->view_manual_sort_item,
-            sortable      ? NULL
+    /* The sort PAIR is this function's to set, not manual_sort_icon_refresh's:
+     * a greyed pair is "neither face", and this runs last on every path
+     * that can change either the mode or the reason.                     */
+    lib_app_action_set_enabled(lw, "sort-manual", sortable && !lw->manual_sort);
+    lib_app_action_set_enabled(lw, "sort-auto",   sortable &&  lw->manual_sort);
+    if (lw->manual_sort_item != NULL) {
+        gtk_widget_set_sensitive(GTK_WIDGET(lw->manual_sort_item), sortable);
+        /* The reason rides on the toolbar button, since a menu item from a
+         * model carries no tooltip.                                        */
+        gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->manual_sort_item),
+            sortable      ? manual_sort_tooltip(lw)
             : lw->board.kanban  ? "The Kanban board is always drag-sorted \xe2\x80\x94 "
                             "turn Kanban View off to change list sorting"
                           : "A search hides rows, and saving an order from "
@@ -306,8 +312,6 @@ task_pane_mode_apply(TaskLibrary *lw)
                             "places \xe2\x80\x94 clear the search box to "
                             "drag-sort again");
     }
-    if (lw->manual_sort_item != NULL)
-        gtk_widget_set_sensitive(GTK_WIDGET(lw->manual_sort_item), sortable);
 }
 
 /* ---------------------------------------------------------------------------
@@ -499,26 +503,30 @@ hide_done_icon_refresh(TaskLibrary *lw)
     }
     gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->hide_done_item),
         show ? "Hide completed tasks" : "Show completed tasks");
-    /* The menu twin says the same thing in words.  No handler blocking:
-     * setting a label cannot emit "activate", where set_active on a check
-     * item would have (same reason as manual_sort_icon_refresh).          */
-    if (lw->view_show_done_item != NULL)
-        gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_show_done_item),
-                                show ? DONE_LABEL_TO_HIDE
-                                     : DONE_LABEL_TO_SHOW);
+    /* The menu twin says the same thing in words: the hidden-when pair.   */
+    lib_menu_pair_sync(lw, "done-hide", "done-show", show);
 }
 
 /* on_toggle_done_visible() — the toolbar toggle behind it: flip the
  * persisted show_completed flag and rebuild the task pane.                 */
 static void
-on_toggle_done_visible(GtkWidget *w, gpointer data)
+on_toggle_done_visible(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     gboolean show = !task_app_config_get_bool("show_completed", TRUE);
     task_app_config_set("show_completed", show ? "1" : "0");
     hide_done_icon_refresh(lw);
     lib_refresh_tasks(lw);
+}
+
+/* manual_sort_tooltip() — what a click on the Sort Mode button will do,
+ * from the cached mode.  One spelling for the button's normal state, read
+ * by manual_sort_icon_refresh and by task_pane_mode_apply when the
+ * greying lifts.                                                           */
+static const gchar *
+manual_sort_tooltip(TaskLibrary *lw)
+{
+    return lw->manual_sort ? "Switch to automatic sorting"
+                           : "Switch to manual drag sorting";
 }
 
 /* manual_sort_icon_refresh() — swap the sort-mode button's icon and tooltip
@@ -542,24 +550,16 @@ manual_sort_icon_refresh(TaskLibrary *lw)
             GTK_TOOL_BUTTON(lw->manual_sort_item), icon);
     }
     gtk_tool_item_set_tooltip_text(GTK_TOOL_ITEM(lw->manual_sort_item),
-        manual ? "Switch to automatic sorting"
-               : "Switch to manual drag sorting");
-    /* The menu item is a plain action item whose LABEL is the destination
-     * mode, so it needs no handler blocking: setting a label cannot emit
-     * "activate", where set_active on a check item would have.            */
-    if (lw->view_manual_sort_item != NULL)
-        gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_manual_sort_item),
-                                manual ? SORT_LABEL_TO_AUTO
-                                       : SORT_LABEL_TO_MANUAL);
+                                   manual_sort_tooltip(lw));
+    /* The menu pair is NOT set here: task_pane_mode_apply owns it, since
+     * the greying it applies is part of the same answer.                  */
 }
 
 /* on_toggle_manual_sort() — toolbar button that flips task_list_manual_sort
  * and refreshes the pane.                                                  */
 static void
-on_toggle_manual_sort(GtkWidget *w, gpointer data)
+on_toggle_manual_sort(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     gboolean manual = !lw->manual_sort;
     task_app_config_set("task_list_manual_sort", manual ? "1" : "0");
     task_manual_sort_apply(lw);
@@ -751,9 +751,7 @@ compact_layout_apply(TaskLibrary *lw)
         task_app_config_get_bool("sidebar_visible", FALSE));
     lib_sidebar_ui_sync(lw);
 
-    if (lw->view_compact_item != NULL)
-        gtk_menu_item_set_label(GTK_MENU_ITEM(lw->view_compact_item),
-            compact ? CTRL_LABEL_TO_FULL : CTRL_LABEL_TO_COMPACT);
+    lib_menu_pair_sync(lw, "controls-full", "controls-compact", compact);
 
     /* Compact Controls takes the whole toolbar away, search box included,
      * so a filter left running would go on hiding tasks with nothing left
@@ -770,10 +768,8 @@ compact_layout_apply(TaskLibrary *lw)
 /* on_new_task() — create an empty task in the selected list and open its
  * editor.  The virtual views cannot hold new tasks.                        */
 static void
-on_new_task(GtkWidget *w, gpointer data)
+on_new_task(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     gint64 list_id = lib_selected_list_id(lw);
     if (list_id == 0) {
         /* A group holds several lists, so "the selected list" has no
@@ -797,13 +793,8 @@ on_new_task(GtkWidget *w, gpointer data)
 
 /* on_delete_task() — confirm + tombstone the selected task.                */
 static void
-on_delete_task(GtkWidget *w, gpointer data)
+on_delete_task(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
-    /* Mirrored Notes items delete like any other task: the row is
-     * tombstoned and its uid parked in bn_deleted, so the next mirror
-     * pass does not helpfully re-create what was just deleted.             */
     GArray *ids = selected_task_ids(lw);
     if (ids->len == 0) {
         task_app_status(lw->app, "Select a task to delete");
@@ -849,42 +840,37 @@ on_delete_task(GtkWidget *w, gpointer data)
  * Task context menu — Open in Google Tasks, Move to List, Delete.
  * =========================================================================== */
 
-static GtkWidget *menu_item(GtkWidget *menu, const gchar *label,
-                            GCallback cb, gpointer data);
+/* ---------------------------------------------------------------------------
+ * The task context menu's actions, all "win." and all acting on the
+ * CURRENT selection (selected_task_ids): the menu is modal, so the
+ * selection it was opened on is the selection its item acts on, whichever
+ * pane the click came from.
+ * ------------------------------------------------------------------------- */
 
-static GArray    *item_ids(GtkWidget *item);
-
-/* on_ctx_info() — open the task editor (same as double-clicking the row).  */
+/* on_task_info() — win.task-info: open the editor for the one selected
+ * task (offered for a single selection only, like a double-click).        */
 static void
-on_ctx_info(GtkWidget *item, gpointer data)
+on_task_info(TaskLibrary *lw)
 {
-    TaskLibrary *lw = data;
-    GArray *ids = item_ids(item);
-    if (ids == NULL || ids->len == 0)
-        return;
-    task_editor_open(lw->app, g_array_index(ids, gint64, 0));
+    GArray *ids = selected_task_ids(lw);
+    if (ids->len > 0)
+        task_editor_open(lw->app, g_array_index(ids, gint64, 0));
+    g_array_unref(ids);
 }
 
-/* item_ids() — the gint64 id array stashed on a context-menu item.         */
-static GArray *
-item_ids(GtkWidget *item)
-{
-    return g_object_get_data(G_OBJECT(item), "task-ids");
-}
-
-/* on_ctx_set_done() — Mark Complete / Mark Incomplete on the selection.
+/* on_mark_done() — win.mark-done(b): Mark (All) Complete / Incomplete.
  * These are the checkbox's two verbs in menu form and take the same
  * route: Complete → Done, Incomplete → In Progress.  Per row, so a
  * multi-row "Mark All Incomplete" over a mixed selection settles every
  * one of them on In Progress rather than half-reverting.                   */
 static void
-on_ctx_set_done(GtkWidget *item, gpointer data)
+on_mark_done(GSimpleAction *action, GVariant *param, gpointer data)
 {
+    (void)action;
     TaskLibrary *lw = data;
-    GArray *ids = item_ids(item);
-    gboolean done = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "task-done"));
+    gboolean done = g_variant_get_boolean(param);
     TaskStatus status = done ? TASK_STATUS_DONE : TASK_STATUS_IN_PROGRESS;
+    GArray *ids = selected_task_ids(lw);
     for (guint i = 0; i < ids->len; i++)
         task_db_task_set_status(lw->app->db,
                                 g_array_index(ids, gint64, i), status);
@@ -892,34 +878,19 @@ on_ctx_set_done(GtkWidget *item, gpointer data)
     task_app_status(lw->app, "Marked %u task%s %s", ids->len,
                     ids->len == 1 ? "" : "s",
                     done ? "complete" : "incomplete");
+    g_array_unref(ids);
 }
 
-/* ctx_done_item() — one Mark (All) Complete / Incomplete context-menu
- * item: the selection rides on the item as its own g_array_ref, the
- * complete/incomplete flag as "task-done".                                 */
+/* on_set_pinned() — win.set-pinned(b): Add to / Remove from Favorites on
+ * the selection (local-only; the sidebar's Favorites row follows via
+ * lib_full_refresh).                                                       */
 static void
-ctx_done_item(TaskLibrary *lw, GtkWidget *menu, GArray *ids,
-              gboolean single, gboolean done)
+on_set_pinned(GSimpleAction *action, GVariant *param, gpointer data)
 {
-    GtkWidget *item = gtk_menu_item_new_with_label(
-        done ? (single ? "Mark Complete"   : "Mark All Complete")
-             : (single ? "Mark Incomplete" : "Mark All Incomplete"));
-    g_object_set_data_full(G_OBJECT(item), "task-ids", g_array_ref(ids),
-                           (GDestroyNotify)g_array_unref);
-    g_object_set_data(G_OBJECT(item), "task-done", GINT_TO_POINTER(done));
-    g_signal_connect(item, "activate", G_CALLBACK(on_ctx_set_done), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-}
-
-/* on_ctx_set_pinned() — Pin / Unpin on the selection (local-only; the
- * sidebar's Pinned Tasks row follows via lib_full_refresh).                    */
-static void
-on_ctx_set_pinned(GtkWidget *item, gpointer data)
-{
+    (void)action;
     TaskLibrary *lw = data;
-    GArray *ids = item_ids(item);
-    gboolean pinned = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "task-flag"));
+    gboolean pinned = g_variant_get_boolean(param);
+    GArray *ids = selected_task_ids(lw);
     for (guint i = 0; i < ids->len; i++)
         task_db_task_set_pinned(lw->app->db,
                                 g_array_index(ids, gint64, i), pinned);
@@ -927,17 +898,18 @@ on_ctx_set_pinned(GtkWidget *item, gpointer data)
     task_app_status(lw->app, "%s %u task%s",
                     pinned ? "Added to Favorites" : "Removed from Favorites",
                     ids->len, ids->len == 1 ? "" : "s");
+    g_array_unref(ids);
 }
 
-/* on_ctx_set_priority() — Set / Clear High Priority on the selection
- * (local-only; the views re-sort via lib_full_refresh).                        */
+/* on_set_priority() — win.set-priority(b): Set / Clear High Priority on
+ * the selection (local-only; the views re-sort via lib_full_refresh).      */
 static void
-on_ctx_set_priority(GtkWidget *item, gpointer data)
+on_set_priority(GSimpleAction *action, GVariant *param, gpointer data)
 {
+    (void)action;
     TaskLibrary *lw = data;
-    GArray *ids = item_ids(item);
-    gboolean priority = GPOINTER_TO_INT(
-        g_object_get_data(G_OBJECT(item), "task-flag"));
+    gboolean priority = g_variant_get_boolean(param);
+    GArray *ids = selected_task_ids(lw);
     for (guint i = 0; i < ids->len; i++)
         task_db_task_set_priority(lw->app->db,
                                   g_array_index(ids, gint64, i), priority);
@@ -945,39 +917,27 @@ on_ctx_set_priority(GtkWidget *item, gpointer data)
     task_app_status(lw->app, "%s high priority on %u task%s",
                     priority ? "Set" : "Cleared",
                     ids->len, ids->len == 1 ? "" : "s");
+    g_array_unref(ids);
 }
 
-/* ctx_flag_item() — one bulk context-menu item: the selection rides on
- * the item as its own g_array_ref ("task-ids"), the boolean to apply as
- * "task-flag".                                                             */
+/* on_move_to_list() — win.move-to-list(x): a destination picked in the
+ * Move to List menu: move every selected TOP-LEVEL task not already there
+ * (subtasks travel with their parents; a selected subtask on its own
+ * cannot move).                                                            */
 static void
-ctx_flag_item(TaskLibrary *lw, GtkWidget *menu, GArray *ids,
-              const gchar *label, gboolean flag, GCallback cb)
+on_move_to_list(GSimpleAction *action, GVariant *param, gpointer data)
 {
-    GtkWidget *item = gtk_menu_item_new_with_label(label);
-    g_object_set_data_full(G_OBJECT(item), "task-ids", g_array_ref(ids),
-                           (GDestroyNotify)g_array_unref);
-    g_object_set_data(G_OBJECT(item), "task-flag", GINT_TO_POINTER(flag));
-    g_signal_connect(item, "activate", cb, lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-}
-
-/* on_ctx_move() — a destination picked in the Move to List menu: move
- * every selected TOP-LEVEL task not already there (subtasks travel with
- * their parents; a selected subtask on its own cannot move).               */
-static void
-on_ctx_move(GtkWidget *item, gpointer data)
-{
+    (void)action;
     TaskLibrary *lw = data;
-    GArray *ids = item_ids(item);
-    gint64 dest_id = *(gint64 *)g_object_get_data(G_OBJECT(item),
-                                                  "task-dest-id");
+    gint64 dest_id = g_variant_get_int64(param);
+    GArray *ids = selected_task_ids(lw);
     guint moved = 0;                 /* how many actually went              */
     for (guint i = 0; i < ids->len; i++) {
         gint64 id = g_array_index(ids, gint64, i);
         if (task_ops_move_to_list(lw->app, id, dest_id))
             moved++;                 /* it declines subtasks and no-op moves */
     }
+    g_array_unref(ids);
     if (moved > 0) {
         lib_full_refresh(lw);
         task_app_status(lw->app, "Moved %u task%s", moved,
@@ -988,26 +948,32 @@ on_ctx_move(GtkWidget *item, gpointer data)
     }
 }
 
+/* menu_item_bool() — append to `section` one item naming `action` with a
+ * boolean target: the two directions of a flag as two items.               */
+static void
+menu_item_bool(GMenu *section, const gchar *label, const gchar *action,
+               gboolean value)
+{
+    GMenuItem *item = g_menu_item_new(label, NULL);
+    g_menu_item_set_action_and_target(item, action, "b", value);
+    g_menu_append_item(section, item);
+    g_object_unref(item);
+}
+
 /* ---------------------------------------------------------------------------
  * task_context_menu_popup() — build and pop the task context menu for the
  * CURRENT selection, whatever produced it.
  *
  * Shared by the list view's rows and the Kanban board's cards, so the two
  * can never drift apart.  It reads the selection through
- * selected_task_ids, which already answers with the board's single card
+ * selected_task_ids, which already answers with the board's card
  * selection while the board is up — so nothing here needs to know which
- * pane the click came from.
- *
- *   anchor — a LONG-LIVED widget to attach the menu to.  Not the clicked
- *            card: an attached menu dies with its widget, and a card is
- *            destroyed by the next refresh, which any of these actions
- *            triggers.
+ * pane the click came from, and neither do the actions the items name.
  *
  * Returns TRUE when a menu was shown (the click is consumed).
  * ------------------------------------------------------------------------- */
 gboolean
-task_context_menu_popup(TaskLibrary *lw, GtkWidget *anchor,
-                        GdkEventButton *event)
+task_context_menu_popup(TaskLibrary *lw, GdkEventButton *event)
 {
     GArray *ids = selected_task_ids(lw);
     if (ids->len == 0) {
@@ -1019,106 +985,85 @@ task_context_menu_popup(TaskLibrary *lw, GtkWidget *anchor,
         ? task_db_task_get(lw->app->db, g_array_index(ids, gint64, 0))
         : NULL;
 
-    GtkWidget *menu = gtk_menu_new();
-    gtk_menu_attach_to_widget(GTK_MENU(menu), anchor, NULL);
-    g_signal_connect(menu, "selection-done",
-                     G_CALLBACK(gtk_widget_destroy), NULL);
+    GMenu *menu    = g_menu_new();
+    GMenu *section = g_menu_new();
 
     /* Info… — single row only; opens the editor (same as double-click).    */
     if (single) {
-        GtkWidget *info_item = gtk_menu_item_new_with_label("Info\xe2\x80\xa6");
-        g_object_set_data_full(G_OBJECT(info_item), "task-ids",
-                               g_array_ref(ids),
-                               (GDestroyNotify)g_array_unref);
-        g_signal_connect(info_item, "activate",
-                         G_CALLBACK(on_ctx_info), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), info_item);
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                              gtk_separator_menu_item_new());
+        g_menu_append(section, "Info\xe2\x80\xa6", "win.task-info");
+        task_app_menu_section_end(menu, &section);
     }
 
     /* Mark Complete / Mark Incomplete — single row: only the applicable
      * direction; multi: both (selection may be mixed).                     */
-    if (single && t != NULL)
-        ctx_done_item(lw, menu, ids, TRUE,
-                      t->status != TASK_STATUS_DONE);
-    else {
-        ctx_done_item(lw, menu, ids, FALSE, TRUE);
-        ctx_done_item(lw, menu, ids, FALSE, FALSE);
+    if (single && t != NULL) {
+        gboolean to_done = t->status != TASK_STATUS_DONE;
+        menu_item_bool(section, to_done ? "Mark Complete" : "Mark Incomplete",
+                       "win.mark-done", to_done);
+    } else {
+        menu_item_bool(section, "Mark All Complete",   "win.mark-done", TRUE);
+        menu_item_bool(section, "Mark All Incomplete", "win.mark-done", FALSE);
     }
-
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                          gtk_separator_menu_item_new());
+    task_app_menu_section_end(menu, &section);
 
     /* Pin / Unpin and High Priority: a single row gets just the action
      * that applies to it; a multi-selection (possibly mixed states)
      * gets both directions.                                                */
     if (single && t != NULL) {
-        ctx_flag_item(lw, menu, ids,
-                      t->pinned ? "Remove from Favorites" : "Add to Favorites",
-                      !t->pinned, G_CALLBACK(on_ctx_set_pinned));
-        ctx_flag_item(lw, menu, ids,
-                      t->priority ? "Clear High Priority"
-                                  : "Set High Priority",
-                      !t->priority, G_CALLBACK(on_ctx_set_priority));
+        menu_item_bool(section,
+                       t->pinned ? "Remove from Favorites" : "Add to Favorites",
+                       "win.set-pinned", !t->pinned);
+        menu_item_bool(section,
+                       t->priority ? "Clear High Priority"
+                                   : "Set High Priority",
+                       "win.set-priority", !t->priority);
     } else {
-        ctx_flag_item(lw, menu, ids, "Add All to Favorites", TRUE,
-                      G_CALLBACK(on_ctx_set_pinned));
-        ctx_flag_item(lw, menu, ids, "Remove All from Favorites", FALSE,
-                      G_CALLBACK(on_ctx_set_pinned));
-        ctx_flag_item(lw, menu, ids, "Set All High Priority", TRUE,
-                      G_CALLBACK(on_ctx_set_priority));
-        ctx_flag_item(lw, menu, ids, "Clear All High Priority", FALSE,
-                      G_CALLBACK(on_ctx_set_priority));
+        menu_item_bool(section, "Add All to Favorites",      "win.set-pinned",   TRUE);
+        menu_item_bool(section, "Remove All from Favorites", "win.set-pinned",   FALSE);
+        menu_item_bool(section, "Set All High Priority",     "win.set-priority", TRUE);
+        menu_item_bool(section, "Clear All High Priority",   "win.set-priority", FALSE);
+    }
+    task_app_menu_section_end(menu, &section);
+
+    /* Move to List — applies to the selection's top-level tasks, so it is
+     * left out for a single selected subtask (they travel with their
+     * parent) and when there is nowhere to move to.  For a single
+     * selection its own list is pointless; keep every destination for
+     * multi (rows may span lists in virtual views).                        */
+    if (!(single && t != NULL && t->parent_id != 0)) {
+        GMenu *sub = g_menu_new();
+        GPtrArray *lists = task_db_lists(lw->app->db, FALSE);
+        for (guint i = 0; i < lists->len; i++) {
+            TaskList *l = g_ptr_array_index(lists, i);
+            if (single && t != NULL && l->id == t->list_id)
+                continue;
+            gchar *label = lib_list_label(l);
+            GMenuItem *dest = g_menu_item_new(label, NULL);
+            g_menu_item_set_action_and_target(dest, "win.move-to-list",
+                                              "x", l->id);
+            g_menu_append_item(sub, dest);
+            g_object_unref(dest);
+            g_free(label);
+        }
+        task_ptr_array_free_lists(lists);
+        if (g_menu_model_get_n_items(G_MENU_MODEL(sub)) > 0) {
+            g_menu_append_submenu(section, "Move to List", G_MENU_MODEL(sub));
+            task_app_menu_section_end(menu, &section);
+        }
+        g_object_unref(sub);
     }
 
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                          gtk_separator_menu_item_new());
-
-    /* Move to List — applies to the selection's top-level tasks.           */
-    GtkWidget *move_item = gtk_menu_item_new_with_label("Move to List");
-    GtkWidget *submenu = gtk_menu_new();
-    GPtrArray *lists = task_db_lists(lw->app->db, FALSE);
-    guint added = 0;                 /* destinations offered                */
-    for (guint i = 0; i < lists->len; i++) {
-        TaskList *l = g_ptr_array_index(lists, i);
-        /* For a single selection its own list is pointless; keep every
-         * destination for multi (rows may span lists in virtual views).    */
-        if (single && t != NULL && l->id == t->list_id)
-            continue;
-        gchar *label = lib_list_label(l);
-        GtkWidget *dest = gtk_menu_item_new_with_label(label);
-        g_free(label);
-        gint64 *did = g_new(gint64, 1);
-        *did = l->id;
-        g_object_set_data_full(G_OBJECT(dest), "task-dest-id", did,
-                               g_free);
-        g_object_set_data_full(G_OBJECT(dest), "task-ids",
-                               g_array_ref(ids),
-                               (GDestroyNotify)g_array_unref);
-        g_signal_connect(dest, "activate",
-                         G_CALLBACK(on_ctx_move), lw);
-        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), dest);
-        added++;
-    }
-    task_ptr_array_free_lists(lists);
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(move_item), submenu);
-    gtk_widget_set_sensitive(move_item, added > 0 &&
-        !(single && t != NULL && t->parent_id != 0));
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), move_item);
-
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                          gtk_separator_menu_item_new());
     gchar *del_label = single
         ? g_strdup("Delete Task")
         : g_strdup_printf("Delete %u Tasks", ids->len);
-    menu_item(menu, del_label, G_CALLBACK(on_delete_task), lw);
+    g_menu_append(section, del_label, "win.delete-task");
     g_free(del_label);
+    task_app_menu_section_end(menu, &section);
+    g_object_unref(section);
 
     task_free(t);
     g_array_unref(ids);
-    gtk_widget_show_all(menu);
-    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)event);
+    task_app_menu_popup(lw->window, G_MENU_MODEL(menu), event);
     return TRUE;
 }
 
@@ -1128,20 +1073,16 @@ task_context_menu_popup(TaskLibrary *lw, GtkWidget *anchor,
 
 /* on_menu_settings() — File → Settings…                                    */
 static void
-on_menu_settings(GtkWidget *w, gpointer data)
+on_menu_settings(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     task_settings_window_open(lw->app, GTK_WINDOW(lw->window), lw->app->db->path);
 }
 
 /* on_menu_clear_completed() — File → Clear Completed Tasks: archive the
  * selected list's done tasks (Google's tasks.clear when synced).           */
 static void
-on_menu_clear_completed(GtkWidget *w, gpointer data)
+on_menu_clear_completed(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     gint64 id = lib_selected_list_id(lw);
     if (id == 0) {
         task_app_status(lw->app,
@@ -1185,11 +1126,9 @@ find_gtk_image(GtkWidget *widget)
  * the new default or for this session only.
  * ------------------------------------------------------------------------- */
 static void
-on_open_db(GtkWidget *widget, gpointer user_data)
+on_open_db(TaskLibrary *lw)
 {
-    (void)widget;
-    TaskLibrary *lw  = user_data;
-    TaskApp     *app = lw->app;
+    TaskApp *app = lw->app;
 
     GtkWidget *chooser = gtk_file_chooser_dialog_new(
         "Open Database", GTK_WINDOW(lw->window),
@@ -1307,10 +1246,8 @@ on_open_db(GtkWidget *widget, gpointer user_data)
  * user can no longer see highlighted.
  * ------------------------------------------------------------------------- */
 static void
-on_toggle_kanban(GtkWidget *w, gpointer data)
+on_toggle_kanban(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     lw->board.kanban = !lw->board.kanban;
     task_app_config_set("kanban_view", lw->board.kanban ? "1" : "0");
     gtk_tree_selection_unselect_all(
@@ -1326,10 +1263,8 @@ on_toggle_kanban(GtkWidget *w, gpointer data)
  * names the controls a click switches TO, so the item carries no state.
  * compact_layout_apply re-labels it.                                       */
 static void
-on_menu_toggle_compact(GtkWidget *w, gpointer data)
+on_menu_toggle_compact(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     task_app_config_set("compact_layout",
         task_app_config_get_bool("compact_layout", FALSE) ? "0" : "1");
     compact_layout_apply(lw);
@@ -1339,11 +1274,8 @@ on_menu_toggle_compact(GtkWidget *w, gpointer data)
  * standard about dialog with the app logo, version, database vitals and
  * a link to the BSD license (the Notes About, retinted).                  */
 static void
-on_menu_about(GtkWidget *w, gpointer data)
+on_menu_about(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
-
     /* 128x128-logical logo from document.png, decoded at the display's
      * scale factor so it stays sharp on Retina.                            */
     gint sf = gtk_widget_get_scale_factor(lw->window);
@@ -1412,54 +1344,9 @@ on_menu_about(GtkWidget *w, gpointer data)
 
 /* on_menu_quit() — File → Quit.                                            */
 static void
-on_menu_quit(GtkWidget *w, gpointer data)
+on_menu_quit(TaskLibrary *lw)
 {
-    (void)w;
-    TaskLibrary *lw = data;
     gtk_widget_destroy(lw->window);
-}
-
-/* menu_item() — build one wired menu item at the end of `menu`.           */
-static GtkWidget *
-menu_item(GtkWidget *menu, const gchar *label, GCallback cb, gpointer data)
-{
-    GtkWidget *item = gtk_menu_item_new_with_label(label);
-    g_signal_connect(item, "activate", cb, data);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-    return item;
-}
-
-/* ---------------------------------------------------------------------------
- * task_library_apply_native_menubar() — move the library menu into (or out
- * of) the native macOS menu bar (see header).  Mirrors Notes: the
- * SAME menu shell drives the macOS bar — the in-window widget just has
- * to be hidden; leaving native mode hands macOS an empty bar so the app
- * menu stays functional.
- * ------------------------------------------------------------------------- */
-void
-task_library_apply_native_menubar(TaskApp *app, gboolean native)
-{
-#ifdef HAVE_GTKOSX
-    if (app->library_window == NULL)
-        return;
-    GtkWidget *menubar =             /* the in-window GtkMenuBar            */
-        g_object_get_data(G_OBJECT(app->library_window), "task-menubar");
-    if (menubar == NULL)
-        return;
-
-    GtkosxApplication *osx = gtkosx_application_get();
-    if (native) {
-        gtk_widget_hide(menubar);
-        gtkosx_application_set_menu_bar(osx, GTK_MENU_SHELL(menubar));
-    } else {
-        gtk_widget_show(menubar);
-        GtkWidget *empty = gtk_menu_bar_new();
-        gtkosx_application_set_menu_bar(osx, GTK_MENU_SHELL(empty));
-    }
-    gtkosx_application_sync_menubar(osx);
-#else
-    (void)app; (void)native;
-#endif
 }
 
 /* ===========================================================================
@@ -1471,12 +1358,12 @@ task_library_apply_native_menubar(TaskApp *app, gboolean native)
 static GtkToolItem *
 tool_button(TaskLibrary *lw, GtkToolbar *bar, const gchar *icon,
             const gchar *fallback_markup, const gchar *label,
-            const gchar *tooltip, GCallback cb)
+            const gchar *tooltip, const gchar *action)
 {
     GtkToolItem *item = task_app_tool_item_new(lw->app, icon,
                                                fallback_markup, label,
                                                tooltip);
-    g_signal_connect(item, "clicked", cb, lw);
+    gtk_actionable_set_detailed_action_name(GTK_ACTIONABLE(item), action);
     gtk_toolbar_insert(bar, item, -1);
     return item;
 }
@@ -1487,7 +1374,7 @@ tool_button(TaskLibrary *lw, GtkToolbar *bar, const gchar *icon,
 static void
 compact_bar_button(TaskLibrary *lw, GtkWidget *box, const gchar *icon,
                    const gchar *fallback_markup, const gchar *tooltip,
-                   GCallback cb)
+                   const gchar *action)
 {
     GtkWidget *btn   = gtk_button_new();
     GtkWidget *image = task_app_icon_image_sized(lw->app, icon, 24);
@@ -1498,7 +1385,7 @@ compact_bar_button(TaskLibrary *lw, GtkWidget *box, const gchar *icon,
     gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
     gtk_container_add(GTK_CONTAINER(btn), image);
     gtk_widget_set_tooltip_text(btn, tooltip);
-    g_signal_connect(btn, "clicked", cb, lw);
+    gtk_actionable_set_detailed_action_name(GTK_ACTIONABLE(btn), action);
     gtk_box_pack_start(GTK_BOX(box), btn, FALSE, FALSE, 0);
 }
 
@@ -1553,10 +1440,9 @@ compact_bar_new(TaskLibrary *lw)
      * grays put a white slab over a dark theme's task rows.                */
     lib_themed_bg_css_apply(bar, float_bar_css);
     compact_bar_button(lw, bar, "add", "+", "Create a task in the "
-                       "selected list", G_CALLBACK(on_new_task));
+                       "selected list", "win.new-task");
     compact_bar_button(lw, bar, "remove", "\xe2\x88\x92",
-                       "Delete the selected task",
-                       G_CALLBACK(on_delete_task));
+                       "Delete the selected task", "win.delete-task");
 
     gtk_widget_set_halign(bar, GTK_ALIGN_END);
     gtk_widget_set_valign(bar, GTK_ALIGN_END);
@@ -1650,6 +1536,242 @@ on_library_destroy(GtkWidget *w, gpointer data)
 }
 
 /* ===========================================================================
+ * Actions (see library_priv.h).
+ *
+ * "app." — what the menubar names.  It must work whichever window is
+ * focused (on macOS the native menubar is the only menubar), so it lives
+ * on the GtkApplication and acts on THE library window through lib_of.
+ * app.about, app.preferences and app.quit are the names GTK's quartz
+ * backend binds its own application menu to.
+ *
+ * "win." — what is invoked only from inside the window: the toolbar
+ * buttons and the context menus.  Where a toolbar button and a menubar
+ * item mean the same thing, the "win." name binds the SAME function.
+ * There are no accelerators.
+ *
+ * The five toggling View items are hidden-when PAIRS: two items, each
+ * naming the thing a click DOES, of which the applier for that state
+ * enables exactly one (lib_menu_pair_sync).  Both halves of a pair bind
+ * the same flipping function, so the pair cannot disagree with the flag.
+ * =========================================================================== */
+
+static void on_toggle_done_visible(TaskLibrary *lw);
+static void on_toggle_manual_sort(TaskLibrary *lw);
+static void on_menu_toggle_compact(TaskLibrary *lw);
+static void on_menu_clear_completed(TaskLibrary *lw);
+static void on_open_db(TaskLibrary *lw);
+static void on_menu_settings(TaskLibrary *lw);
+static void on_menu_about(TaskLibrary *lw);
+static void on_menu_quit(TaskLibrary *lw);
+
+static const LibCommand APP_COMMANDS[] = {
+    { "new-task",         on_new_task             },
+    { "new-list",         lib_on_new_list         },
+    { "clear-completed",  on_menu_clear_completed },
+    { "open-db",          on_open_db              },
+    { "preferences",      on_menu_settings        },
+    { "about",            on_menu_about           },
+    { "quit",             on_menu_quit            },
+    { "done-hide",        on_toggle_done_visible  },
+    { "done-show",        on_toggle_done_visible  },
+    { "sort-manual",      on_toggle_manual_sort   },
+    { "sort-auto",        on_toggle_manual_sort   },
+    { "sidebar-hide",     lib_on_toggle_sidebar   },
+    { "sidebar-show",     lib_on_toggle_sidebar   },
+    { "controls-compact", on_menu_toggle_compact  },
+    { "controls-full",    on_menu_toggle_compact  },
+    { "pane-kanban",      on_toggle_kanban        },
+    { "pane-list",        on_toggle_kanban        },
+};
+
+static const LibCommand WIN_COMMANDS[] = {
+    { "new-task",    on_new_task            },
+    { "delete-task", on_delete_task         },
+    { "toggle-done", on_toggle_done_visible },
+    { "toggle-sort", on_toggle_manual_sort  },
+    { "toggle-pane", on_toggle_kanban       },
+    { "task-info",   on_task_info           },
+};
+
+/* on_win_command() — "activate" of a "win." command: the command rides on
+ * the action, `data` is the library.                                       */
+static void
+on_win_command(GSimpleAction *action, GVariant *param, gpointer data)
+{
+    (void)param;
+    const LibCommand *cmd = g_object_get_data(G_OBJECT(action), "lib-command");
+    cmd->run(data);
+}
+
+/* on_app_command() — "activate" of an "app." command: `data` is the
+ * TaskApp, since these outlive any one library window; with no library
+ * window there is nothing to act on.                                       */
+static void
+on_app_command(GSimpleAction *action, GVariant *param, gpointer data)
+{
+    (void)param;
+    TaskLibrary *lw = lib_of(data);
+    if (lw == NULL)
+        return;
+    const LibCommand *cmd = g_object_get_data(G_OBJECT(action), "lib-command");
+    cmd->run(lw);
+}
+
+/* commands_install() — add `n` parameterless actions from `table` to
+ * `map`, each carrying its table entry so one handler serves them all.
+ * `table` must outlive the map (every caller's is a static).              */
+static void
+commands_install(GActionMap *map, const LibCommand *table, gsize n,
+                 GCallback handler, gpointer user_data)
+{
+    for (gsize i = 0; i < n; i++) {
+        GSimpleAction *action = g_simple_action_new(table[i].name, NULL);
+        g_object_set_data(G_OBJECT(action), "lib-command",
+                          (gpointer)&table[i]);
+        g_signal_connect(action, "activate", handler, user_data);
+        g_action_map_add_action(map, G_ACTION(action));
+        g_object_unref(action);      /* the map holds it now                */
+    }
+}
+
+void
+lib_win_commands_install(TaskLibrary *lw, const LibCommand *table, gsize n)
+{
+    commands_install(G_ACTION_MAP(lw->window), table, n,
+                     G_CALLBACK(on_win_command), lw);
+}
+
+void
+lib_win_action_add(TaskLibrary *lw, const gchar *name,
+                   const GVariantType *type, GCallback activate)
+{
+    GSimpleAction *action = g_simple_action_new(name, type);
+    g_signal_connect(action, "activate", activate, lw);
+    g_action_map_add_action(G_ACTION_MAP(lw->window), G_ACTION(action));
+    g_object_unref(action);
+}
+
+void
+lib_app_action_set_enabled(TaskLibrary *lw, const gchar *name,
+                           gboolean enabled)
+{
+    GAction *action = g_action_map_lookup_action(
+        G_ACTION_MAP(lw->app->gtk_app), name);
+    if (action != NULL)
+        g_simple_action_set_enabled(G_SIMPLE_ACTION(action), enabled);
+}
+
+void
+lib_menu_pair_sync(TaskLibrary *lw, const gchar *when_on,
+                   const gchar *when_off, gboolean on)
+{
+    lib_app_action_set_enabled(lw, when_on,  on);
+    lib_app_action_set_enabled(lw, when_off, !on);
+}
+
+/* ---------------------------------------------------------------------------
+ * library_install_actions() — every action of the library: the "app."
+ * commands on the application (once — a second library window in one
+ * process reuses them), the "win." commands and the parameterised context
+ * menu actions on the window, and the sidebar's own.  The list's column
+ * actions are added by task_list_build, once the columns exist.
+ * ------------------------------------------------------------------------- */
+static void
+library_install_actions(TaskLibrary *lw)
+{
+    GActionMap *app_map = G_ACTION_MAP(lw->app->gtk_app);
+    if (g_action_map_lookup_action(app_map, APP_COMMANDS[0].name) == NULL)
+        commands_install(app_map, APP_COMMANDS, G_N_ELEMENTS(APP_COMMANDS),
+                         G_CALLBACK(on_app_command), lw->app);
+    lib_win_commands_install(lw, WIN_COMMANDS, G_N_ELEMENTS(WIN_COMMANDS));
+    lib_win_action_add(lw, "mark-done",    G_VARIANT_TYPE_BOOLEAN,
+                       G_CALLBACK(on_mark_done));
+    lib_win_action_add(lw, "set-pinned",   G_VARIANT_TYPE_BOOLEAN,
+                       G_CALLBACK(on_set_pinned));
+    lib_win_action_add(lw, "set-priority", G_VARIANT_TYPE_BOOLEAN,
+                       G_CALLBACK(on_set_priority));
+    lib_win_action_add(lw, "move-to-list", G_VARIANT_TYPE_INT64,
+                       G_CALLBACK(on_move_to_list));
+    task_sidebar_install_actions(lw);
+}
+
+/* menu_pair() — append a hidden-when PAIR to `section`: the two faces of
+ * one toggling item, each naming the action a click performs; the applier
+ * for that state enables exactly one of them (lib_menu_pair_sync).  A
+ * dynamic label is never a runtime model edit — see the actions note.     */
+static void
+menu_pair(GMenu *section, const gchar *label_on, const gchar *action_on,
+          const gchar *label_off, const gchar *action_off)
+{
+    const gchar *labels[]  = { label_on,  label_off  };
+    const gchar *actions[] = { action_on, action_off };
+    for (gsize i = 0; i < 2; i++) {
+        GMenuItem *item = g_menu_item_new(labels[i], actions[i]);
+        g_menu_item_set_attribute(item, "hidden-when", "s", "action-disabled");
+        g_menu_append_item(section, item);
+        g_object_unref(item);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * build_menubar() — the File and View menus as a menu model, every item
+ * naming an "app." action.  Rendered by GTK: in the native macOS menu bar,
+ * or across the top of the GtkApplicationWindow where the shell shows no
+ * menubar of its own.  Returns the model (owned by the caller).
+ * ------------------------------------------------------------------------- */
+static GMenuModel *
+build_menubar(void)
+{
+    GMenu *bar     = g_menu_new();
+    GMenu *menu    = g_menu_new();
+    GMenu *section = g_menu_new();
+
+    /* File.  ONE separator in this menu, and it goes after the group
+     * below.  What acts on the TASKS is New Task, New List and Clear
+     * Completed; everything after the rule is about the app or the file it
+     * keeps — the database, Settings, About, Quit.  A rule between every
+     * pair of items (which is what this was) divides nothing, so it
+     * stopped reading as grouping at all.  (On macOS GTK also puts
+     * Settings, About and Quit in the application menu it builds from the
+     * same three actions.)                                               */
+    g_menu_append(section, "New Task",              "app.new-task");
+    g_menu_append(section, "New List\xe2\x80\xa6",  "app.new-list");
+    g_menu_append(section, "Clear Completed Tasks", "app.clear-completed");
+    task_app_menu_section_end(menu, &section);
+    g_menu_append(section, "Open Database File\xe2\x80\xa6", "app.open-db");
+    g_menu_append(section, "Settings\xe2\x80\xa6",           "app.preferences");
+    g_menu_append(section, "About",                          "app.about");
+    g_menu_append(section, "Quit",                           "app.quit");
+    task_app_menu_section_end(menu, &section);
+    g_menu_append_submenu(bar, "File", G_MENU_MODEL(menu));
+    g_object_unref(menu);
+
+    /* View.  Above the divider is what the task PANE shows — the completed
+     * rows and the sort mode; below it is what the WINDOW looks like.
+     * Every item is a PAIR whose applier picks the face on offer:
+     * hide_done_icon_refresh, task_pane_mode_apply (sorting AND the pane),
+     * lib_sidebar_ui_sync, compact_layout_apply.                          */
+    menu = g_menu_new();
+    menu_pair(section, DONE_LABEL_TO_HIDE,    "app.done-hide",
+                       DONE_LABEL_TO_SHOW,    "app.done-show");
+    menu_pair(section, SORT_LABEL_TO_MANUAL,  "app.sort-manual",
+                       SORT_LABEL_TO_AUTO,    "app.sort-auto");
+    task_app_menu_section_end(menu, &section);
+    menu_pair(section, SIDEBAR_LABEL_TO_HIDE, "app.sidebar-hide",
+                       SIDEBAR_LABEL_TO_SHOW, "app.sidebar-show");
+    menu_pair(section, CTRL_LABEL_TO_COMPACT, "app.controls-compact",
+                       CTRL_LABEL_TO_FULL,    "app.controls-full");
+    menu_pair(section, PANE_LABEL_TO_KANBAN,  "app.pane-kanban",
+                       PANE_LABEL_TO_LIST,    "app.pane-list");
+    task_app_menu_section_end(menu, &section);
+    g_object_unref(section);
+    g_menu_append_submenu(bar, "View", G_MENU_MODEL(menu));
+    g_object_unref(menu);
+
+    return G_MENU_MODEL(bar);
+}
+
+/* ===========================================================================
  * Row order: the saved-order helpers BOTH panes share, then manual sort's
  * own persistence, drag handlers and mode toggle.
  *
@@ -1685,8 +1807,14 @@ task_library_window_new(TaskApp *app)
     lw->group_expanded = g_hash_table_new(g_direct_hash, g_direct_equal);
     lw->board.kanban_sel     = g_hash_table_new(NULL, NULL);   /* id set          */
 
-    lw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    /* A GtkApplicationWindow: that is what gives it the "win." action
+     * group the toolbar and the context menus name, and — where the shell
+     * shows no menubar of its own (XFCE) — what draws the application's
+     * menubar across its top.  On macOS GTK's quartz backend puts the same
+     * model in the native menu bar.                                        */
+    lw->window = gtk_application_window_new(app->gtk_app);
     gtk_window_set_title(GTK_WINDOW(lw->window), "Tasks");
+    library_install_actions(lw);     /* before anything can name one       */
     /* The last session's closing size (win_w/win_h), else the default.     */
     gchar *ww = task_app_config_get("win_w");
     gchar *wh = task_app_config_get("win_h");
@@ -1698,96 +1826,17 @@ task_library_window_new(TaskApp *app)
     g_free(wh);
     g_signal_connect(lw->window, "configure-event",
                      G_CALLBACK(on_library_configure), lw);
-    gtk_application_add_window(app->gtk_app, GTK_WINDOW(lw->window));
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(lw->window), vbox);
 
     /* --- Menubar ---------------------------------------------------------- */
-    GtkWidget *menubar = gtk_menu_bar_new();
-    GtkWidget *file_menu = gtk_menu_new();
-    GtkWidget *file_item = gtk_menu_item_new_with_label("File");
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
-    /* ONE separator in this menu, and it goes after the group below.
-     * What acts on the TASKS is New Task, New List and Clear Completed;
-     * everything after the rule is about the app or the file it keeps —
-     * the database, Settings, About, Quit.  A rule between every pair of
-     * items (which is what this was) divides nothing, so it stopped
-     * reading as grouping at all.                                        */
-    menu_item(file_menu, "New Task", G_CALLBACK(on_new_task), lw);
-    menu_item(file_menu, "New List\xe2\x80\xa6", G_CALLBACK(lib_on_new_list), lw);
-    menu_item(file_menu, "Clear Completed Tasks",
-              G_CALLBACK(on_menu_clear_completed), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
-                          gtk_separator_menu_item_new());
-    menu_item(file_menu, "Open Database File\xe2\x80\xa6",
-              G_CALLBACK(on_open_db), lw);
-    menu_item(file_menu, "Settings\xe2\x80\xa6",
-              G_CALLBACK(on_menu_settings), lw);
-    menu_item(file_menu, "About", G_CALLBACK(on_menu_about), lw);
-    menu_item(file_menu, "Quit", G_CALLBACK(on_menu_quit), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), file_item);
-
-    GtkWidget *view_menu = gtk_menu_new();
-    GtkWidget *view_item = gtk_menu_item_new_with_label("View");
-    gtk_menu_item_set_submenu(GTK_MENU_ITEM(view_item), view_menu);
-    /* Built with the label the persisted state calls for;
-     * hide_done_icon_refresh keeps it in step with the toolbar twin from
-     * then on.  Wired straight to that twin's handler.                    */
-    lw->view_show_done_item = gtk_menu_item_new_with_label(
-        task_app_config_get_bool("show_completed", TRUE)
-            ? DONE_LABEL_TO_HIDE : DONE_LABEL_TO_SHOW);
-    g_signal_connect(lw->view_show_done_item, "activate",
-                     G_CALLBACK(on_toggle_done_visible), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
-                          lw->view_show_done_item);
-    /* The sort toggle, as an ACTION item: its label is the mode a click
-     * switches TO — "Manual Sorting" while sorting is automatic (the
-     * column headers doing it), "Automatic Sorting" while dragging is.
-     * Built with the right label already, and
-     * manual_sort_icon_refresh keeps it in step with the toolbar twin.     */
-    lw->view_manual_sort_item = gtk_menu_item_new_with_label(
-        lw->manual_sort ? SORT_LABEL_TO_AUTO : SORT_LABEL_TO_MANUAL);
-    g_signal_connect(lw->view_manual_sort_item, "activate",
-                     G_CALLBACK(on_toggle_manual_sort), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
-                          lw->view_manual_sort_item);
-
-    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
-                          gtk_separator_menu_item_new());
-
-    /* Below the divider: what the WINDOW looks like.  Show/Hide Sidebar
-     * mirrors the toolbar's Sidebar button (both write `sidebar_visible`);
-     * Compact / Full Controls swaps the toolbar for the floating
-     * New/Delete pair, leaving the sidebar to that item in either mode;
-     * Kanban View / List View swaps the task pane for the board.  All are applied after the construction-time
-     * show_all, at the end of this function.                               */
-    lw->view_sidebar_item = gtk_menu_item_new_with_label(
-        task_app_config_get_bool("sidebar_visible", FALSE)
-            ? SIDEBAR_LABEL_TO_HIDE : SIDEBAR_LABEL_TO_SHOW);
-    g_signal_connect(lw->view_sidebar_item, "activate",
-                     G_CALLBACK(lib_on_toggle_sidebar), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
-                          lw->view_sidebar_item);
-    lw->view_compact_item = gtk_menu_item_new_with_label(
-        task_app_config_get_bool("compact_layout", FALSE)
-            ? CTRL_LABEL_TO_FULL : CTRL_LABEL_TO_COMPACT);
-    g_signal_connect(lw->view_compact_item, "activate",
-                     G_CALLBACK(on_menu_toggle_compact), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
-                          lw->view_compact_item);
-    lw->view_kanban_item = gtk_menu_item_new_with_label(
-        lw->board.kanban ? PANE_LABEL_TO_LIST : PANE_LABEL_TO_KANBAN);
-    g_signal_connect(lw->view_kanban_item, "activate",
-                     G_CALLBACK(on_toggle_kanban), lw);
-    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
-                          lw->view_kanban_item);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), view_item);
-
-    /* Remembered so the menu can be moved into the native macOS menu
-     * bar (see task_library_apply_native_menubar).                         */
-    g_object_set_data(G_OBJECT(lw->window), "task-menubar", menubar);
-    gtk_box_pack_start(GTK_BOX(vbox), menubar, FALSE, FALSE, 0);
+    /* A model over the "app." actions, rendered by GTK: in the native
+     * macOS menu bar, or across the top of this window on a desktop whose
+     * shell shows none.                                                    */
+    GMenuModel *menubar = build_menubar();
+    gtk_application_set_menubar(app->gtk_app, menubar);
+    g_object_unref(menubar);
 
     /* --- Toolbar ---------------------------------------------------------- */
     /* Icon names are icons/-relative paths; the curated set lives in
@@ -1810,10 +1859,10 @@ task_library_window_new(TaskApp *app)
     gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), GTK_TOOLBAR_ICONS);
     tool_button(lw, GTK_TOOLBAR(toolbar), "add", NULL,
                 "New Task", "Create a task in the selected list",
-                G_CALLBACK(on_new_task));
+                "win.new-task");
     tool_button(lw, GTK_TOOLBAR(toolbar), "remove", NULL,
                 "Delete Task", "Delete the selected task",
-                G_CALLBACK(on_delete_task));
+                "win.delete-task");
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar),
                        gtk_separator_tool_item_new(), -1);
 
@@ -1822,15 +1871,15 @@ task_library_window_new(TaskApp *app)
      * which way the next click goes in the tooltip (see there).          */
     lw->sidebar_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
         "left-and-right", "\xe2\x97\xa7", "Sidebar",
-        "Show the lists pane", G_CALLBACK(lib_on_toggle_sidebar)));
+        "Show the lists pane", "win.toggle-sidebar"));
 
     lw->hide_done_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
         "hidden", "\xf0\x9f\x91\x81", "Completed",
-        "Hide completed tasks", G_CALLBACK(on_toggle_done_visible)));
+        "Hide completed tasks", "win.toggle-done"));
     hide_done_icon_refresh(lw);      /* the persisted state's icon          */
     lw->manual_sort_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
         "manual", "\xe2\x89\x8b", "Sort Mode",
-        "Switch to manual drag sorting", G_CALLBACK(on_toggle_manual_sort)));
+        "Switch to manual drag sorting", "win.toggle-sort"));
     manual_sort_icon_refresh(lw);    /* the persisted state's tooltip       */
     /* The pane toggle sits with the sort toggle, not with the task
      * buttons: both of them change how the tasks are PRESENTED rather than
@@ -1841,7 +1890,7 @@ task_library_window_new(TaskApp *app)
      * construction-time show_all.                                        */
     lw->pane_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
         "menu", "\xe2\x96\xa6", "Kanban",
-        "Show the tasks as a Kanban board", G_CALLBACK(on_toggle_kanban)));
+        "Show the tasks as a Kanban board", "win.toggle-pane"));
 
     /* Expanding blank separator pushes the search box to the right edge
      * (the Notes layout, which keeps its own search box there).           */

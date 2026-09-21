@@ -204,6 +204,29 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
                           const gchar *fmt, ...) G_GNUC_PRINTF(3, 4);
 
 /* ---------------------------------------------------------------------------
+ * task_app_menu_popup() — show `model` as a context menu at the pointer.
+ *   attach — a LONG-LIVED widget the menu is attached to and resolves its
+ *            actions through (the library window).  Never the widget that
+ *            was clicked: an attached menu dies with its widget, and a
+ *            card or a row is often destroyed by the very action chosen.
+ *   model  — the menu; ownership passes to this call.
+ *   event  — the button press, for placement.
+ * The menu destroys itself once it closes ("selection-done" fires AFTER
+ * the chosen item's action, so the destroy never races it).
+ * ------------------------------------------------------------------------- */
+void task_app_menu_popup(GtkWidget *attach, GMenuModel *model,
+                         GdkEventButton *event);
+
+/* ---------------------------------------------------------------------------
+ * task_app_menu_section_end() — close the section being built into `menu`
+ * and start a fresh one: appends *section to `menu` (as a separated
+ * section), drops the reference, and replaces *section with a new empty
+ * GMenu.  Close the last section the same way and unref the empty one
+ * left behind.
+ * ------------------------------------------------------------------------- */
+void task_app_menu_section_end(GMenu *menu, GMenu **section);
+
+/* ---------------------------------------------------------------------------
  * Config — tasks.ini lives in the app's SHARED DIRECTORY,
  * task_db_default_dir() (<user data dir>/tasks), with the database.
  * Resolved ONCE, in three steps: that file if it EXISTS;
@@ -219,7 +242,7 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
  *                Database File…; there is no Settings control for it),
  *                backup_enabled,
  *                backup_dir, backup_interval_min, backup_keep
- *   UI         — bold_task_titles, native_menubar,
+ *   UI         — bold_task_titles,
  *                show_completed, sidebar_visible, compact_layout,
  *                due_today_show_overdue,
  *                task_list_manual_sort, kanban_view,
