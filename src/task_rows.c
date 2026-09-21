@@ -3,7 +3,6 @@
  * =========================================================================== */
 
 #include "task_rows.h"
-#include "plugin_owner.h"
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -23,61 +22,6 @@ task_rows_store_new(void)
                               G_TYPE_INT64,    /* TL_COMPLETED_RAW */
                               G_TYPE_INT,      /* TL_STATUS        */
                               G_TYPE_STRING);  /* TL_STATUS_TEXT   */
-}
-
-/* ---------------------------------------------------------------------------
- * Row decorations (see task_rows.h).  Registered once at startup; never
- * removed, so the list needs no lock.
- * ------------------------------------------------------------------------- */
-static GPtrArray *decorations = NULL;   /* const TaskRowDecorDef*, sorted   */
-
-static gint
-decor_cmp(gconstpointer a, gconstpointer b)
-{
-    const TaskRowDecorDef *da = *(const TaskRowDecorDef **)a;
-    const TaskRowDecorDef *db = *(const TaskRowDecorDef **)b;
-    return da->sort < db->sort ? -1 : (da->sort > db->sort ? 1 : 0);
-}
-
-void
-task_rows_add_decoration(const TaskRowDecorDef *def)
-{
-    if (def == NULL || def->prefix == NULL)
-        return;
-    if (decorations == NULL)
-        decorations = g_ptr_array_new();
-    task_plugin_owner_stamp((gpointer)def);
-    g_ptr_array_add(decorations, (gpointer)def);
-    g_ptr_array_sort(decorations, decor_cmp);
-}
-
-/* ---------------------------------------------------------------------------
- * task_rows_remove_owner() — drop `owner`'s decorations (see task_rows.h).
- * ------------------------------------------------------------------------- */
-void
-task_rows_remove_owner(const gchar *owner)
-{
-    if (decorations == NULL || owner == NULL)
-        return;
-    for (guint i = decorations->len; i > 0; i--) {
-        gpointer def = g_ptr_array_index(decorations, i - 1);
-        if (!task_plugin_owner_is(def, owner))
-            continue;
-        task_plugin_owner_forget(def);
-        g_ptr_array_remove_index(decorations, i - 1);
-        /* NOT freed: a decoration is the plugin's own static struct, and
-         * the module stays mapped.                                       */
-    }
-}
-
-/* decor_has() — is `task_id` in the set collected for decoration `i`?    */
-static gboolean
-decor_has(const TaskRowCtx *ctx, guint i, gint64 task_id)
-{
-    if (ctx == NULL || ctx->decor_sets == NULL || i >= ctx->decor_sets->len)
-        return FALSE;
-    GHashTable *set = g_ptr_array_index(ctx->decor_sets, i);
-    return set != NULL && g_hash_table_contains(set, &task_id);
 }
 
 /* ---------------------------------------------------------------------------
@@ -182,17 +126,6 @@ task_rows_desc_markup(const Task *t, const gchar *list_name, gint att_count,
     gchar *line = t->status == TASK_STATUS_DONE
         ? g_strdup_printf("%s<s>%s</s>%s", open, title, close)
         : g_strdup_printf("%s%s%s", open, title, close);
-    /* Contributed decorations, innermost first (see task_rows.h).  The ❗
-     * that used to be hard-coded here from t->bn_uid is now one of these,
-     * registered by whatever owns that meaning.                          */
-    for (guint i = 0; decorations != NULL && i < decorations->len; i++) {
-        const TaskRowDecorDef *d = g_ptr_array_index(decorations, i);
-        if (!decor_has(ctx, i, t->id))
-            continue;
-        gchar *p = g_strdup_printf("%s%s", d->prefix, line);
-        g_free(line);
-        line = p;
-    }
     if (t->pinned) {                  /* favorite task wears a star         */
         gchar *p = g_strdup_printf("\xe2\xad\x90\xef\xb8\x8f  %s", line);
         g_free(line);
@@ -362,16 +295,6 @@ task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx, gboolean virtual_view)
     }
     ctx->bold = task_app_config_get_bool("bold_task_titles", FALSE);
     ctx->show_done = task_app_config_get_bool("show_completed", TRUE);
-
-    /* Ask each decoration ONCE for the whole set it applies to — the
-     * batching that keeps a plugin out of the per-row path.             */
-    ctx->decor_sets = g_ptr_array_new();
-    for (guint i = 0; decorations != NULL && i < decorations->len; i++) {
-        const TaskRowDecorDef *d = g_ptr_array_index(decorations, i);
-        g_ptr_array_add(ctx->decor_sets,
-                        d->collect != NULL ? d->collect(app, d->user_data)
-                                           : NULL);
-    }
 }
 
 void
@@ -382,15 +305,6 @@ task_row_ctx_clear(TaskRowCtx *ctx)
     task_ptr_array_free_tasks(ctx->all_subs);
     if (ctx->list_names != NULL)
         g_hash_table_destroy(ctx->list_names);
-    if (ctx->decor_sets != NULL) {
-        for (guint i = 0; i < ctx->decor_sets->len; i++) {
-            GHashTable *set = g_ptr_array_index(ctx->decor_sets, i);
-            if (set != NULL)
-                g_hash_table_destroy(set);
-        }
-        g_ptr_array_free(ctx->decor_sets, TRUE);
-        ctx->decor_sets = NULL;
-    }
 }
 
 /* append_task_rows() — append `tasks` to `store` through the shared-
@@ -503,8 +417,7 @@ fade_step_cb(gpointer data)
     /* The context holds a REFERENCE to the store, so the store cannot be
      * freed under this timer.  That replaces the old guard, which asked
      * the library window whether it still owned this store — a question
-     * only that window could answer, and one a panel or a plugin has no
-     * way to.  A row reference that has gone stale (the pane refreshed
+     * only that window could answer.  A row reference that has gone stale (the pane refreshed
      * beneath us) still reports itself below.                             */
     GtkTreePath *path = gtk_tree_row_reference_get_path(ctx->row_ref);
     if (path == NULL) {              /* row already gone (external refresh) */
@@ -584,11 +497,9 @@ start_fade(TaskApp *app, GtkListStore *store, GtkTreeIter *iter,
 /* ---------------------------------------------------------------------------
  * task_rows_toggle_done() — the ✓ column's click (see task_rows.h).
  *
- * ONE implementation for every pane that shows a checkbox: the task
- * pane, the Weekly Forecast's seven day views, and any plugin's.  They
- * were separate copies differing only in where the model came from,
- * which is how two of them would eventually disagree about what a tick
- * means.
+ * ONE implementation for every pane that shows a checkbox.  Separate
+ * copies differing only in where the model came from are how two of
+ * them would eventually disagree about what a tick means.
  * ------------------------------------------------------------------------- */
 void
 task_rows_toggle_done(TaskApp *app, GtkListStore *store, GtkTreeIter *iter)

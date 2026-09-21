@@ -7,10 +7,8 @@
 #include "task_ops.h"
 #include "backup.h"
 #include "task_worker.h"
-#include "plugin_loader.h"
 #include "task_view.h"
 #include "task_rows.h"
-#include "task_ui.h"
 #include "search.h"
 #include "settings_window.h"
 #include <stdlib.h>
@@ -37,9 +35,7 @@
 enum {
     SB_KIND_VIEW = 0,                /* a registered virtual view; SB_ID
                                       * holds its registry INDEX, not a
-                                      * list id (see task_view.h).  Panel
-                                      * views (the Weekly Forecast) are
-                                      * registered like any other          */
+                                      * list id (see task_view.h)          */
     SB_KIND_HEADER,                  /* the "Lists" section header          */
     SB_KIND_LIST,                    /* a real list                         */
     SB_KIND_GROUP                    /* a list-group sub-header             */
@@ -68,15 +64,7 @@ typedef struct {
     GtkListStore *task_store;
     GtkWidget    *task_view;
     GtkWidget    *task_scroll;       /* the regular task pane; swapped
-                                      * with forecast_box (visibility)      */
-    /* Panel panes, keyed by the TaskView POINTER rather than by its
-     * registry index.  The index is not a stable identity: registering a
-     * view re-sorts the registry, so a plugin enabled at run time
-     * renumbers every view after it and an index-keyed table would hand
-     * back the wrong pane.  Built LAZILY — a view registered after this
-     * window was constructed has to be able to make its pane too.        */
-    GHashTable   *panels;            /* const TaskView* -> GtkWidget*      */
-    GtkWidget    *task_pane;         /* the box a new panel packs into     */
+                                      * with the board (visibility)         */
     /* ---------------------------------------------------------------------
      * The Kanban board — the THIRD task-pane variant, one lane per
      * TaskStatus.  Lane INDEX IS the status value, which is what lets a
@@ -163,19 +151,6 @@ typedef struct {
     GtkWidget    *sidebar_box;       /* for the toolbar show/hide toggle    */
     GtkWidget    *toolbar;           /* hidden by Compact Layout            */
     GtkWidget    *toolbar_rule;      /* the thin rule under the toolbar     */
-    GtkWidget    *ui_tool_rule;      /* divider before contributed buttons  */
-    gint          ui_tool_pos;       /* the toolbar index the contributed
-                                      * block starts at.  Recorded because
-                                      * that block is REBUILT IN PLACE when
-                                      * a plugin is switched on or off, so
-                                      * the spot has to outlive the first
-                                      * build (see ui_tools_build)          */
-    GtkWidget    *menubar;           /* the bar itself â its contributed
-                                      * menus are rebuilt the same way      */
-    GtkWidget    *file_menu;         /* File and View hold contributed      */
-    GtkWidget    *view_menu;         /* items INSIDE them, so each one      */
-    gint          file_ui_pos;       /* remembers where its group begins    */
-    gint          view_ui_pos;
     GtkWidget    *float_bar;         /* Compact Layout's floating New /
                                       * Delete Task pair (overlay child)    */
     GtkWidget    *search_entry;      /* the toolbar's search box, at the
@@ -450,8 +425,7 @@ scroll_keep_apply(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
-/* scroll_keep_queue_win() — the same, given the scrolled window itself
- * (the Weekly Forecast's one outer scroller wraps a box, not a view).      */
+/* scroll_keep_queue_win() — the same, given the scrolled window itself.   */
 static void
 scroll_keep_queue_win(GtkWidget *scroll)
 {
@@ -463,24 +437,6 @@ scroll_keep_queue_win(GtkWidget *scroll)
     sk->vadj  = g_object_ref(vadj);
     sk->value = gtk_adjustment_get_value(vadj);
     g_idle_add(scroll_keep_apply, sk);
-}
-
-/* task_library_scroll_keep() — the same, exported for panel plugins (see
- * library_window.h).                                                       */
-void
-task_library_scroll_keep(GtkWidget *scroll)
-{
-    scroll_keep_queue_win(scroll);
-}
-
-/* task_library_set_location() — see library_window.h.  Re-resolves the
- * window, so it is safe from a panel that outlived it.                     */
-void
-task_library_set_location(TaskApp *app, const gchar *text)
-{
-    TaskLibrary *lw = lib_of(app);
-    if (lw != NULL && lw->status_left != NULL)
-        gtk_label_set_text(GTK_LABEL(lw->status_left), text);
 }
 
 static void
@@ -502,8 +458,6 @@ static void     row_order_keys_drop(gint kind, gint64 id);
 static gboolean on_column_header_press(GtkWidget *, GdkEventButton *, gpointer);
 static void     on_toggle_kanban(GtkWidget *, gpointer);
 static void     full_refresh(TaskLibrary *lw);
-static void     ui_tools_apply(TaskLibrary *lw);
-static void     on_ui_task_menu_activated(GtkWidget *, gpointer);
 static void     scroll_keep_queue_win(GtkWidget *scroll);
 static void     refresh_tasks(TaskLibrary *lw);
 
@@ -536,60 +490,6 @@ view_refuse(TaskLibrary *lw, const gchar *alternative)
                         "%s is a view, not a list \xe2\x80\x94 %s",
                         v->name != NULL ? v->name : v->id, alternative);
     return TRUE;
-}
-
-/* panel_widget() — the pane a panel view owns, building it on first use.
- *
- * NULL for a query view, and for a panel view before the window's own
- * pane box exists.  Lazy because a view can arrive at ANY time: enabling
- * a plugin registers its views immediately, and one registered after
- * this window was built would otherwise have no pane and show an empty
- * area for the rest of the session.                                      */
-static GtkWidget *
-panel_widget(TaskLibrary *lw, const TaskView *v)
-{
-    if (lw->panels == NULL || v == NULL || !task_view_is_panel(v))
-        return NULL;
-    GtkWidget *w = g_hash_table_lookup(lw->panels, v);
-    if (w != NULL)
-        return w;
-    if (lw->task_pane == NULL)
-        return NULL;                 /* too early: no box to pack into     */
-    w = v->panel_new(lw->app, v->user_data);
-    if (w == NULL)
-        return NULL;
-    g_hash_table_insert(lw->panels, (gpointer)v, w);
-    /* Packed BEFORE the Kanban box so the panes keep their construction
-     * order, and shown explicitly: the window's show_all has long since
-     * run, so a widget added now starts hidden.                          */
-    gtk_box_pack_start(GTK_BOX(lw->task_pane), w, TRUE, TRUE, 0);
-    gtk_box_reorder_child(GTK_BOX(lw->task_pane), w, 1);
-    gtk_widget_show_all(w);
-    return w;
-}
-
-/* panels_prune() — destroy panes whose view has left the registry.
- *
- * A plugin switched off takes its views with it, but the pane it built
- * is a child of this window and would otherwise sit there for the rest
- * of the session, hidden but alive, holding whatever it cached.         */
-static void
-panels_prune(TaskLibrary *lw)
-{
-    if (lw->panels == NULL)
-        return;
-    GHashTableIter it;
-    gpointer key, val;
-    g_hash_table_iter_init(&it, lw->panels);
-    while (g_hash_table_iter_next(&it, &key, &val)) {
-        gboolean live = FALSE;
-        for (guint i = 0; i < task_view_count() && !live; i++)
-            live = task_view_nth(i) == key;
-        if (!live) {
-            gtk_widget_destroy(val);
-            g_hash_table_iter_remove(&it);
-        }
-    }
 }
 
 /* view_visible() — whether a view's sidebar row should exist right now.   */
@@ -2752,44 +2652,19 @@ kanban_lane_new(TaskLibrary *lw, TaskStatus status)
  * task_pane_mode_apply() — show exactly ONE of the three task-pane
  * variants.  The single place that answers "which pane is on screen":
  * refresh_tasks calls it, and so does the construction path after
- * show_all has made all three visible at once.
- *
- * The Weekly Forecast OUTRANKS Kanban.  It is its own panel of seven
- * dated day views, not a task list with a layout — there is nothing for
- * a board to lay out, so turning Kanban on does not disturb it, and
- * leaving the forecast puts the board back.
+ * show_all has made both visible at once.
  * ------------------------------------------------------------------------- */
 static void
 task_pane_mode_apply(TaskLibrary *lw)
 {
-    const TaskView *view  = sel_view(lw);
-    gboolean        panel = task_view_is_panel(view);
-    gboolean        kanban = !panel && lw->board.kanban;
-    gtk_widget_set_visible(lw->task_scroll, !panel && !kanban);
-    gtk_widget_set_visible(lw->board.kanban_box,   kanban);
-    /* Exactly one panel at most: show the selected view's, hide the rest.
-     * Pruned first, so a pane belonging to a view that has just been
-     * unregistered is gone rather than merely hidden.                    */
-    panels_prune(lw);
-    for (guint i = 0; i < task_view_count(); i++) {
-        const TaskView *v = task_view_nth(i);
-        /* Only the SELECTED one is built: asking for the others would
-         * construct every panel view's pane just to hide it.             */
-        GtkWidget *w = (panel && v == view) ? panel_widget(lw, v)
-                                            : g_hash_table_lookup(lw->panels, v);
-        if (w != NULL)
-            gtk_widget_set_visible(w, panel && v == view);
-    }
+    gboolean kanban = lw->board.kanban;
+    gtk_widget_set_visible(lw->task_scroll, !kanban);
+    gtk_widget_set_visible(lw->board.kanban_box, kanban);
 
     /* The sort toggle is INERT while Kanban View is on: the board is
      * always drag-sorted (its own per-lane order, kanban_order_*), and the
      * list view it governs is not reachable at all in that mode.  So grey
      * it out rather than leaving a control that silently does nothing.
-     *
-     * Keyed on lw->board.kanban, NOT on `kanban` above: with the board on and
-     * the Weekly Forecast selected the list view is still unreachable, and
-     * flickering the item's sensitivity as the sidebar selection moves
-     * would be worse than a steady "unavailable while Kanban is on".
      *
      * The TOOLBAR twin greys with it — one control in two places, and
      * leaving the button live would let a click change a setting the menu
@@ -2798,9 +2673,7 @@ task_pane_mode_apply(TaskLibrary *lw)
      * single place that answers "which pane is on screen" — so both the
      * menu label and the toolbar button's icon are set here rather than in
      * the handler, and a kanban flag changed by any other route still
-     * reaches them.  Keyed on lw->board.kanban like the greying below: the
-     * forecast outranks the board without turning it off, so the controls
-     * must still offer the way back to the list.
+     * reaches them.
      *
      * The ICON names the action too, the same rule the completed-visibility
      * button follows — and BOTH faces come from menu.png, the bulleted
@@ -2846,54 +2719,25 @@ task_pane_mode_apply(TaskLibrary *lw)
     }
     if (lw->manual_sort_item != NULL)
         gtk_widget_set_sensitive(GTK_WIDGET(lw->manual_sort_item), sortable);
-
-    /* The search box filters the task LIST the core lays out, and a panel
-     * view has none — the Weekly Forecast owns its seven day views and
-     * what goes in them.  So grey the box out there rather than leave a
-     * control that silently does nothing, the same call the sort toggle
-     * makes above.  Keyed on `panel`, not on lw->board.kanban: unlike the board,
-     * a panel is only ever up while its own row is selected, so the
-     * sensitivity tracks something the user can see.                       */
-    if (lw->search_entry != NULL) {
-        gtk_widget_set_sensitive(lw->search_entry, !panel);
-        gtk_widget_set_tooltip_text(lw->search_entry,
-            panel ? "The Weekly Forecast lays out its own days \xe2\x80\x94 "
-                    "pick a list or All Tasks to search"
-                  : SEARCH_TOOLTIP);
-    }
 }
 
 /* ---------------------------------------------------------------------------
  * refresh_tasks() — rebuild the task pane for the current selection.
- * The Weekly Forecast has its own panel of seven day views; selecting
- * it swaps that panel in for the regular task list (and back).  With
- * Kanban View on, every OTHER view renders its tasks as a board instead
+ * With Kanban View on, every view renders its tasks as a board instead
  * of a list — the collection below is shared, only the presentation
  * differs.
  * ------------------------------------------------------------------------- */
 static void
 refresh_tasks(TaskLibrary *lw)
 {
-    const TaskView *panel_view = sel_view(lw);
-    if (!task_view_is_panel(panel_view))
-        panel_view = NULL;
-    gboolean kanban = panel_view == NULL && lw->board.kanban;
+    gboolean kanban = lw->board.kanban;
     task_pane_mode_apply(lw);
-    if (panel_view != NULL) {
-        /* Drop the hidden regular pane's rows: a stale selection there
-         * would still feed the toolbar's Delete Task.                      */
-        gtk_list_store_clear(lw->task_store);
-        GtkWidget *w = panel_widget(lw, panel_view);
-        if (w != NULL && panel_view->panel_refresh != NULL)
-            panel_view->panel_refresh(lw->app, w, panel_view->user_data);
-        return;
-    }
 
     if (!kanban)
         scroll_keep_queue(lw->task_view);
-    /* Cleared in BOTH modes, for the same reason the forecast clears it:
-     * a selection left in the hidden list would still feed Delete Task.
-     * On the board that job belongs to lw->board.kanban_sel.                     */
+    /* Cleared in BOTH modes: a selection left in the hidden list would
+     * still feed Delete Task.  On the board that job belongs to
+     * lw->board.kanban_sel.                                                */
     gtk_list_store_clear(lw->task_store);
 
     /* Collect the tasks of the current view.  A registered view answers
@@ -2999,19 +2843,12 @@ refresh_tasks(TaskLibrary *lw)
     task_ptr_array_free_tasks(tasks);
 }
 
-/* full_refresh() — sidebar + task pane + open editors, plus the Sync
- * button's visibility (hidden while the Google master switch is off —
- * Settings fires a full notify when it flips).                             */
+/* full_refresh() — sidebar + task pane + open editors.                    */
 static void
 full_refresh(TaskLibrary *lw)
 {
     refresh_sidebar(lw);
     refresh_tasks(lw);
-    /* Contributed toolbar buttons decide their own visibility (see
-     * task_ui.h).  The window used to own a Sync button and gate it on
-     * Google's setting while it also ran the Notes mirror; each
-     * integration now brings its own button and answers for it.         */
-    ui_tools_apply(lw);
     task_editor_refresh_all(lw->app);
 }
 
@@ -3319,17 +3156,6 @@ selected_list_id(TaskLibrary *lw)
 static GArray *
 selected_task_ids(TaskLibrary *lw)
 {
-    /* A panel view owns its pane, so only it can answer.  NULL is a fine
-     * answer — the forecast's day views deliberately have no selection.   */
-    const TaskView *view = sel_view(lw);
-    if (task_view_is_panel(view)) {
-        GArray *ids = NULL;
-        GtkWidget *w = panel_widget(lw, view);
-        if (w != NULL && view->panel_selection != NULL)
-            ids = view->panel_selection(lw->app, w, view->user_data);
-        return ids != NULL ? ids
-                           : g_array_new(FALSE, FALSE, sizeof(gint64));
-    }
     if (lw->board.kanban)
         return card_sel_ids(lw);
     GArray *ids = g_array_new(FALSE, FALSE, sizeof(gint64));
@@ -4087,16 +3913,6 @@ on_delete_list(GtkWidget *w, gpointer data)
     TaskList *l = task_db_list_get(lw->app->db, id);
     if (l == NULL)
         return;
-    /* Ask every registered veto first — an integration may know its
-     * remote side will refuse the delete (see task_ops.h).                */
-    gchar *why = NULL;
-    if (!task_ops_list_can_delete(lw->app, l, &why)) {
-        task_app_status(lw->app, "%s", why != NULL ? why
-                        : "That list cannot be deleted");
-        g_free(why);
-        task_list_free(l);
-        return;
-    }
     gboolean yes = task_app_confirm(GTK_WINDOW(lw->window), "Delete List",
         "Delete the list \xe2\x80\x9c%s\xe2\x80\x9d and all of its "
         "tasks?", l->name);
@@ -4419,29 +4235,6 @@ task_context_menu_popup(TaskLibrary *lw, GtkWidget *anchor,
     gtk_menu_shell_append(GTK_MENU_SHELL(menu),
                           gtk_separator_menu_item_new());
 
-    /* Contributed items (see task_ui.h).  An item that does not apply to
-     * this selection is GREYED, not hidden: the menu keeps its shape
-     * between right-clicks rather than moving under the pointer.          */
-    for (guint i = 0; i < task_ui_task_menu_count(); i++) {
-        const TaskUiTaskMenuDef *d = task_ui_task_menu_nth(i);
-        GtkWidget *item = gtk_menu_item_new_with_label(d->label);
-        gboolean on = d->enabled == NULL ||
-                      d->enabled(lw->app, ids, d->user_data);
-        if (on) {
-            g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
-            /* The ids array outlives the menu: it is ref'd onto the item
-             * exactly as the app's own bulk actions do.                   */
-            g_object_set_data_full(G_OBJECT(item), "task-ids",
-                                   g_array_ref(ids),
-                                   (GDestroyNotify)g_array_unref);
-            g_signal_connect(item, "activate",
-                             G_CALLBACK(on_ui_task_menu_activated), lw);
-        } else {
-            gtk_widget_set_sensitive(item, FALSE);
-        }
-        gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-    }
-
     /* Move to List — applies to the selection's top-level tasks.           */
     GtkWidget *move_item = gtk_menu_item_new_with_label("Move to List");
     GtkWidget *submenu = gtk_menu_new();
@@ -4557,22 +4350,6 @@ on_task_button_press(GtkWidget *view, GdkEventButton *event, gpointer data)
 
     return task_context_menu_popup(lw, view, event);
 }
-
-/* ---------------------------------------------------------------------------
- * There is no on_sync() here any more, and no File → Sync Now.
- *
- * SYNC IS ENTIRELY PLUGIN BUSINESS, and the window cannot describe it.
- * That item ran every registered worker, which made its label a promise
- * it could not keep: with no integration installed it did nothing, with
- * two it did two different things, and either way "Sync Now" in File
- * could not say WHAT was about to be synced.  Each integration now
- * offers its own — Google's is Google → Sync Now (see task_ui.h's
- * TASK_UI_MENU_OWN) — so the label names the thing it acts on.
- *
- * task_worker_run_all() still exists as the run-everything call for
- * whoever wants it; nothing in the core's chrome reaches for it, because
- * the core is not the one who knows what "everything" is.
- * ------------------------------------------------------------------------- */
 
 /* ===========================================================================
  * Menu actions.
@@ -4691,7 +4468,6 @@ on_open_db(GtkWidget *widget, gpointer user_data)
 
     task_editor_close_all(app);
     gchar *old_path = g_strdup(app->db->path);
-    task_plugins_db_closing(app, app->db);   /* plugin tables live here too */
     task_db_close(app->db);
     GError *gerr = NULL;
     app->db = task_db_open(file_path, &gerr);
@@ -4707,14 +4483,11 @@ on_open_db(GtkWidget *widget, gpointer user_data)
         if (app->db == NULL)
             g_critical("on_open_db: cannot revert to %s: %s", old_path,
                        gerr != NULL ? gerr->message : "?");
-        else
-            task_plugins_db_open(app, app->db);   /* reverted, but OPEN     */
         g_clear_error(&gerr);
         g_free(old_path);
         g_free(file_path);
         return;
     }
-    task_plugins_db_open(app, app->db);
 
     /* The ini key is the whole of "where the database is kept": it is read
      * once at startup to resolve the path, and this is its only writer.  */
@@ -4875,26 +4648,14 @@ on_menu_quit(GtkWidget *w, gpointer data)
     gtk_widget_destroy(lw->window);
 }
 
-/* menu_item_at() — build one wired menu item at `pos`; -1 appends.
- *
- * The positional form is what the CONTRIBUTED groups need: they sit
- * INSIDE File and View rather than at the end of either, and they are
- * rebuilt in place when a plugin is switched on or off.                    */
-static GtkWidget *
-menu_item_at(GtkWidget *menu, const gchar *label, GCallback cb,
-             gpointer data, gint pos)
-{
-    GtkWidget *item = gtk_menu_item_new_with_label(label);
-    g_signal_connect(item, "activate", cb, data);
-    gtk_menu_shell_insert(GTK_MENU_SHELL(menu), item, pos);
-    return item;
-}
-
-/* menu_item() — the common case: one wired menu item at the end.           */
+/* menu_item() — build one wired menu item at the end of `menu`.           */
 static GtkWidget *
 menu_item(GtkWidget *menu, const gchar *label, GCallback cb, gpointer data)
 {
-    return menu_item_at(menu, label, cb, data, -1);
+    GtkWidget *item = gtk_menu_item_new_with_label(label);
+    g_signal_connect(item, "activate", cb, data);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+    return item;
 }
 
 /* ---------------------------------------------------------------------------
@@ -4949,269 +4710,6 @@ task_library_apply_native_menubar(TaskApp *app, gboolean native)
 /* ===========================================================================
  * Construction.
  * =========================================================================== */
-
-/* on_ui_tool_clicked() — a contributed toolbar button was pressed.  The
- * definition rides on the widget, so one handler serves every item.     */
-static void
-on_ui_tool_clicked(GtkWidget *item, gpointer data)
-{
-    TaskLibrary *lw = data;
-    const TaskUiToolDef *d = g_object_get_data(G_OBJECT(item),
-                                               "task-ui-def");
-    if (d != NULL && d->clicked != NULL)
-        d->clicked(lw->app, d->user_data);
-}
-
-/* on_ui_menu_activated() — the same for a contributed menu item.        */
-static void
-on_ui_menu_activated(GtkWidget *item, gpointer data)
-{
-    TaskLibrary *lw = data;
-    const TaskUiMenuDef *d = g_object_get_data(G_OBJECT(item),
-                                               "task-ui-def");
-    if (d != NULL && d->activate != NULL)
-        d->activate(lw->app, d->user_data);
-}
-
-/* on_ui_task_menu_activated() — a contributed task context-menu item.
- * Both the definition and the selection ride on the widget.             */
-static void
-on_ui_task_menu_activated(GtkWidget *item, gpointer data)
-{
-    TaskLibrary *lw = data;
-    const TaskUiTaskMenuDef *d = g_object_get_data(G_OBJECT(item),
-                                                   "task-ui-def");
-    GArray *ids = g_object_get_data(G_OBJECT(item), "task-ids");
-    if (d != NULL && d->activate != NULL && ids != NULL)
-        d->activate(lw->app, ids, d->user_data);
-}
-
-/* ---------------------------------------------------------------------------
- * The CONTRIBUTED CHROME — a plugin's toolbar buttons and menu items — is
- * built from the task_ui registries and REBUILT IN PLACE whenever those
- * registries change, which is what makes the Settings checkbox honest:
- * switching a plugin on puts its button and its menu there and then, and
- * switching one off takes them away.  Without that, an enabled plugin's
- * button appeared only at the next launch and a DISABLED one's button
- * stayed on the toolbar, still wired to the callback it registered — the
- * module is never unmapped, so it went on working.
- *
- * Every widget built for it is marked with UI_CHROME_KEY, and rebuilding
- * means "destroy this container's marked children, then build the group
- * again at the recorded index".  The mark rather than an index range: the
- * group sits INSIDE File and View, next to items the window owns, and a
- * range would have to be kept true through every future edit to those
- * menus.
- * ------------------------------------------------------------------------- */
-#define UI_CHROME_KEY "task-ui-chrome"
-
-/* chrome_mark() — this widget belongs to the contributed group.           */
-static void
-chrome_mark(GtkWidget *w)
-{
-    g_object_set_data(G_OBJECT(w), UI_CHROME_KEY, GINT_TO_POINTER(1));
-}
-
-/* chrome_clear() — destroy every marked child of `container`, leaving
- * everything the window built itself alone.                               */
-static void
-chrome_clear(GtkWidget *container)
-{
-    GList *kids = gtk_container_get_children(GTK_CONTAINER(container));
-    for (GList *l = kids; l != NULL; l = l->next)
-        if (g_object_get_data(G_OBJECT(l->data), UI_CHROME_KEY) != NULL)
-            gtk_widget_destroy(GTK_WIDGET(l->data));
-    g_list_free(kids);
-}
-
-/* chrome_pos() — how many children `container` has right now, which is
- * the index the next thing appended would land at.  Recorded at
- * construction so a rebuild puts the group back where it was.             */
-static gint
-chrome_pos(GtkWidget *container)
-{
-    GList *kids = gtk_container_get_children(GTK_CONTAINER(container));
-    gint n = (gint)g_list_length(kids);
-    g_list_free(kids);
-    return n;
-}
-
-/* ui_menu_items() — (re)build the contributed items for `which`, at `pos`.
- *
- * `rule` adds a separator AFTER them so the group reads as its own
- * section; pass FALSE where the caller's own grouping already says where
- * the group ends (File puts them at the head of its second group, which
- * a rule of their own would then split in two).  Either way this adds
- * NOTHING when nothing is contributed — rule included — which keeps an
- * app with no plugins looking exactly as it did.
- *
- * The items are shown as they are built rather than left to the window's
- * show_all: on a rebuild there is no show_all coming.                     */
-static void
-ui_menu_items(TaskLibrary *lw, GtkWidget *menu, TaskUiMenu which,
-              gboolean rule, gint pos)
-{
-    chrome_clear(menu);
-    gboolean any = FALSE;
-    for (guint i = 0; i < task_ui_menu_count(); i++) {
-        const TaskUiMenuDef *d = task_ui_menu_nth(i);
-        if (d->menu != which)
-            continue;
-        GtkWidget *item = menu_item_at(menu, d->label,
-                                       G_CALLBACK(on_ui_menu_activated),
-                                       lw, pos++);
-        g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
-        chrome_mark(item);
-        gtk_widget_show(item);
-        any = TRUE;
-    }
-    if (any && rule) {
-        GtkWidget *sep = gtk_separator_menu_item_new();
-        chrome_mark(sep);
-        gtk_menu_shell_insert(GTK_MENU_SHELL(menu), sep, pos);
-        gtk_widget_show(sep);
-    }
-}
-
-/* ---------------------------------------------------------------------------
- * ui_own_menus() — (re)build the TOP-LEVEL menus contributed items asked
- * for (TASK_UI_MENU_OWN, see task_ui.h) at the end of the menu bar.
- *
- * One menu per distinct `menu_title`, created when its first item is
- * reached — so the registry order (which is `sort` order) decides both
- * the items within a menu and the menus among themselves, and an
- * integration with two items gets one menu rather than two.  Titles are
- * compared by CONTENT, not pointer: two plugins are two shared objects,
- * so the same title is a different string in each.
- *
- * Adds nothing when nothing is contributed, which is what keeps the
- * bar at File + View for an app with no plugins.  These always sit after
- * the window's own menus, so they are appended rather than placed.
- * ------------------------------------------------------------------------- */
-static void
-ui_own_menus(TaskLibrary *lw, GtkWidget *menubar)
-{
-    chrome_clear(menubar);
-    GHashTable *by_title = g_hash_table_new(g_str_hash, g_str_equal);
-    for (guint i = 0; i < task_ui_menu_count(); i++) {
-        const TaskUiMenuDef *d = task_ui_menu_nth(i);
-        if (d->menu != TASK_UI_MENU_OWN || d->label == NULL)
-            continue;
-        /* A menu with no name has nowhere to go — skip it rather than
-         * putting an untitled menu in the bar.                           */
-        if (d->menu_title == NULL || *d->menu_title == '\0')
-            continue;
-        GtkWidget *menu = g_hash_table_lookup(by_title, d->menu_title);
-        if (menu == NULL) {
-            menu = gtk_menu_new();
-            GtkWidget *top = gtk_menu_item_new_with_label(d->menu_title);
-            gtk_menu_item_set_submenu(GTK_MENU_ITEM(top), menu);
-            gtk_menu_shell_append(GTK_MENU_SHELL(menubar), top);
-            chrome_mark(top);
-            gtk_widget_show(top);
-            g_hash_table_insert(by_title, (gpointer)d->menu_title, menu);
-        }
-        GtkWidget *item = menu_item(menu, d->label,
-                                    G_CALLBACK(on_ui_menu_activated), lw);
-        g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
-        gtk_widget_show(item);
-    }
-    g_hash_table_destroy(by_title);
-}
-
-/* ---------------------------------------------------------------------------
- * ui_tools_apply() — re-ask every contributed button whether it should be
- * on screen, and hide the divider when none of them is.
- *
- * The divider follows the BUTTONS, not the registry: an item can be
- * registered and hidden (an integration switched off in its own settings),
- * and a rule with nothing after it reads as a mistake.
- * ------------------------------------------------------------------------- */
-static void
-ui_tools_apply(TaskLibrary *lw)
-{
-    task_ui_tools_apply_visibility(lw->app);
-    if (lw->ui_tool_rule != NULL)
-        gtk_widget_set_visible(lw->ui_tool_rule,
-                               task_ui_any_tool_visible(lw->app));
-}
-
-/* ---------------------------------------------------------------------------
- * ui_tools_build() — (re)build the contributed toolbar block at
- * lw->ui_tool_pos: its own divider, then one button per registered item.
- *
- * They sit LAST among the buttons, behind that divider: an integration's
- * button is neither one of the view controls nor one of the task actions,
- * and grouping it with either would say it was.  Nothing at all is added
- * when nothing is contributed, so an app with no plugins keeps exactly
- * the toolbar it had.
- *
- * task_ui_tool_forget_all() comes first because the widgets the map named
- * have just been destroyed; the fresh ones re-bind below.
- * ------------------------------------------------------------------------- */
-static void
-ui_tools_build(TaskLibrary *lw)
-{
-    chrome_clear(lw->toolbar);
-    lw->ui_tool_rule = NULL;
-    task_ui_tool_forget_all();
-
-    gint pos = lw->ui_tool_pos;
-    if (task_ui_tool_count() > 0) {
-        GtkToolItem *rule = gtk_separator_tool_item_new();
-        chrome_mark(GTK_WIDGET(rule));
-        lw->ui_tool_rule = GTK_WIDGET(rule);
-        gtk_toolbar_insert(GTK_TOOLBAR(lw->toolbar), rule, pos++);
-        gtk_widget_show(GTK_WIDGET(rule));
-    }
-    for (guint i = 0; i < task_ui_tool_count(); i++) {
-        const TaskUiToolDef *d = task_ui_tool_nth(i);
-        GtkToolItem *item = task_app_tool_item_new(lw->app, d->icon,
-                                                   d->fallback_markup,
-                                                   d->label, d->tooltip);
-        g_object_set_data(G_OBJECT(item), "task-ui-def", (gpointer)d);
-        chrome_mark(GTK_WIDGET(item));
-        g_signal_connect(item, "clicked", G_CALLBACK(on_ui_tool_clicked),
-                         lw);
-        gtk_toolbar_insert(GTK_TOOLBAR(lw->toolbar), item, pos++);
-        /* show_all, not show: the button inside the tool item has to come
-         * up too, and on a rebuild no window-wide show_all follows.  Its
-         * OWN visibility is then settled by ui_tools_apply below.        */
-        gtk_widget_show_all(GTK_WIDGET(item));
-        task_ui_tool_bind(d->id, GTK_WIDGET(item));
-    }
-    ui_tools_apply(lw);
-}
-
-/* ---------------------------------------------------------------------------
- * task_library_rebuild_chrome() — the plugin registries changed; put the
- * window's contributed chrome back in step with them (see header).
- * ------------------------------------------------------------------------- */
-void
-task_library_rebuild_chrome(TaskApp *app)
-{
-    TaskLibrary *lw = lib_of(app);
-    if (lw == NULL)
-        return;
-    ui_menu_items(lw, lw->file_menu, TASK_UI_MENU_FILE, FALSE,
-                  lw->file_ui_pos);
-    ui_menu_items(lw, lw->view_menu, TASK_UI_MENU_VIEW, TRUE,
-                  lw->view_ui_pos);
-    ui_own_menus(lw, lw->menubar);
-    ui_tools_build(lw);
-#ifdef HAVE_GTKOSX
-    /* The native bar is driven by this very menu shell, so it has to be
-     * told the shell changed.  ONLY while that mode is on: with the
-     * in-window bar showing, macOS has never been handed a menu shell at
-     * all, and gtkosx_application_sync_menubar then sends -resync to an
-     * object that does not implement it — an uncaught NSException that
-     * kills the process (seen for real on 3.24.52, gtk-mac-integration
-     * 3.0.1).  The setting is the same one task_library_apply_native_menubar
-     * is driven by.                                                      */
-    if (task_app_config_get_bool("native_menubar", FALSE))
-        gtkosx_application_sync_menubar(gtkosx_application_get());
-#endif
-}
 
 /* tool_button() — a style-aware toolbar button (local icon + label)
  * wired to `cb` and appended to `bar`.                                     */
@@ -5368,13 +4866,9 @@ on_library_destroy(GtkWidget *w, gpointer data)
      * can destroy sibling editors mid-teardown (a failing Notes CLI
      * closes its editors on reload) and leave close_all's snapshot list
      * holding freed windows.                                               */
-    /* The panes themselves are children of the window and are destroyed
-     * with it; only the table goes here.                                 */
-    g_clear_pointer(&lw->panels, (GDestroyNotify)g_hash_table_destroy);
     /* The entry is a child of the toolbar and goes with the window; the
      * PARSED query is ours and does not.                                   */
     g_clear_pointer(&lw->search, (GDestroyNotify)task_search_free);
-    task_ui_tool_forget_all();   /* the toolbar destroyed them */
     task_app_unlisten(lw->app, lw->listen_changed);
     task_app_unlisten(lw->app, lw->listen_tasks);
     task_app_unlisten(lw->app, lw->listen_status);
@@ -5942,9 +5436,7 @@ task_library_window_new(TaskApp *app)
 
     /* --- Menubar ---------------------------------------------------------- */
     GtkWidget *menubar = gtk_menu_bar_new();
-    lw->menubar = menubar;           /* rebuilt in part per plugin toggle   */
     GtkWidget *file_menu = gtk_menu_new();
-    lw->file_menu = file_menu;
     GtkWidget *file_item = gtk_menu_item_new_with_label("File");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
     /* ONE separator in this menu, and it goes after the group below.
@@ -5952,24 +5444,13 @@ task_library_window_new(TaskApp *app)
      * everything after the rule is about the app or the file it keeps —
      * the database, Settings, About, Quit.  A rule between every pair of
      * items (which is what this was) divides nothing, so it stopped
-     * reading as grouping at all.
-     *
-     * No Sync Now here either — an integration contributes its own, in a
-     * menu of its own (see the note where on_sync used to be, and
-     * task_ui.h).                                                        */
+     * reading as grouping at all.                                        */
     menu_item(file_menu, "New Task", G_CALLBACK(on_new_task), lw);
     menu_item(file_menu, "New List\xe2\x80\xa6", G_CALLBACK(on_new_list), lw);
     menu_item(file_menu, "Clear Completed Tasks",
               G_CALLBACK(on_menu_clear_completed), lw);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu),
                           gtk_separator_menu_item_new());
-    /* Contributed items lead the second group WITHOUT a rule of their
-     * own — one more rule is exactly what this menu is losing.  The index
-     * is recorded first: this group is rebuilt in place when a plugin is
-     * switched on or off, and it has to come back HERE rather than at the
-     * end of the menu.                                                   */
-    lw->file_ui_pos = chrome_pos(file_menu);
-    ui_menu_items(lw, file_menu, TASK_UI_MENU_FILE, FALSE, lw->file_ui_pos);
     menu_item(file_menu, "Open Database File\xe2\x80\xa6",
               G_CALLBACK(on_open_db), lw);
     menu_item(file_menu, "Settings\xe2\x80\xa6",
@@ -5979,7 +5460,6 @@ task_library_window_new(TaskApp *app)
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), file_item);
 
     GtkWidget *view_menu = gtk_menu_new();
-    lw->view_menu = view_menu;
     GtkWidget *view_item = gtk_menu_item_new_with_label("View");
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(view_item), view_menu);
     /* Built with the label the persisted state calls for;
@@ -6006,15 +5486,6 @@ task_library_window_new(TaskApp *app)
 
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu),
                           gtk_separator_menu_item_new());
-
-    /* Contributed View items, between the two groups: a plugin's way of
-     * LOOKING at the tasks belongs with the app's own.  This call was
-     * missing — TASK_UI_MENU_VIEW was a registry value the window never
-     * read, so anything registered for it went nowhere at all.  It
-     * appends nothing (not even its rule) when nothing is contributed,
-     * so the menu is unchanged for an app with no plugins.               */
-    lw->view_ui_pos = chrome_pos(view_menu);
-    ui_menu_items(lw, view_menu, TASK_UI_MENU_VIEW, TRUE, lw->view_ui_pos);
 
     /* Below the divider: what the WINDOW looks like.  Show/Hide Sidebar
      * mirrors the toolbar's Sidebar button (both write `sidebar_visible`);
@@ -6044,13 +5515,6 @@ task_library_window_new(TaskApp *app)
                           lw->view_kanban_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), view_item);
 
-    /* Contributed top-level menus come after the app's own: File and View
-     * are the window's, and an integration's menu is about the
-     * integration.  Rebuilt from the registry when a plugin is switched
-     * on or off, so a menu arrives and leaves with its plugin rather than
-     * waiting for the next launch.                                        */
-    ui_own_menus(lw, menubar);
-
     /* Remembered so the menu can be moved into the native macOS menu
      * bar (see task_library_apply_native_menubar).                         */
     g_object_set_data(G_OBJECT(lw->window), "task-menubar", menubar);
@@ -6065,8 +5529,7 @@ task_library_window_new(TaskApp *app)
      * controls that change what the pane SHOWS.  The task verbs lead
      * because they are what the window is for; the four toggles are one
      * group behind the rule, the sidebar toggle among them rather than
-     * standing alone behind a rule of its own.  The contributed block adds
-     * its own divider after all of this (see ui_tools_build).             */
+     * standing alone behind a rule of its own.                            */
     GtkWidget *toolbar = gtk_toolbar_new();
     lw->toolbar = toolbar;           /* Compact Layout hides it whole       */
     /* Small-toolbar metrics — the Notes bar height.  ICONS ONLY, set here
@@ -6110,14 +5573,6 @@ task_library_window_new(TaskApp *app)
     lw->pane_item = GTK_WIDGET(tool_button(lw, GTK_TOOLBAR(toolbar),
         "menu", "\xe2\x96\xa6", "Kanban",
         "Show the tasks as a Kanban board", G_CALLBACK(on_toggle_kanban)));
-
-    /* Contributed toolbar items (see task_ui.h) sit LAST among the
-     * buttons, behind their own divider.  ui_tools_build owns that block
-     * whole — it is rebuilt there when a plugin is switched on or off —
-     * so the index it starts at is recorded before the call and the
-     * search box below is appended after it.                              */
-    lw->ui_tool_pos = (gint)gtk_toolbar_get_n_items(GTK_TOOLBAR(toolbar));
-    ui_tools_build(lw);
 
     /* Expanding blank separator pushes the search box to the right edge
      * (the Notes layout, which keeps its own search box there).           */
@@ -6446,12 +5901,6 @@ task_library_window_new(TaskApp *app)
                                    GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(lw->task_scroll), lw->task_view);
 
-    /* Panel panes are built ON DEMAND by panel_widget(), not here: a view
-     * can be registered at any time (enabling a plugin does it), so there
-     * is no moment at which "every panel view" is a closed set.  The
-     * table is keyed by the view itself for the same reason.             */
-    lw->panels = g_hash_table_new(g_direct_hash, g_direct_equal);
-
     /* The Kanban board: three equal lanes side by side, 6 px apart, in
      * one outer scroller — the forecast's construction with the sections
      * turned through 90°.  Homogeneous so a lane holding one card is as
@@ -6472,7 +5921,6 @@ task_library_window_new(TaskApp *app)
     gtk_container_add(GTK_CONTAINER(lw->board.kanban_box), board);
 
     GtkWidget *task_pane = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    lw->task_pane = task_pane;       /* panel_widget() packs into this     */
     gtk_box_pack_start(GTK_BOX(task_pane), lw->task_scroll,
                        TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(task_pane), lw->board.kanban_box,
@@ -6532,12 +5980,8 @@ task_library_window_new(TaskApp *app)
      * default; the Sidebar button and View → Show Sidebar bring it back)
      * and hides the floating button pair outside compact mode.             */
     compact_layout_apply(lw);
-    /* show_all made ALL THREE task-pane variants visible — put the
-     * regular-list / Weekly Forecast / Kanban choice back.                 */
+    /* show_all made BOTH task-pane variants visible — put the list /
+     * Kanban choice back.                                                  */
     task_pane_mode_apply(lw);
-    /* show_all revealed every contributed toolbar button; let each one
-     * answer for itself (see task_ui.h).  Same reason the pane choice is
-     * re-applied above.                                                   */
-    ui_tools_apply(lw);
     return lw->window;
 }

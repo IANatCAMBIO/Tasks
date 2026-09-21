@@ -3,8 +3,8 @@
  *
  * A single TaskApp instance is created in main() and passed to every window.
  * It owns the database handle, tracks open task-editor windows, and hosts
- * the change-notification events windows and plugins subscribe to.  Companion app to
- * Notes — same design language: plain C + GTK3 + SQLite, no
+ * the change-notification events the windows subscribe to.  Companion app
+ * to Notes — same design language: plain C + GTK3 + SQLite, no
  * HeaderBars, window titles "Tasks - <thing>".
  * =========================================================================== */
 
@@ -26,31 +26,25 @@
  *   gtk_app        — the GtkApplication driving the main loop.
  *   db             — open tasks database (owned; closed at shutdown).
  *   editors        — map of open editor windows keyed by task id
- *                    (gint64* keys, GtkWindow* values).  Notes action
- *                    items are ordinary tasks (the Notes plugin), so they
- *                    live in this map like everything else.
+ *                    (gint64* keys, GtkWindow* values).
  *   library_window — the (single) library window, or NULL before startup.
  *   changed_l      — listeners for a FULL refresh (sidebar + task pane +
  *                    open editors).  For structural changes: lists
- *                    created/renamed/deleted, sync applied.  The library
- *                    window is normally one of them; a plugin may be
- *                    another.  Fire through task_app_notify_changed().
+ *                    created/renamed/deleted.  The library window is
+ *                    normally one of them.  Fire through
+ *                    task_app_notify_changed().
  *   tasks_l        — listeners for the LIGHTER event: the task pane only.
  *                    Editor saves and subtask/attachment edits use this —
  *                    they can never change the sidebar, and the saving
- *                    editor is itself the source of truth (reloading every
- *                    editor per autosave would also re-run the Notes CLI).
+ *                    editor is itself the source of truth.
  *                    Fire through task_app_notify_tasks(), which falls
  *                    back to the full event when nothing is listening for
  *                    the light one.
  *   status_l       — listeners for a one-line event message.  Post through
  *                    task_app_status().
- *   sync_running   — TRUE while the Google Tasks sync worker is running
- *                    (main-thread flag; blocks a second concurrent sync).
- *   sync_timer     — the periodic auto-sync GSource id, or 0.
- *   backup_running — the same guard again for the optional rotating
- *                    backup (backup.h), a third worker on its own
- *                    schedule.
+ *   backup_running — TRUE while the optional rotating backup's worker
+ *                    (backup.h) is in flight (main-thread flag; blocks a
+ *                    second concurrent pass).
  *   backup_timer   — its periodic GSource id, or 0.
  *   icons_dir      — absolute path of the local icons/ folder the
  *                    toolbar button PNGs are loaded from (owned string).
@@ -78,8 +72,6 @@ typedef struct TaskApp {
     GSList          *tasks_l;
     GSList          *status_l;
     guint            listener_next;      /* next subscription id            */
-    gboolean         sync_running;
-    guint            sync_timer;
     gboolean         backup_running;     /* rotating-backup worker in flight */
     guint            backup_timer;       /* its periodic GSource, or 0      */
     gchar           *icons_dir;
@@ -213,8 +205,8 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
 
 /* ---------------------------------------------------------------------------
  * Config — tasks.ini lives in the app's SHARED DIRECTORY,
- * task_db_default_dir() (<user data dir>/tasks), with the database and
- * the plugins.  Resolved ONCE, in three steps: that file if it EXISTS;
+ * task_db_default_dir() (<user data dir>/tasks), with the database.
+ * Resolved ONCE, in three steps: that file if it EXISTS;
  * else tasks.ini NEXT TO THE BINARY if it EXISTS (portable mode, so a
  * source tree or a USB copy keeps the ini it came with); else CREATED in
  * the shared directory.  Both tests are for EXISTENCE — a writability
@@ -222,22 +214,11 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
  * settings.  There is no ~/.config/tasks fallback and no migration to
  * one.  Loaded ONCE into memory; written through on every change.
  * Keys used (see tasks.ini.defaults):
- *   sync       — google_sync_enabled, google_client_id,
- *                google_client_secret, gtasks_refresh_token,
- *                sync_interval_min, sync_toolbar_button
- *   Notes — notes_sync, notes_cli, notes_sync_interval_min,
- *                notes_meta_row (where mirrored items are FILED is not a
- *                key: the plugin's filing-rules table decides it)
  *   database   — db_dir (the directory holding tasks.db; absent = the
  *                default location.  Written only by File → Open
  *                Database File…; there is no Settings control for it),
  *                backup_enabled,
  *                backup_dir, backup_interval_min, backup_keep
- *   plugins    — plugin_dir (folder to load plugins from; absent =
- *                beside the binary if that exists, else
- *                <data>/tasks/plugins), and one <id>_plugin_enabled per
- *                plugin found.  A plugin's OWN keys are namespaced by
- *                its id (see task_app_config_get_ns).
  *   UI         — bold_task_titles, native_menubar,
  *                show_completed, sidebar_visible, compact_layout,
  *                due_today_show_overdue,
@@ -246,8 +227,8 @@ gboolean task_app_confirm(GtkWindow *parent, const gchar *title,
  *                col_completed_visible, win_w, win_h
  *   per-view   — manual_order_list_<id>, manual_order_group_<id>,
  *                manual_order_all, manual_order_pinned,
- *                manual_order_today, manual_order_bn_actions (task-pane
- *                drag-reorder), and kanban_order_* under the same six
+ *                manual_order_today (task-pane drag-reorder), and
+ *                kanban_order_* under the same five
  *                names (the board's own card order — a separate family
  *                on purpose, see kanban_order_key).  A group's aggregate
  *                orders separately from the lists under it: they are
@@ -261,32 +242,12 @@ void      task_app_config_set(const gchar *key, const gchar *value);
  * app only ever writes "0"/"1", so any other stored value reads as "1".    */
 gboolean  task_app_config_get_bool(const gchar *key, gboolean def);
 
-/* ---------------------------------------------------------------------------
- * Namespaced config — the same store, with the key prefixed by a
- * feature's id: task_app_config_get_ns("notes", "sync") reads
- * "notes_sync", exactly the key that is already in users' ini files.
- *
- * There is ONE ini group ("[tasks]", part of the file format), so a
- * feature's key space is carved out by name rather than by section.  That
- * is not a workaround: prefixes are already the convention here
- * (google_*, notes_*, backup_*), so this only makes the existing rule
- * something a caller cannot get wrong, and lets an integration that does
- * not know the app's key inventory still avoid colliding with it.
- *
- * `ns` must not be NULL; use the plain accessors above for core keys.
- * ------------------------------------------------------------------------- */
-gchar    *task_app_config_get_ns(const gchar *ns, const gchar *key);
-void      task_app_config_set_ns(const gchar *ns, const gchar *key,
-                                 const gchar *value);
-gboolean  task_app_config_get_bool_ns(const gchar *ns, const gchar *key,
-                                      gboolean def);
-
 /* task_app_exe_dir() — the directory holding the binary, resolved once by
  * task_app_config_init().  Borrowed string; do not free.                   */
 const gchar *task_app_exe_dir(void);
 
 /* ---------------------------------------------------------------------------
- * Date helpers shared by the two windows and the sync engine.
+ * Date helpers shared by the windows and the recurrence pass.
  *
  * USE THESE TWO RATHER THAN GLib's "_local" CONSTRUCTORS.  Every
  * g_date_time_new_now_local() / _new_from_unix_local() / _new_local()

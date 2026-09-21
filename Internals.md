@@ -1,85 +1,29 @@
 # Tasks — Internals
 
-How Tasks is put together: the source layout, the plugin ABI, the
-database schema, and the sync engine. For everyday use see the
-[User Guide](User_Guide.md); for build instructions see the
-[README](README.md).
+How Tasks is put together: the source layout and the database schema.
+For everyday use see the [User Guide](User_Guide.md); for build
+instructions see the [README](README.md).
 
 ## Code layout
 
-The application is the list of files below and nothing else. **No file
-here mentions Google Tasks or Notes** — both are plugins, and the core
-does not know they exist.
+The application is the list of files below and nothing else.
 
 | File                       | Purpose                                            |
 |----------------------------|----------------------------------------------------|
-| `src/main.c`               | GtkApplication entry point: config → database → registries → plugins → window |
-| `src/app.[ch]`             | Shared `TaskApp` context: ini config, dialogs, toolbar styles, icon loading, date helpers |
+| `src/main.c`               | GtkApplication entry point: config → database → registries → window |
+| `src/app.[ch]`             | Shared `TaskApp` context: ini config, dialogs, icon loading, date helpers |
 | `src/backup.[ch]`          | Optional rotating database backups: worker thread, VACUUM INTO + verify, bounded rotation |
 | `src/db.[ch]`              | SQLite layer: lists, tasks, subtasks, attachments; tombstones and `updated_at` for sync |
 | `src/recur.[ch]`           | Recurring tasks: the preset table, GDateTime schedule arithmetic, and the periodic pass that rolls due repeats forward |
 | `src/library_window.[ch]`  | Sidebar (virtual views, list groups), tall task rows, toolbar, compact controls + floating button bar, Kanban board, context menus, status bar |
 | `src/editor_window.[ch]`   | Per-task editor; debounced write-through saves; Advanced fold for Recurrence/Subtasks/Attachments |
-| `src/settings_window.[ch]` | The Settings window, including the Plugins list |
-| `src/plugin.h`             | The plugin ABI: the `TaskHostApi` table a plugin sees, and what a `TaskPlugin` is |
-| `src/plugin_loader.[ch]`   | Discovery, `dlopen`, ABI checks, enable/disable at run time |
-| `src/plugin_owner.[ch]`    | Which plugin registered what, so switching one off can take exactly its registrations back out |
-| `src/task_view.[ch]`       | The sidebar view registry (query views and panel views) |
-| `src/task_ops.[ch]`        | Core operations (move, clear completed) and their hooks |
+| `src/settings_window.[ch]` | The Settings window |
+| `src/task_view.[ch]`       | The sidebar view registry |
+| `src/task_ops.[ch]`        | Core operations (move, clear completed) |
 | `src/task_worker.[ch]`     | The one background scheduler: timers, db path, re-arm on a database switch |
-| `src/task_rows.[ch]`       | Task-row rendering and the row-decoration registry |
-| `src/task_ui.[ch]`         | Window chrome registries: toolbar items, menu items, editor sections |
-| `src/core_views.c`         | The app's *own* sidebar views (Favorites, All Tasks, Due Today) — registered through the same registry a plugin uses |
+| `src/task_rows.[ch]`       | Task-row rendering |
+| `src/core_views.c`         | The app's sidebar views (Favorites, All Tasks, Due Today), registered through the view registry |
 | `icons/`                   | Bundled PNG toolbar icons + app logo; `icons/theme/hicolor/` holds SVG arrows for crisp HiDPI tree expanders |
-
-Plugins live under `src/plugins/`, each building to `plugins/<id>.so`.
-A plugin is either a single `<id>.c` or a directory `<id>/` of several
-files linked into one module:
-
-| Plugin | Purpose |
-|---|---|
-| `src/plugins/gtasks/` | [Google Tasks Sync](src/plugins/gtasks/README.md): sync engine, OAuth (PKCE + loopback), libcurl wrapper, minimal JSON parser. Owns `gtasks_list` / `gtasks_task`, and brings its own libcurl via `deps.mk` |
-| `src/plugins/notes/`  | [Notes Action Items Sync](src/plugins/notes/README.md): the mirror plus its CLI wrapper. Owns `notes_task` / `notes_deleted` |
-| `src/plugins/forecast.c` | [Weekly Forecast](src/plugins/forecast.README.md): a panel view of the week |
-| `src/plugins/overdue.c`  | [Overdue](src/plugins/overdue.README.md): a query view — the small worked example |
-
-## Plugin ABI
-
-A plugin exports exactly one symbol, `task_plugin_entry`, and receives a
-`TaskHostApi` table. It **imports nothing from the host**, so a module
-links against no application object and the app is not built with
-`-rdynamic`. The full contract is in `src/plugin.h`; the shape is:
-
-- `init()` registers — views, a worker, op hooks, row decorations,
-  toolbar and menu items, a settings section. It must be cheap: it runs
-  before the window is shown.
-- `db_open()` creates the plugin's **own tables**. Nothing belonging to
-  an integration is on a core row.
-- Config keys are namespaced by the plugin id automatically, so the
-  `notes` plugin asking for `sync` reads `notes_sync`.
-
-Two properties are worth stating because everything else follows from
-them:
-
-**A disabled plugin is never opened.** The loader reads
-`<id>_plugin_enabled` from the *filename* before `dlopen`, so switching
-one off means it is never mapped, never initialised, never resolved —
-not merely ignored. That is also why the Settings list takes a plugin's
-displayed name and description from its README rather than from inside
-the module: the README is the only thing readable in both states.
-
-**A plugin is never `dlclose`d.** Switching one off sweeps its
-registrations (that is what `plugin_owner` is for) and stops its worker's
-timer, and the change is immediate — but the code stays mapped for the
-life of the process. A worker pass still in flight, or an idle callback
-already queued, therefore remains valid code and simply finds itself
-unregistered. Unmapping would turn each of those into a jump into freed
-memory, and buys nothing.
-
-Because a disable is a sweep rather than an unload, `init()` may be
-called more than once — the app sweeps before re-calling, so registering
-again is correct rather than duplicated. Anything genuinely
-once-per-process belongs in `task_plugin_entry`.
 
 ## Database format
 
@@ -151,9 +95,9 @@ CREATE TABLE attachments (
 CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX idx_tasks_list ON tasks(list_id, parent_id, position);
 
--- ------------------------------------------------- owned by the plugins
--- Created by each plugin's own db_open hook, not by the app.  A database
--- whose plugins are not installed simply does not have these.
+-- ------------------------------------------- owned by the integrations
+-- Created by the v8/v9 migrations (and, when they return, by the
+-- integrations themselves).  A database that never had them does not.
 
 CREATE TABLE gtasks_list (                    -- Google Tasks Sync
   list_id   INTEGER PRIMARY KEY REFERENCES lists(id) ON DELETE CASCADE,
@@ -182,16 +126,16 @@ CREATE TABLE notes_deleted (uid INTEGER PRIMARY KEY); -- mirror tasks the
 **A task row carries nothing belonging to a particular integration.**
 A remote id, an etag, a deep link, the baseline a done-only source was
 last known to hold — each lives in a SIDE TABLE keyed by row id, owned
-and created by whichever plugin the integration is. `ON DELETE CASCADE`
+by the integration. `ON DELETE CASCADE`
 so purging a task cannot leave its remote identity behind to be matched
 against later. Schema **v8** moved the Google columns out of `tasks` and
 `lists`; **v9** moved the Notes ones; **v10** added the five `recur_*`
 columns.
 
 Those two migrations still name the side tables, and must: a migration
-moves data that already exists whether or not the plugin that will read
-it is installed. Each creates what it needs itself, with
-`IF NOT EXISTS`, so it agrees with the plugin's own `db_open`.
+moves data that already exists whether or not the integration that will
+read it is present. Each creates what it needs itself, with
+`IF NOT EXISTS`.
 
 The schema version rides in `PRAGMA user_version` (currently **10**, from
 `TASK_DB_SCHEMA_VERSION`).
@@ -229,11 +173,12 @@ Semantics worth knowing when querying directly:
   are the Google sync identity: a task with no `gtasks_task` row has
   never been pushed; `updated_at` newer than the remote copy means
   locally dirty. Joining is how you ask — `LEFT JOIN gtasks_task g ON
-  g.task_id = t.id` — and a database without that plugin has no such
-  table at all.
+  g.task_id = t.id`.  The Google and Notes side tables are created by
+  the v8/v9 migrations and kept in the file; nothing in this build
+  writes them, and the integrations that own them return later.
 - `position` (both tables) and `lists.emoji` are local-only.
   `gtasks_task.web_link`, `glinks` and `assigned` are read-only mirrors
-  of Google fields, shown in an editor section the plugin contributes.
+  of Google fields.
 - Writes to the local-only flags `pinned` and `priority` deliberately
   **do not** touch `updated_at` — bumping it would mark the row
   sync-dirty and cost a no-op PATCH per toggle, and could starve a
@@ -274,11 +219,11 @@ Semantics worth knowing when querying directly:
   fields. `recur_lead` is clamped at read time to shorter than one
   repeat period, so an hourly schedule cannot sit permanently inside its
   own lead window.
-- `sync_state` is a key/value scratchpad shared by the app and the
-  plugins, and its keys are NOT namespaced — a plugin prefixes its own.
-  `lists_custom_order` is the app's (set once the user drag-reorders
-  lists); `last_sync`, `default_list_gid` and `bn_*` belong to the sync
-  plugins.
+- `sync_state` is a key/value scratchpad shared by the app and its
+  integrations, and its keys are NOT namespaced — an integration
+  prefixes its own.  `lists_custom_order` and `backup_source_stamp` are
+  the app's; `last_sync`, `default_list_gid` and `bn_*` belong to the
+  syncs.
 - `notes_task.done` / `.due` are a BASELINE, not a mirror: they hold
   what Notes was last known to have, so the rows whose done-ness or due
   date differs from them *are* the pending write set. There is no queue
@@ -288,67 +233,7 @@ Semantics worth knowing when querying directly:
   knows neither concept).
 
 Two practical cautions: the app sets a 5-second busy timeout (the GUI
-and the sync worker share the file), so brief external readers coexist
+and the backup worker share the file), so brief external readers coexist
 fine, but long write transactions from other tools will stall it; and
-prefer backing up while the app is closed — a copy taken mid-sync can
+prefer backing up while the app is closed — a copy taken mid-write can
 catch a transaction in flight.
-
-## Sync engine
-
-All of this is the **Google Tasks plugin** (`src/plugins/gtasks/`), not
-the application. See also its
-[README](src/plugins/gtasks/README.md).
-
-The design goal is to be **non-destructive by default**: absence on
-one side never deletes on the other; only explicit deletes propagate.
-The Notes mirror follows the same rule — see
-[its README](src/plugins/notes/README.md) — including refusing to reap
-anything when a listing comes back empty, since an empty listing is
-indistinguishable from a stale Notes answering on the socket.
-
-- Sync runs on a worker thread with its **own SQLite connection** (a
-  connection never crosses threads); progress and completion are
-  marshalled back to the main loop through `host->notify->invoke_main`.
-  `curl_global_init` happens in the plugin's `task_plugin_entry`, before
-  any worker of its own can exist — libcurl's implicit init is not
-  thread-safe, and the application does not link libcurl at all.
-- After the first full pass, task fetches are incremental
-  (`updatedMin = last_sync − 300` — the overlap absorbs clock skew)
-  with deleted/completed/hidden items included. With a partial
-  listing, an absent item means *unchanged*, never deleted — remote
-  deletions arrive as explicit `deleted: true` items.
-- Local tombstones DELETE remotely, then purge. A local task whose
-  `gtasks_id` is missing from a **full** listing (deleted on Google
-  with no local tombstone) drops its stale identity and is pushed
-  back as a new remote task; a local list whose remote list vanished
-  is re-created and all its tasks re-pushed.
-- Pushes: creates POST (parents before subtasks), edits PATCH with
-  `If-Match: etag` — a 412 skips the push (remote wins; the next pull
-  reconciles). Otherwise conflicts resolve newest-wins per item, and
-  a deletion beats a concurrent edit. Every push reply stamps the row
-  clean (fresh etag, remote update time).
-- `hidden` remote tasks (completed and cleared) are never re-created
-  locally — that keeps Clear Completed from resurrecting rows.
-- Cross-list moves use `tasks.move` with `destinationTasklist` on a
-  worker job, children re-parented afterwards; when offline the
-  fallback is a tombstone in the source list plus stripped ids so the
-  rows push as new. Clear Completed uses `tasks.clear` when signed
-  in, tombstone deletes otherwise.
-- Google's default tasklist cannot be deleted by any client (their
-  API returns 400). Every sync stores its id in `sync_state`, the
-  delete action refuses it up front, and a stale tombstone for it is
-  restored rather than retried forever.
-
-## OAuth
-
-Also the Google Tasks plugin. Installed-app flow per RFC 8252: PKCE (S256, GLib SHA-256), a
-loopback `GSocketService` on an ephemeral port for the redirect, and
-`access_type=offline` for a refresh token. The client credentials
-resolve in order: a `client_secret….json` next to the binary (or in
-the shared `~/.local/share/tasks` directory, alongside the database and
-the ini) → legacy `google_client_id`/`google_client_secret`
-ini keys → a baked-in default from `client_credentials.mk`. The
-refresh token persists in `tasks.ini` (`gtasks_refresh_token`);
-access tokens live in memory only. The redirect listener redeems the
-authorization code exactly once — browsers sometimes replay the
-redirect GET, and a second exchange would revoke the first grant.

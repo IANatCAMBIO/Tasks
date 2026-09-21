@@ -3,7 +3,6 @@
  * =========================================================================== */
 
 #include "db.h"
-#include "plugin_owner.h"
 #include <glib/gstdio.h>             /* g_unlink, g_stat                    */
 #include <string.h>
 
@@ -40,46 +39,6 @@ task_db_scalar(TaskDatabase *db, const gchar *sql)
         v = sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     return v;
-}
-
-/* task_db_exec_sql() / task_db_exec_query() — see db.h.  Both are thin
- * public faces on the internal exec paths, so there is exactly one
- * implementation whether the caller is in-tree or a plugin.             */
-gboolean
-task_db_exec_sql(TaskDatabase *db, const gchar *sql)
-{
-    return exec(db, sql);
-}
-
-typedef struct {
-    gint (*cb)(gpointer, gint, gchar **, gchar **);
-    gpointer user_data;
-} QueryTramp;
-
-static int
-query_tramp(void *data, int n_cols, char **values, char **names)
-{
-    QueryTramp *q = data;
-    return q->cb(q->user_data, n_cols, values, names);
-}
-
-gboolean
-task_db_exec_query(TaskDatabase *db, const gchar *sql,
-                   gint (*cb)(gpointer, gint, gchar **, gchar **),
-                   gpointer user_data)
-{
-    QueryTramp q = { cb, user_data };
-    gchar *msg = NULL;
-    gint rc = sqlite3_exec(db->sq, sql, query_tramp, &q, &msg);
-    /* SQLITE_ABORT is a callback asking to stop, which is the documented
-     * way to read only the rows you need — not a failure.               */
-    if (rc != SQLITE_OK && rc != SQLITE_ABORT) {
-        g_warning("db: %s: %s", sql, msg != NULL ? msg : "?");
-        sqlite3_free(msg);
-        return FALSE;
-    }
-    sqlite3_free(msg);
-    return TRUE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -640,12 +599,10 @@ task_db_open(const gchar *path, GError **err)
         "  key   TEXT PRIMARY KEY,"
         "  value TEXT)");
     /* NO integration-owned tables here.  A side table belongs to whatever
-     * owns the integration, and every one of them is now a plugin that
-     * creates its own from its db_open hook (see plugin.h).  The two
-     * MIGRATIONS below still name those tables — they have to, because a
-     * migration moves data that already exists whether or not the plugin
-     * that will read it is installed — so each one creates what it needs
-     * itself rather than relying on a block up here.                     */
+     * owns the integration.  The two MIGRATIONS below still name those
+     * tables — they have to, because a migration moves data that already
+     * exists — so each one creates what it needs itself rather than
+     * relying on a block up here.                                        */
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
              "ON tasks(list_id, parent_id, position)");
 
@@ -716,10 +673,10 @@ task_db_open(const gchar *path, GError **err)
     if (uv > 0 && uv < 8) {
         gboolean copied =
             /* The destinations are created HERE rather than in the schema
-             * block above: the Google sync is a plugin and owns them, and
-             * this migration must still run on a database whose owner is
-             * not installed.  IF NOT EXISTS because the plugin's own
-             * db_open may have created them already.                     */
+             * block above: they belong to the Google sync, and this
+             * migration must still run on a database whose owner is not
+             * present.  IF NOT EXISTS because the owner may have created
+             * them already.                                              */
             exec(db, "CREATE TABLE IF NOT EXISTS gtasks_list ("
                      "  list_id   INTEGER PRIMARY KEY REFERENCES lists(id)"
                      "            ON DELETE CASCADE,"
@@ -1858,90 +1815,19 @@ task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction)
 }
 
 /* ---------------------------------------------------------------------------
- * Delete hooks (see db.h).  One process-wide list; entries are never
- * removed, so no lock is needed as long as registration happens at
- * startup before any worker thread exists — which is the documented
- * contract.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    TaskDbDeleteSqlFn fn;
-    gpointer          user_data;
-} DeleteHook;
-
-static GSList *delete_hooks = NULL;  /* DeleteHook*, registration order     */
-
-/* ---------------------------------------------------------------------------
- * task_db_add_delete_hook() — register a delete hook (see db.h).
- * ------------------------------------------------------------------------- */
-void
-task_db_add_delete_hook(TaskDbDeleteSqlFn fn, gpointer user_data)
-{
-    if (fn == NULL)
-        return;
-    DeleteHook *h = g_new0(DeleteHook, 1);
-    h->fn        = fn;
-    h->user_data = user_data;
-    task_plugin_owner_stamp(h);
-    delete_hooks = g_slist_append(delete_hooks, h);
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_remove_delete_hooks_owner() — drop `owner`'s delete hooks
- * (see db.h).  A disabled plugin must stop contributing SQL to a delete:
- * its statements name ITS tables, and it is no longer keeping them.
- * ------------------------------------------------------------------------- */
-void
-task_db_remove_delete_hooks_owner(const gchar *owner)
-{
-    if (owner == NULL)
-        return;
-    GSList *n = delete_hooks;
-    while (n != NULL) {
-        GSList *next = n->next;
-        DeleteHook *h = n->data;
-        if (task_plugin_owner_is(h, owner)) {
-            task_plugin_owner_forget(h);
-            delete_hooks = g_slist_delete_link(delete_hooks, n);
-            g_free(h);
-        }
-        n = next;
-    }
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_task_delete() — tombstone the task and its subtasks.
- *
- * Registered delete hooks contribute their statements FIRST, while the
- * row is still untouched: a hook that copies an identity out of the row
- * (the Notes mirror parks its bn_uid so the next pass cannot helpfully
- * re-create what the user just deleted) must see the row as it was.  The
- * tombstone is a soft delete, so the ordering is belt and braces — but
- * it is the ordering those hooks were written against.
- *
- * Everything runs in ONE transaction, which is the point: a suppression
- * that commits without its delete, or a delete that commits without its
- * suppression, are both worse than neither.
+ * task_db_task_delete() — tombstone the task and its subtasks, in ONE
+ * transaction.
  * ------------------------------------------------------------------------- */
 void
 task_db_task_delete(TaskDatabase *db, gint64 id)
 {
-    GString *sql = g_string_new(NULL);
-
-    for (GSList *l = delete_hooks; l != NULL; l = l->next) {
-        DeleteHook *h = l->data;
-        h->fn(db, id, sql, h->user_data);
-    }
-
-    gchar *own = sqlite3_mprintf(
+    gchar *sql = sqlite3_mprintf(
         "UPDATE tasks SET deleted = 1, updated_at = %lld "
         "  WHERE parent_id = %lld;"
         "UPDATE tasks SET deleted = 1, updated_at = %lld WHERE id = %lld;",
         (long long)now(), (long long)id, (long long)now(), (long long)id);
-    g_string_append(sql, own);
-    sqlite3_free(own);
-
-    exec_txn(db, sql->str);
-    g_string_free(sql, TRUE);
+    exec_txn(db, sql);
+    sqlite3_free(sql);
 }
 
 /* ---------------------------------------------------------------------------

@@ -3,11 +3,8 @@
  *
  * A GTK3 + SQLite task-list application in plain C — the companion app to
  * Notes.  Boot order: config (needs argv[0] for the portable ini) →
- * database → the app's own registries → plugins (which register their
- * views, workers and settings) → GtkApplication → library window → the
- * shared scheduler arms every registered worker.
- *
- * Nothing here knows about Google Tasks or Notes.  Both are plugins.
+ * database → the app's own registries (views, workers) → GtkApplication →
+ * library window → the shared scheduler arms every registered worker.
  * =========================================================================== */
 
 #include <gtk/gtk.h>
@@ -18,8 +15,6 @@
 #include "recur.h"
 #include "task_worker.h"
 #include "core_views.h"
-#include "plugin_loader.h"
-#include "settings_window.h"
 #include "library_window.h"
 #ifdef HAVE_GTKOSX
 #include <gtkosxapplication.h>
@@ -129,7 +124,7 @@ typedef struct {
 
 /* ---------------------------------------------------------------------------
  * on_activate() — build the library window (or raise it on re-activate)
- * and start the auto-sync timer.
+ * and arm the background workers.
  * ------------------------------------------------------------------------- */
 static void
 on_activate(GtkApplication *gtk_app, gpointer data)
@@ -201,17 +196,10 @@ main(int argc, char **argv)
 
     /* Classic full-width scrollbars everywhere instead of GTK's modern
      * overlay style, matching Notes.  This is the ONE lever: it is a
-     * GtkSettings default, so it reaches every scroller in the process —
-     * the plugins' included, which the core cannot call into — and every
-     * one added later.  Must be set before GTK initializes, which the
-     * first-run dialog's gtk_init_check() below may do.                   */
+     * GtkSettings default, so it reaches every scroller in the process
+     * and every one added later.  Must be set before GTK initializes,
+     * which the first-run dialog's gtk_init_check() below may do.        */
     g_setenv("GTK_OVERLAY_SCROLLING", "0", TRUE);
-
-    /* NOTE there is no curl_global_init here any more, and no other
-     * library's either.  A dependency belongs to whatever needs it: the
-     * Google Tasks plugin does its own from `task_plugin_entry`, which
-     * is before any worker of its own can exist — the same guarantee
-     * this spot used to give, made by the code that actually cares.     */
 
     /* The key is consumed here and not kept: the resolved PATH is the
      * only thing the rest of the run needs, and the ini is the record of
@@ -246,37 +234,20 @@ main(int argc, char **argv)
         return 1;
     }
 
-
     TaskApp *app = g_new0(TaskApp, 1);
     app->db     = db;
     app->editors = g_hash_table_new_full(g_int64_hash, g_int64_equal,
                                          g_free, NULL);
     task_app_init_icons_dir(app);
 
-    /* Register every subsystem: its periodic worker with the shared
-     * scheduler, and its hooks into the core operations.  All of it must
-     * happen before the first window or thread exists, because those
-     * registries are unlocked (see task_worker.h and task_ops.h).  The
-     * app has to be built first — a worker definition points at the
-     * app's own in-flight flag and GSource id.                          */
-
+    /* Register every subsystem: its sidebar views and its periodic worker
+     * with the shared scheduler.  All of it must happen before the first
+     * window or thread exists, because those registries are unlocked (see
+     * task_worker.h).  The app has to be built first — a worker
+     * definition points at the app's own in-flight flag and GSource id.  */
     task_core_views_init();          /* the app's own sidebar views first  */
     task_recur_init(app);            /* recurring tasks: earliest worker   */
     task_backup_init(app);
-
-    /* Plugins load LAST of the registrants but still before the window:
-     * the sidebar is built from the view registry, so a plugin's view has
-     * to be in it by then.  Loading after the app's own registrations
-     * also means a plugin's view sorts after the built-ins at equal
-     * `sort`, which is the expected reading order.                       */
-    /* BEFORE the plugins load: contributed settings sections are built in
-     * registration order, and the Plugins list has to come first so it
-     * reads as a table of contents with each plugin's controls below it.
-     * Registering early is safe because the BUILDER runs when Settings is
-     * opened, by which time everything has been discovered.              */
-    task_settings_init();
-    task_plugins_load(app);
-    task_plugins_db_open(app, db);
 
     TaskBoot boot = { app, db_path };
     app->gtk_app = gtk_application_new("org.example.tasks",
@@ -289,18 +260,10 @@ main(int argc, char **argv)
     g_object_unref(app->gtk_app);
     g_hash_table_destroy(app->editors);
     /* Any listener still subscribed here outlived its window, which is
-     * not an error — a plugin may subscribe for the whole run.           */
+     * not an error.                                                      */
     g_slist_free_full(app->changed_l, g_free);
     g_slist_free_full(app->tasks_l,   g_free);
     g_slist_free_full(app->status_l,  g_free);
-    /* db_closing BEFORE shutdown, and both before the handle goes: a
-     * plugin's last chance to touch its own tables is while the database
-     * is still open.  Without this the switch paths announced a closing
-     * database and the exit path did not, which is the kind of asymmetry
-     * a plugin author would only find by losing a write.                 */
-    if (app->db != NULL)
-        task_plugins_db_closing(app, app->db);
-    task_plugins_shutdown(app);
     task_db_close(app->db);
     g_free(app);
     g_free(db_path);

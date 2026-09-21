@@ -757,7 +757,6 @@ static const TaskWorkerDef recur_worker = {
     .run              = recur_run,
     .ready            = NULL,
     .on_arm           = NULL,
-    .on_blocked       = NULL,
 };
 
 /* task_recur_init() — see recur.h.                                         */

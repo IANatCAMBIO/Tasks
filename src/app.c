@@ -7,7 +7,6 @@
 #include "editor_window.h"
 #include "backup.h"
 #include "task_worker.h"
-#include "plugin_loader.h"
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
@@ -368,7 +367,7 @@ task_app_exe_dir(void)
 /* ---------------------------------------------------------------------------
  * task_app_config_init() — resolve + load the config file once.
  *
- * THE INI LIVES WITH THE DATABASE AND THE PLUGINS, in
+ * THE INI LIVES WITH THE DATABASE, in
  * task_db_default_dir() — ~/.local/share/tasks on Linux.  One directory
  * holds everything this app keeps per user, so there is one place to back
  * up, one place to look, and no answer to "where are my settings?" that
@@ -456,43 +455,6 @@ task_app_config_get_bool(const gchar *key, gboolean def)
         return def;
     gboolean b = strcmp(v, "0") != 0;
     g_free(v);
-    return b;
-}
-
-/* ---------------------------------------------------------------------------
- * Namespaced config (see app.h) — "<ns>_<key>" against the same store.
- * ------------------------------------------------------------------------- */
-
-/* ns_key() — build the prefixed key.  g_free the result.                  */
-static gchar *
-ns_key(const gchar *ns, const gchar *key)
-{
-    return g_strdup_printf("%s_%s", ns, key);
-}
-
-gchar *
-task_app_config_get_ns(const gchar *ns, const gchar *key)
-{
-    gchar *k = ns_key(ns, key);
-    gchar *v = task_app_config_get(k);
-    g_free(k);
-    return v;
-}
-
-void
-task_app_config_set_ns(const gchar *ns, const gchar *key, const gchar *value)
-{
-    gchar *k = ns_key(ns, key);
-    task_app_config_set(k, value);
-    g_free(k);
-}
-
-gboolean
-task_app_config_get_bool_ns(const gchar *ns, const gchar *key, gboolean def)
-{
-    gchar *k = ns_key(ns, key);
-    gboolean b = task_app_config_get_bool(k, def);
-    g_free(k);
     return b;
 }
 

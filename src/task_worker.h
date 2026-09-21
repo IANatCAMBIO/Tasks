@@ -1,12 +1,12 @@
 /* ===========================================================================
  * task_worker.h — the periodic background pass, once.
  *
- * Three subsystems (the Google Tasks sync, the Notes mirror and the
- * rotating backup) each wanted the same thing: a config-driven timer
- * that runs a pass every N minutes against the database path it was
- * armed with.  Each grew its own copy — an identical flag, GSource id,
- * g_strdup'd path, tick, GDestroyNotify and arm function, differing only
- * in which config keys they read.
+ * Several subsystems (the rotating backup, the recurrence pass, and the
+ * syncs that used to live here) each wanted the same thing: a
+ * config-driven timer that runs a pass every N minutes against the
+ * database path it was armed with.  Each grew its own copy — an
+ * identical flag, GSource id, g_strdup'd path, tick, GDestroyNotify and
+ * arm function, differing only in which config keys they read.
  *
  * Three copies is how they drifted.  The Settings "move the database"
  * flow (since deleted — gotcha 14) re-armed all three; the File → Open
@@ -37,12 +37,11 @@
  *   NEVER  — arm the timer and nothing else (the backup: an unprompted
  *            copy at every launch is not wanted).
  *   ARMED  — one pass, but only when a timer was actually installed, and
- *            only when `ready` says so (the Google sync: at interval 0
- *            the user asked for manual-only, and there is nothing to
- *            sync while signed out).
- *   ALWAYS — one pass even at interval 0 (the Notes mirror: its view has
- *            to be POPULATED before the user can act on it, so "manual
- *            only" still means "fill it in now").
+ *            only when `ready` says so (a sync at interval 0 means the
+ *            user asked for manual-only).
+ *   ALWAYS — one pass even at interval 0 (the recurrence pass: repeats
+ *            that came round while the app was closed are applied at
+ *            launch whatever the timer says).
  */
 typedef enum {
     TASK_WORKER_INITIAL_NEVER = 0,
@@ -58,13 +57,9 @@ typedef enum {
  *   id               — short name, for diagnostics only.
  *   sort             — run ORDER: lower goes first, and equal values keep
  *                      registration order.  0 is the default and means
- *                      "no preference", which is right for almost every
- *                      worker.  It exists because one ordering is load-
- *                      bearing and must not depend on which plugin the
- *                      loader happened to open first: the Notes mirror
- *                      runs BEFORE the Google sync, so a new action item
- *                      is mirrored and then pushed on to Google by a
- *                      single press of Sync rather than taking two.
+ *                      "no preference".  It exists because one ordering
+ *                      is load-bearing: the recurrence pass runs before
+ *                      anything that would push its results elsewhere.
  *   enabled_key      — config master switch; NULL means always enabled.
  *   enabled_default  — its default when the key is unset.
  *   interval_key     — config key holding the period in MINUTES; <= 0
@@ -80,10 +75,7 @@ typedef enum {
  *   run              — start one pass (main thread).
  *   ready            — may a pass run right now?  NULL means always.
  *   on_arm           — run just after the master switch passes and BEFORE
- *                      the timer is installed.  NULL for nothing.  The
- *                      Notes mirror uses it to carry already-mirrored
- *                      items over when the target list setting changed
- *                      while the integration was switched off.
+ *                      the timer is installed.  NULL for nothing.
  * ------------------------------------------------------------------------- */
 typedef struct {
     const gchar      *id;
@@ -98,12 +90,6 @@ typedef struct {
     void            (*run)(TaskApp *app, const gchar *db_path);
     gboolean        (*ready)(TaskApp *app);
     void            (*on_arm)(TaskApp *app);
-    /* The user explicitly asked for a pass (a Sync Now) but `ready` said
-     * no.  A chance to do something about it rather than appear to do
-     * nothing — the Google sync opens its sign-in flow here.  NULL means
-     * stay silent, which is right for a worker whose "not now" is not
-     * the user's to fix.                                                */
-    void            (*on_blocked)(TaskApp *app, const gchar *db_path);
 } TaskWorkerDef;
 
 /* ---------------------------------------------------------------------------
@@ -131,46 +117,5 @@ void task_worker_arm(TaskApp *app, const TaskWorkerDef *def,
  * individual workers there is what let one go missing.
  * ------------------------------------------------------------------------- */
 void task_worker_arm_all(TaskApp *app, const gchar *db_path);
-
-/* ---------------------------------------------------------------------------
- * task_worker_run_all() — run every enabled worker's pass NOW.
- *
- * NOTHING IN THE CORE'S CHROME CALLS THIS ANY MORE, and that is the
- * point: File → Sync Now used to, and a control that runs whatever
- * happens to be installed cannot say what it does.  Each integration
- * offers its own Sync Now instead (see task_ui.h's TASK_UI_MENU_OWN),
- * naming the service it contacts.  This stays as the run-everything call
- * for a caller who genuinely means everything — a headless pass, a
- * future "sync all" a user asks for by name.
- *
- * Order is registration order, which is deliberate rather than
- * incidental: a cheap local pass registered first has its results in the
- * database before a network pass reads them, so an item picked up from
- * one integration can reach another in a single press.
- *
- * A worker that is switched off, already running, or whose `ready` says
- * no is skipped silently — the call means "bring everything up to
- * date", and a worker with nothing to do has done that.
- * ------------------------------------------------------------------------- */
-void task_worker_run_all(TaskApp *app, const gchar *db_path);
-
-/* task_worker_any_enabled() — is there any enabled worker at all?  For a
- * caller deciding whether a run-everything control is worth offering.     */
-gboolean task_worker_any_enabled(void);
-
-/* ---------------------------------------------------------------------------
- * task_worker_remove_owner() — remove everything plugin `owner`
- * registered here.  Called when a plugin is switched off while the app is
- * running; the app's OWN registrations are unowned and never match.
- * ------------------------------------------------------------------------- */
-void task_worker_remove_owner(const gchar *owner);
-
-/* ---------------------------------------------------------------------------
- * task_worker_arm_owner() — arm only the workers plugin `owner`
- * registered.  For bringing one re-enabled plugin back without running
- * every other worker's initial pass as a side effect.
- * ------------------------------------------------------------------------- */
-void task_worker_arm_owner(TaskApp *app, const gchar *owner,
-                           const gchar *db_path);
 
 #endif /* TASK_WORKER_H */

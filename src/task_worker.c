@@ -3,7 +3,6 @@
  * =========================================================================== */
 
 #include "task_worker.h"
-#include "plugin_owner.h"
 #include <stdlib.h>
 
 static GSList *workers = NULL;       /* const TaskWorkerDef*, in order      */
@@ -25,7 +24,6 @@ task_worker_register(const TaskWorkerDef *def)
             break;
         prev = n;
     }
-    task_plugin_owner_stamp((gpointer)def);
     if (prev == NULL)
         workers = g_slist_prepend(workers, (gpointer)def);
     else
@@ -132,63 +130,6 @@ task_worker_arm(TaskApp *app, const TaskWorkerDef *def, const gchar *db_path)
 }
 
 /* ---------------------------------------------------------------------------
- * task_worker_remove_owner() — drop `owner`'s workers, STOPPING each
- * one's timer first (see task_worker.h).  Forgetting the definition
- * without killing the GSource would leave a tick firing into a worker
- * nobody can reach any more.
- * ------------------------------------------------------------------------- */
-void
-task_worker_remove_owner(const gchar *owner)
-{
-    if (owner == NULL)
-        return;
-    GSList *n = workers;
-    while (n != NULL) {
-        GSList *next = n->next;
-        const TaskWorkerDef *def = n->data;
-        if (task_plugin_owner_is((gpointer)def, owner)) {
-            if (def->timer != NULL && *def->timer != 0) {
-                g_source_remove(*def->timer);
-                *def->timer = 0;
-            }
-            task_plugin_owner_forget((gpointer)def);
-            workers = g_slist_delete_link(workers, n);
-            /* NOT freed: the definition is the plugin's own static
-             * struct.  A pass already IN FLIGHT is left to finish — the
-             * module stays mapped, so its completion callback is still
-             * valid code; it simply finds itself unregistered.          */
-        }
-        n = next;
-    }
-}
-
-/* ---------------------------------------------------------------------------
- * task_worker_arm_owner() — arm just `owner`'s workers (see task_worker.h).
- *
- * Narrow on purpose.  Arming runs on_arm and, for an ALWAYS worker, an
- * immediate pass — so arming EVERYTHING to bring one re-enabled plugin
- * back would kick off every other integration's network round trip as a
- * side effect of a checkbox the user ticked for something else.
- * ------------------------------------------------------------------------- */
-void
-task_worker_arm_owner(TaskApp *app, const gchar *owner, const gchar *db_path)
-{
-    if (owner == NULL)
-        return;
-    /* Copied first: on_arm and the initial pass are the plugin's own code
-     * and may register or remove workers, which would invalidate a live
-     * walk of the list.                                                  */
-    GSList *snapshot = g_slist_copy(workers);
-    for (GSList *n = snapshot; n != NULL; n = n->next) {
-        if (g_slist_find(workers, n->data) == NULL)
-            continue;                /* removed while we armed             */
-        if (task_plugin_owner_is(n->data, owner))
-            task_worker_arm(app, n->data, db_path);
-    }
-    g_slist_free(snapshot);
-}
-
-/* ---------------------------------------------------------------------------
  * task_worker_arm_all() — every worker, one call (see task_worker.h).
  * ------------------------------------------------------------------------- */
 void
@@ -196,44 +137,4 @@ task_worker_arm_all(TaskApp *app, const gchar *db_path)
 {
     for (GSList *n = workers; n != NULL; n = n->next)
         task_worker_arm(app, n->data, db_path);
-}
-
-/* enabled() — the worker's master switch, or TRUE when it has none.      */
-static gboolean
-enabled(const TaskWorkerDef *def)
-{
-    return def->enabled_key == NULL ||
-           task_app_config_get_bool(def->enabled_key, def->enabled_default);
-}
-
-/* ---------------------------------------------------------------------------
- * task_worker_run_all() — every enabled worker, now (see task_worker.h).
- * ------------------------------------------------------------------------- */
-void
-task_worker_run_all(TaskApp *app, const gchar *db_path)
-{
-    for (GSList *n = workers; n != NULL; n = n->next) {
-        const TaskWorkerDef *def = n->data;
-        if (!enabled(def))
-            continue;
-        if (def->running != NULL && *def->running)
-            continue;                /* a pass is already in flight        */
-        if (def->ready != NULL && !def->ready(app)) {
-            /* Asked but not able.  Silence here is what made the Sync
-             * button look broken while signed out.                       */
-            if (def->on_blocked != NULL)
-                def->on_blocked(app, db_path);
-            continue;
-        }
-        def->run(app, db_path);
-    }
-}
-
-gboolean
-task_worker_any_enabled(void)
-{
-    for (GSList *n = workers; n != NULL; n = n->next)
-        if (enabled(n->data))
-            return TRUE;
-    return FALSE;
 }

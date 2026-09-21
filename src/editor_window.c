@@ -3,7 +3,6 @@
  * =========================================================================== */
 
 #include "editor_window.h"
-#include "task_ui.h"
 #include "recur.h"
 #include <string.h>
 #include <time.h>
@@ -62,7 +61,6 @@ typedef struct {
                                       * editable dies under us)             */
     GtkListStore *att_store;
     GtkWidget    *att_view;
-    GtkWidget    *ext_box;           /* contributed sections (task_ui.h)    */
 
     /* The Recurrence block (recur.h).  TWO ROWS, and they are one
      * sentence read top to bottom: "Starting <date> at <time>, repeat
@@ -110,8 +108,7 @@ typedef struct {
 /* editor_notify() — tell the library something changed.  Editor saves
  * use the LIGHT hook (task pane only): they can never change the
  * sidebar, and the saving editor is itself the source of truth — the
- * full notify would reload every open editor (and re-run the Notes
- * CLI) per autosave.                                                       */
+ * full notify would reload every open editor per autosave.                 */
 static void
 editor_notify(TaskEditor *ed)
 {
@@ -433,13 +430,6 @@ editor_completed_refresh(TaskEditor *ed, const Task *t)
 /* ---------------------------------------------------------------------------
  * editor_save_now() — write every editable field through to the row and
  * notify the library.  The debounce timer funnels here.
- *
- * A mirrored Notes item saves exactly like any other task: its status
- * and due land in the database, and the next mirror pass carries them
- * to Notes in bulk (the Notes plugin) — flattened there to the done flag Notes
- * understands.  The editor no longer shells the CLI per
- * keystroke-debounce, which is what made every autosave wait on a
- * process spawn.
  * ------------------------------------------------------------------------- */
 static void
 editor_save_now(TaskEditor *ed)
@@ -1341,47 +1331,6 @@ due_entry_refresh(TaskEditor *ed, gint64 due)
     g_free(text);
 }
 
-/* clear_children() — empty a container.                                    */
-static void
-clear_children(GtkWidget *box)
-{
-    GList *kids = gtk_container_get_children(GTK_CONTAINER(box));
-    for (GList *l = kids; l != NULL; l = l->next)
-        gtk_widget_destroy(GTK_WIDGET(l->data));
-    g_list_free(kids);
-}
-
-/* ---------------------------------------------------------------------------
- * ext_sections_load() — rebuild the contributed sections for `t`.
- *
- * Rebuilt per load rather than built once and refilled: a section is
- * whatever its owner returns for THIS task, and most tasks get nothing.
- * Asking each contributor and packing what comes back is simpler than
- * keeping a widget per contributor alive and hiding it, and it means a
- * contributor cannot leak state between the tasks it is shown for.
- *
- * A contributor returning NULL is the normal case, not an error.
- * ------------------------------------------------------------------------- */
-static void
-ext_sections_load(TaskEditor *ed, const Task *t)
-{
-    clear_children(ed->ext_box);
-    gboolean any = FALSE;
-    for (guint i = 0; i < task_ui_editor_count(); i++) {
-        const TaskUiEditorDef *d = task_ui_editor_nth(i);
-        GtkWidget *w = d->build != NULL
-                     ? d->build(ed->app, t, d->user_data) : NULL;
-        if (w == NULL)
-            continue;
-        gtk_box_pack_start(GTK_BOX(ed->ext_box), w, FALSE, FALSE, 0);
-        any = TRUE;
-    }
-    if (any)
-        gtk_widget_show_all(ed->ext_box);
-    else
-        gtk_widget_hide(ed->ext_box);
-}
-
 /* ---------------------------------------------------------------------------
  * editor_load() — (re)load every widget from the database row.  Returns
  * FALSE when the row/item vanished and the window was destroyed — `ed`
@@ -1451,7 +1400,6 @@ editor_load(TaskEditor *ed)
 
     sub_refresh(ed);
     att_refresh(ed);
-    ext_sections_load(ed, t);
     editor_title_refresh(ed);
     ed->loading = FALSE;
     task_free(t);
@@ -1653,9 +1601,7 @@ combo_match_fields(GtkWidget *combo, gint height)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_open_common() — build an editor window for a task.  Mirrored
- * Notes items are ordinary tasks, so there is no longer a reduced
- * variant: they get notes, subtasks and attachments like anything else.
+ * editor_open_common() — build an editor window for a task.
  *
  * Every editor gets a Save button under the notes box; `is_new` marks the
  * window as the one the New Task action just opened and adds Cancel beside
@@ -2217,13 +2163,6 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
 
     gtk_box_pack_start(GTK_BOX(vbox), ed->adv_box, FALSE, FALSE, 0);
 
-    /* Contributed sections (see task_ui.h) — an integration's read-only
-     * view of this task, such as what a sync knows about it.  Empty and
-     * zero-height for a task nothing contributes to, which is most of
-     * them, so it costs the editor's natural height nothing.              */
-    ed->ext_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_box_pack_start(GTK_BOX(vbox), ed->ext_box, FALSE, FALSE, 0);
-
     /* Bottom row: the Advanced disclosure link at the left, Save at the
      * right (every editor) and Cancel to ITS right in the New Task variant
      * — vbox's 12 px border puts them flush with the notes box's right
@@ -2268,8 +2207,8 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     g_hash_table_insert(app->editors, key, ed->window);
     g_object_set_data(G_OBJECT(ed->window), "task-editor", ed);
     task_free(t);
-    /* The Notes load can destroy the window (item gone / CLI
-     * failure) — `ed` is freed then, so bail before touching it.           */
+    /* The load can destroy the window (the row is gone) — `ed` is freed
+     * then, so bail before touching it.                                    */
     if (!editor_load(ed))
         return;
     /* Fold state, decided once the stores are loaded (editor_load, just

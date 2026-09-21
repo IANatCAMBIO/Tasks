@@ -2,15 +2,14 @@
 # Tasks — Makefile
 #
 # Builds the Tasks application (a GTK3 + SQLite task-list app written
-# in plain C — the companion app to Notes).  Requires GTK3, SQLite3
-# and libcurl, discovered via pkg-config.
+# in plain C — the companion app to Notes).  Requires GTK3 and SQLite3,
+# discovered via pkg-config.
 #
 # On macOS with MacPorts:
-#     sudo port install pkgconf gtk3 +quartz curl
+#     sudo port install pkgconf gtk3 +quartz
 #
 # Targets:
-#     make          — build the `tasks` binary and its plugins
-#     make plugins  — build only plugins/ from src/plugins/
+#     make          — build the `tasks` binary
 #     make clean    — remove build artifacts (including dist/)
 #     make run      — build and launch the app
 #     make app      — macOS .app bundle → dist/Tasks.app
@@ -21,10 +20,9 @@
 # Semantic version — read from VERSION file (the single source of truth).
 # Baked into the binary as TASK_VERSION (shown in the About dialog) and into
 # the .app bundle's Info.plist.  To release: edit VERSION, then `make`.
-# Stated explicitly rather than left to "the first rule in the file".
-# Twice now a rule defined above `all:` has silently become the default
-# goal and `make` stopped building the binary — once for the `plugins`
-# convenience target, once for a per-plugin rule created by $(eval).
+# Stated explicitly rather than left to "the first rule in the file":
+# a rule defined above `all:` silently becomes the default goal and
+# `make` stops building the binary.
 .DEFAULT_GOAL := all
 
 VERSION  := $(strip $(shell cat VERSION))
@@ -50,11 +48,8 @@ PKGCONF  := $(shell command -v pkg-config 2>/dev/null || echo /opt/local/bin/pkg
 HAVE_GTKOSX := $(shell $(PKGCONF) --exists gtk-mac-integration-gtk3 && echo 1)
 
 # Every pkg-config module the build needs, resolved in a single query.
-# NO libcurl.  The only thing that ever needed it was the Google Tasks
-# sync, which is a plugin and brings its own (src/plugins/gtasks/deps.mk).
-# An installation without that plugin links no network library at all —
-# which is the point of the whole exercise, and is checkable with
-# `otool -L tasks` / `ldd tasks`.
+# No network library: nothing in the app talks to one (checkable with
+# `otool -L tasks` / `ldd tasks`).
 PKGS     := gtk+-3.0 sqlite3
 ifeq ($(HAVE_GTKOSX),1)
 PKGS    += gtk-mac-integration-gtk3
@@ -72,33 +67,13 @@ endif
 # Linker flags: those same libraries, plus libm.
 LDFLAGS  := $(shell $(PKGCONF) --libs $(PKGS)) -lm
 
-# The app's own Google OAuth client, baked into the binary so users just
-# click Sync and sign in — no configuration.  One-time developer setup:
-# create client_credentials.mk (gitignored) with two lines —
-#   GOOGLE_CLIENT_ID     = <id>.apps.googleusercontent.com
-#   GOOGLE_CLIENT_SECRET = <secret>
-# from a "Desktop app" OAuth client in the Google Cloud console (Google
-# Tasks API enabled).  Installed-app client secrets are not confidential
-# (Google's own docs) — baking them in is the standard desktop-app
-# pattern.
--include client_credentials.mk
-ifneq ($(GOOGLE_CLIENT_ID),)
-CFLAGS  += -DTASK_GOOGLE_CLIENT_ID='"$(GOOGLE_CLIENT_ID)"'
-endif
-ifneq ($(GOOGLE_CLIENT_SECRET),)
-CFLAGS  += -DTASK_GOOGLE_CLIENT_SECRET='"$(GOOGLE_CLIENT_SECRET)"'
-endif
-
 # All C source files that make up the application.
 SRCS     := src/main.c \
             src/app.c \
             src/task_ops.c \
             src/task_worker.c \
-            src/plugin_loader.c \
-            src/plugin_owner.c \
             src/task_view.c \
             src/task_rows.c \
-            src/task_ui.c \
             src/search.c \
             src/core_views.c \
             src/db.c \
@@ -114,93 +89,9 @@ OBJS     := $(SRCS:src/%.c=build/%.o)
 # The final executable name.
 BIN      := tasks
 
-# --- Plugins -----------------------------------------------------------------
-# Each src/plugins/<id>.c builds into plugins/<id>.<ext>, loaded at startup
-# by src/plugin_loader.c.  The FILENAME is the plugin id (the loader reads
-# the enabled setting from it before dlopen, so a disabled plugin is never
-# mapped) and must match the id in its TaskPlugin struct.
-#
-# A plugin imports NOTHING from the host — everything arrives in the
-# TaskHostApi table (see plugin.h) — so these link against no host object
-# and need no symbol-resolution flags.  That is also why the host is NOT
-# built with -rdynamic: exporting the app's symbols would cost the app a
-# larger dynamic symbol table for a mechanism it does not use.
-#
-# -fvisibility=hidden keeps everything but task_plugin_entry (marked
-# TASK_PLUGIN_EXPORT) out of the module's dynamic symbol table: a smaller
-# table resolves faster under RTLD_NOW, and nothing else is callable.
-# A plugin is EITHER a single src/plugins/<id>.c, or a directory
-# src/plugins/<id>/ of several .c files that link into one module.  The
-# second exists because a real integration is not one file: the Google
-# Tasks plugin is its sync engine, its OAuth flow, an HTTP wrapper and a
-# JSON parser, and splitting a plugin across files must not mean
-# splitting it across modules.
-PLUGIN_SRCS := $(wildcard src/plugins/*.c)
-# Every directory under src/plugins/ is a plugin.
-PLUGIN_PKGS := $(notdir $(patsubst %/,%,\
-                 $(sort $(dir $(wildcard src/plugins/*/*.c)))))
-PLUGIN_DIR  := plugins
-
-# .so everywhere, including macOS: the extension is a build convention,
-# not a format, and one name keeps the docs and the loader honest.  Only
-# the LINK flag genuinely differs between the two platforms.
-PLUGIN_EXT  := so
-UNAME_S     := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-PLUGIN_LDFLAGS := -dynamiclib -undefined dynamic_lookup
-else
-PLUGIN_LDFLAGS := -shared
-endif
-
-PLUGINS := $(patsubst src/plugins/%.c,$(PLUGIN_DIR)/%.$(PLUGIN_EXT),$(PLUGIN_SRCS)) \
-           $(foreach d,$(PLUGIN_PKGS),$(PLUGIN_DIR)/$(d).$(PLUGIN_EXT))
-
-# A plugin's README travels WITH it: the Settings list finds one by the
-# convention "<id>.README.md" beside the module, which is the only way it
-# can be offered for a plugin the user has switched OFF (a disabled
-# plugin is never opened, so nothing inside it can be read).
-PLUGIN_DOCS := $(patsubst src/plugins/%,$(PLUGIN_DIR)/%,\
-                 $(wildcard src/plugins/*.README.md)) \
-               $(foreach d,$(PLUGIN_PKGS),\
-                 $(if $(wildcard src/plugins/$(d)/README.md),\
-                   $(PLUGIN_DIR)/$(d).README.md))
-
-$(PLUGIN_DIR)/%.README.md: src/plugins/%/README.md
-	@mkdir -p $(PLUGIN_DIR)
-	cp $< $@
-
-$(PLUGIN_DIR)/%.README.md: src/plugins/%.README.md
-	@mkdir -p $(PLUGIN_DIR)
-	cp $< $@
-
-# A plugin may bring its OWN dependencies: src/plugins/<id>/deps.mk, when
-# present, is included and may add to that plugin's CFLAGS/LDFLAGS.  This
-# is how the Google Tasks plugin asks for libcurl WITHOUT the application
-# linking it — see the PKGS list above, which no longer mentions it.
-define PLUGIN_PKG_RULE
--include src/plugins/$(1)/deps.mk
-$$(PLUGIN_DIR)/$(1).$$(PLUGIN_EXT): $$(wildcard src/plugins/$(1)/*.c) \
-                                   $$(wildcard src/plugins/$(1)/*.h) \
-                                   $$(wildcard src/*.h) Makefile
-	@mkdir -p $$(PLUGIN_DIR)
-	$$(CC) $$(CFLAGS) $$(PLUGIN_CFLAGS_$(1)) -fPIC -fvisibility=hidden \
-	      -Isrc -Isrc/plugins/$(1) $$(PLUGIN_LDFLAGS) -o $$@ \
-	      $$(wildcard src/plugins/$(1)/*.c) $$(PLUGIN_LIBS_$(1))
-endef
-$(foreach d,$(PLUGIN_PKGS),$(eval $(call PLUGIN_PKG_RULE,$(d))))
-
-$(PLUGIN_DIR)/%.$(PLUGIN_EXT): src/plugins/%.c $(wildcard src/*.h) Makefile
-	@mkdir -p $(PLUGIN_DIR)
-	$(CC) $(CFLAGS) -fPIC -fvisibility=hidden -Isrc \
-	      $(PLUGIN_LDFLAGS) -o $@ $<
-
-# NOTE: the `plugins` convenience target is declared BELOW `all`.  make
-# builds the first target in the file, so declaring it here would make
-# `make` stop building the binary.
-
 # Default target: build the application binary (and keep the clangd
 # compilation database fresh — it only regenerates on Makefile changes).
-all: $(BIN) $(PLUGINS) $(PLUGIN_DOCS) compile_commands.json
+all: $(BIN) compile_commands.json
 
 # Link all object files into the final binary.
 $(BIN): $(OBJS)
@@ -210,7 +101,7 @@ $(BIN): $(OBJS)
 # headers for simplicity (the project is small enough that full rebuilds
 # on header change are cheap), and on the Makefile so a VERSION bump
 # recompiles the baked-in TASK_VERSION.
-build/%.o: src/%.c $(wildcard src/*.h) Makefile VERSION $(wildcard client_credentials.mk)
+build/%.o: src/%.c $(wildcard src/*.h) Makefile VERSION
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -223,7 +114,7 @@ build/%.o: src/%.c $(wildcard src/*.h) Makefile VERSION $(wildcard client_creden
 # double-quoting collapses that to \", which is what JSON needs.
 JSONFLAGS := $(subst ",\\\",$(CFLAGS))
 
-compile_commands.json: Makefile VERSION $(wildcard client_credentials.mk)
+compile_commands.json: Makefile VERSION
 	@{ echo '['; \
 	first=1; \
 	for f in $(SRCS); do \
@@ -234,23 +125,13 @@ compile_commands.json: Makefile VERSION $(wildcard client_credentials.mk)
 	echo; echo ']'; } > $@
 	@echo "wrote $@"
 
-# Build only the plugins.
-plugins: $(PLUGINS) $(PLUGIN_DOCS)
-
 # Build and launch the application.
 run: $(BIN)
 	./$(BIN)
 
 # Remove all build artifacts.
-# Removes only what this Makefile BUILT.  Note plugins/ itself is left
-# alone, and only the modules and docs we produced are deleted from it:
-# Settings tells the user to copy third-party plugins into that folder,
-# so `rm -rf` on it would make `make clean` quietly delete something the
-# app had just invited them to put there.
 clean:
 	rm -rf build $(BIN) $(DIST)
-	rm -rf $(PLUGINS) $(PLUGIN_DOCS) $(addsuffix .dSYM,$(PLUGINS))
-	-rmdir $(PLUGIN_DIR) 2>/dev/null || true
 
 # =============================================================================
 # Optional packaging targets — everything lands in dist/.
@@ -264,10 +145,7 @@ DIST     := dist
 # to argv[0]).  document.png becomes the bundle icon via sips + iconutil.
 # The binary still links against the MacPorts GTK dylibs (absolute install
 # names), so the bundle runs on this machine but is NOT self-contained.
-# The live tasks.ini is NEVER copied (it holds the refresh token);
-# the OAuth client json IS copied when present so Sync sign-in works from
-# the bundle (installed-app client secrets are not confidential — the
-# same rationale as the baked client_credentials.mk defaults).
+# The live tasks.ini is NEVER copied (it is per-machine state).
 
 # The bundle name carries no version: the path stays stable across
 # releases, so a Dock/Launchpad entry or an alias pointing at it keeps
@@ -288,14 +166,10 @@ app: $(BIN)
 	# gtkosx menubar is built programmatically) macOS titles the app
 	# menu with the PROCESS name, not CFBundleName — the binary's
 	# filename is the only lever.  argv[0]-relative lookups (icons,
-	# ini, client json) resolve by directory, so the rename is harmless.
+	# ini) resolve by directory, so the rename is harmless.
 	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Tasks"
 	cp -R icons "$(APP_DIR)/Contents/MacOS/icons"
 	cp tasks.ini.defaults "$(APP_DIR)/Contents/MacOS/"
-	@if [ -f client_secret.apps.googleusercontent.com.json ]; then \
-	  cp client_secret.apps.googleusercontent.com.json \
-	     "$(APP_DIR)/Contents/MacOS/"; \
-	fi
 	find "$(APP_DIR)" -name .DS_Store -delete
 	for sz in 16 32 128 256 512; do \
 	  sips -z $$sz $$sz icons/document.png \
@@ -326,4 +200,4 @@ app: $(BIN)
 	  > "$(APP_DIR)/Contents/Info.plist"
 	@echo "built $(APP_DIR)"
 
-.PHONY: all run clean app plugins
+.PHONY: all run clean app

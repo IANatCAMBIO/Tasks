@@ -11,12 +11,10 @@
  * the blank-line gate that keeps a one-space note from silently making a
  * row taller.
  *
- * All of that used to live inside library_window.c, where the Weekly
- * Forecast reached into it directly.  A plugin cannot: the forecast is
- * moving out to a shared object, and it needs SEVEN of these.  So the
- * renderer lives here, the app's own task pane uses it, and a plugin
- * gets exactly what the app has rather than a reimplementation that
- * drifts.
+ * All of that used to live inside library_window.c.  The renderer lives
+ * here so that every pane showing tasks — the task list, the Kanban
+ * cards, and whatever views come later — gets exactly the same row
+ * rather than a reimplementation that drifts.
  *
  * PERFORMANCE.  The expensive lookups — attachment counts, subtasks,
  * list names — are gathered ONCE per refresh into a TaskRowCtx and
@@ -75,49 +73,7 @@ typedef struct {
     GHashTable *list_names;          /* list id → name, NULL for list views */
     gboolean    bold;                /* the bold_task_titles setting        */
     gboolean    show_done;           /* the show_completed toggle           */
-    GPtrArray  *decor_sets;          /* one id-set per registered decoration,
-                                      * in registry order; owned            */
 } TaskRowCtx;
-
-/* ---------------------------------------------------------------------------
- * Row decorations — a glyph a feature prefixes to the task cell.
- *
- * The task cell already stacks several: ↳ for a subtask shown in a
- * virtual view, 🚨 high priority, ⭐️ a favourite, and — until this
- * existed — ❗ for a mirrored Notes item, which the renderer knew about
- * by reading `bn_uid` straight off the row.  That is exactly the coupling
- * a plugin cannot have, and the reason this hook exists.
- *
- * IT IS DELIBERATELY BATCH-SHAPED.  `collect` is called ONCE when the row
- * context is built and returns the SET of task ids to decorate; drawing a
- * row is then a hash lookup.  The alternative — asking per row — would
- * put a plugin call inside markup generation for every task in the pane,
- * and `task_desc_markup` feeds a cell renderer, so that cost lands on
- * every refresh of a list that can hold thousands of rows.  A decoration
- * that cannot answer for the whole set at once does not belong here.
- *
- * `sort` orders the stack from the TITLE OUTWARDS: the lowest sort sits
- * innermost, nearest the title, because a glyph that says what the row IS
- * belongs closer to it than one saying how it is flagged.  The app's own
- * glyphs occupy 100 (favourite) and 200 (priority), so a decoration
- * describing the row's nature should sort below 100.
- *
- * `prefix` is Pango markup, inserted verbatim ahead of the title — glyph
- * plus its spacing, e.g. "\xe2\x9d\x97  ".  Register at startup.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    const gchar *id;
-    gint         sort;
-    /* The ids to decorate this refresh, as a GHashTable whose KEYS are
-     * gint64* (g_int64_hash/equal).  NULL means "nothing this time",
-     * which is the normal answer for a switched-off integration.  The
-     * caller takes ownership and destroys it.                          */
-    GHashTable *(*collect)(TaskApp *app, gpointer user_data);
-    const gchar *prefix;
-    gpointer     user_data;
-} TaskRowDecorDef;
-
-void task_rows_add_decoration(const TaskRowDecorDef *def);
 
 void task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx, gboolean virtual_view);
 void task_row_ctx_clear(TaskRowCtx *ctx);
@@ -165,19 +121,11 @@ void task_rows_bg_func(GtkTreeViewColumn *col, GtkCellRenderer *cell,
  *
  * A row whose id is 0 is a placeholder, not a task, and is ignored.
  *
- * Every pane with a checkbox uses THIS: the task pane, the seven Weekly
- * Forecast day views, and any plugin's.  They were separate copies of the
- * same twenty lines, which is how two of them eventually disagree about
- * what a tick means.
+ * Every pane with a checkbox uses THIS.  Separate copies of the same
+ * twenty lines are how two of them eventually disagree about what a tick
+ * means.
  * ------------------------------------------------------------------------- */
 void task_rows_toggle_done(TaskApp *app, GtkListStore *store,
                            GtkTreeIter *iter);
-
-/* ---------------------------------------------------------------------------
- * task_rows_remove_owner() — remove everything plugin `owner`
- * registered here.  Called when a plugin is switched off while the app is
- * running; the app's OWN registrations are unowned and never match.
- * ------------------------------------------------------------------------- */
-void task_rows_remove_owner(const gchar *owner);
 
 #endif /* TASK_ROWS_H */
