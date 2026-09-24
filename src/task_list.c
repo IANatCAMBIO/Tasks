@@ -416,8 +416,22 @@ task_manual_sort_apply(TaskLibrary *lw)
     gboolean manual = lib_manual_sort_live(lw);
     if (lw->col_drag)
         gtk_column_view_column_set_visible(lw->col_drag, manual);
-    /* In manual mode, disconnect the header sorter so the store order is
-     * used directly; in automatic mode, reconnect it so header clicks sort. */
+
+    /* In manual mode: null each column's sorter so headers are non-clickable
+     * and show no sort arrow.  In auto mode: restore the original sorters.
+     * The sort MODEL's sorter is also disconnected in manual mode so the
+     * store order becomes the display order directly.                        */
+    GListModel *cols = gtk_column_view_get_columns(
+                           GTK_COLUMN_VIEW(lw->task_view));
+    guint ncols = g_list_model_get_n_items(cols);
+    for (guint i = 0; i < ncols; i++) {
+        GtkColumnViewColumn *col = g_list_model_get_item(cols, i);
+        GtkSorter *orig = g_object_get_data(G_OBJECT(col), "task-orig-sorter");
+        if (orig != NULL)
+            gtk_column_view_column_set_sorter(col, manual ? NULL : orig);
+        g_object_unref(col);
+    }
+
     GtkSorter *sorter = manual
         ? NULL
         : gtk_column_view_get_sorter(GTK_COLUMN_VIEW(lw->task_view));
@@ -1231,7 +1245,10 @@ col_new(GtkColumnView *cv, const gchar *title, GtkListItemFactory *f,
     if (cmp != NULL) {
         GtkSorter *sorter = GTK_SORTER(gtk_custom_sorter_new(cmp, NULL, NULL));
         gtk_column_view_column_set_sorter(col, sorter);
-        g_object_unref(sorter);
+        /* Save for task_manual_sort_apply to restore; object data owns this
+         * reference (the column holds its own ref via set_sorter).           */
+        g_object_set_data_full(G_OBJECT(col), "task-orig-sorter",
+                               sorter, g_object_unref);
     }
     gtk_column_view_column_set_resizable(col, title != NULL);
     gtk_column_view_column_set_expand(col, expand);
