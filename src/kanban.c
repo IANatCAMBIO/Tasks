@@ -66,6 +66,8 @@ pad_widget(GtkWidget *w, gint pad)
  * including a plain GtkBox.  So the shadow wrapper from the GTK3 port (which
  * existed because GtkEventBox clipped outset shadows at its GdkWindow
  * boundary — gotcha 30) is gone.  box-shadow on .task-card just works.
+ * One caveat: the GTK-CSS alpha() extension does NOT parse inside box-shadow
+ * values; use rgba() there instead.
  * ------------------------------------------------------------------------- */
 static void
 kanban_css_install(void)
