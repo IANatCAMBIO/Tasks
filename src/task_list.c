@@ -1106,6 +1106,7 @@ on_task_rclick_setup(GtkListItemFactory *f, GtkListItem *item, gpointer data)
     TaskLibrary *lw   = data;
     GtkWidget   *label = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_wrap(GTK_LABEL(label), TRUE);
     gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
     gtk_widget_set_margin_top(label, 8);
     gtk_widget_set_margin_bottom(label, 8);
