@@ -879,6 +879,11 @@ on_double_click_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
                  "gtk-double-click-time",     &time_ms,
                  "gtk-double-click-distance", &dist,
                  NULL);
+    /* Cap at 400 ms — the GTK documented default.  On macOS the system
+     * accessibility slow-click preference can push this above 500 ms,
+     * which feels broken in a task-management UI.                           */
+    if (time_ms > 400)
+        time_ms = 400;
     gboolean second = dc->last_time != 0 &&
                       now - dc->last_time <= (guint32)time_ms &&
                       ABS(x - dc->last_x) <= dist && ABS(y - dc->last_y) <= dist;

@@ -1108,8 +1108,29 @@ on_task_right_click(GtkGestureClick *gesture, gint n, gdouble x, gdouble y,
  */
 
 /*
- * on_task_rclick_setup — create the Task label with both select-on-press and
- * the right-click gesture.
+ * on_task_double_click — double-click on a task description label opens the
+ * editor.  The TaskDoubleClickFn callback for task_app_double_click_watch.
+ *
+ * Inputs:
+ *   widget — the task description label
+ *   data   — TaskLibrary *
+ * Output: none
+ */
+static void
+on_task_double_click(GtkWidget *widget, gpointer data)
+{
+    TaskLibrary *lw   = data;
+    GtkListItem *item = g_object_get_data(G_OBJECT(widget), "task-rclick-item");
+    if (item == NULL)
+        return;
+    TaskRow *row = TASK_ROW(gtk_list_item_get_item(item));
+    if (row != NULL && row->id != 0)
+        task_editor_open(lw->app, row->id);
+}
+
+/*
+ * on_task_rclick_setup — create the Task label with select-on-press, the
+ * right-click gesture and the double-click-to-open-editor watch.
  * Inputs: standard factory "setup" + TaskLibrary *
  * Output: none
  */
@@ -1128,6 +1149,7 @@ on_task_rclick_setup(GtkListItemFactory *f, GtkListItem *item, gpointer data)
     gtk_widget_set_hexpand(label, TRUE);
     gtk_list_item_set_child(item, label);
     task_app_select_on_press(label, item);
+    task_app_double_click_watch(label, on_task_double_click, lw);
 
     GtkGesture *click = gtk_gesture_click_new();
     gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
