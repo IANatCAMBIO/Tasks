@@ -1060,52 +1060,72 @@ on_completed_bind(GtkListItemFactory *f, GtkListItem *item, gpointer data)
  * ------------------------------------------------------------------------- */
 
 /*
- * on_task_right_click — show the context menu; select the clicked row if it
- * is not already part of the selection.
+ * on_task_view_event — GtkEventControllerLegacy at CAPTURE phase on the
+ * GtkColumnView.  Handles secondary button presses to show the task context
+ * menu.
  *
- * Attached to each task description label's GtkGestureClick (SECONDARY,
- * CAPTURE phase).
+ * A GtkGestureClick on the factory-created cell labels never fires for
+ * secondary button events: GtkColumnView's internal widget tree (column view
+ * rows / cells) captures them first via its own gesture controllers before
+ * the event reaches leaf widgets.  A GtkEventControllerLegacy on the column
+ * view itself fires at the root of that subtree, before any of those
+ * internal controllers run, and returning TRUE consumes the event so the
+ * column view's own selection logic cannot collapse the multi-selection.
  *
  * Inputs:
- *   gesture — the click gesture
- *   n, x, y — press count and position in the label's coordinates
- *   data    — TaskLibrary *
- * Output: none
+ *   ctrl  — the legacy controller
+ *   event — the raw GdkEvent (surface/window coordinates)
+ *   data  — TaskLibrary *
+ * Output: TRUE when the event is consumed (secondary button press handled).
  */
-static void
-on_task_right_click(GtkGestureClick *gesture, gint n, gdouble x, gdouble y,
-                    gpointer data)
+static gboolean
+on_task_view_event(GtkEventControllerLegacy *ctrl, GdkEvent *event,
+                   gpointer data)
 {
-    (void)n;
+    if (gdk_event_get_event_type(event) != GDK_BUTTON_PRESS)
+        return FALSE;
+    guint button = gdk_button_event_get_button(event);
+    if (button != GDK_BUTTON_SECONDARY)
+        return FALSE;
+
     TaskLibrary *lw   = data;
-    GtkWidget   *lbl  = gtk_event_controller_get_widget(
-                            GTK_EVENT_CONTROLLER(gesture));
-    GtkListItem *item = g_object_get_data(G_OBJECT(lbl), "task-rclick-item");
-    if (item == NULL)
-        return;
+    GtkWidget   *view = gtk_event_controller_get_widget(
+                            GTK_EVENT_CONTROLLER(ctrl));
 
-    guint pos = gtk_list_item_get_position(item);
-    if (!gtk_selection_model_is_selected(
-            GTK_SELECTION_MODEL(lw->task_sel), pos))
-        gtk_selection_model_select_item(
-            GTK_SELECTION_MODEL(lw->task_sel), pos, TRUE);
+    /* gdk_event_get_position returns surface (window) coordinates.          */
+    double wx, wy;
+    gdk_event_get_position(event, &wx, &wy);
 
-    /* Convert label coordinates to window (attachment widget) coordinates. */
-    graphene_point_t lsrc = { (float)x, (float)y };
-    graphene_point_t ldst;
-    if (gtk_widget_compute_point(lbl, lw->window, &lsrc, &ldst))
-        task_context_menu_popup(lw, lw->window, ldst.x, ldst.y);
+    /* Convert to view-local coords for the widget pick.                     */
+    graphene_point_t wsrc = { (float)wx, (float)wy };
+    graphene_point_t vlocal;
+    if (!gtk_widget_compute_point(lw->window, view, &wsrc, &vlocal))
+        return TRUE;
+
+    /* Walk from the picked widget up to the view looking for the cell item. */
+    GtkWidget   *child = gtk_widget_pick(view, vlocal.x, vlocal.y,
+                                         GTK_PICK_DEFAULT);
+    GtkListItem *item  = NULL;
+    for (GtkWidget *w = child; w != NULL && w != view;
+         w = gtk_widget_get_parent(w)) {
+        item = g_object_get_data(G_OBJECT(w), "task-rclick-item");
+        if (item != NULL)
+            break;
+    }
+
+    if (item != NULL) {
+        guint pos = gtk_list_item_get_position(item);
+        /* Guard: INVALID would make select_item wipe the entire selection.  */
+        if (pos != GTK_INVALID_LIST_POSITION &&
+            !gtk_selection_model_is_selected(
+                GTK_SELECTION_MODEL(lw->task_sel), pos))
+            gtk_selection_model_select_item(
+                GTK_SELECTION_MODEL(lw->task_sel), pos, TRUE);
+    }
+
+    task_context_menu_popup(lw, lw->window, wx, wy);
+    return TRUE;
 }
-
-/*
- * on_task_right_click_setup — attach a right-click gesture to a Task label.
- * Inputs: standard factory "setup" + TaskLibrary *
- * Output: none; called from on_task_setup via the existing setup chain
- *
- * NOTE: This is called from a separate factory "setup" callback for the
- * description column — the gesture is installed in on_task_setup_rclick
- * which on_task_setup delegates to.
- */
 
 /*
  * on_task_double_click — double-click on a task description label opens the
@@ -1150,14 +1170,10 @@ on_task_rclick_setup(GtkListItemFactory *f, GtkListItem *item, gpointer data)
     gtk_list_item_set_child(item, label);
     task_app_select_on_press(label, item);
     task_app_double_click_watch(label, on_task_double_click, lw);
-
-    GtkGesture *click = gtk_gesture_click_new();
-    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click),
-                                   GDK_BUTTON_SECONDARY);
-    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click),
-                                               GTK_PHASE_CAPTURE);
-    g_signal_connect(click, "pressed", G_CALLBACK(on_task_right_click), lw);
-    gtk_widget_add_controller(label, GTK_EVENT_CONTROLLER(click));
+    /* Secondary button handling is done at the GtkColumnView level by
+     * on_task_view_event (a GtkEventControllerLegacy at CAPTURE phase),
+     * because GtkColumnView's internal widget tree intercepts secondary
+     * button events before they reach factory-created leaf widgets.         */
 }
 
 /*
@@ -1305,6 +1321,15 @@ task_list_build(TaskLibrary *lw)
     lw->task_view = GTK_WIDGET(cv);
     gtk_widget_add_css_class(lw->task_view, "task-list");
     gtk_column_view_set_reorderable(cv, FALSE);
+
+    /* Secondary button events: handled by a legacy event controller at
+     * CAPTURE phase on the column view (see on_task_view_event).  A
+     * GtkGestureClick on cell labels never fires for secondary because
+     * GtkColumnView's own internal controllers capture them first.          */
+    GtkEventController *rclick_ctrl = gtk_event_controller_legacy_new();
+    gtk_event_controller_set_propagation_phase(rclick_ctrl, GTK_PHASE_CAPTURE);
+    g_signal_connect(rclick_ctrl, "event", G_CALLBACK(on_task_view_event), lw);
+    gtk_widget_add_controller(lw->task_view, rclick_ctrl);
 
     /* Wire the column view's combined sorter into the sort model.           */
     gtk_sort_list_model_set_sorter(lw->task_sorted,

@@ -268,10 +268,14 @@ lib_refresh_tasks(TaskLibrary *lw)
 
     if (!kanban)
         lib_scroll_keep_queue(lw->task_view);
-    /* Cleared in BOTH modes: a selection left in the hidden list would
-     * still feed Delete Task.  On the board that job belongs to
-     * lw->board.kanban_sel.                                                */
-    g_list_store_remove_all(lw->task_store);
+    /* Kanban mode keeps task_store EMPTY so Delete Task does not act on a
+     * list-view selection while the board is showing.  For the list view,
+     * task_rows_append() does a single atomic g_list_store_splice() that
+     * replaces old items with new ones — no blank frame between remove and
+     * refill, which is what caused the checkbox-toggle flicker on white
+     * (non-selected) rows.                                                 */
+    if (kanban)
+        g_list_store_remove_all(lw->task_store);
 
     /* Collect the tasks of the current view.  A registered view answers
      * for itself (see task_view.h); anything else is a real list.          */
