@@ -91,10 +91,10 @@ kanban_css_install(void)
         "}"
         ".task-card {"
         "  background-color: @theme_base_color;"
-        "  border: 1px solid alpha(@theme_fg_color, 0.22);"
+        "  border: 1px solid alpha(@theme_fg_color, 0.30);"
         "}"
         ".task-card:hover {"
-        "  border-color: alpha(@theme_fg_color, 0.45);"
+        "  border-color: alpha(@theme_fg_color, 0.55);"
         "}"
         /* Landing indicator: lane tint says COLUMN, marker bar says SLOT.
          * .task-lane-target is listed AFTER .task-lane so it wins at equal
@@ -107,13 +107,14 @@ kanban_css_install(void)
         "}"
         /* The card's DROP SHADOW.  In GTK4, box-shadow on a GtkBox widget
          * works correctly — the render-node approach does not clip it at the
-         * widget boundary.  The light is in the UPPER LEFT so the shadow
-         * falls bottom and right only; the negative spread keeps it off the
-         * top and left edges (gotcha 30 is GTK3-only).                      */
+         * widget boundary.  Zero X-offset: a pure vertical shadow keeps both
+         * upper corners and both lower corners symmetric, avoiding the
+         * "top-right corner sticks out" artifact from a diagonal shadow when
+         * the lane border frames the card (gotcha 30 is GTK3-only).          */
         /* rgba() rather than alpha(@theme_fg_color,...): the GTK-CSS alpha()
          * extension does not parse inside box-shadow values.               */
         ".task-card-shadow {"
-        "  box-shadow: 2px 2px 3px -1px rgba(0,0,0,0.40);"
+        "  box-shadow: 0 2px 3px -1px rgba(0,0,0,0.40);"
         "}"
         /* No shadow while in flight — a crisp shadow under a nearly
          * transparent card reads as the shadow having come loose.           */
