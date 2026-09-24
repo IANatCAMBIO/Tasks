@@ -82,6 +82,10 @@ kanban_css_install(void)
         ".task-lane {"
         "  background-color: alpha(@theme_fg_color, 0.05);"
         "  border: 1px solid alpha(@theme_fg_color, 0.20);"
+        /* GTK4: the lane IS the content box (no GtkEventBox wrapper), so inner
+         * padding must be CSS.  The old pad_widget(lane, LANE_PAD) only adds an
+         * outer margin; cards would otherwise pack against the lane's border.  */
+        "  padding: 6px;"
         "}"
         ".task-card {"
         "  background-color: @theme_base_color;"
@@ -104,18 +108,19 @@ kanban_css_install(void)
          * widget boundary.  The light is in the UPPER LEFT so the shadow
          * falls bottom and right only; the negative spread keeps it off the
          * top and left edges (gotcha 30 is GTK3-only).                      */
+        /* rgba() rather than alpha(@theme_fg_color,...): the GTK-CSS alpha()
+         * extension does not parse inside box-shadow values.               */
         ".task-card-shadow {"
-        "  box-shadow: 2px 2px 3px -1px alpha(@theme_fg_color, 0.40);"
+        "  box-shadow: 2px 2px 3px -1px rgba(0,0,0,0.28);"
         "}"
         /* No shadow while in flight — a crisp shadow under a nearly
          * transparent card reads as the shadow having come loose.           */
         ".task-card-shadow-flat {"
         "  box-shadow: none;"
         "}"
-        /* The ⠿ grip strip — only this area starts a drag.                 */
-        ".task-card-handle:hover {"
-        "  background-color: alpha(@theme_fg_color, 0.10);"
-        "}"
+        /* The ⠿ grip strip — only this area starts a drag.  No hover tint:
+         * the glyph and the "grab" cursor already communicate draggability;
+         * a narrow grey strip on a white card adds noise.                   */
         /* The original card stays in place, dimmed while its ghost moves.   */
         ".task-card-dragging {"
         "  opacity: 0.40;"
@@ -1056,7 +1061,17 @@ kanban_card_new(TaskLibrary *lw, gint64 id, const gchar *markup,
                          "<span alpha=\"55%\">\xe2\xa0\xbf</span>");
     gtk_widget_set_margin_start(grip, CARD_GRIP_PAD);
     gtk_widget_set_margin_end(grip, CARD_GRIP_PAD);
+    /* The handle box fills the card's full height.  vexpand gives the grip
+     * the full allocation inside the vertical box; valign then centers the
+     * glyph within it.  Without vexpand the box only allocates natural
+     * height and valign has no room to act — the glyph stays at the top.   */
+    gtk_widget_set_vexpand(grip, TRUE);
+    gtk_widget_set_valign(grip, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(handle), grip);
+    /* Explicitly block vexpand from propagating out of the handle into the
+     * card.  Without this, the grip's vexpand=TRUE bubbles up through handle
+     * → card → lane and each card fills the entire lane.                    */
+    gtk_widget_set_vexpand(handle, FALSE);
     gtk_box_append(GTK_BOX(card), handle);
 
     /* ---- The TASK LABEL -------------------------------------------------- */

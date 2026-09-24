@@ -1433,6 +1433,9 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
         labels[TASK_STATUS_N_VALUES] = NULL;
         ed->status_combo = gtk_drop_down_new_from_strings(labels);
     }
+    /* Fix the combo width to the widest option ("In Progress") so the row
+     * does not reflow when the selection changes.                            */
+    gtk_widget_set_size_request(ed->status_combo, 115, -1);
     gtk_drop_down_set_selected(GTK_DROP_DOWN(ed->status_combo),
                                (guint)TASK_STATUS_NEW);
     g_signal_connect(ed->status_combo, "notify::selected",
@@ -1451,11 +1454,15 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     gtk_editable_set_width_chars(GTK_EDITABLE(ed->due_entry), 12);
     gtk_entry_set_placeholder_text(GTK_ENTRY(ed->due_entry), "YYYY-MM-DD");
     gtk_widget_set_tooltip_text(ed->due_entry, "Click to pick a due date.");
-    /* Primary click opens the calendar picker.                             */
+    /* Primary click opens the calendar picker.  CAPTURE phase so we see the
+     * event before GtkEntry's own bubble-phase handler takes focus and
+     * swallows the press on the first click.                               */
     {
         GtkGesture *gc = gtk_gesture_click_new();
         gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gc),
                                       GDK_BUTTON_PRIMARY);
+        gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(gc),
+                                                   GTK_PHASE_CAPTURE);
         g_signal_connect(gc, "pressed",
                          G_CALLBACK(on_due_entry_press), ed);
         gtk_widget_add_controller(ed->due_entry, GTK_EVENT_CONTROLLER(gc));
@@ -1677,6 +1684,8 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
             GtkGesture *gc = gtk_gesture_click_new();
             gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gc),
                                           GDK_BUTTON_PRIMARY);
+            gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(gc),
+                                                       GTK_PHASE_CAPTURE);
             g_signal_connect(gc, "pressed",
                              G_CALLBACK(on_recur_start_press), ed);
             gtk_widget_add_controller(ed->recur_start_entry,
