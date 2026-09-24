@@ -113,7 +113,7 @@ kanban_css_install(void)
         /* rgba() rather than alpha(@theme_fg_color,...): the GTK-CSS alpha()
          * extension does not parse inside box-shadow values.               */
         ".task-card-shadow {"
-        "  box-shadow: 2px 2px 3px -1px rgba(0,0,0,0.28);"
+        "  box-shadow: 2px 2px 3px -1px rgba(0,0,0,0.40);"
         "}"
         /* No shadow while in flight — a crisp shadow under a nearly
          * transparent card reads as the shadow having come loose.           */
