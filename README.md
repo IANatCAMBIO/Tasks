@@ -2,11 +2,11 @@
 
 Make lists of tasks. You can give them a due date, or if the task is too big, break it down into subtasks.
 
-Tasks is written in classic C with GTK3 and SQLite. It is a companion app to
+Tasks is written in plain C with GTK4 and SQLite. It is a companion app to
 [Notes](https://github.com/IANatCAMBIO/Records), built the same way and **with the help
-of Claude Code for edits, testing, and code organization**. 
-No Electron or interpreted code. 
-Low resource usage, and runs on macOS and Linux.
+of Claude Code for edits, testing, and code organization**.
+No Electron or interpreted code.
+Low resource usage, and runs on Linux and macOS.
 
 ![Tasks](Screenshot.png)
 
@@ -31,14 +31,12 @@ integrated features once the GTK4 port is complete.
 
 ## Building
 
-You'll need a C compiler, the GTK3 and SQLite3 development files, and
-pkg-config.
+You'll need a C compiler, GTK4 (4.10+), SQLite3, and pkg-config.
 
 macOS (MacPorts):
 
 ```sh
-sudo port install pkgconf gtk3 +quartz
-sudo port install gtk-osx-application-gtk3   # optional: native menu bar
+sudo port install pkgconf gtk4 +quartz
 make
 make run
 ```
@@ -46,7 +44,7 @@ make run
 Debian/Ubuntu:
 
 ```sh
-sudo apt install build-essential pkg-config libgtk-3-dev libsqlite3-dev
+sudo apt install build-essential pkg-config libgtk-4-dev libsqlite3-dev
 make
 make run
 ```
@@ -61,8 +59,9 @@ curl -L "https://github.com/samuelngs/apple-emoji-ttf/releases/download/macos-26
 sudo dpkg -i fonts-apple-color-emoji.deb
 ```
 
-The Makefile auto-detects `gtk-mac-integration-gtk3`; if you install it
-later, rebuild from clean (`make clean && make`) so every file sees it.
 On macOS, `make app` wraps the binary into `dist/Tasks.app` (it still
 links against the MacPorts GTK libraries, so the bundle runs on the
 machine that built it).
+
+See [BUILD.md](BUILD.md) for the full build reference: all targets,
+install instructions, and platform notes.

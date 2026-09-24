@@ -12,6 +12,8 @@
 #     make          — build the `tasks` binary
 #     make clean    — remove build artifacts (including dist/)
 #     make run      — build and launch the app
+#     make install  — install to $(PREFIX)/share/tasks, symlink from $(PREFIX)/bin
+#     make test     — build and run the logic test suite
 #     make app      — macOS .app bundle → dist/Tasks.app
 #                     (needs the macOS sips/iconutil tools; the bundle
 #                     still depends on the MacPorts GTK libraries)
@@ -139,6 +141,48 @@ $(DEV_DATA)/tasks/tasks.db:
 run-dev: $(BIN) $(DEV_DATA)/tasks/tasks.db
 	XDG_DATA_HOME=$(CURDIR)/$(DEV_DATA) ./$(BIN)
 
+# --- Install ---------------------------------------------------------------
+# Installs the binary, icons/ and tasks.ini.defaults under
+# $(PREFIX)/share/tasks/, then creates a symlink from $(PREFIX)/bin/tasks.
+# The symlink is load-bearing: the app resolves icons/ and tasks.ini.defaults
+# relative to its own path, and symlink resolution (g_canonicalize_filename
+# calls realpath on POSIX) hands it the real binary directory, not the
+# symlink directory.  Default prefix: ~/.local (user install, no sudo).
+#
+# Usage:
+#     make install                   # → ~/.local/bin/tasks
+#     make install PREFIX=/usr/local # → /usr/local/bin/tasks
+
+PREFIX   ?= $(HOME)/.local
+BINDIR   := $(PREFIX)/bin
+SHAREDIR := $(PREFIX)/share/tasks
+
+install: $(BIN)
+	@install -d "$(BINDIR)" "$(SHAREDIR)"
+	install -m 755 $(BIN) "$(SHAREDIR)/$(BIN)"
+	cp -R icons "$(SHAREDIR)/icons"
+	install -m 644 tasks.ini.defaults "$(SHAREDIR)/tasks.ini.defaults"
+	@ln -sf "$(SHAREDIR)/$(BIN)" "$(BINDIR)/$(BIN)"
+	@echo "installed to $(SHAREDIR)"
+	@echo "symlinked $(BINDIR)/$(BIN) → $(SHAREDIR)/$(BIN)"
+
+# --- Test suite -------------------------------------------------------------
+# Builds build/test_tasks against the same object files as the application
+# (minus main.c, which defines main()) and runs it.  No display required:
+# all tests are pure logic — search parsing, recurrence arithmetic, and the
+# database schema.
+
+TEST_BIN  := build/test_tasks
+TEST_OBJS := build/app.o build/db.o build/search.o build/recur.o \
+             build/backup.o build/task_worker.o
+
+$(TEST_BIN): tests/test_main.c $(TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/test_main.c $(TEST_OBJS) $(LDFLAGS)
+
+test: $(TEST_BIN)
+	./$(TEST_BIN)
+
 # Remove all build artifacts.
 clean:
 	rm -rf build $(BIN) $(DIST)
@@ -210,4 +254,4 @@ app: $(BIN)
 	  > "$(APP_DIR)/Contents/Info.plist"
 	@echo "built $(APP_DIR)"
 
-.PHONY: all run run-dev clean app
+.PHONY: all run run-dev install test clean app
