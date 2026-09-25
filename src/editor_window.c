@@ -698,10 +698,14 @@ sub_refresh(TaskEditor *ed)
                          G_CALLBACK(on_sub_done_toggled), ed);
         gtk_box_append(GTK_BOX(r), check);
 
+        /* Flat GtkEntry: always editable on a single click (GTK3 parity)
+         * but styled transparent so it reads as a compact text row rather
+         * than a prominent input field.  The "flat" CSS class strips the
+         * border and background in the resting state.                      */
         GtkWidget *entry = gtk_entry_new();
+        gtk_widget_add_css_class(entry, "flat");
         gtk_editable_set_text(GTK_EDITABLE(entry), s->title);
         gtk_widget_set_hexpand(entry, TRUE);
-        /* Store the id on the entry too so focus-leave can find it.       */
         gint64 *eid = g_new(gint64, 1);
         *eid = s->id;
         g_object_set_data_full(G_OBJECT(entry), "task-id", eid, g_free);
@@ -1379,15 +1383,32 @@ editor_css_install(void)
         "  padding: 1px 8px; min-height: 0; min-width: 0;"
         "}"
         "button.task-small-button > label { font-size: 85%; }"
-        /* Compact entries inside the subtask listbox: strip the theme's
-         * 32 px min-height floor so rows match GTK3's text-renderer height. */
+        /* Compact subtask rows: flat GtkEntry — transparent background and
+         * no border so it reads as a text row, with a subtle highlight on
+         * focus.  Shrink the checkbutton indicator to match line height.   */
         "listbox.task-sub-listbox > row {"
-        "  padding: 2px 4px;"
+        "  padding: 1px 4px;"
         "}"
-        "listbox.task-sub-listbox entry {"
+        "listbox.task-sub-listbox entry.flat {"
         "  min-height: 0;"
-        "  padding-top: 2px;"
-        "  padding-bottom: 2px;"
+        "  padding: 1px 4px;"
+        "  font-size: 85%;"
+        "  background: transparent;"
+        "  border-color: transparent;"
+        "  box-shadow: none;"
+        "  outline: none;"
+        "}"
+        "listbox.task-sub-listbox entry.flat:focus {"
+        "  background-color: alpha(@theme_base_color, 0.6);"
+        "  border-color: alpha(@theme_selected_bg_color, 0.4);"
+        "}"
+        "listbox.task-sub-listbox checkbutton {"
+        "  padding: 1px 0;"
+        "}"
+        "listbox.task-sub-listbox check {"
+        "  min-width: 14px; min-height: 14px;"
+        "  -gtk-icon-size: 12px;"
+        "  padding: 1px;"
         "}");
 }
 
@@ -1615,6 +1636,10 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
         gtk_size_group_add_widget(btn_sg, sub_add);
         gtk_size_group_add_widget(btn_sg, sub_rem);
 
+        /* ▲▼ pair: NOT in the size group — two buttons side-by-side would make
+         * the group wider than any single-label button.  They sit at their
+         * natural compact width, which fills the button column without driving
+         * the column width.  hexpand fills each half of move_box only.        */
         GtkWidget *move_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
         GtkWidget *up_btn   = gtk_button_new_with_label("\xe2\x96\xb2");
         GtkWidget *dn_btn   = gtk_button_new_with_label("\xe2\x96\xbc");
@@ -1622,18 +1647,17 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
         gtk_widget_add_css_class(dn_btn, "task-small-button");
         gtk_widget_set_valign(up_btn, GTK_ALIGN_CENTER);
         gtk_widget_set_valign(dn_btn, GTK_ALIGN_CENTER);
+        gtk_widget_set_hexpand(up_btn, TRUE);
+        gtk_widget_set_hexpand(dn_btn, TRUE);
         g_object_set_data(G_OBJECT(up_btn), "task-direction", GINT_TO_POINTER(-1));
         g_object_set_data(G_OBJECT(dn_btn), "task-direction", GINT_TO_POINTER( 1));
         g_signal_connect(up_btn, "clicked", G_CALLBACK(on_sub_move), ed);
         g_signal_connect(dn_btn, "clicked", G_CALLBACK(on_sub_move), ed);
-        gtk_widget_set_hexpand(up_btn, TRUE);
-        gtk_widget_set_hexpand(dn_btn, TRUE);
         gtk_box_append(GTK_BOX(move_box), up_btn);
         gtk_box_append(GTK_BOX(move_box), dn_btn);
-        /* Size the move_box as a whole so ▲▼ together match the other buttons. */
-        gtk_size_group_add_widget(btn_sg, move_box);
 
         GtkWidget *sub_btns = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_widget_set_hexpand(sub_btns, FALSE);
         gtk_box_append(GTK_BOX(sub_btns), sub_add);
         gtk_box_append(GTK_BOX(sub_btns), sub_rem);
         gtk_box_append(GTK_BOX(sub_btns), move_box);
