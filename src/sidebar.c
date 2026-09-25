@@ -179,7 +179,31 @@ static void on_sb_row_pressed(GtkGestureClick *gesture, gint n_press,
  * classes on the source and target widgets give live feedback.  On release
  * all list ids are collected in their new flat display order from sb_tree
  * and persisted via task_db_lists_reorder, then lib_full_refresh rebuilds.
+ * When the drop crosses a group boundary (into a different group, or between
+ * grouped and ungrouped), task_db_list_set_group updates the membership first.
  * ------------------------------------------------------------------------- */
+
+/* group_id_of_flat() — group id of the list at flat sb_tree position pos.
+ * Walks up to the row's parent: if the parent is a SB_KIND_GROUP its id is
+ * the group; otherwise (parent is the Lists header) the list is ungrouped.
+ * Returns 0 for ungrouped or when pos is out of range.                      */
+static gint64
+group_id_of_flat(TaskLibrary *lw, guint pos)
+{
+    GtkTreeListRow *trow =
+        g_list_model_get_item(G_LIST_MODEL(lw->sb_tree), pos);
+    if (trow == NULL) return 0;
+    GtkTreeListRow *parent = gtk_tree_list_row_get_parent(trow);
+    gint64 gid = 0;
+    if (parent != NULL) {
+        TaskSbRow *psrow = TASK_SB_ROW(gtk_tree_list_row_get_item(parent));
+        if (psrow->kind == SB_KIND_GROUP)
+            gid = psrow->id;
+        g_object_unref(parent);
+    }
+    g_object_unref(trow);
+    return gid;
+}
 
 /* sb_drag_row_of() — walk up from `hit` to find the expander with
  * "task-sb-item" data (set in on_sb_setup).  Returns NULL if not found.   */
@@ -354,6 +378,16 @@ on_sb_drag_end(GtkGestureDrag *gesture, gdouble offset_x, gdouble offset_y,
     if (insert_at < 0) insert_at = 0;
     if ((guint)insert_at > reordered->len) insert_at = (gint)reordered->len;
     g_array_insert_val(reordered, (guint)insert_at, drag_id);
+
+    /* Update group membership when the drag crosses a group boundary.
+     * Read both positions from sb_tree before the refresh destroys it.
+     * from_flat is the dragged list's current position; to_pos is the
+     * target (the mark row, always a SB_KIND_LIST, so its parent tells
+     * us which group it belongs to).                                         */
+    gint64 src_gid = group_id_of_flat(lw, from_flat);
+    gint64 dst_gid = group_id_of_flat(lw, to_pos);
+    if (src_gid != dst_gid)
+        task_db_list_set_group(lw->app->db, drag_id, dst_gid);
 
     task_db_lists_reorder(lw->app->db,
                           (const gint64 *)reordered->data, reordered->len);
