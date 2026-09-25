@@ -107,14 +107,16 @@ kanban_css_install(void)
         "}"
         /* The card's DROP SHADOW.  In GTK4, box-shadow on a GtkBox widget
          * works correctly — the render-node approach does not clip it at the
-         * widget boundary.  Zero X-offset: a pure vertical shadow keeps both
-         * upper corners and both lower corners symmetric, avoiding the
-         * "top-right corner sticks out" artifact from a diagonal shadow when
-         * the lane border frames the card (gotcha 30 is GTK3-only).          */
-        /* rgba() rather than alpha(@theme_fg_color,...): the GTK-CSS alpha()
-         * extension does not parse inside box-shadow values.               */
+         * widget boundary.  Shadow falls bottom-right (light from upper-left).
+         * Blur 4px (not 3px): with offset 2px and spread -1px, the shadow
+         * box's left edge sits 3px right of the card left edge; a 3px blur
+         * barely reaches there, leaving the bottom-left corner without
+         * shadow — the border appears visibly darker at those last few pixels.
+         * 4px blur covers the corner while keeping the directional feel.
+         * rgba() not alpha(@theme_fg_color,...): alpha() doesn't parse inside
+         * box-shadow values in GTK CSS (gotcha 30 is GTK3-only).             */
         ".task-card-shadow {"
-        "  box-shadow: 0 2px 3px -1px rgba(0,0,0,0.40);"
+        "  box-shadow: 2px 2px 4px -1px rgba(0,0,0,0.38);"
         "}"
         /* No shadow while in flight — a crisp shadow under a nearly
          * transparent card reads as the shadow having come loose.           */
