@@ -563,6 +563,32 @@ on_sb_row_pressed(GtkGestureClick *gesture, gint n_press,
     task_app_menu_popup(widget, G_MENU_MODEL(menu), x, y);
 }
 
+/*
+ * on_sb_bg_pressed() — secondary-button click on the sidebar background
+ * (empty space below the rows).  Shows the minimal New List / New Group menu.
+ *
+ * Attached to the scrolled window at BUBBLE phase, so it only fires when no
+ * per-row CAPTURE gesture already claimed the event (i.e. empty space only).
+ */
+static void
+on_sb_bg_pressed(GtkGestureClick *gesture, gint n_press,
+                 gdouble x, gdouble y, gpointer data)
+{
+    (void)n_press;
+    TaskLibrary *lw = data;
+    GtkWidget   *widget = gtk_event_controller_get_widget(
+                              GTK_EVENT_CONTROLLER(gesture));
+    GMenu *menu    = g_menu_new();
+    GMenu *section = g_menu_new();
+    g_menu_append(section, "New List",  "win.new-list");
+    g_menu_append(section, "New Group", "win.new-group");
+    task_app_menu_section_end(menu, &section);
+    g_object_unref(section);
+    /* task_app_menu_popup takes ownership of the model (unrefs it). */
+    task_app_menu_popup(widget, G_MENU_MODEL(menu), x, y);
+    (void)lw;
+}
+
 /* ---------------------------------------------------------------------------
  * Sidebar selection helper.
  * ------------------------------------------------------------------------- */
@@ -1317,6 +1343,16 @@ task_sidebar_build(TaskLibrary *lw, GtkWidget *paned)
                                    GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sb_scroll),
                                   lw->sb_view);
+
+    /* Background right-click: fires on empty space below the rows because
+     * per-row CAPTURE gestures claim row clicks before this BUBBLE one.    */
+    GtkGesture *bg_click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(bg_click), 3);
+    gtk_event_controller_set_propagation_phase(
+        GTK_EVENT_CONTROLLER(bg_click), GTK_PHASE_BUBBLE);
+    g_signal_connect(bg_click, "pressed",
+                     G_CALLBACK(on_sb_bg_pressed), lw);
+    gtk_widget_add_controller(sb_scroll, GTK_EVENT_CONTROLLER(bg_click));
 
     /* Sidebar column: a fixed spacer strip at the top so the first row's
      * text aligns with the task list's column-header text.  Painted in the
