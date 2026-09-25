@@ -1,133 +1,104 @@
 /* ===========================================================================
  * editor_window.c — the per-task editor window (see editor_window.h)
+ *
+ * GTK4 port: GtkComboBoxText → GtkDropDown; GtkListStore/GtkTreeView for
+ * subtasks and attachments → GtkListBox of rows; button-press-event →
+ * GtkGestureClick; focus-out-event → GtkEventControllerFocus; all
+ * deprecated container / show_all / no_show_all APIs replaced; calendar
+ * picker and file picker are async via task_app_dialog_new /
+ * task_app_pick_path.  theme_field_height() and combo_match_fields() are
+ * deleted — GTK4 aligns combos and entries without the workaround.
  * =========================================================================== */
 
 #include "editor_window.h"
-#include "task_ui.h"
 #include "recur.h"
 #include <string.h>
 #include <time.h>
 
-/* The Advanced disclosure link's two faces.  The ARROW NAMES THE ACTION,
- * like the View menu's items: ▾ offers to unfold, ▴ to fold away.  The
- * FOLDED face is written where the label is BUILT as well as by the
- * applier, because adv_box is constructed folded and the open path calls
- * an applier only when it reveals — a link whose label was never written
- * is a relief-less button with no text in it, i.e. invisible until the
- * first blind click (reported 2026-08-27 against new tasks, which never
- * have advanced content and so never reveal on open).                      */
+/* The Advanced disclosure link's two faces.  Arrow names the action.       */
 #define ADV_LABEL_TO_SHOW "<u>Advanced \xe2\x96\xbe</u>"
 #define ADV_LABEL_TO_FOLD "<u>Advanced \xe2\x96\xb4</u>"
-
-/* Columns of the subtasks list store.                                      */
-enum {
-    SUB_ID = 0,                      /* gint64: subtask id                  */
-    SUB_DONE,                        /* gboolean                            */
-    SUB_TITLE,                       /* gchar*                              */
-    SUB_N_COLS
-};
-
-/* Columns of the attachments list store.                                   */
-enum {
-    ATT_ID = 0,                      /* gint64: attachment id               */
-    ATT_PATH,                        /* gchar*: full path                   */
-    ATT_NAME,                        /* gchar*: basename shown              */
-    ATT_N_COLS
-};
 
 /* ---------------------------------------------------------------------------
  * TaskEditor — one open editor window's state.
  * ------------------------------------------------------------------------- */
 typedef struct {
     TaskApp        *app;
-    gint64        task_id;
-    gint64        parent_id;         /* 0 when the task is top-level        */
-    GtkWidget    *window;
-    GtkWidget    *title_entry;
-    GtkWidget    *status_combo;      /* New / In Progress / Done — index
-                                      * IS the TaskStatus value           */
-    GtkWidget    *pinned_check;
-    GtkWidget    *priority_check;
-    GtkWidget    *completed_label;   /* "Completed <date>" while the task
-                                      * is Done, else empty               */
-    GtkWidget    *due_entry;
-    GtkWidget    *due_time_entry;    /* "HH:MM" — the time of day that due
-                                      * date means; 08:00 unless someone
-                                      * says otherwise                     */
-    GtkTextBuffer *notes_buf;
-    GtkListStore *sub_store;         /* NULL for subtask editors            */
-    GtkWidget    *sub_view;
-    GtkCellEditable *sub_edit;       /* in-place subtask edit in flight,
-                                      * else NULL (weak: cleared if the
-                                      * editable dies under us)             */
-    GtkListStore *att_store;
-    GtkWidget    *att_view;
-    GtkWidget    *ext_box;           /* contributed sections (task_ui.h)    */
+    gint64          task_id;
+    gint64          parent_id;        /* 0 when the task is top-level        */
+    GtkWidget      *window;
+    GtkWidget      *title_entry;
+    GtkWidget      *status_combo;     /* GtkDropDown: index IS TaskStatus    */
+    GtkWidget      *pinned_check;
+    GtkWidget      *priority_check;
+    GtkWidget      *completed_label;
+    GtkWidget      *due_entry;
+    GtkWidget      *due_time_entry;
+    GtkTextBuffer  *notes_buf;
+    GtkWidget      *sub_box;          /* GtkListBox of subtask rows          */
+    GtkWidget      *att_box;          /* GtkListBox of attachment rows       */
 
-    /* The Recurrence block (recur.h).  TWO ROWS, and they are one
-     * sentence read top to bottom: "Starting <date> at <time>, repeat
-     * every <N> <units>".  Every schedule is written that one way —
-     * there is no preset combo any more, so nothing here is ever greyed
-     * out waiting to be unlocked.  The unit combos' active index IS the
-     * TaskRecurUnit, built by appending the labels in enum order, the
-     * same trick the Status combo uses.                                  */
-    GtkWidget    *recur_enable;      /* the block's MASTER SWITCH; ticked
-                                      * IFF the task has a schedule, so it
-                                      * holds no state of its own          */
-    GtkWidget    *recur_body;        /* everything below the switch, hidden
-                                      * whole while it is off              */
-    GtkWidget    *recur_start_entry; /* "YYYY-MM-DD" — the anchor DAY,
-                                      * empty = anchor on the due date     */
-    GtkWidget    *recur_time_entry;  /* "HH:MM" — that anchor's o'clock    */
-    GtkWidget    *recur_every_spin;  /* repeat every N …, 0 = not at all    */
-    GtkWidget    *recur_unit_combo;  /* … of THIS unit                      */
-    GtkWidget    *recur_lead_spin;   /* reset this long before it …         */
-    GtkWidget    *recur_lead_unit;   /* … in these units                    */
-    GtkWidget    *recur_summary;     /* "Every Monday at 9:00 AM / Next …"  */
-    gint64        recur_next;        /* the next occurrence, reseeded on
-                                      * every edit to the schedule         */
-    /* The (interval, unit) the lead was last defaulted FOR, so a change
-     * of period can tell a lead the user chose from one this editor put
-     * there itself (editor_recur_lead_follow).                           */
-    gint          recur_seen_every;
-    gint          recur_seen_unit;
-    gboolean      recur_body_shown;  /* is the body on screen?             */
+    /* Recurrence block.                                                     */
+    GtkWidget      *recur_enable;     /* GtkCheckButton master switch        */
+    GtkWidget      *recur_body;       /* everything below the switch         */
+    GtkWidget      *recur_start_entry;
+    GtkWidget      *recur_time_entry;
+    GtkWidget      *recur_every_spin;
+    GtkWidget      *recur_unit_combo; /* GtkDropDown                        */
+    GtkWidget      *recur_lead_spin;
+    GtkWidget      *recur_lead_unit;  /* GtkDropDown                        */
+    GtkWidget      *recur_summary;
+    gint64          recur_next;
+    gint            recur_seen_every;
+    gint            recur_seen_unit;
+    gboolean        recur_body_shown;
 
-    GtkWidget    *adv_box;           /* Recurrence + Subtasks + Attachments,
-                                      * folded away behind the Advanced
-                                      * disclosure                          */
-    GtkWidget    *adv_label;         /* the "Advanced ▾" link's label       */
-    gboolean      adv_shown;         /* disclosure state                    */
-    gint          adv_height;        /* px the window grew when expanding,
-                                      * given back on collapse             */
-    guint         save_source;       /* pending debounce save, or 0         */
-    TaskStatus    status_saved;      /* the status last read or written, so
-                                      * a save can tell whether the
-                                      * completion stamp can have moved    */
-    gboolean      loading;           /* suppress change handlers            */
+    GtkWidget      *adv_box;
+    GtkWidget      *adv_label;
+    gboolean        adv_shown;
+    gint            adv_height;
+    guint           save_source;
+    TaskStatus      status_saved;
+    gboolean        loading;
 } TaskEditor;
 
-/* editor_notify() — tell the library something changed.  Editor saves
- * use the LIGHT hook (task pane only): they can never change the
- * sidebar, and the saving editor is itself the source of truth — the
- * full notify would reload every open editor (and re-run the Notes
- * CLI) per autosave.                                                       */
+/* The lead unit combo covers the first FOUR TaskRecurUnit values.          */
+#define RECUR_LEAD_N_UNITS 4
+static const gint recur_lead_minutes[RECUR_LEAD_N_UNITS] = {
+    1, 60, 1440, 10080
+};
+
+/* ---------------------------------------------------------------------------
+ * Forward declarations for callbacks that reference each other.
+ * ------------------------------------------------------------------------- */
+static void editor_save_now(TaskEditor *ed);
+static void on_recur_changed(GtkWidget *w, gpointer data);
+static void editor_status_resync(TaskEditor *ed);
+
+/* ---------------------------------------------------------------------------
+ * Helpers.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * editor_notify — tell the library the task changed (light hook: pane only).
+ */
 static void
 editor_notify(TaskEditor *ed)
 {
-    task_app_notify_tasks(ed->app);  /* falls back to the full event       */
+    task_app_notify_tasks(ed->app);
 }
 
-/* editor_due_entry_parse() — the due entry's text as a timestamp, with
- * the mid-typing guard: blank clears (0), a valid date parses, and
- * PARTIAL/invalid text keeps `current` — a debounced save firing while
- * the user is still typing must not wipe the stored date.                  */
+/*
+ * editor_due_entry_parse — due entry text as a timestamp, mid-typing safe.
+ *
+ * Blank clears (0); a valid date parses; partial/invalid keeps `current`.
+ */
 static gint64
 editor_due_entry_parse(TaskEditor *ed, gint64 current)
 {
     gchar *trim = g_strstrip(
-        g_strdup(gtk_entry_get_text(GTK_ENTRY(ed->due_entry))));
-    gint64 due;                      /* the value to store                  */
+        g_strdup(gtk_editable_get_text(GTK_EDITABLE(ed->due_entry))));
+    gint64 due;
     if (*trim == '\0')
         due = 0;
     else {
@@ -138,45 +109,15 @@ editor_due_entry_parse(TaskEditor *ed, gint64 current)
     return due;
 }
 
-/* ===========================================================================
- * The Recurrence block (recur.h).
+/*
+ * editor_time_entry_parse — "HH:MM" entry as minutes past midnight.
  *
- * Everything the user can set lives in widgets; recur_next does not — it
- * is bookkeeping, RESEEDED from scratch whenever the schedule is edited
- * (editor_recur_reseed) and otherwise carried through from the row.  That
- * split is why an edit here never has to guess what the pass would do:
- * both sides call task_recur_seed.
- * =========================================================================== */
-
-/* The lead's unit menu is the first FOUR TaskRecurUnit values — minutes,
- * hours, days, weeks — so its active index IS the enum value and the
- * LABELS come from task_recur_unit_label, the same table the custom row's
- * combo uses.  Only the minutes-per-unit multipliers are local, because
- * only this menu needs them (the column stores minutes).
- *
- * It stops at weeks on purpose: a lead of "3 months" says nothing the
- * clamp would not immediately cut back to under one period.  That the
- * first four enum values are exactly the four wanted is not luck — the
- * units are in ascending duration order (db.h), which several things
- * here rely on.                                                           */
-#define RECUR_LEAD_N_UNITS 4
-static const gint recur_lead_minutes[RECUR_LEAD_N_UNITS] = {
-    1, 60, 1440, 10080
-};
-
-/* editor_time_entry_parse() — an "HH:MM" entry as minutes past midnight,
- * with the same mid-typing guard the due entry has (editor_due_entry_parse):
- * partial or invalid text keeps `current`, because a debounced save firing
- * while the user is still typing "8:3" must not store 8:03 and move the
- * caret's meaning underneath them.
- *
- * Takes the WIDGET rather than the editor: two entries want exactly this
- * (the due date's time of day and the recurrence schedule's), and a second
- * copy of the guard is a second place for it to be got wrong.              */
+ * Mid-typing guard: partial or invalid text keeps `current`.
+ */
 static gint
 editor_time_entry_parse(GtkWidget *entry, gint current)
 {
-    const gchar *txt   = gtk_entry_get_text(GTK_ENTRY(entry));
+    const gchar *txt   = gtk_editable_get_text(GTK_EDITABLE(entry));
     const gchar *colon = strchr(txt, ':');
     if (colon == NULL)
         return current;
@@ -191,11 +132,9 @@ editor_time_entry_parse(GtkWidget *entry, gint current)
     return (gint)(h * 60 + m);
 }
 
-/* editor_time_entry_set() — write `minutes` into an "HH:MM" entry, unless
- * it has focus: rewriting under the caret would replace half-typed text,
- * the rule due_entry_refresh follows.  `fallback` is what an out-of-range
- * value shows, so each caller names its OWN default rather than this
- * function picking one for both.                                           */
+/*
+ * editor_time_entry_set — write `minutes` to "HH:MM" entry unless focused.
+ */
 static void
 editor_time_entry_set(GtkWidget *entry, gint minutes, gint fallback)
 {
@@ -204,21 +143,19 @@ editor_time_entry_set(GtkWidget *entry, gint minutes, gint fallback)
     if (minutes < 0 || minutes > 23 * 60 + 59)
         minutes = fallback;
     gchar *txt = g_strdup_printf("%02d:%02d", minutes / 60, minutes % 60);
-    if (strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), txt) != 0)
-        gtk_entry_set_text(GTK_ENTRY(entry), txt);
+    if (strcmp(gtk_editable_get_text(GTK_EDITABLE(entry)), txt) != 0)
+        gtk_editable_set_text(GTK_EDITABLE(entry), txt);
     g_free(txt);
 }
 
-/* editor_recur_start_parse() — the start entry's text as a local-midnight
- * timestamp, with the SAME mid-typing guard the due entry has: blank means
- * "no anchor" (0, so the schedule falls back to the due date), a valid
- * date parses, and anything half-typed keeps `current` rather than letting
- * a debounced save store a date the user is still in the middle of.        */
+/*
+ * editor_recur_start_parse — start entry text as a timestamp, mid-typing safe.
+ */
 static gint64
 editor_recur_start_parse(TaskEditor *ed, gint64 current)
 {
     gchar *trim = g_strstrip(
-        g_strdup(gtk_entry_get_text(GTK_ENTRY(ed->recur_start_entry))));
+        g_strdup(gtk_editable_get_text(GTK_EDITABLE(ed->recur_start_entry))));
     gint64 start;
     if (*trim == '\0')
         start = 0;
@@ -230,52 +167,44 @@ editor_recur_start_parse(TaskEditor *ed, gint64 current)
     return start;
 }
 
-/* editor_recur_start_set() — show a stored anchor date in that entry,
- * unless it has focus (rewriting under the caret moves the meaning of the
- * user's own typing — the rule due_entry_refresh follows).                 */
+/*
+ * editor_recur_start_set — show anchor date unless the entry has focus.
+ */
 static void
 editor_recur_start_set(TaskEditor *ed, gint64 start)
 {
     if (gtk_widget_has_focus(ed->recur_start_entry))
         return;
     gchar *text = task_due_format_iso(start);
-    /* Only when it really differs, so a refresh never moves the caret —
-     * set_entry_if_differs itself lives further down the file than this
-     * block does.                                                          */
-    if (strcmp(gtk_entry_get_text(GTK_ENTRY(ed->recur_start_entry)),
+    if (strcmp(gtk_editable_get_text(GTK_EDITABLE(ed->recur_start_entry)),
                text) != 0)
-        gtk_entry_set_text(GTK_ENTRY(ed->recur_start_entry), text);
+        gtk_editable_set_text(GTK_EDITABLE(ed->recur_start_entry), text);
     g_free(text);
 }
 
-/* editor_recur_lead_minutes() — the lead spin and its unit combo, folded
- * into the minutes the column stores.                                      */
+/*
+ * editor_recur_lead_minutes — lead spin + unit combo → stored minutes.
+ */
 static gint
 editor_recur_lead_minutes(TaskEditor *ed)
 {
-    gint n = gtk_spin_button_get_value_as_int(
-                 GTK_SPIN_BUTTON(ed->recur_lead_spin));
-    gint u = gtk_combo_box_get_active(GTK_COMBO_BOX(ed->recur_lead_unit));
-    if (u < 0 || u >= RECUR_LEAD_N_UNITS)
-        u = (gint)TASK_RECUR_DAY;    /* the fallback, matching the default */
-    return n * recur_lead_minutes[u];
+    gint  n = gtk_spin_button_get_value_as_int(
+                  GTK_SPIN_BUTTON(ed->recur_lead_spin));
+    guint u = gtk_drop_down_get_selected(GTK_DROP_DOWN(ed->recur_lead_unit));
+    if (u == GTK_INVALID_LIST_POSITION || u >= RECUR_LEAD_N_UNITS)
+        u = (guint)TASK_RECUR_DAY;
+    return n * recur_lead_minutes[(gint)u];
 }
 
-/* editor_recur_lead_set() — the inverse: show `minutes` in the LARGEST
- * unit that divides it evenly, so the stored 7200 comes back as "5 days"
- * rather than "7200 minutes".                                              */
+/*
+ * editor_recur_lead_set — show `minutes` in the largest exact-dividing unit.
+ */
 static void
 editor_recur_lead_set(TaskEditor *ed, gint minutes)
 {
-    /* 0 is a REAL lead now, not a missing one: task_recur_lead_default
-     * answers 0 for a per-minute repeat, where half a period is less than
-     * the minute this column stores.  Showing it as "0 minutes" says so;
-     * folding it to a default would put back a number the schedule cannot
-     * hold.  The unit is forced rather than searched for, because every
-     * unit divides 0 and the loop below would otherwise say "0 weeks".  */
     if (minutes <= 0) {
-        gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_lead_unit),
-                                 (gint)TASK_RECUR_MINUTE);
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(ed->recur_lead_unit),
+                                   (guint)TASK_RECUR_MINUTE);
         gtk_spin_button_set_value(GTK_SPIN_BUTTON(ed->recur_lead_spin), 0);
         return;
     }
@@ -285,51 +214,42 @@ editor_recur_lead_set(TaskEditor *ed, gint minutes)
             u = i;
             break;
         }
-    gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_lead_unit), u);
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(ed->recur_lead_unit), (guint)u);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(ed->recur_lead_spin),
                               minutes / recur_lead_minutes[u]);
 }
 
-/* editor_recur_every() — the interval the widgets describe, in the units
- * the unit combo names.  0 when the MASTER SWITCH is off, which is what
- * "does not recur" is on disk — so the checkbox needs no state of its own
- * and cannot disagree with the row.  Spelled once because both the save
- * (editor_recur_read) and the lead default (editor_recur_lead_follow) ask
- * the same question and must get the same answer.                         */
+/*
+ * editor_recur_every — interval the widgets describe; 0 when switch is off.
+ */
 static gint
 editor_recur_every(TaskEditor *ed)
 {
-    if (!gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(ed->recur_enable)))
+    if (!gtk_check_button_get_active(GTK_CHECK_BUTTON(ed->recur_enable)))
         return 0;
     return gtk_spin_button_get_value_as_int(
                GTK_SPIN_BUTTON(ed->recur_every_spin));
 }
 
-/* ---------------------------------------------------------------------------
- * editor_recur_read() — fill `t`'s schedule fields from the widgets.
- *
- * Straight off the two rows, with nothing to expand: every schedule is
- * "every N units", and the master switch is what turns that into the 0
- * interval meaning "does not repeat" (editor_recur_every).  recur_next is
- * NOT written — see the block comment above.
- * ------------------------------------------------------------------------- */
+/*
+ * editor_recur_read — fill `t`'s schedule fields from the widgets.
+ */
 static void
 editor_recur_read(TaskEditor *ed, Task *t)
 {
     t->recur_interval = editor_recur_every(ed);
-    gint u = gtk_combo_box_get_active(GTK_COMBO_BOX(ed->recur_unit_combo));
-    t->recur_unit = (u >= 0 && u < TASK_RECUR_N_UNITS)
+    guint u = gtk_drop_down_get_selected(GTK_DROP_DOWN(ed->recur_unit_combo));
+    t->recur_unit = (u != GTK_INVALID_LIST_POSITION && u < TASK_RECUR_N_UNITS)
                     ? (TaskRecurUnit)u : TASK_RECUR_DAY;
     t->recur_time  = editor_time_entry_parse(ed->recur_time_entry,
-                                            TASK_RECUR_TIME_DEFAULT);
+                                             TASK_RECUR_TIME_DEFAULT);
     t->recur_start = editor_recur_start_parse(ed, t->recur_start);
     t->recur_lead  = editor_recur_lead_minutes(ed);
 }
 
-/* editor_recur_task() — the schedule the widgets currently describe, as a
- * bare Task for the recur.h helpers to read.  Its due date comes from the
- * due ENTRY rather than the row, so the summary answers for what is on
- * screen; nothing here owns memory, so it is never task_free'd.            */
+/*
+ * editor_recur_task — schedule as a bare Task for recur.h helpers.
+ */
 static Task
 editor_recur_task(TaskEditor *ed)
 {
@@ -340,83 +260,60 @@ editor_recur_task(TaskEditor *ed)
     return t;
 }
 
-/* editor_recur_reseed() — the schedule changed, so the next occurrence is
- * computed afresh.  Through task_recur_seed, the same function the pass
- * uses when recur_next is 0, so the date shown here is the date the pass
- * will act on.                                                             */
+/*
+ * editor_recur_reseed — schedule changed; recompute the next occurrence.
+ */
 static void
 editor_recur_reseed(TaskEditor *ed)
 {
     Task t = editor_recur_task(ed);
-    t.recur_next = 0;                /* a changed schedule starts over      */
+    t.recur_next = 0;
     ed->recur_next = task_recur_seed(&t, (gint64)time(NULL));
 }
 
 /* ---------------------------------------------------------------------------
- * editor_title_refresh() — window title "Tasks - <task title>".
+ * Status / title refresh.
  * ------------------------------------------------------------------------- */
+
+/*
+ * editor_title_refresh — window title "Tasks - <task title>".
+ */
 static void
 editor_title_refresh(TaskEditor *ed)
 {
-    const gchar *t = gtk_entry_get_text(GTK_ENTRY(ed->title_entry));
+    const gchar *t = gtk_editable_get_text(GTK_EDITABLE(ed->title_entry));
     gchar *title = g_strdup_printf("Tasks - %s",
                                    *t != '\0' ? t : "Untitled Task");
     gtk_window_set_title(GTK_WINDOW(ed->window), title);
     g_free(title);
 }
 
-/* editor_status_get() — the status dropdown's current value.  The combo
- * is built with one row per TaskStatus IN ORDER, so the active index
- * IS the enum value; -1 (nothing active, which only happens if the combo
- * has not been loaded yet) reads as New rather than as a negative
- * status.                                                                  */
+/*
+ * editor_status_get — current status from the dropdown (clamped to New).
+ */
 static TaskStatus
 editor_status_get(TaskEditor *ed)
 {
-    gint active =
-        gtk_combo_box_get_active(GTK_COMBO_BOX(ed->status_combo));
-    if (active < 0 || active >= TASK_STATUS_N_VALUES)
+    guint active = gtk_drop_down_get_selected(GTK_DROP_DOWN(ed->status_combo));
+    if (active == GTK_INVALID_LIST_POSITION || active >= TASK_STATUS_N_VALUES)
         return TASK_STATUS_NEW;
     return (TaskStatus)active;
 }
 
 /* ---------------------------------------------------------------------------
- * editor_completed_refresh() — show when `t` was last completed.
- *
- * READ-ONLY, and shown whenever there is a STAMP — not only while the task
- * is Done.  completed_at is stamped on entering Done and nothing clears it
- * (db.h), so it survives someone reopening the task, and that is exactly
- * when it is worth reading: "this was finished on the 27th and is being
- * worked on again" is a fact about the task, not a leftover.  A task whose
- * stamp is 0 — never completed, or a row completed by a writer that
- * predates the column — shows nothing rather than "Jan 1, 1970".
- *
- * The two faces are one spelling each, and the ARROW-NAMES-THE-ACTION rule
- * the View menu follows applied to a statement: say what is true of the
- * CURRENT state.  "Completed 27 Aug" beside a Status reading In Progress
- * is a flat contradiction; "Last completed" is the same fact, told
- * straight.
- *
- * It lives on the flags row and is EMPTY rather than hidden when there is
- * nothing to say: an empty label takes no width, the row's height comes
- * from the checkboxes beside it either way, and there is no show_all to
- * fight (gotcha 15) and no window height to keep honest.
- *
- * The date only, not the time.  The row has the two checkboxes on it and
- * the editor takes its natural width from 490 px, so a string that grows
- * with the locale is one that can silently widen every editor.
+ * Completed-at label.
  * ------------------------------------------------------------------------- */
 #define COMPLETED_LABEL_DONE "Completed"
 #define COMPLETED_LABEL_PAST "Last completed"
 
+/*
+ * editor_completed_refresh — show when `t` was last completed (read-only).
+ *
+ * Empty when t is NULL or has no stamp.  Never shown as "Jan 1, 1970".
+ */
 static void
 editor_completed_refresh(TaskEditor *ed, const Task *t)
 {
-    /* ONE condition carrying the NULL guard and the has-a-stamp test, so
-     * the branch that reads t->status is visibly the branch that proved t
-     * is non-NULL.  Splitting them left the dereference unreachable but
-     * unprovably so — clang's analyzer flagged it, and a reader has to do
-     * the same reasoning it could not.                                    */
     gchar *when = t != NULL ? task_due_format(t->completed_at)
                             : g_strdup("");
     gchar *markup = (t != NULL && *when != '\0')
@@ -431,16 +328,12 @@ editor_completed_refresh(TaskEditor *ed, const Task *t)
 }
 
 /* ---------------------------------------------------------------------------
- * editor_save_now() — write every editable field through to the row and
- * notify the library.  The debounce timer funnels here.
- *
- * A mirrored Notes item saves exactly like any other task: its status
- * and due land in the database, and the next mirror pass carries them
- * to Notes in bulk (the Notes plugin) — flattened there to the done flag Notes
- * understands.  The editor no longer shells the CLI per
- * keystroke-debounce, which is what made every autosave wait on a
- * process spawn.
+ * Write-through save.
  * ------------------------------------------------------------------------- */
+
+/*
+ * editor_save_now — flush every editable field to the row; clear debounce.
+ */
 static void
 editor_save_now(TaskEditor *ed)
 {
@@ -453,38 +346,22 @@ editor_save_now(TaskEditor *ed)
         return;
     g_free(t->title);
     g_free(t->notes);
-    t->title = g_strdup(gtk_entry_get_text(GTK_ENTRY(ed->title_entry)));
+    t->title = g_strdup(gtk_editable_get_text(GTK_EDITABLE(ed->title_entry)));
     GtkTextIter a, b;
     gtk_text_buffer_get_bounds(ed->notes_buf, &a, &b);
     t->notes = gtk_text_buffer_get_text(ed->notes_buf, &a, &b, FALSE);
-    t->status = editor_status_get(ed);
-    t->pinned = gtk_toggle_button_get_active(
-                    GTK_TOGGLE_BUTTON(ed->pinned_check));
-    t->priority = gtk_toggle_button_get_active(
-                    GTK_TOGGLE_BUTTON(ed->priority_check));
+    t->status   = editor_status_get(ed);
+    t->pinned   = gtk_check_button_get_active(
+                      GTK_CHECK_BUTTON(ed->pinned_check));
+    t->priority = gtk_check_button_get_active(
+                      GTK_CHECK_BUTTON(ed->priority_check));
     t->due      = editor_due_entry_parse(ed, t->due);
     t->due_time = editor_time_entry_parse(ed->due_time_entry, t->due_time);
-    /* The recurrence schedule rides the same write-through save.
-     * recur_next comes off `ed` rather than out of a widget: it is not a
-     * setting, and it is reseeded by editor_recur_reseed whenever the
-     * schedule the widgets describe actually changes.                    */
     editor_recur_read(ed, t);
     t->recur_next = ed->recur_next;
     task_db_task_update(ed->app->db, t);
-    /* The pass waits on the EARLIEST fire time in the database, and a
-     * schedule saved here may have moved it nearer — a task set to repeat
-     * every minute has to be picked up within the minute, not whenever
-     * something else happened to be due.  AFTER the write, or the pass
-     * could reach the row before this save did.  Only nearer counts, so a
-     * schedule slowed down or switched off needs nothing (see recur.h).  */
     task_recur_wake_by(ed->app, t->recur_next > 0
                        ? t->recur_next - task_recur_lead_seconds(t) : 0);
-    /* Only a STATUS change can move completed_at, and the row is the one
-     * that knows where it landed — the stamping rule is an SQL CASE over
-     * the old row (db.c), and spelling it a second time here is how the
-     * two come to disagree.  So re-read, but only on the change that can
-     * matter: every other save is a keystroke on the 600 ms debounce and
-     * must not buy a query.                                              */
     gboolean status_moved = t->status != ed->status_saved;
     ed->status_saved = t->status;
     task_free(t);
@@ -497,7 +374,9 @@ editor_save_now(TaskEditor *ed)
     editor_notify(ed);
 }
 
-/* save_timeout() — the debounce timer body.                                */
+/*
+ * save_timeout — debounce timer body.
+ */
 static gboolean
 save_timeout(gpointer data)
 {
@@ -507,7 +386,9 @@ save_timeout(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
-/* editor_queue_save() — (re)arm the ~600 ms debounce.                      */
+/*
+ * editor_queue_save — (re)arm the ~600 ms debounce.
+ */
 static void
 editor_queue_save(TaskEditor *ed)
 {
@@ -518,7 +399,13 @@ editor_queue_save(TaskEditor *ed)
     ed->save_source = g_timeout_add(600, save_timeout, ed);
 }
 
-/* on_field_changed() — any text/toggle edit → debounce a save.             */
+/* ---------------------------------------------------------------------------
+ * Change signal callbacks.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * on_field_changed — any text/check edit → debounce a save.
+ */
 static void
 on_field_changed(GtkWidget *w, gpointer data)
 {
@@ -526,10 +413,9 @@ on_field_changed(GtkWidget *w, gpointer data)
     editor_queue_save(data);
 }
 
-/* on_toggle_changed() — status/pinned change → save immediately (these
- * drive the library's meta lists).  The status combo shares it: a
- * dropdown pick is a deliberate act like a tick, not something the
- * 600 ms debounce should sit on.                                           */
+/*
+ * on_toggle_changed — status/pin change → immediate save.
+ */
 static void
 on_toggle_changed(GtkWidget *w, gpointer data)
 {
@@ -539,35 +425,38 @@ on_toggle_changed(GtkWidget *w, gpointer data)
         editor_save_now(ed);
 }
 
+/*
+ * on_status_notify — status GtkDropDown "notify::selected" → immediate save.
+ */
+static void
+on_status_notify(GObject *obj, GParamSpec *pspec, gpointer data)
+{
+    (void)obj; (void)pspec;
+    TaskEditor *ed = data;
+    if (!ed->loading)
+        editor_save_now(ed);
+}
+
 /* ---------------------------------------------------------------------------
- * editor_recur_lead_follow() — keep the lead on its DEFAULT while the user
- * has not chosen one, as the repeat period moves.
- *
- * The default is a function of the period (task_recur_lead_default: a
- * week, or half the period when that is shorter), so it has to be
- * recomputed when the period changes — otherwise picking "every hour"
- * leaves a week's lead sitting there, which the clamp then silently cuts
- * to 59 minutes and nothing on screen explains.
- *
- * It must not stomp a lead the user typed, so it only rewrites one that is
- * still exactly the default for the PREVIOUS period — the widgets' own
- * "has this been touched?" test, needing no extra flag.  Creating a
- * schedule (the previous interval was 0) always seeds, because the number
- * in the widgets then is the column's default rather than anyone's choice.
- *
- * Writing the lead widgets re-emits their own change signals, so the call
- * is fenced with ed->loading — the caller re-applies and saves anyway.
+ * Recurrence helpers.
  * ------------------------------------------------------------------------- */
+
+/*
+ * editor_recur_lead_follow — keep the lead on its default while the user
+ * has not chosen one, as the repeat period moves.
+ */
 static void
 editor_recur_lead_follow(TaskEditor *ed)
 {
-    gint every = editor_recur_every(ed);
-    gint unit  = gtk_combo_box_get_active(
-                     GTK_COMBO_BOX(ed->recur_unit_combo));
-    if (unit < 0 || unit >= TASK_RECUR_N_UNITS)
-        unit = (gint)TASK_RECUR_DAY;
+    gint  every = editor_recur_every(ed);
+    guint u_raw = gtk_drop_down_get_selected(
+                      GTK_DROP_DOWN(ed->recur_unit_combo));
+    gint  unit  = (u_raw != GTK_INVALID_LIST_POSITION &&
+                   u_raw < TASK_RECUR_N_UNITS)
+                  ? (gint)u_raw : (gint)TASK_RECUR_DAY;
+
     if (every == ed->recur_seen_every && unit == ed->recur_seen_unit)
-        return;                      /* the period did not move            */
+        return;
 
     gint was = task_recur_lead_default((TaskRecurUnit)ed->recur_seen_unit,
                                        ed->recur_seen_every);
@@ -582,94 +471,54 @@ editor_recur_lead_follow(TaskEditor *ed)
     ed->recur_seen_unit  = unit;
 }
 
-/* ---------------------------------------------------------------------------
- * editor_recur_body_set() — show or hide EVERYTHING below the master
- * switch, resizing the window by exactly what that changed.
+/*
+ * editor_recur_body_set — show or hide the recurrence body, resizing the
+ * window by the change in adv_box height.
  *
- * One box rather than four rows, so this measures and resizes ONCE.  The
- * bookkeeping is the price of hiding rather than greying, and it is the
- * same bargain the Advanced disclosure makes: adv_height is what the fold
- * gives back, so a group that appears and vanishes INSIDE it has to keep
- * that total true or a later collapse leaves the window the wrong height.
- *
- * Nothing here is GREYED instead, which would be the cheaper option: a
- * greyed control still shows a value, and a whole schedule shown but
- * untouchable is what the old preset combo did — four dead controls with
- * no hint of the way in.  Off means gone.
- *
- * adv_height is RE-MEASURED off adv_box rather than adjusted by the body's
- * own height, and the window moves by the difference between the old total
- * and the new one.  Adjusting by the body was the obvious way and it drifts:
- * the summary inside it is a WRAPPED label, whose preferred height depends
- * on the width it is asked at, so the height it reports alone is not the
- * height it contributes in place — measured 13 px out over one hide, which
- * a later Advanced fold then handed back as a window 13 px short.  Taking
- * the total fresh each time leaves adv_height equal to a real measurement
- * at every moment, which is what makes the fold exact by construction.
- *
- * The RESIZE half runs only for a window already on screen with the block
- * open, the same split editor_advanced_reveal / editor_advanced_set make:
- * on the open path the body's visibility is settled by editor_load before
- * the window is ever presented, so it is already in the natural height and
- * adv_height has not been taken yet — the reveal takes it afterwards, over
- * a body that is already in its final state.
- *
- * recur_body carries no_show_all permanently, which keeps it out of BOTH
- * show_all passes — the window's, and the one editor_advanced_reveal runs
- * over adv_box — so this function is the only thing that can reveal it.
- * The flag is lifted across its own show_all, without which that call
- * would return early and nothing would appear (gotcha 15).
- * ------------------------------------------------------------------------- */
+ * adv_height is RE-MEASURED off adv_box after every change rather than
+ * adjusted by the body's own height, because the summary inside it is a
+ * wrapped label whose height changes with the width it is given in place.
+ */
 static void
 editor_recur_body_set(TaskEditor *ed, gboolean shown)
 {
     if (shown == ed->recur_body_shown)
-        return;                      /* no change, and so no resize         */
+        return;
     ed->recur_body_shown = shown;
 
     gboolean live = gtk_widget_get_visible(ed->window) && ed->adv_shown;
-    gint w = 0, h = 0;               /* live client size                    */
+    gint h = 0;
     if (live)
-        gtk_window_get_size(GTK_WINDOW(ed->window), &w, &h);
+        h = gtk_widget_get_height(GTK_WIDGET(ed->window));
 
-    if (shown) {
-        gtk_widget_set_no_show_all(ed->recur_body, FALSE);
-        gtk_widget_show_all(ed->recur_body);
-        gtk_widget_set_no_show_all(ed->recur_body, TRUE);
-    } else {
-        gtk_widget_hide(ed->recur_body);
-    }
+    gtk_widget_set_visible(ed->recur_body, shown);
+
     if (!live)
         return;
 
-    gint min, nat;                   /* the WHOLE block, measured afresh    */
-    gtk_widget_get_preferred_height(ed->adv_box, &min, &nat);
+    gint min, nat;
+    gtk_widget_measure(ed->adv_box, GTK_ORIENTATION_VERTICAL, 490,
+                       &min, &nat, NULL, NULL);
     gint was = ed->adv_height;
-    ed->adv_height = nat + 8;        /* + the vbox's inter-child spacing    */
-    gtk_window_resize(GTK_WINDOW(ed->window), w,
-                      MAX(h + (ed->adv_height - was), 1));
+    ed->adv_height = nat + 8;
+    gint delta = ed->adv_height - was;
+    if (delta != 0)
+        gtk_window_set_default_size(GTK_WINDOW(ed->window), 490,
+                                    MAX(h + delta, 100));
 }
 
-/* ---------------------------------------------------------------------------
- * editor_recur_refresh() — the Recurrence block's single applier: what the
- * master switch reveals, and what the summary line says.
+/*
+ * editor_recur_refresh — the Recurrence block's single applier.
  *
- * NOTHING IS EVER GREYED OUT.  The start date, the time and the lead used
- * to be dead until a preset was chosen from a combo, and the "Every N
- * units" row appeared only for Custom… — so the block a user first met was
- * four controls they could not touch, with no hint that the combo was the
- * way in.  There is one switch now, it says what it does, and everything
- * it governs is either fully live or not on screen at all.
- * ------------------------------------------------------------------------- */
+ * Sets the summary label and shows/hides the body according to the master
+ * switch.  NOTHING IS EVER GREYED OUT — if it is off, the body is gone.
+ */
 static void
 editor_recur_refresh(TaskEditor *ed)
 {
     Task t = editor_recur_task(ed);
 
     gchar *text = task_recur_describe(&t, (gint64)time(NULL));
-    /* Dimmed with Pango alpha, never a fixed gray (a gray is unreadable
-     * on a dark theme).  Escaped because the sentence carries formatted
-     * dates from the C library, not a literal of ours.                   */
     gchar *markup = *text != '\0'
         ? g_markup_printf_escaped(
               "<small><span alpha=\"65%%\">%s</span></small>", text)
@@ -678,382 +527,268 @@ editor_recur_refresh(TaskEditor *ed)
     g_free(markup);
     g_free(text);
 
-    /* LAST, after the summary has its final text.  editor_recur_body_set
-     * measures the body to size the window, and the summary is a wrapped
-     * label INSIDE it — so measuring first reads whatever the label still
-     * said a moment ago.  Switching the block on measured the one-line
-     * "Does not repeat." it was showing while off and came out 13 px (one
-     * line) short, which the next Advanced fold then handed back as a
-     * window 13 px too tall.                                            */
+    /* LAST — body measurement must see the summary's final text.           */
     editor_recur_body_set(ed,
-        gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(ed->recur_enable)));
+        gtk_check_button_get_active(GTK_CHECK_BUTTON(ed->recur_enable)));
 }
 
-/* on_recur_changed() — any Recurrence control moved: reseed the next
- * occurrence, re-apply the block, and debounce a save.
- *
- * The DEBOUNCE rather than an immediate write, unlike the status combo:
- * the time and lead controls are typed into, and a save per keystroke
- * would write a half-entered "8:" through the parse guard on every one.
- * Nothing is lost by waiting — the save is write-through, and
- * on_editor_destroy flushes a pending one.                                 */
+/*
+ * recur_changed_impl — common body for all recurrence-control change handlers.
+ */
 static void
-on_recur_changed(GtkWidget *w, gpointer data)
+recur_changed_impl(TaskEditor *ed)
 {
-    (void)w;
-    TaskEditor *ed = data;
     if (ed->loading)
         return;
-    /* BEFORE the reseed: a changed period may carry the lead with it, and
-     * the summary states where the reset lands.                          */
     editor_recur_lead_follow(ed);
     editor_recur_reseed(ed);
     editor_recur_refresh(ed);
     editor_queue_save(ed);
 }
 
-/* ---------------------------------------------------------------------------
- * The in-flight in-place subtask edit.
- *
- * GTK hands the renderer's editable (a GtkEntry) to "editing-started"; we
- * hold it so Add and Save can COMMIT half-typed text rather than throw the
- * typing out.  The pointer is weak — every path that ends an edit
- * ("edited", "editing-canceled", the widget simply dying) clears it, and
- * on_editor_destroy drops the weak reference before `ed` is freed, since
- * the editable can outlive it (the window's "destroy" handlers run before
- * its children are destroyed).
- *
- * Holding the editable is NOT on its own enough, and the reason is worth
- * writing down: GTK3 treats losing focus as CANCELLING an in-place cell
- * edit, not as finishing it (GtkCellRendererText's own focus-out handler
- * sets the entry's "editing-canceled" and tears the editable down).  A
- * mouse click on Add moves focus on BUTTON-PRESS, so that cancel has
- * already run — and already emitted "editing-canceled", which clears this
- * pointer — by the time "clicked" reaches on_sub_add.  Committing from the
- * button handler therefore found nothing left to commit and the typing was
- * lost anyway.  So on_sub_edit_focus_out below commits FIRST, from the
- * entry's own focus-out (a plain g_signal_connect, which runs ahead of the
- * renderer's g_signal_connect_after one); committing disconnects the
- * renderer's handler, so the cancel never happens.  Escape is unaffected —
- * it cancels through the key-press path with no focus change at all
- * (verified both ways against GTK 3.24).
- * ------------------------------------------------------------------------- */
-static gboolean on_sub_edit_focus_out(GtkWidget *entry, GdkEventFocus *event,
-                                      gpointer data);
-
+/*
+ * on_recur_changed — GtkWidget "changed"/"value-changed"/"toggled" for
+ * recurrence entries, spinners and the master check button.
+ */
 static void
-editor_sub_edit_forget(TaskEditor *ed)
+on_recur_changed(GtkWidget *w, gpointer data)
 {
-    if (ed->sub_edit == NULL)
-        return;
-    /* Disconnect BEFORE dropping the pointer: the handler captures `ed`,
-     * and the editable outlives it (a window being destroyed hands focus
-     * away as it goes), so a handler left connected is a use-after-free.  */
-    g_signal_handlers_disconnect_by_func(ed->sub_edit,
-                                         (gpointer)on_sub_edit_focus_out, ed);
-    g_object_remove_weak_pointer(G_OBJECT(ed->sub_edit),
-                                 (gpointer *)&ed->sub_edit);
-    ed->sub_edit = NULL;
+    (void)w;
+    recur_changed_impl(data);
 }
 
-/* editor_sub_edit_commit() — finish an in-flight edit as if the user had
- * pressed Enter: "editing-done" makes the renderer emit "edited" with the
- * entry's current text (on_sub_title_edited saves it), and remove-widget
- * tears the editable down.  No-op when nothing is being edited.            */
+/*
+ * on_recur_notify — GtkDropDown "notify::selected" for recurrence combos.
+ */
 static void
-editor_sub_edit_commit(TaskEditor *ed)
+on_recur_notify(GObject *obj, GParamSpec *pspec, gpointer data)
 {
-    if (ed->sub_edit == NULL)
-        return;
-    GtkCellEditable *e = ed->sub_edit;
-    g_object_ref(e);                 /* remove_widget may drop the last ref */
-    editor_sub_edit_forget(ed);      /* the callbacks below re-enter here   */
-    gtk_cell_editable_editing_done(e);
-    gtk_cell_editable_remove_widget(e);
-    g_object_unref(e);
+    (void)obj; (void)pspec;
+    recur_changed_impl(data);
 }
 
 /* ---------------------------------------------------------------------------
- * on_editor_save() — the Save button every editor carries: flush the
- * write-through save and close.  Saves are already write-through, so this
- * is a "commit now and get out of my way" button rather than the only way
- * to persist.
+ * Subtask section.
+ *
+ * In GTK4 we use a GtkListBox of rows.  Each row is a GtkBox with a
+ * GtkCheckButton (for done) and a GtkEntry (for the title, always
+ * editable).  Sub_box replaces sub_store + sub_view + sub_edit.
  * ------------------------------------------------------------------------- */
-static void
-on_editor_save(GtkWidget *w, gpointer data)
+
+/*
+ * sub_row_id — retrieve the task id stored on a subtask row's check button.
+ *
+ * Each row widget is a GtkBox; its first child is the GtkCheckButton with
+ * "task-id" object data.
+ */
+static gint64
+sub_row_id(GtkListBoxRow *lrow)
 {
-    (void)w;
-    TaskEditor *ed = data;
-    editor_sub_edit_commit(ed);      /* a subtask still being typed         */
-    editor_save_now(ed);             /* also clears the pending debounce    */
-    gtk_widget_destroy(ed->window);
+    GtkWidget *box   = gtk_list_box_row_get_child(lrow);
+    GtkWidget *check = gtk_widget_get_first_child(box);
+    gint64    *id_p  = g_object_get_data(G_OBJECT(check), "task-id");
+    return id_p != NULL ? *id_p : 0;
 }
 
-/* ---------------------------------------------------------------------------
- * on_editor_cancel() — the New Task window's Cancel: close and delete the
- * task the New Task action created (tombstoned with its subtasks, the same
- * path as the library's Delete Task, so the delete syncs).
- *
- * Order matters: drop the pending debounce and destroy the window FIRST,
- * because on_editor_destroy frees `ed` and would otherwise flush a save
- * into the row we are about to tombstone.  The library is notified after
- * that through the app hook — a vanishing task is structural (list counts,
- * the Favorites row), so it takes the FULL refresh, not notify_tasks.
- *
- * A subtask still in its in-place editor is FORGOTTEN, not committed: the
- * whole task is about to be tombstoned, so on_editor_destroy must not go
- * writing that title into a row on its way out.
- * ------------------------------------------------------------------------- */
-static void
-on_editor_cancel(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskEditor *ed = data;
-    TaskApp  *app = ed->app;           /* `ed` dies with the window below   */
-    gint64  id  = ed->task_id;
-    if (ed->save_source != 0) {
-        g_source_remove(ed->save_source);
-        ed->save_source = 0;
-    }
-    editor_sub_edit_forget(ed);
-    gtk_widget_destroy(ed->window);
-    task_db_task_delete(app->db, id);
-    task_app_notify_changed(app);
-    task_app_status(app, "Discarded the new task");
-}
-
-/* ---------------------------------------------------------------------------
- * editor_pick_date() — the 📅 buttons' modal GtkCalendar dialog, writing an
- * ISO date into `entry` (Clear empties it).
- *
- * Inputs:
- *   ed    — the editor the dialog is transient for
- *   entry — the date entry to preselect from and write back into
- *   title — the dialog's window title ("Due Date", "Start Date")
- *
- * Output:
- *   TRUE when the entry's text was written (a pick or a clear), FALSE when
- *   the dialog was cancelled.  The caller decides what a change means —
- *   the two entries this serves are saved by different paths.
- * ------------------------------------------------------------------------- */
-static gboolean
-editor_pick_date(TaskEditor *ed, GtkWidget *entry, const gchar *title)
-{
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(title,
-        GTK_WINDOW(ed->window),
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        "_Clear", GTK_RESPONSE_REJECT, "_Cancel", GTK_RESPONSE_CANCEL,
-        "_OK", GTK_RESPONSE_OK, NULL);
-    GtkWidget *cal = gtk_calendar_new();
-
-    /* Preselect what the entry already holds, if anything.                 */
-    gint64 cur = task_due_parse(gtk_entry_get_text(GTK_ENTRY(entry)));
-    if (cur != 0) {
-        GDateTime *dt = task_local_dt(cur);
-        gtk_calendar_select_month(GTK_CALENDAR(cal),
-                                  (guint)g_date_time_get_month(dt) - 1,
-                                  (guint)g_date_time_get_year(dt));
-        gtk_calendar_select_day(GTK_CALENDAR(cal),
-                                (guint)g_date_time_get_day_of_month(dt));
-        g_date_time_unref(dt);
-    }
-    gtk_box_pack_start(
-        GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
-        cal, TRUE, TRUE, 6);
-    gtk_widget_show_all(dlg);
-
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-    gboolean changed = TRUE;
-    if (resp == GTK_RESPONSE_OK) {
-        guint y, m, d;               /* the picked date                     */
-        gtk_calendar_get_date(GTK_CALENDAR(cal), &y, &m, &d);
-        gchar *iso = g_strdup_printf("%04u-%02u-%02u", y, m + 1, d);
-        gtk_entry_set_text(GTK_ENTRY(entry), iso);
-        g_free(iso);
-    } else if (resp == GTK_RESPONSE_REJECT) {
-        gtk_entry_set_text(GTK_ENTRY(entry), "");
-    } else {
-        changed = FALSE;
-    }
-    gtk_widget_destroy(dlg);
-    return changed;
-}
-
-/* on_due_entry_press() — the due ENTRY is the picker: a left click in it
- * opens the calendar instead of placing a caret, so the row needs no 📅
- * button of its own.  TRUE stops the entry's own handler, which is what
- * keeps the click from taking focus and leaving a caret blinking behind
- * the modal dialog.  Any OTHER button falls through untouched, so the
- * right-click context menu (and with it paste, and keyboard focus) still
- * reaches the entry — the mid-typing guards in editor_due_entry_parse and
- * due_entry_refresh are still load-bearing because of that path.
- *
- * The write-through save is immediate rather than debounced: a pick from a
- * modal dialog is a deliberate act, like a dropdown choice.               */
-static gboolean
-on_due_entry_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
-{
-    (void)w;
-    TaskEditor *ed = data;
-
-    if (ev->type != GDK_BUTTON_PRESS || ev->button != GDK_BUTTON_PRIMARY)
-        return FALSE;
-
-    if (editor_pick_date(ed, ed->due_entry, "Due Date"))
-        editor_save_now(ed);
-    return TRUE;
-}
-
-/* on_recur_start_press() — the Starting entry is its own picker, exactly
- * as the due entry is (on_due_entry_press): a left click opens the
- * calendar, every other button falls through, and the block needs no 📅
- * button of its own.  It needs no "is the schedule on?" check of its own
- * either: the whole body is HIDDEN while the master switch is off
- * (editor_recur_body_set), and an unmapped entry is handed no clicks.
- *
- * Setting the entry's text emits "changed", so on_recur_changed reseeds
- * the next occurrence and re-labels the summary on its own; only the
- * immediate save is left to do here, for the same reason the due picker
- * does one.                                                               */
-static gboolean
-on_recur_start_press(GtkWidget *w, GdkEventButton *ev, gpointer data)
-{
-    (void)w;
-    TaskEditor *ed = data;
-
-    if (ev->type != GDK_BUTTON_PRESS || ev->button != GDK_BUTTON_PRIMARY)
-        return FALSE;
-
-    if (editor_pick_date(ed, ed->recur_start_entry, "Start Date"))
-        editor_save_now(ed);
-    return TRUE;
-}
-
-/* ===========================================================================
- * Subtasks section (top-level tasks only).
- * =========================================================================== */
-
-/* sub_selected_id() — id of the selected subtask row, or 0.                */
+/*
+ * sub_selected_id — id of the selected subtask row, or 0.
+ */
 static gint64
 sub_selected_id(TaskEditor *ed)
 {
-    GtkTreeSelection *sel =
-        gtk_tree_view_get_selection(GTK_TREE_VIEW(ed->sub_view));
-    GtkTreeModel *model;
-    GtkTreeIter iter;
-    if (!gtk_tree_selection_get_selected(sel, &model, &iter))
+    if (ed->sub_box == NULL)
         return 0;
-    gint64 id;
-    gtk_tree_model_get(model, &iter, SUB_ID, &id, -1);
-    return id;
+    GtkListBoxRow *row = gtk_list_box_get_selected_row(
+                             GTK_LIST_BOX(ed->sub_box));
+    return row != NULL ? sub_row_id(row) : 0;
 }
 
-/* sub_refresh() — repopulate the subtasks store from the database.         */
+/*
+ * on_sub_done_toggled — the done checkbox on a subtask row was clicked.
+ */
+static void
+on_sub_done_toggled(GtkCheckButton *btn, gpointer data)
+{
+    TaskEditor *ed     = data;
+    gint64     *id_ptr = g_object_get_data(G_OBJECT(btn), "task-id");
+    if (id_ptr == NULL)
+        return;
+    gboolean now_done = gtk_check_button_get_active(btn);
+    task_db_task_set_status(ed->app->db, *id_ptr,
+        now_done ? TASK_STATUS_DONE : TASK_STATUS_IN_PROGRESS);
+    /* Completing a subtask may promote the parent New → In Progress.       */
+    if (now_done)
+        editor_status_resync(ed);
+    editor_notify(ed);
+}
+
+/*
+ * sub_save_entry — save a subtask title entry to the database.
+ */
+static void
+sub_save_entry(GtkWidget *entry, TaskEditor *ed)
+{
+    gint64 *id_ptr = g_object_get_data(G_OBJECT(entry), "task-id");
+    if (id_ptr == NULL)
+        return;
+    const gchar *text = gtk_editable_get_text(GTK_EDITABLE(entry));
+    Task *t = task_db_task_get(ed->app->db, *id_ptr);
+    if (t == NULL)
+        return;
+    if (strcmp(t->title, text) != 0) {
+        g_free(t->title);
+        t->title = g_strdup(text);
+        task_db_task_update(ed->app->db, t);
+        editor_notify(ed);
+    }
+    task_free(t);
+}
+
+/*
+ * on_sub_entry_activate — Enter in a subtask entry saves the title.
+ */
+static void
+on_sub_entry_activate(GtkEntry *entry, gpointer data)
+{
+    sub_save_entry(GTK_WIDGET(entry), data);
+}
+
+/*
+ * on_sub_entry_focus_leave — focus lost saves the subtask title.
+ */
+static void
+on_sub_entry_focus_leave(GtkEventControllerFocus *ctl, gpointer data)
+{
+    (void)ctl;
+    GtkWidget *entry = gtk_event_controller_get_widget(
+                           GTK_EVENT_CONTROLLER(ctl));
+    sub_save_entry(entry, data);
+}
+
+/*
+ * sub_refresh — repopulate the subtask GtkListBox from the database.
+ */
 static void
 sub_refresh(TaskEditor *ed)
 {
-    if (ed->sub_store == NULL)
+    if (ed->sub_box == NULL)
         return;
-    gtk_list_store_clear(ed->sub_store);
+
+    /* Remove all existing rows.                                            */
+    GtkListBoxRow *row;
+    while ((row = gtk_list_box_get_row_at_index(
+                      GTK_LIST_BOX(ed->sub_box), 0)) != NULL)
+        gtk_list_box_remove(GTK_LIST_BOX(ed->sub_box), GTK_WIDGET(row));
+
     GPtrArray *subs = task_db_subtasks(ed->app->db, ed->task_id);
     for (guint i = 0; i < subs->len; i++) {
         Task *s = g_ptr_array_index(subs, i);
-        GtkTreeIter iter;
-        gtk_list_store_append(ed->sub_store, &iter);
-        gtk_list_store_set(ed->sub_store, &iter,
-                           SUB_ID, s->id,
-                           SUB_DONE, s->status == TASK_STATUS_DONE,
-                           SUB_TITLE, s->title,
-                           -1);
+
+        /* Row: [CheckButton] [Entry(title)]                               */
+        GtkWidget *r = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+
+        GtkWidget *check = gtk_check_button_new();
+        gtk_check_button_set_active(GTK_CHECK_BUTTON(check),
+                                    s->status == TASK_STATUS_DONE);
+        /* Store the id on the check button (boxed, safe for 64-bit ids).  */
+        gint64 *id_ptr = g_new(gint64, 1);
+        *id_ptr = s->id;
+        g_object_set_data_full(G_OBJECT(check), "task-id", id_ptr, g_free);
+        g_signal_connect(check, "toggled",
+                         G_CALLBACK(on_sub_done_toggled), ed);
+        gtk_box_append(GTK_BOX(r), check);
+
+        /* Flat GtkEntry: always editable on a single click (GTK3 parity)
+         * but styled transparent so it reads as a compact text row rather
+         * than a prominent input field.  The "flat" CSS class strips the
+         * border and background in the resting state.                      */
+        GtkWidget *entry = gtk_entry_new();
+        gtk_widget_add_css_class(entry, "flat");
+        gtk_editable_set_text(GTK_EDITABLE(entry), s->title);
+        gtk_widget_set_hexpand(entry, TRUE);
+        gint64 *eid = g_new(gint64, 1);
+        *eid = s->id;
+        g_object_set_data_full(G_OBJECT(entry), "task-id", eid, g_free);
+        g_signal_connect(entry, "activate",
+                         G_CALLBACK(on_sub_entry_activate), ed);
+        GtkEventController *fc = gtk_event_controller_focus_new();
+        g_signal_connect(fc, "leave",
+                         G_CALLBACK(on_sub_entry_focus_leave), ed);
+        gtk_widget_add_controller(entry, fc);
+        gtk_box_append(GTK_BOX(r), entry);
+
+        gtk_list_box_append(GTK_LIST_BOX(ed->sub_box), r);
     }
     task_ptr_array_free_tasks(subs);
 }
 
-/* on_sub_edit_focus_out() — the entry lost focus (the user clicked Add,
- * Save, another field, another window): SAVE the half-typed title instead
- * of letting GTK's own focus-out handler cancel it.  Returns FALSE so the
- * entry still gets its ordinary focus-out handling.                        */
+/*
+ * sub_scroll_to_bottom — idle callback: scroll the subtask GtkScrolledWindow
+ * to its bottom so the newly appended row is visible.
+ *
+ * Called with a g_object_ref'd scrolled window; unref'd on completion so
+ * the object stays alive even if the editor closes before this fires.
+ */
 static gboolean
-on_sub_edit_focus_out(GtkWidget *entry, GdkEventFocus *event, gpointer data)
+sub_scroll_to_bottom(gpointer data)
 {
-    (void)event;
-    TaskEditor *ed = data;
-    if (ed->sub_edit == (GtkCellEditable *)entry)
-        editor_sub_edit_commit(ed);
-    return FALSE;
+    GtkScrolledWindow *sw = data;
+    GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(sw);
+    gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+    g_object_unref(sw);
+    return G_SOURCE_REMOVE;
 }
 
-/* on_sub_editing_started() — remember the editable GTK just created, and
- * take over its focus-out (see the block comment above).                   */
-static void
-on_sub_editing_started(GtkCellRenderer *cell, GtkCellEditable *editable,
-                       gchar *path_str, gpointer data)
-{
-    (void)cell;
-    (void)path_str;
-    TaskEditor *ed = data;
-    editor_sub_edit_forget(ed);
-    ed->sub_edit = editable;
-    g_object_add_weak_pointer(G_OBJECT(editable), (gpointer *)&ed->sub_edit);
-    if (GTK_IS_WIDGET(editable))
-        g_signal_connect(editable, "focus-out-event",
-                         G_CALLBACK(on_sub_edit_focus_out), ed);
-}
-
-/* on_sub_editing_canceled() — Escape (or GTK cancelling for us).           */
-static void
-on_sub_editing_canceled(GtkCellRenderer *cell, gpointer data)
-{
-    (void)cell;
-    editor_sub_edit_forget(data);
-}
-
-/* on_sub_add() — create a subtask and start editing its title in place.
- * A title still being typed in another row is committed first, so Add
- * never costs the user what they had just written.  A mouse click has
- * normally already committed it through the focus-out path (see the block
- * comment above), which leaves this call a no-op; it still matters for a
- * keyboard/mnemonic activation that never moves focus.                     */
+/*
+ * on_sub_add — create a subtask and focus its title entry.
+ */
 static void
 on_sub_add(GtkWidget *w, gpointer data)
 {
     (void)w;
     TaskEditor *ed = data;
-    editor_sub_edit_commit(ed);
     Task *t = task_db_task_get(ed->app->db, ed->task_id);
     if (t == NULL)
         return;
     gint64 id = task_db_task_create(ed->app->db, t->list_id, ed->task_id,
                                     "New subtask");
     task_free(t);
-    if (id == 0) {                   /* refused (nesting) or write failed   */
+    if (id == 0) {
         task_app_status(ed->app, "Could not create the subtask");
         return;
     }
     sub_refresh(ed);
     editor_notify(ed);
 
-    /* Put the fresh row's title straight into edit mode.                   */
-    GtkTreeModel *model = GTK_TREE_MODEL(ed->sub_store);
-    GtkTreeIter iter;
-    gboolean valid = gtk_tree_model_get_iter_first(model, &iter);
-    while (valid) {
-        gint64 rid;
-        gtk_tree_model_get(model, &iter, SUB_ID, &rid, -1);
-        if (rid == id) {
-            GtkTreePath *path = gtk_tree_model_get_path(model, &iter);
-            gtk_tree_view_set_cursor(GTK_TREE_VIEW(ed->sub_view), path,
-                gtk_tree_view_get_column(GTK_TREE_VIEW(ed->sub_view), 1),
-                TRUE);
-            gtk_tree_path_free(path);
+    /* Focus the new row's entry.                                           */
+    GtkListBoxRow *row;
+    for (gint i = 0;
+         (row = gtk_list_box_get_row_at_index(GTK_LIST_BOX(ed->sub_box),
+                                              i)) != NULL;
+         i++) {
+        if (sub_row_id(row) == id) {
+            GtkWidget *box   = gtk_list_box_row_get_child(row);
+            GtkWidget *check = gtk_widget_get_first_child(box);
+            GtkWidget *entry = gtk_widget_get_next_sibling(check);
+            if (entry != NULL) {
+                gtk_widget_grab_focus(entry);
+                /* Scroll the list to show the new row.  Layout hasn't run
+                 * yet so the adjustment upper is stale; defer one idle tick.
+                 * g_object_ref keeps the window alive if the editor closes
+                 * before the idle fires.                                    */
+                GtkWidget *sw = gtk_widget_get_ancestor(ed->sub_box,
+                                                        GTK_TYPE_SCROLLED_WINDOW);
+                if (sw != NULL)
+                    g_idle_add(sub_scroll_to_bottom, g_object_ref(sw));
+            }
             break;
         }
-        valid = gtk_tree_model_iter_next(model, &iter);
     }
 }
 
-/* on_sub_remove() — delete the selected subtask (no confirm — it is one
- * line of text; the delete propagates to Google on the next sync).         */
+/*
+ * on_sub_remove — delete the selected subtask.
+ */
 static void
 on_sub_remove(GtkWidget *w, gpointer data)
 {
@@ -1067,13 +802,15 @@ on_sub_remove(GtkWidget *w, gpointer data)
     editor_notify(ed);
 }
 
-/* on_sub_move() — move the selected subtask up (-1) or down (+1).          */
+/*
+ * on_sub_move — move the selected subtask up (-1) or down (+1).
+ */
 static void
 on_sub_move(GtkWidget *w, gpointer data)
 {
-    TaskEditor *ed = data;
-    gint direction = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w),
-                                                       "task-direction"));
+    TaskEditor *ed    = data;
+    gint direction    = GPOINTER_TO_INT(
+                            g_object_get_data(G_OBJECT(w), "task-direction"));
     gint64 id = sub_selected_id(ed);
     if (id == 0)
         return;
@@ -1081,179 +818,162 @@ on_sub_move(GtkWidget *w, gpointer data)
     sub_refresh(ed);
     editor_notify(ed);
 
-    /* Restore selection to the moved row. */
-    GtkTreeModel *model = GTK_TREE_MODEL(ed->sub_store);
-    GtkTreeIter iter;
-    gboolean valid = gtk_tree_model_get_iter_first(model, &iter);
-    while (valid) {
-        gint64 rid;
-        gtk_tree_model_get(model, &iter, SUB_ID, &rid, -1);
-        if (rid == id) {
-            GtkTreeSelection *sel =
-                gtk_tree_view_get_selection(GTK_TREE_VIEW(ed->sub_view));
-            gtk_tree_selection_select_iter(sel, &iter);
+    /* Reselect the moved row.                                              */
+    GtkListBoxRow *row;
+    for (gint i = 0;
+         (row = gtk_list_box_get_row_at_index(GTK_LIST_BOX(ed->sub_box),
+                                              i)) != NULL;
+         i++) {
+        if (sub_row_id(row) == id) {
+            gtk_list_box_select_row(GTK_LIST_BOX(ed->sub_box), row);
             break;
         }
-        valid = gtk_tree_model_iter_next(model, &iter);
     }
 }
 
-/*
- * editor_status_resync() — re-read this task's status off the row and put
- * it in the combo, without saving.
- *
- * Inputs:  ed — the editor
- * Output:  none.
- *
- * For the case where something OTHER than this combo moved the status:
- * ticking a subtask promotes its parent New → In Progress in the
- * database, and this editor may BE that parent.  Leaving the combo stale
- * would not merely look wrong — editor_save_now reads the combo and
- * writes it back, so the next debounced save would quietly undo the
- * promotion.
- *
- * `loading` is raised around the set_active for the same reason
- * editor_load raises it: "changed" fires on a programmatic set, and
- * on_toggle_changed would answer it with a save.                          */
-static void
-editor_status_resync(TaskEditor *ed)
-{
-    Task *t = task_db_task_get(ed->app->db, ed->task_id);
-    if (t == NULL)
-        return;
-    gboolean was = ed->loading;
-    ed->loading = TRUE;
-    gtk_combo_box_set_active(GTK_COMBO_BOX(ed->status_combo),
-        t->status >= 0 && t->status < TASK_STATUS_N_VALUES
-            ? (gint)t->status : (gint)TASK_STATUS_NEW);
-    ed->loading = was;
-    task_free(t);
-}
-
-/* on_sub_toggled() — the subtask done checkbox in the list.  Subtasks
- * have a status like any other task and get the same checkbox rule as
- * the task pane's: ticking means Done, unticking means In Progress (a
- * subtask that was ticked HAD been worked on).  There is no per-subtask
- * status dropdown — the row is one line in a compact list — but opening
- * the subtask in its own editor offers the full choice.
- *
- * Completing a subtask also moves the PARENT off New (parent_started in
- * db.c, which every write path folds through), so the combo above is
- * resynced: it is the parent's own status, and a stale one would be
- * written back by the next debounced save.  Unticking is not the mirror
- * of that — see parent_started.                                           */
-static void
-on_sub_toggled(GtkCellRendererToggle *cell, gchar *path_str, gpointer data)
-{
-    (void)cell;
-    TaskEditor *ed = data;
-    GtkTreeIter iter;
-    GtkTreeModel *model = GTK_TREE_MODEL(ed->sub_store);
-    if (!gtk_tree_model_get_iter_from_string(model, &iter, path_str))
-        return;
-    gint64 id;
-    gboolean done;
-    gtk_tree_model_get(model, &iter, SUB_ID, &id, SUB_DONE, &done, -1);
-    task_db_task_set_status(ed->app->db, id,
-                            done ? TASK_STATUS_IN_PROGRESS : TASK_STATUS_DONE);
-    gtk_list_store_set(ed->sub_store, &iter, SUB_DONE, !done, -1);
-    if (!done)                       /* the tick just COMPLETED it         */
-        editor_status_resync(ed);
-    editor_notify(ed);
-}
-
-/* on_sub_title_edited() — in-place subtask rename.                         */
-static void
-on_sub_title_edited(GtkCellRendererText *cell, gchar *path_str,
-                    gchar *new_text, gpointer data)
-{
-    (void)cell;
-    TaskEditor *ed = data;
-    editor_sub_edit_forget(ed);      /* this edit is over                   */
-    GtkTreeIter iter;
-    GtkTreeModel *model = GTK_TREE_MODEL(ed->sub_store);
-    if (!gtk_tree_model_get_iter_from_string(model, &iter, path_str))
-        return;
-    gint64 id;
-    gtk_tree_model_get(model, &iter, SUB_ID, &id, -1);
-    Task *t = task_db_task_get(ed->app->db, id);
-    if (t == NULL)
-        return;
-    g_free(t->title);
-    t->title = g_strdup(new_text);
-    task_db_task_update(ed->app->db, t);
-    task_free(t);
-    gtk_list_store_set(ed->sub_store, &iter, SUB_TITLE, new_text, -1);
-    editor_notify(ed);
-}
-
-/* ===========================================================================
+/* ---------------------------------------------------------------------------
  * Attachments section.
- * =========================================================================== */
+ *
+ * GtkListBox of rows; each row is a GtkLabel (name).  Add / Remove / Open
+ * are separate buttons.
+ * ------------------------------------------------------------------------- */
 
-/* att_refresh() — repopulate the attachments store.                        */
+/*
+ * att_row_at — retrieve the id and optionally the path from a list box row.
+ */
+static gint64
+att_row_id_path(GtkListBoxRow *lrow, gchar **path_out)
+{
+    gint64 *id_ptr = g_object_get_data(G_OBJECT(lrow), "task-id");
+    if (path_out != NULL) {
+        gchar *p = g_object_get_data(G_OBJECT(lrow), "task-path");
+        *path_out = p != NULL ? g_strdup(p) : NULL;
+    }
+    return id_ptr != NULL ? *id_ptr : 0;
+}
+
+/*
+ * att_selected — id and optionally path of the selected attachment row.
+ */
+static gint64
+att_selected(TaskEditor *ed, gchar **path_out)
+{
+    GtkListBoxRow *row = gtk_list_box_get_selected_row(
+                             GTK_LIST_BOX(ed->att_box));
+    if (row == NULL) {
+        if (path_out != NULL)
+            *path_out = NULL;
+        return 0;
+    }
+    return att_row_id_path(row, path_out);
+}
+
+/*
+ * att_refresh — repopulate the attachments GtkListBox from the database.
+ */
 static void
 att_refresh(TaskEditor *ed)
 {
-    gtk_list_store_clear(ed->att_store);
+    GtkListBoxRow *row;
+    while ((row = gtk_list_box_get_row_at_index(
+                      GTK_LIST_BOX(ed->att_box), 0)) != NULL)
+        gtk_list_box_remove(GTK_LIST_BOX(ed->att_box), GTK_WIDGET(row));
+
     GPtrArray *atts = task_db_attachments(ed->app->db, ed->task_id);
     for (guint i = 0; i < atts->len; i++) {
         TaskAttachment *a = g_ptr_array_index(atts, i);
-        gchar *name = g_path_get_basename(a->path);
-        GtkTreeIter iter;
-        gtk_list_store_append(ed->att_store, &iter);
-        gtk_list_store_set(ed->att_store, &iter,
-                           ATT_ID, a->id,
-                           ATT_PATH, a->path,
-                           ATT_NAME, name,
-                           -1);
+        gchar *name  = g_path_get_basename(a->path);
+        GtkWidget *label = gtk_label_new(name);
+        gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_MIDDLE);
+        gtk_widget_set_hexpand(label, TRUE);
+        gtk_widget_set_halign(label, GTK_ALIGN_START);
         g_free(name);
+
+        gtk_list_box_append(GTK_LIST_BOX(ed->att_box), label);
+        /* gtk_list_box_append wraps label in a GtkListBoxRow automatically.*/
+        GtkListBoxRow *lrow = gtk_list_box_get_row_at_index(
+                                  GTK_LIST_BOX(ed->att_box), (gint)i);
+        gint64 *id_ptr = g_new(gint64, 1);
+        *id_ptr = a->id;
+        g_object_set_data_full(G_OBJECT(lrow), "task-id", id_ptr, g_free);
+        g_object_set_data_full(G_OBJECT(lrow), "task-path",
+                               g_strdup(a->path), g_free);
     }
     task_ptr_array_free_attachments(atts);
 }
 
-/* att_selected() — id and (optionally) path of the selected row.           */
-static gint64
-att_selected(TaskEditor *ed, gchar **path_out)
+/*
+ * att_open_path — hand a filesystem path to the platform's default opener.
+ */
+static void
+att_open_path(TaskEditor *ed, const gchar *path)
 {
-    GtkTreeSelection *sel =
-        gtk_tree_view_get_selection(GTK_TREE_VIEW(ed->att_view));
-    GtkTreeModel *model;
-    GtkTreeIter iter;
-    if (!gtk_tree_selection_get_selected(sel, &model, &iter))
-        return 0;
-    gint64 id;
-    gtk_tree_model_get(model, &iter, ATT_ID, &id, -1);
-    if (path_out != NULL)
-        gtk_tree_model_get(model, &iter, ATT_PATH, path_out, -1);
-    return id;
+    gchar *uri = g_filename_to_uri(path, NULL, NULL);
+    if (uri == NULL)
+        return;
+    GtkUriLauncher *launcher = gtk_uri_launcher_new(uri);
+    gtk_uri_launcher_launch(launcher, GTK_WINDOW(ed->window),
+                            NULL, NULL, NULL);
+    g_object_unref(launcher);
+    g_free(uri);
 }
 
-/* on_att_add() — file chooser → new attachment row.                        */
+/*
+ * on_att_row_activated — double-click on an attachment row opens it.
+ */
+static void
+on_att_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data)
+{
+    (void)box;
+    TaskEditor *ed = data;
+    gchar *p = NULL;
+    att_row_id_path(row, &p);
+    if (p != NULL) {
+        att_open_path(ed, p);
+        g_free(p);
+    }
+}
+
+/* Async context for task_app_pick_path (attachment add).                   */
+typedef struct {
+    TaskEditor *ed;
+} AttAddCtx;
+
+/*
+ * on_att_add_done — completion callback for the attachment file picker.
+ */
+static void
+on_att_add_done(gchar *path, gpointer user_data)
+{
+    AttAddCtx *ctx = user_data;
+    if (path != NULL) {
+        task_db_attachment_add(ctx->ed->app->db, ctx->ed->task_id, path);
+        g_free(path);
+        att_refresh(ctx->ed);
+        editor_notify(ctx->ed);
+    }
+    g_free(ctx);
+}
+
+/*
+ * on_att_add — open an async file picker and add the chosen file.
+ */
 static void
 on_att_add(GtkWidget *w, gpointer data)
 {
     (void)w;
-    TaskEditor *ed = data;
-    GtkWidget *dlg = gtk_file_chooser_dialog_new("Attach File",
-        GTK_WINDOW(ed->window), GTK_FILE_CHOOSER_ACTION_OPEN,
-        "_Cancel", GTK_RESPONSE_CANCEL, "_Attach", GTK_RESPONSE_ACCEPT,
-        NULL);
-    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
-        gchar *path =
-            gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
-        if (path != NULL) {
-            task_db_attachment_add(ed->app->db, ed->task_id, path);
-            g_free(path);
-            att_refresh(ed);
-            editor_notify(ed);
-        }
-    }
-    gtk_widget_destroy(dlg);
+    TaskEditor *ed  = data;
+    AttAddCtx  *ctx = g_new0(AttAddCtx, 1);
+    ctx->ed = ed;
+    task_app_pick_path(GTK_WINDOW(ed->window), "Attach File",
+                       TASK_PICK_OPEN, "Attach",
+                       NULL, NULL, NULL,
+                       on_att_add_done, ctx);
 }
 
-/* on_att_remove() — drop the selected attachment (the file itself is
- * never touched — attachments are references).                             */
+/*
+ * on_att_remove — drop the selected attachment record (file untouched).
+ */
 static void
 on_att_remove(GtkWidget *w, gpointer data)
 {
@@ -1267,70 +987,149 @@ on_att_remove(GtkWidget *w, gpointer data)
     editor_notify(ed);
 }
 
-/* att_open_path() — hand a path to the platform's default opener.          */
-static void
-att_open_path(TaskEditor *ed, const gchar *path)
-{
-    gchar *uri = g_filename_to_uri(path, NULL, NULL);
-    if (uri == NULL)
-        return;
-    GError *gerr = NULL;
-    if (!gtk_show_uri_on_window(GTK_WINDOW(ed->window), uri,
-                                GDK_CURRENT_TIME, &gerr)) {
-        task_app_notice(GTK_WINDOW(ed->window), GTK_MESSAGE_ERROR, NULL,
-                        "Cannot open %s: %s", path,
-                        gerr != NULL ? gerr->message : "?");
-        g_clear_error(&gerr);
-    }
-    g_free(uri);
-}
-
-/* on_att_open() — the Open button.                                         */
+/*
+ * on_att_open — open the selected attachment with the platform opener.
+ */
 static void
 on_att_open(GtkWidget *w, gpointer data)
 {
     (void)w;
-    TaskEditor *ed = data;
-    gchar *path = NULL;
+    TaskEditor *ed   = data;
+    gchar      *path = NULL;
     if (att_selected(ed, &path) != 0 && path != NULL)
         att_open_path(ed, path);
     g_free(path);
 }
 
-/* on_att_activated() — double-click a row = open it.                       */
+/* ---------------------------------------------------------------------------
+ * Date picker (async, via task_app_dialog_new + GtkCalendar).
+ * ------------------------------------------------------------------------- */
+
+/* Context passed to the async date-picker completion.                      */
+typedef struct {
+    TaskEditor *ed;
+    GtkWidget  *entry;        /* the date entry to update                   */
+    GtkWidget  *calendar;     /* GtkCalendar inside the dialog              */
+    GtkWidget  *clear_check;  /* "Clear date" checkbox                      */
+    gboolean    is_recur;     /* TRUE → fire on_recur_changed, else save_now */
+} PickDateCtx;
+
+/*
+ * on_pick_date_done — completion callback for the calendar dialog.
+ *
+ * Accepted with clear_check → empty the entry; accepted without → write ISO.
+ */
 static void
-on_att_activated(GtkTreeView *view, GtkTreePath *tp,
-                 GtkTreeViewColumn *col, gpointer data)
+on_pick_date_done(gboolean accepted, GtkWindow *dialog, gpointer user_data)
 {
-    (void)col;
-    TaskEditor *ed = data;
-    GtkTreeModel *model = gtk_tree_view_get_model(view);
-    GtkTreeIter iter;
-    if (!gtk_tree_model_get_iter(model, &iter, tp))
-        return;
-    gchar *path = NULL;
-    gtk_tree_model_get(model, &iter, ATT_PATH, &path, -1);
-    if (path != NULL)
-        att_open_path(ed, path);
-    g_free(path);
+    (void)dialog;
+    PickDateCtx *ctx = user_data;
+    if (accepted) {
+        if (gtk_check_button_get_active(GTK_CHECK_BUTTON(ctx->clear_check))) {
+            gtk_editable_set_text(GTK_EDITABLE(ctx->entry), "");
+        } else {
+            GDateTime *dt = gtk_calendar_get_date(
+                                GTK_CALENDAR(ctx->calendar));
+            gchar *iso = g_strdup_printf("%04d-%02d-%02d",
+                g_date_time_get_year(dt),
+                g_date_time_get_month(dt),
+                g_date_time_get_day_of_month(dt));
+            g_date_time_unref(dt);
+            gtk_editable_set_text(GTK_EDITABLE(ctx->entry), iso);
+            g_free(iso);
+        }
+        if (ctx->is_recur)
+            on_recur_changed(NULL, ctx->ed);
+        else
+            editor_save_now(ctx->ed);
+    }
+    g_free(ctx);
 }
 
-/* ===========================================================================
- * Load / lifetime.
- * =========================================================================== */
+/*
+ * editor_pick_date — open an async calendar dialog for `entry`.
+ *
+ * is_recur TRUE → on_recur_changed fires on OK, else editor_save_now.
+ */
+static void
+editor_pick_date(TaskEditor *ed, GtkWidget *entry, const gchar *title,
+                 gboolean is_recur)
+{
+    PickDateCtx *ctx = g_new0(PickDateCtx, 1);
+    ctx->ed       = ed;
+    ctx->entry    = entry;
+    ctx->is_recur = is_recur;
 
-/* set_entry_if_differs() — rewrite an entry only when the text really
- * changed, so refreshes never move a cursor needlessly.                    */
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    ctx->calendar = gtk_calendar_new();
+
+    /* Preselect what the entry currently shows.                            */
+    const gchar *cur_text =
+        gtk_editable_get_text(GTK_EDITABLE(entry));
+    gint64 cur = task_due_parse(cur_text);
+    if (cur != 0) {
+        GDateTime *dt = task_local_dt(cur);
+        gtk_calendar_set_date(GTK_CALENDAR(ctx->calendar), dt);
+        g_date_time_unref(dt);
+    }
+    gtk_box_append(GTK_BOX(vbox), ctx->calendar);
+
+    ctx->clear_check = gtk_check_button_new_with_label("Clear date");
+    gtk_box_append(GTK_BOX(vbox), ctx->clear_check);
+
+    task_app_dialog_new(GTK_WINDOW(ed->window), title, vbox, "OK",
+                        on_pick_date_done, ctx);
+}
+
+/* ---------------------------------------------------------------------------
+ * Due-entry and recur-start-entry click → open calendar picker.
+ *
+ * GtkGestureClick replaces button-press-event.  Only primary button.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * on_due_entry_press — primary click on the due entry opens the calendar.
+ */
+static void
+on_due_entry_press(GtkGestureClick *gesture, gint n_press,
+                   gdouble x, gdouble y, gpointer data)
+{
+    (void)n_press; (void)x; (void)y;
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+    TaskEditor *ed = data;
+    editor_pick_date(ed, ed->due_entry, "Due Date", FALSE);
+}
+
+/*
+ * on_recur_start_press — primary click on the start entry opens the calendar.
+ */
+static void
+on_recur_start_press(GtkGestureClick *gesture, gint n_press,
+                     gdouble x, gdouble y, gpointer data)
+{
+    (void)n_press; (void)x; (void)y;
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+    TaskEditor *ed = data;
+    editor_pick_date(ed, ed->recur_start_entry, "Start Date", TRUE);
+}
+
+/* ---------------------------------------------------------------------------
+ * Load / lifetime.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * set_entry_if_differs — update an entry only when the text actually changed.
+ */
 static void
 set_entry_if_differs(GtkWidget *entry, const gchar *text)
 {
-    if (strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), text) != 0)
-        gtk_entry_set_text(GTK_ENTRY(entry), text);
+    if (strcmp(gtk_editable_get_text(GTK_EDITABLE(entry)), text) != 0)
+        gtk_editable_set_text(GTK_EDITABLE(entry), text);
 }
 
-/* due_entry_refresh() — show a stored due date in the entry — unless the
- * user is mid-edit: never rewrite the entry while it has focus (the
- * canonical form would replace their half-typed text).                     */
+/*
+ * due_entry_refresh — show a stored due date; skip if the entry has focus.
+ */
 static void
 due_entry_refresh(TaskEditor *ed, gint64 due)
 {
@@ -1341,104 +1140,74 @@ due_entry_refresh(TaskEditor *ed, gint64 due)
     g_free(text);
 }
 
-/* clear_children() — empty a container.                                    */
+/*
+ * editor_status_resync — re-read the task's status and update the dropdown.
+ *
+ * Called when something OTHER than the combo moved the status (e.g. a
+ * subtask completion promoting the parent New → In Progress).  Guarded
+ * with loading so the "notify::selected" handler does not fire a save.
+ */
 static void
-clear_children(GtkWidget *box)
+editor_status_resync(TaskEditor *ed)
 {
-    GList *kids = gtk_container_get_children(GTK_CONTAINER(box));
-    for (GList *l = kids; l != NULL; l = l->next)
-        gtk_widget_destroy(GTK_WIDGET(l->data));
-    g_list_free(kids);
+    Task *t = task_db_task_get(ed->app->db, ed->task_id);
+    if (t == NULL)
+        return;
+    gboolean was = ed->loading;
+    ed->loading = TRUE;
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(ed->status_combo),
+        t->status >= 0 && t->status < TASK_STATUS_N_VALUES
+            ? (guint)t->status : (guint)TASK_STATUS_NEW);
+    ed->loading = was;
+    ed->status_saved = t->status;
+    task_free(t);
 }
 
-/* ---------------------------------------------------------------------------
- * ext_sections_load() — rebuild the contributed sections for `t`.
+/*
+ * editor_load — (re)load every widget from the database row.
  *
- * Rebuilt per load rather than built once and refilled: a section is
- * whatever its owner returns for THIS task, and most tasks get nothing.
- * Asking each contributor and packing what comes back is simpler than
- * keeping a widget per contributor alive and hiding it, and it means a
- * contributor cannot leak state between the tasks it is shown for.
- *
- * A contributor returning NULL is the normal case, not an error.
- * ------------------------------------------------------------------------- */
-static void
-ext_sections_load(TaskEditor *ed, const Task *t)
-{
-    clear_children(ed->ext_box);
-    gboolean any = FALSE;
-    for (guint i = 0; i < task_ui_editor_count(); i++) {
-        const TaskUiEditorDef *d = task_ui_editor_nth(i);
-        GtkWidget *w = d->build != NULL
-                     ? d->build(ed->app, t, d->user_data) : NULL;
-        if (w == NULL)
-            continue;
-        gtk_box_pack_start(GTK_BOX(ed->ext_box), w, FALSE, FALSE, 0);
-        any = TRUE;
-    }
-    if (any)
-        gtk_widget_show_all(ed->ext_box);
-    else
-        gtk_widget_hide(ed->ext_box);
-}
-
-/* ---------------------------------------------------------------------------
- * editor_load() — (re)load every widget from the database row.  Returns
- * FALSE when the row/item vanished and the window was destroyed — `ed`
+ * Returns FALSE when the row vanished and the window was destroyed; `ed`
  * must not be touched afterwards.
- * ------------------------------------------------------------------------- */
+ */
 static gboolean
 editor_load(TaskEditor *ed)
 {
     Task *t = task_db_task_get(ed->app->db, ed->task_id);
     if (t == NULL || t->deleted) {
         task_free(t);
-        gtk_widget_destroy(ed->window);
+        gtk_window_destroy(GTK_WINDOW(ed->window));
         return FALSE;
     }
     ed->loading = TRUE;
     set_entry_if_differs(ed->title_entry, t->title);
-    /* The combo's rows are the TaskStatus values in order, so the enum
-     * value doubles as the active index.  An out-of-range status off
-     * disk would leave the combo blank, so it clamps to New.               */
-    gtk_combo_box_set_active(GTK_COMBO_BOX(ed->status_combo),
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(ed->status_combo),
         t->status >= 0 && t->status < TASK_STATUS_N_VALUES
-            ? (gint)t->status : (gint)TASK_STATUS_NEW);
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->pinned_check),
-                                 t->pinned);
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->priority_check),
-                                 t->priority);
+            ? (guint)t->status : (guint)TASK_STATUS_NEW);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(ed->pinned_check),
+                                t->pinned);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(ed->priority_check),
+                                t->priority);
     due_entry_refresh(ed, t->due);
     editor_time_entry_set(ed->due_time_entry, t->due_time,
                           TASK_DUE_TIME_DEFAULT);
     ed->status_saved = t->status;
     editor_completed_refresh(ed, t);
 
-    /* The recurrence schedule, straight onto the two rows.  The MASTER
-     * SWITCH is simply "does this task have a schedule?" — it is derived
-     * from the interval rather than stored, so it can never disagree with
-     * the row it describes.  The spin then never holds 0: 0 is said by
-     * the switch being off, and a task with no schedule opens the block
-     * ready to be given "every 1 days" rather than "every 0".  The unit
-     * falls back to days only when there is no schedule to read one from. */
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ed->recur_enable),
-                                 t->recur_interval > 0);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(ed->recur_enable),
+                                t->recur_interval > 0);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(ed->recur_every_spin),
                               t->recur_interval > 0 ? t->recur_interval : 1);
-    gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_unit_combo),
-                             t->recur_interval > 0 ? (gint)t->recur_unit
-                                                   : (gint)TASK_RECUR_DAY);
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(ed->recur_unit_combo),
+                               t->recur_interval > 0
+                                   ? (guint)t->recur_unit
+                                   : (guint)TASK_RECUR_DAY);
     editor_time_entry_set(ed->recur_time_entry, t->recur_time,
                           TASK_RECUR_TIME_DEFAULT);
     editor_recur_start_set(ed, t->recur_start);
     editor_recur_lead_set(ed, t->recur_lead);
-    /* What the lead is currently the default FOR.  Seeded from the row
-     * just loaded, so the first change of period can tell a lead this
-     * task has carried all along from one the user is about to leave
-     * alone (editor_recur_lead_follow).                                   */
     ed->recur_seen_every = t->recur_interval > 0 ? t->recur_interval : 0;
     ed->recur_seen_unit  = t->recur_interval > 0 ? (gint)t->recur_unit
-                                                 : (gint)TASK_RECUR_DAY;
+                                                  : (gint)TASK_RECUR_DAY;
     ed->recur_next = t->recur_next;
     editor_recur_refresh(ed);
 
@@ -1451,43 +1220,152 @@ editor_load(TaskEditor *ed)
 
     sub_refresh(ed);
     att_refresh(ed);
-    ext_sections_load(ed, t);
     editor_title_refresh(ed);
     ed->loading = FALSE;
     task_free(t);
     return TRUE;
 }
 
-/* ---------------------------------------------------------------------------
- * on_editor_destroy() — flush a pending save and unregister.
- *
- * A subtask title still in its in-place editor is committed here too, so
- * closing the window keeps it — the window's own "destroy" handlers run
- * BEFORE its children are destroyed, so the editable and its tree view are
- * both still alive at this point.  The commit also drops the weak pointer,
- * which must not outlive `ed`.  on_editor_cancel forgets the edit instead:
- * that path is tombstoning the task, so there is nothing to save into.
- * ------------------------------------------------------------------------- */
+/*
+ * on_editor_destroy — flush a pending save and unregister.
+ */
 static void
 on_editor_destroy(GtkWidget *w, gpointer data)
 {
     (void)w;
     TaskEditor *ed = data;
-    editor_sub_edit_commit(ed);
     if (ed->save_source != 0)
-        editor_save_now(ed);         /* also clears the source              */
+        editor_save_now(ed);
     g_hash_table_remove(ed->app->editors, &ed->task_id);
     g_free(ed);
 }
 
 /* ---------------------------------------------------------------------------
- * make_list_section() — the shared "label + scrolled tree view + button
- * column" layout of the subtasks and attachments sections: wraps the
- * caller's `view` and `btn_box` under `heading`.  Returns the outer
- * widget.
+ * Button / action callbacks.
  * ------------------------------------------------------------------------- */
+
+/*
+ * on_editor_save — flush the write-through save and close.
+ */
+static void
+on_editor_save(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    TaskEditor *ed = data;
+    editor_save_now(ed);
+    gtk_window_destroy(GTK_WINDOW(ed->window));
+}
+
+/*
+ * on_editor_cancel — New Task "Cancel": close and tombstone the new task.
+ *
+ * Destroy the window FIRST so on_editor_destroy does not flush a save into
+ * the row about to be tombstoned.
+ */
+static void
+on_editor_cancel(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    TaskEditor *ed  = data;
+    TaskApp    *app = ed->app;
+    gint64      id  = ed->task_id;
+    if (ed->save_source != 0) {
+        g_source_remove(ed->save_source);
+        ed->save_source = 0;
+    }
+    gtk_window_destroy(GTK_WINDOW(ed->window));
+    task_db_task_delete(app->db, id);
+    task_app_notify_changed(app);
+    task_app_status(app, "Discarded the new task");
+}
+
+/*
+ * on_editor_advanced — flip the Advanced disclosure block.
+ */
+static void
+on_editor_advanced(GtkWidget *w, gpointer data)
+{
+    (void)w;
+    TaskEditor *ed = data;
+    /* Forward declaration needed; implemented below.                       */
+    extern void editor_advanced_set(TaskEditor *ed, gboolean shown);
+    editor_advanced_set(ed, !ed->adv_shown);
+}
+
+/* ---------------------------------------------------------------------------
+ * Advanced disclosure.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * editor_has_advanced_content — does the task already carry recurrence,
+ * subtasks or attachments?  Read off the loaded widgets; run after
+ * editor_load.
+ */
+static gboolean
+editor_has_advanced_content(TaskEditor *ed)
+{
+    return gtk_check_button_get_active(GTK_CHECK_BUTTON(ed->recur_enable)) ||
+           (ed->sub_box != NULL &&
+            gtk_list_box_get_row_at_index(
+                GTK_LIST_BOX(ed->sub_box), 0) != NULL) ||
+           (ed->att_box != NULL &&
+            gtk_list_box_get_row_at_index(
+                GTK_LIST_BOX(ed->att_box), 0) != NULL);
+}
+
+/*
+ * editor_advanced_reveal — show adv_box and record its height.
+ *
+ * Does NOT resize the window.  Called on the open path before the window
+ * is presented (so the window appears at its final size in one step) and
+ * from editor_advanced_set for a window already on screen.
+ */
+static void
+editor_advanced_reveal(TaskEditor *ed)
+{
+    ed->adv_shown = TRUE;
+    gtk_label_set_markup(GTK_LABEL(ed->adv_label), ADV_LABEL_TO_FOLD);
+    gtk_widget_set_visible(ed->adv_box, TRUE);
+    gint min, nat;
+    gtk_widget_measure(ed->adv_box, GTK_ORIENTATION_VERTICAL, 490,
+                       &min, &nat, NULL, NULL);
+    ed->adv_height = nat + 8;
+}
+
+/*
+ * editor_advanced_set — fold or unfold the block for a window on screen,
+ * resizing the window by the block's height.
+ */
+void
+editor_advanced_set(TaskEditor *ed, gboolean shown)
+{
+    gint h = gtk_widget_get_height(GTK_WIDGET(ed->window));
+    if (shown) {
+        editor_advanced_reveal(ed);
+        gtk_window_set_default_size(GTK_WINDOW(ed->window), 490,
+                                    h + ed->adv_height);
+    } else {
+        ed->adv_shown = FALSE;
+        gtk_label_set_markup(GTK_LABEL(ed->adv_label), ADV_LABEL_TO_SHOW);
+        gtk_widget_set_visible(ed->adv_box, FALSE);
+        if (ed->adv_height > 0)
+            gtk_window_set_default_size(GTK_WINDOW(ed->window), 490,
+                                        MAX(h - ed->adv_height, 100));
+        ed->adv_height = 0;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Layout helpers.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * make_list_section — GtkListBox + button column under a bold heading label.
+ *
+ * Returns the outer GtkBox.
+ */
 static GtkWidget *
-make_list_section(const gchar *heading, GtkWidget *view,
+make_list_section(const gchar *heading, GtkWidget *listbox,
                   GtkWidget *btn_box)
 {
     GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -1496,170 +1374,88 @@ make_list_section(const gchar *heading, GtkWidget *view,
     gtk_label_set_markup(GTK_LABEL(label), markup);
     g_free(markup);
     gtk_widget_set_halign(label, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(outer), label, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(outer), label);
 
-    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *hbox   = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scroll),
-                                        GTK_SHADOW_IN);
+    gtk_scrolled_window_set_has_frame(GTK_SCROLLED_WINDOW(scroll), TRUE);
     gtk_widget_set_size_request(scroll, -1, 110);
-    gtk_container_add(GTK_CONTAINER(scroll), view);
-    gtk_box_pack_start(GTK_BOX(hbox), scroll, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(hbox), btn_box, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(outer), hbox, TRUE, TRUE, 0);
+    gtk_widget_set_hexpand(scroll, TRUE);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), listbox);
+    gtk_box_append(GTK_BOX(hbox), scroll);
+    gtk_box_append(GTK_BOX(hbox), btn_box);
+    gtk_box_append(GTK_BOX(outer), hbox);
     return outer;
 }
 
-/* small_button() — a compact labelled button wired to `cb`.                */
+/*
+ * editor_css_install — CSS for the editor's list sections (idempotent).
+ *
+ * Installs the same .task-small-button rule as settings_window so both
+ * windows share the compact-button look without cross-including each other.
+ * Also installs rules that shrink the per-row entries in the subtask listbox
+ * to roughly the same height as GTK3's tree-view text renderers.
+ */
+static void
+editor_css_install(void)
+{
+    static gboolean done = FALSE;
+    if (done) return;
+    done = TRUE;
+    task_app_css_install(
+        "button.task-small-button {"
+        "  padding: 1px 8px; min-height: 0; min-width: 0;"
+        "}"
+        "button.task-small-button > label { font-size: 85%; }"
+        /* Compact subtask rows: flat GtkEntry — transparent background and
+         * no border so it reads as a text row, with a subtle highlight on
+         * focus.  Shrink the checkbutton indicator to match line height.   */
+        "listbox.task-sub-listbox > row {"
+        "  padding: 1px 4px;"
+        "}"
+        "listbox.task-sub-listbox entry.flat {"
+        "  min-height: 0;"
+        "  padding: 1px 4px;"
+        "  font-size: 85%;"
+        "  background: transparent;"
+        "  border-color: transparent;"
+        "  box-shadow: none;"
+        "  outline: none;"
+        "}"
+        "listbox.task-sub-listbox entry.flat:focus {"
+        "  background-color: alpha(@theme_base_color, 0.6);"
+        "  border-color: alpha(@theme_selected_bg_color, 0.4);"
+        "}"
+        "listbox.task-sub-listbox checkbutton {"
+        "  padding: 1px 0;"
+        "}"
+        "listbox.task-sub-listbox check {"
+        "  min-width: 14px; min-height: 14px;"
+        "  -gtk-icon-size: 12px;"
+        "  padding: 1px;"
+        "}");
+}
+
+/*
+ * small_button — compact labelled button wired to `cb`.
+ *
+ * Uses the task-small-button CSS class (installed by editor_css_install) so
+ * the button stays the same size regardless of which theme is active.
+ */
 static GtkWidget *
 small_button(const gchar *label, GCallback cb, gpointer data)
 {
     GtkWidget *b = gtk_button_new_with_label(label);
+    gtk_widget_add_css_class(b, "task-small-button");
+    gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
     g_signal_connect(b, "clicked", cb, data);
     return b;
 }
 
 /* ---------------------------------------------------------------------------
- * editor_advanced_set() — fold the Subtasks + Attachments block away (or
- * back) and grow/shrink the window by exactly that block's height, so the
- * rest of the layout never reflows.
- *
- * The measurement is taken AFTER the show, when the block's preferred
- * height is real, and remembered in adv_height so the collapse gives back
- * the same pixels it took (a GtkBox sizes itself from its VISIBLE children
- * only, so re-measuring a folded box would read 0).
- * ------------------------------------------------------------------------- */
-static void
-editor_advanced_reveal(TaskEditor *ed)
-{
-    ed->adv_shown = TRUE;
-    gtk_label_set_markup(GTK_LABEL(ed->adv_label), ADV_LABEL_TO_FOLD);
-    /* Lift no_show_all across the show — with it set, show_all on the box
-     * itself returns early and nothing would appear (gotcha 15).           */
-    gtk_widget_set_no_show_all(ed->adv_box, FALSE);
-    gtk_widget_show_all(ed->adv_box);
-    gtk_widget_set_no_show_all(ed->adv_box, TRUE);
-    gint min, nat;
-    gtk_widget_get_preferred_height(ed->adv_box, &min, &nat);
-    ed->adv_height = nat + 8;        /* + the vbox's inter-child spacing    */
-}
-
-/* ---------------------------------------------------------------------------
- * editor_advanced_set() — the disclosure applier for a window that is
- * ALREADY ON SCREEN: reveal or fold the block and resize the window by its
- * height, so the collapse gives back exactly the pixels the expand took.
- *
- * The open path does NOT come through here when the block starts expanded
- * — see editor_open_common.  Growing a window that has already been
- * presented is a visible two-step, and that is precisely the stutter the
- * open path must not have.
- * ------------------------------------------------------------------------- */
-static void
-editor_advanced_set(TaskEditor *ed, gboolean shown)
-{
-    gint w, h;                       /* live client size                    */
-    gtk_window_get_size(GTK_WINDOW(ed->window), &w, &h);
-    if (shown) {
-        editor_advanced_reveal(ed);
-        gtk_window_resize(GTK_WINDOW(ed->window), w, h + ed->adv_height);
-    } else {
-        ed->adv_shown = FALSE;
-        gtk_label_set_markup(GTK_LABEL(ed->adv_label), ADV_LABEL_TO_SHOW);
-        gtk_widget_hide(ed->adv_box);
-        if (ed->adv_height > 0)
-            gtk_window_resize(GTK_WINDOW(ed->window), w,
-                              MAX(h - ed->adv_height, 1));
-        ed->adv_height = 0;
-    }
-}
-
-/* on_editor_advanced() — the Advanced link: flip the disclosure.           */
-static void
-on_editor_advanced(GtkWidget *w, gpointer data)
-{
-    (void)w;
-    TaskEditor *ed = data;
-    editor_advanced_set(ed, !ed->adv_shown);
-}
-
-/* editor_has_advanced_content() — does this task already carry a
- * recurrence, subtasks or attachments?  Read off the loaded widgets and
- * stores, so it needs editor_load to have run.  Existing tasks with any of
- * the three open expanded (saving the user a click); new and empty ones
- * open folded.                                                             */
-static gboolean
-editor_has_advanced_content(TaskEditor *ed)
-{
-    return gtk_toggle_button_get_active(
-               GTK_TOGGLE_BUTTON(ed->recur_enable)) ||
-           (ed->sub_store != NULL &&
-            gtk_tree_model_iter_n_children(
-                GTK_TREE_MODEL(ed->sub_store), NULL) > 0) ||
-           (ed->att_store != NULL &&
-            gtk_tree_model_iter_n_children(
-                GTK_TREE_MODEL(ed->att_store), NULL) > 0);
-}
-
-/* ---------------------------------------------------------------------------
- * theme_field_height() — the height the THEME gives a plain push button.
- *
- * Used to line a GtkComboBox up with the GtkEntrys beside it, which it
- * does NOT do by itself under every theme.  The mechanism, measured
- * rather than assumed: a theme may ask for more height on an entry than
- * it PAINTS, leaving a transparent gutter for a focus ring — Mojave-Light
- * gives `entry` `min-height: 20px; padding: 2px; border: 3px solid
- * transparent` and then draws the field as a border-image INSIDE that
- * border, so a 30 px request comes out as a 26 px plate.  A combo is a
- * button, a button FILLS its allocation, and combobox CSS zeroes the
- * button min-height the theme would otherwise give it — so in a row whose
- * height the entry set, the combo paints all 30 and reads 4 px taller
- * than the field next to it.
- *
- * A PLAIN button is what the theme sizes to match its own entry plate
- * (measured: Mojave-Light 26 against a 26 px plate, Adwaita 34 against
- * 34), so asking one is the portable answer — no hardcoded inset, and
- * NOTHING CHANGES on a theme where the two already agree.
- *
- * Output: the natural height in pixels.  It must be measured inside a
- * toplevel — an unparented widget has no style to resolve against and
- * answers 0 — hence the throwaway offscreen window.  0.2 ms per call
- * (measured), so it is called ONCE per editor and handed to each combo.
- * ------------------------------------------------------------------------- */
-static gint
-theme_field_height(void)
-{
-    GtkWidget *win = gtk_offscreen_window_new();
-    GtkWidget *btn = gtk_button_new_with_label("X");
-    gtk_container_add(GTK_CONTAINER(win), btn);
-    gtk_widget_show_all(win);
-    gint min_h, nat_h;
-    gtk_widget_get_preferred_height(btn, &min_h, &nat_h);
-    gtk_widget_destroy(win);
-    return nat_h;
-}
-
-/* combo_match_fields() — size `combo` to `height` (theme_field_height's
- * answer) and stop the row stretching it past that, so its plate matches
- * the entries and spin buttons sharing the row.  CENTER is what makes the
- * size request stick: a combo left at the default FILL takes whatever the
- * tallest child asked for, which is the whole problem.                     */
-static void
-combo_match_fields(GtkWidget *combo, gint height)
-{
-    gtk_widget_set_valign(combo, GTK_ALIGN_CENTER);
-    gtk_widget_set_size_request(combo, -1, height);
-}
-
-/* ---------------------------------------------------------------------------
- * editor_open_common() — build an editor window for a task.  Mirrored
- * Notes items are ordinary tasks, so there is no longer a reduced
- * variant: they get notes, subtasks and attachments like anything else.
- *
- * Every editor gets a Save button under the notes box; `is_new` marks the
- * window as the one the New Task action just opened and adds Cancel beside
- * it, meaning "throw the row away again".
+ * editor_open_common — build and present an editor window.
  * ------------------------------------------------------------------------- */
 static void
 editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
@@ -1680,85 +1476,90 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     ed->task_id   = task_id;
     ed->parent_id = t->parent_id;
 
-    ed->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    /* Height -1 = the layout's NATURAL height, which with the Advanced
-     * block folded away (no_show_all, see below) is the 8-line notes box
-     * plus the fixed rows — so the notes area opens at the size it was
-     * asked for instead of swallowing the slack of a fixed window height.
-     * editor_advanced_set adds the block's own height when it opens.       */
+    ed->window = gtk_window_new();
+    /* Height -1 = natural height: the notes box has a capped content height,
+     * so the folded window opens at exactly the size of its fixed rows plus
+     * the notes scroller.  editor_advanced_set adds the block height when
+     * the user expands it.                                                  */
     gtk_window_set_default_size(GTK_WINDOW(ed->window), 490, -1);
-    gtk_window_set_position(GTK_WINDOW(ed->window), GTK_WIN_POS_CENTER);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 12);
-    gtk_container_add(GTK_CONTAINER(ed->window), vbox);
+    gtk_widget_set_margin_start(vbox, 12);
+    gtk_widget_set_margin_end(vbox, 12);
+    gtk_widget_set_margin_top(vbox, 12);
+    gtk_widget_set_margin_bottom(vbox, 12);
+    gtk_window_set_child(GTK_WINDOW(ed->window), vbox);
 
-    /* Title.                                                               */
+    /* ── Title ──────────────────────────────────────────────────────────── */
     ed->title_entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(ed->title_entry),
-                                   "Task title");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(ed->title_entry), "Task title");
     g_signal_connect(ed->title_entry, "changed",
                      G_CALLBACK(on_field_changed), ed);
-    /* Enter in the title is the Save button: the common case is typing a
-     * new task's title and being done with it, and the notes box (a
-     * GtkTextView) still takes Enter as a newline.  It is deliberately
-     * NOT hooked to Cancel in the New Task variant — Enter must never
-     * discard what was just typed.                                         */
     g_signal_connect(ed->title_entry, "activate",
                      G_CALLBACK(on_editor_save), ed);
-    gtk_box_pack_start(GTK_BOX(vbox), ed->title_entry, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), ed->title_entry);
 
-    /* Status / Due row, then the flags row beneath it.
+    /* ── Status / Due row ────────────────────────────────────────────────
      *
-     * The status dropdown is where the Done checkbox used to sit, and it
-     * is a good deal wider than one.  Two rows, not one: the window asks
-     * for 490 px and takes its NATURAL height, so an over-wide row would
-     * silently widen every editor, while an extra row costs one row of
-     * height and nothing else.                                             */
+     * Left group: "Status:" label + status dropdown.
+     * Right group: "Due:" label + date entry + "at" + time entry.
+     * An expanding spacer pushes the right group to the end.              */
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    /* Every combo in this window shares a row with entries or spin
-     * buttons; one probe sizes all three (see theme_field_height).       */
-    gint field_h = theme_field_height();
-    gtk_box_pack_start(GTK_BOX(row), gtk_label_new("Status:"),
-                       FALSE, FALSE, 0);
-    /* One row per TaskStatus, appended IN ENUM ORDER — the active
-     * index is read back as the status value (editor_status_get).          */
-    ed->status_combo = gtk_combo_box_text_new();
-    for (gint s = 0; s < TASK_STATUS_N_VALUES; s++)
-        gtk_combo_box_text_append_text(
-            GTK_COMBO_BOX_TEXT(ed->status_combo),
-            task_status_label((TaskStatus)s));
-    gtk_combo_box_set_active(GTK_COMBO_BOX(ed->status_combo),
-                             (gint)TASK_STATUS_NEW);
-    g_signal_connect(ed->status_combo, "changed",
-                     G_CALLBACK(on_toggle_changed), ed);
-    combo_match_fields(ed->status_combo, field_h);
-    gtk_box_pack_start(GTK_BOX(row), ed->status_combo, FALSE, FALSE, 0);
 
-    /* The time of day that due date means.  pack_end puts the FIRST-packed
-     * child rightmost, so the reading order here is bottom-up: this entry,
-     * then "at", then the date, then the "Due:" label — which comes out as
-     * `Due: [date] at [HH:MM]`.  The time entry is therefore the row's
-     * last child and, packed with no padding like the title entry above
-     * it, ends flush with the title box's right edge.
-     *
-     * There is NO 📅 button any more (2026-08-30): the due entry opens the
-     * picker itself (on_due_entry_press), which is one control where there
-     * were two and gives the row back the button's width.  The Recurrence
-     * block's Starting: entry keeps its button — it is a plain date field
-     * that is also typed into, and the two rows are not the same case.
-     *
-     * The middle of the row is left EMPTY on purpose: Status is
-     * pack_start, the due controls pack_end, and that slack is what let
-     * the time entry fit without widening the editor (the same slack the
-     * completion label found on the flags row below).                      */
+    gtk_box_append(GTK_BOX(row), gtk_label_new("Status:"));
+
+    /* Build status dropdown from task_status_label, enum-order.            */
+    {
+        const gchar *labels[TASK_STATUS_N_VALUES + 1];
+        for (gint s = 0; s < TASK_STATUS_N_VALUES; s++)
+            labels[s] = task_status_label((TaskStatus)s);
+        labels[TASK_STATUS_N_VALUES] = NULL;
+        ed->status_combo = gtk_drop_down_new_from_strings(labels);
+    }
+    /* Fix the combo width to the widest option ("In Progress") so the row
+     * does not reflow when the selection changes.                            */
+    gtk_widget_set_size_request(ed->status_combo, 115, -1);
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(ed->status_combo),
+                               (guint)TASK_STATUS_NEW);
+    g_signal_connect(ed->status_combo, "notify::selected",
+                     G_CALLBACK(on_status_notify), ed);
+    gtk_box_append(GTK_BOX(row), ed->status_combo);
+
+    /* Spacer.                                                               */
+    GtkWidget *rspc = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(rspc, TRUE);
+    gtk_box_append(GTK_BOX(row), rspc);
+
+    /* Due date (right side, left-to-right: "Due:" date "at" time).         */
+    gtk_box_append(GTK_BOX(row), gtk_label_new("Due:"));
+
+    ed->due_entry = gtk_entry_new();
+    gtk_editable_set_width_chars(GTK_EDITABLE(ed->due_entry), 12);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(ed->due_entry), "YYYY-MM-DD");
+    gtk_widget_set_tooltip_text(ed->due_entry, "Click to pick a due date.");
+    /* Primary click opens the calendar picker.  CAPTURE phase so we see the
+     * event before GtkEntry's own bubble-phase handler takes focus and
+     * swallows the press on the first click.                               */
+    {
+        GtkGesture *gc = gtk_gesture_click_new();
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gc),
+                                      GDK_BUTTON_PRIMARY);
+        gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(gc),
+                                                   GTK_PHASE_CAPTURE);
+        g_signal_connect(gc, "pressed",
+                         G_CALLBACK(on_due_entry_press), ed);
+        gtk_widget_add_controller(ed->due_entry, GTK_EVENT_CONTROLLER(gc));
+    }
+    g_signal_connect(ed->due_entry, "changed",
+                     G_CALLBACK(on_field_changed), ed);
+    gtk_box_append(GTK_BOX(row), ed->due_entry);
+
+    gtk_box_append(GTK_BOX(row), gtk_label_new("at"));
+
     ed->due_time_entry = gtk_entry_new();
-    /* FIVE chars, not the recurrence entry's six: "HH:MM" is exactly five
-     * and this row is the editor's widest.  At six it came out 4 px past
-     * the 490 the window asks for, and the window silently grew to fit —
-     * the row must stay under that width, not merely near it.           */
-    gtk_entry_set_width_chars(GTK_ENTRY(ed->due_time_entry), 5);
-    gtk_entry_set_max_width_chars(GTK_ENTRY(ed->due_time_entry), 5);
+    /* FIVE chars: "HH:MM".  Six was 4 px past the 490 the window asks for.*/
+    gtk_editable_set_width_chars(GTK_EDITABLE(ed->due_time_entry), 5);
+    gtk_editable_set_max_width_chars(GTK_EDITABLE(ed->due_time_entry), 5);
     gtk_entry_set_placeholder_text(GTK_ENTRY(ed->due_time_entry), "HH:MM");
     gtk_widget_set_tooltip_text(ed->due_time_entry,
         "The time of day this task is due (24-hour), 08:00 unless you "
@@ -1767,54 +1568,43 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
         "not carry it or overwrite it.");
     g_signal_connect(ed->due_time_entry, "changed",
                      G_CALLBACK(on_field_changed), ed);
-    gtk_box_pack_end(GTK_BOX(row), ed->due_time_entry, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(row), gtk_label_new("at"), FALSE, FALSE, 0);
-    ed->due_entry = gtk_entry_new();
-    gtk_entry_set_width_chars(GTK_ENTRY(ed->due_entry), 12);
-    gtk_entry_set_placeholder_text(GTK_ENTRY(ed->due_entry),
-                                   "YYYY-MM-DD");
-    gtk_widget_set_tooltip_text(ed->due_entry,
-        "Click to pick a due date.");
-    /* The entry IS the picker — it needs the button-press event, which a
-     * GtkEntry's own window gets by default, so no add_events call.        */
-    g_signal_connect(ed->due_entry, "button-press-event",
-                     G_CALLBACK(on_due_entry_press), ed);
-    g_signal_connect(ed->due_entry, "changed",
-                     G_CALLBACK(on_field_changed), ed);
-    gtk_box_pack_end(GTK_BOX(row), ed->due_entry, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(row), gtk_label_new("Due:"),
-                     FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), row, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(row), ed->due_time_entry);
 
-    /* Favorite / High Priority — the two local-only flags.                 */
+    gtk_box_append(GTK_BOX(vbox), row);
+
+    /* ── Favorite / High Priority / completion date row ─────────────────── */
     GtkWidget *flags = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+
     ed->pinned_check = gtk_check_button_new_with_label("Favorite");
     g_signal_connect(ed->pinned_check, "toggled",
                      G_CALLBACK(on_toggle_changed), ed);
-    gtk_box_pack_start(GTK_BOX(flags), ed->pinned_check, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(flags), ed->pinned_check);
+
     ed->priority_check = gtk_check_button_new_with_label("High Priority");
     g_signal_connect(ed->priority_check, "toggled",
                      G_CALLBACK(on_toggle_changed), ed);
-    gtk_box_pack_start(GTK_BOX(flags), ed->priority_check,
-                       FALSE, FALSE, 0);
-    /* The completion date, read-only, at the right of the same row — the
-     * space beside two checkboxes was doing nothing, and it costs no
-     * height at all.  editor_completed_refresh writes it (empty until the
-     * task has been completed at least once).                             */
-    ed->completed_label = gtk_label_new(NULL);
-    gtk_box_pack_end(GTK_BOX(flags), ed->completed_label, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), flags, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(flags), ed->priority_check);
 
-    /* Notes.                                                               */
+    GtkWidget *fspc = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(fspc, TRUE);
+    gtk_box_append(GTK_BOX(flags), fspc);
+
+    ed->completed_label = gtk_label_new(NULL);
+    gtk_box_append(GTK_BOX(flags), ed->completed_label);
+
+    gtk_box_append(GTK_BOX(vbox), flags);
+
+    /* ── Notes ──────────────────────────────────────────────────────────── */
     GtkWidget *notes_label = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(notes_label), "<b>Notes</b>");
     gtk_widget_set_halign(notes_label, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(vbox), notes_label, FALSE, FALSE, 0);
-    GtkWidget *notes_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_box_append(GTK_BOX(vbox), notes_label);
+
+    GtkWidget *notes_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(notes_scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(notes_scroll),
-                                        GTK_SHADOW_IN);
+    gtk_scrolled_window_set_has_frame(GTK_SCROLLED_WINDOW(notes_scroll), TRUE);
+
     GtkWidget *notes_view = gtk_text_view_new();
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(notes_view), GTK_WRAP_WORD);
     gtk_text_view_set_left_margin(GTK_TEXT_VIEW(notes_view), 6);
@@ -1824,162 +1614,131 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     ed->notes_buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(notes_view));
     g_signal_connect(ed->notes_buf, "changed",
                      G_CALLBACK(on_field_changed), ed);
-    gtk_container_add(GTK_CONTAINER(notes_scroll), notes_view);
-    /* Eight lines tall, measured by LAYING OUT eight lines in the view's
-     * own font and context — not from font metrics, whose ascent+descent
-     * omits the line gap Pango adds between lines and would leave the box
-     * about half a line short.  Measuring beats hardcoding pixels: the UI
-     * font differs per platform and per HiDPI scale.
-     *
-     * min AND max content height both get the value: the min is the ask,
-     * and the max keeps a task with 50 lines of notes from opening a
-     * window the height of the screen — the box scrolls instead.  A
-     * hand-resized window still stretches it (expand=TRUE below), since
-     * max-content-height caps the size REQUEST, not the allocation.        */
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(notes_scroll),
+                                  notes_view);
+    /* Eight lines: measure by laying out eight "X\n" lines in the view's
+     * own Pango context (+12 px: the view's 4 px top+bottom margins and
+     * 4 px slack so the caret on line 8 is not flush against the frame).  */
     {
         PangoLayout *lay = gtk_widget_create_pango_layout(notes_view,
             "X\nX\nX\nX\nX\nX\nX\nX");
         gint lines_w, lines_h;
         pango_layout_get_pixel_size(lay, &lines_w, &lines_h);
         g_object_unref(lay);
-        if (lines_h <= 0)            /* no font resolved yet: sane default  */
+        if (lines_h <= 0)
             lines_h = 8 * 17;
-        /* + the view's 4 px top and bottom margins, + 4 px slack so the
-         * caret on the 8th line is not flush against the frame.            */
         gint content = lines_h + 12;
         gtk_scrolled_window_set_min_content_height(
             GTK_SCROLLED_WINDOW(notes_scroll), content);
         gtk_scrolled_window_set_max_content_height(
             GTK_SCROLLED_WINDOW(notes_scroll), content);
     }
-    gtk_box_pack_start(GTK_BOX(vbox), notes_scroll, TRUE, TRUE, 0);
+    gtk_widget_set_hexpand(notes_scroll, TRUE);
+    gtk_widget_set_vexpand(notes_scroll, TRUE);
+    gtk_box_append(GTK_BOX(vbox), notes_scroll);
 
-    /* Subtasks and Attachments live inside the Advanced disclosure — both
-     * are folded away until the user asks for them (or the task already
-     * has some).  no_show_all keeps the construction-time show_all out of
-     * the block, which is what makes the window's NATURAL height the
-     * folded one; editor_advanced_set lifts the flag across its own
-     * show_all (that call would otherwise return early — see gotcha 15).   */
+    /* ── adv_box: Subtasks + Attachments + Recurrence ────────────────────
+     *
+     * Hidden until the user clicks Advanced or the task already has content.
+     * Hidden = not in the window's natural height.                         */
     ed->adv_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_widget_set_no_show_all(ed->adv_box, TRUE);
+    gtk_widget_set_visible(ed->adv_box, FALSE);
 
-    /* Subtasks — only for top-level tasks (no nested subtasks).            */
+    /* Shared size group: all list-section buttons get the same width so the
+     * subtask column and the attachment column align across both sections.    */
+    editor_css_install();
+    GtkSizeGroup *btn_sg = gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
+
+    /* ── Subtasks (top-level tasks only) ─────────────────────────────────  */
     if (ed->parent_id == 0) {
-        ed->sub_store = gtk_list_store_new(SUB_N_COLS, G_TYPE_INT64,
-                                           G_TYPE_BOOLEAN, G_TYPE_STRING);
-        ed->sub_view = gtk_tree_view_new_with_model(
-            GTK_TREE_MODEL(ed->sub_store));
-        g_object_unref(ed->sub_store);
-        gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(ed->sub_view),
-                                          FALSE);
-        gtk_tree_view_set_enable_search(GTK_TREE_VIEW(ed->sub_view),
-                                        FALSE);
+        ed->sub_box = gtk_list_box_new();
+        gtk_list_box_set_selection_mode(GTK_LIST_BOX(ed->sub_box),
+                                        GTK_SELECTION_SINGLE);
+        /* CSS class targets compact entry CSS installed by editor_css_install. */
+        gtk_widget_add_css_class(ed->sub_box, "task-sub-listbox");
 
-        GtkCellRenderer *toggle = gtk_cell_renderer_toggle_new();
-        g_signal_connect(toggle, "toggled",
-                         G_CALLBACK(on_sub_toggled), ed);
-        gtk_tree_view_append_column(GTK_TREE_VIEW(ed->sub_view),
-            gtk_tree_view_column_new_with_attributes("", toggle,
-                "active", SUB_DONE, NULL));
-        GtkCellRenderer *text = gtk_cell_renderer_text_new();
-        g_object_set(text, "editable", TRUE, NULL);
-        g_signal_connect(text, "edited",
-                         G_CALLBACK(on_sub_title_edited), ed);
-        g_signal_connect(text, "editing-started",
-                         G_CALLBACK(on_sub_editing_started), ed);
-        g_signal_connect(text, "editing-canceled",
-                         G_CALLBACK(on_sub_editing_canceled), ed);
-        gtk_tree_view_append_column(GTK_TREE_VIEW(ed->sub_view),
-            gtk_tree_view_column_new_with_attributes("Subtask", text,
-                "text", SUB_TITLE, NULL));
+        GtkWidget *sub_add = small_button("Add",    G_CALLBACK(on_sub_add),    ed);
+        GtkWidget *sub_rem = small_button("Remove", G_CALLBACK(on_sub_remove), ed);
+        gtk_size_group_add_widget(btn_sg, sub_add);
+        gtk_size_group_add_widget(btn_sg, sub_rem);
 
-        GtkWidget *btns = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-        gtk_box_pack_start(GTK_BOX(btns),
-            small_button("Add", G_CALLBACK(on_sub_add), ed),
-            FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(btns),
-            small_button("Remove", G_CALLBACK(on_sub_remove), ed),
-            FALSE, FALSE, 0);
+        /* ▲▼ pair: NOT in the size group — two buttons side-by-side would make
+         * the group wider than any single-label button.  They sit at their
+         * natural compact width, which fills the button column without driving
+         * the column width.  hexpand fills each half of move_box only.        */
         GtkWidget *move_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
         GtkWidget *up_btn   = gtk_button_new_with_label("\xe2\x96\xb2");
-        GtkWidget *down_btn = gtk_button_new_with_label("\xe2\x96\xbc");
-        g_object_set_data(G_OBJECT(up_btn),   "task-direction",
-                          GINT_TO_POINTER(-1));
-        g_object_set_data(G_OBJECT(down_btn),  "task-direction",
-                          GINT_TO_POINTER(1));
-        g_signal_connect(up_btn,   "clicked", G_CALLBACK(on_sub_move), ed);
-        g_signal_connect(down_btn, "clicked", G_CALLBACK(on_sub_move), ed);
-        gtk_box_pack_start(GTK_BOX(move_box), up_btn,   TRUE, TRUE, 0);
-        gtk_box_pack_start(GTK_BOX(move_box), down_btn, TRUE, TRUE, 0);
-        gtk_box_pack_start(GTK_BOX(btns), move_box, FALSE, FALSE, 0);
+        GtkWidget *dn_btn   = gtk_button_new_with_label("\xe2\x96\xbc");
+        gtk_widget_add_css_class(up_btn, "task-small-button");
+        gtk_widget_add_css_class(dn_btn, "task-small-button");
+        gtk_widget_set_valign(up_btn, GTK_ALIGN_CENTER);
+        gtk_widget_set_valign(dn_btn, GTK_ALIGN_CENTER);
+        gtk_widget_set_hexpand(up_btn, TRUE);
+        gtk_widget_set_hexpand(dn_btn, TRUE);
+        g_object_set_data(G_OBJECT(up_btn), "task-direction", GINT_TO_POINTER(-1));
+        g_object_set_data(G_OBJECT(dn_btn), "task-direction", GINT_TO_POINTER( 1));
+        g_signal_connect(up_btn, "clicked", G_CALLBACK(on_sub_move), ed);
+        g_signal_connect(dn_btn, "clicked", G_CALLBACK(on_sub_move), ed);
+        gtk_box_append(GTK_BOX(move_box), up_btn);
+        gtk_box_append(GTK_BOX(move_box), dn_btn);
+
+        GtkWidget *sub_btns = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_widget_set_hexpand(sub_btns, FALSE);
+        gtk_box_append(GTK_BOX(sub_btns), sub_add);
+        gtk_box_append(GTK_BOX(sub_btns), sub_rem);
+        gtk_box_append(GTK_BOX(sub_btns), move_box);
+
         GtkWidget *sub_section =
-            make_list_section("Subtasks", ed->sub_view, btns);
-        gtk_box_pack_start(GTK_BOX(ed->adv_box), sub_section,
-                           FALSE, FALSE, 0);
+            make_list_section("Subtasks", ed->sub_box, sub_btns);
+        gtk_box_append(GTK_BOX(ed->adv_box), sub_section);
     } else {
         Task *parent = task_db_task_get(app->db, ed->parent_id);
         gchar *txt = g_strdup_printf(
             "This is a subtask of \xe2\x80\x9c%s\xe2\x80\x9d "
-            "— subtasks cannot have their own subtasks.",
+            "\xe2\x80\x94 subtasks cannot have their own subtasks.",
             parent != NULL ? parent->title : "?");
         GtkWidget *note = gtk_label_new(txt);
-        gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+        gtk_label_set_wrap(GTK_LABEL(note), TRUE);
         gtk_widget_set_halign(note, GTK_ALIGN_START);
-        gtk_box_pack_start(GTK_BOX(vbox), note, FALSE, FALSE, 0);
+        gtk_box_append(GTK_BOX(vbox), note);
         g_free(txt);
         task_free(parent);
     }
 
-    /* Attachments.                                                         */
-    ed->att_store = gtk_list_store_new(ATT_N_COLS, G_TYPE_INT64,
-                                       G_TYPE_STRING, G_TYPE_STRING);
-    ed->att_view = gtk_tree_view_new_with_model(
-        GTK_TREE_MODEL(ed->att_store));
-    g_object_unref(ed->att_store);
-    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(ed->att_view), FALSE);
-    gtk_tree_view_set_enable_search(GTK_TREE_VIEW(ed->att_view), FALSE);
-    GtkCellRenderer *att_text = gtk_cell_renderer_text_new();
-    g_object_set(att_text, "ellipsize", PANGO_ELLIPSIZE_MIDDLE, NULL);
-    gtk_tree_view_append_column(GTK_TREE_VIEW(ed->att_view),
-        gtk_tree_view_column_new_with_attributes("File", att_text,
-            "text", ATT_NAME, NULL));
-    g_signal_connect(ed->att_view, "row-activated",
-                     G_CALLBACK(on_att_activated), ed);
+    /* ── Attachments ─────────────────────────────────────────────────────  */
+    ed->att_box = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(ed->att_box),
+                                    GTK_SELECTION_SINGLE);
+    g_signal_connect(ed->att_box, "row-activated",
+                     G_CALLBACK(on_att_row_activated), ed);
+
+    GtkWidget *att_add = small_button("Add\xe2\x80\xa6", G_CALLBACK(on_att_add),    ed);
+    GtkWidget *att_rem = small_button("Remove",          G_CALLBACK(on_att_remove), ed);
+    GtkWidget *att_opn = small_button("Open",            G_CALLBACK(on_att_open),   ed);
+    gtk_size_group_add_widget(btn_sg, att_add);
+    gtk_size_group_add_widget(btn_sg, att_rem);
+    gtk_size_group_add_widget(btn_sg, att_opn);
 
     GtkWidget *att_btns = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_box_pack_start(GTK_BOX(att_btns),
-        small_button("Add…", G_CALLBACK(on_att_add), ed),
-        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(att_btns),
-        small_button("Remove", G_CALLBACK(on_att_remove), ed),
-        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(att_btns),
-        small_button("Open", G_CALLBACK(on_att_open), ed),
-        FALSE, FALSE, 0);
-    GtkWidget *att_section =
-        make_list_section("Attachments", ed->att_view, att_btns);
-    gtk_box_pack_start(GTK_BOX(ed->adv_box), att_section, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(att_btns), att_add);
+    gtk_box_append(GTK_BOX(att_btns), att_rem);
+    gtk_box_append(GTK_BOX(att_btns), att_opn);
 
-    /* Recurrence, LAST in the block and so at the foot of the window's
-     * content, just above the Advanced link that reveals it.  Subtasks and
-     * Attachments are what the task CONTAINS and are what someone opening
-     * Advanced is usually after; a schedule is set once and then left
-     * alone, so it reads better out of their way than in front of them.  */
+    GtkWidget *att_section =
+        make_list_section("Attachments", ed->att_box, att_btns);
+    gtk_box_append(GTK_BOX(ed->adv_box), att_section);
+
+    /* All list-section buttons are now in btn_sg; release our reference.     */
+    g_object_unref(btn_sg);
+
+    /* ── Recurrence (LAST in adv_box — at the foot above the disclosure) ─  */
     {
         GtkWidget *rec = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         GtkWidget *heading = gtk_label_new(NULL);
         gtk_label_set_markup(GTK_LABEL(heading), "<b>Recurrence</b>");
         gtk_widget_set_halign(heading, GTK_ALIGN_START);
-        gtk_box_pack_start(GTK_BOX(rec), heading, FALSE, FALSE, 0);
+        gtk_box_append(GTK_BOX(rec), heading);
 
-        /* What the block DOES, said once under its heading — the controls
-         * below say what each of them sets, and the summary at the foot
-         * says where this particular schedule lands, but neither of those
-         * explains the rule itself.  Static, so the markup is set here and
-         * never touched again; dimmed with Pango alpha and wrapped at the
-         * summary's width for the same two reasons that label is (a fixed
-         * gray is unreadable on a dark theme, and the editor takes its
-         * natural width from its widest child).                            */
         GtkWidget *desc = gtk_label_new(NULL);
         gtk_label_set_markup(GTK_LABEL(desc),
             "<small><span alpha=\"65%\">"
@@ -1989,102 +1748,64 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
             "shorter repeat) before that Due Date to give you lead time."
             "</span></small>");
         gtk_label_set_xalign(GTK_LABEL(desc), 0.0);
-        gtk_label_set_line_wrap(GTK_LABEL(desc), TRUE);
+        gtk_label_set_wrap(GTK_LABEL(desc), TRUE);
         gtk_label_set_max_width_chars(GTK_LABEL(desc), 52);
-        gtk_box_pack_start(GTK_BOX(rec), desc, FALSE, FALSE, 0);
+        gtk_box_append(GTK_BOX(rec), desc);
 
-        /* The MASTER SWITCH, directly under the description that says what
-         * the block does — so the block reads: here is the feature, here
-         * is the switch, and here (only once it is on) is the schedule.
-         *
-         * It holds NO STATE OF ITS OWN.  Ticked means "this task has a
-         * schedule", which on disk is recur_interval > 0, so the switch is
-         * derived on load and folded back in by editor_recur_every.  A
-         * flag beside the interval would be a second thing to keep true,
-         * and the two would eventually disagree.                          */
         ed->recur_enable = gtk_check_button_new_with_label("Repeat this task");
         gtk_widget_set_tooltip_text(ed->recur_enable,
             "Give this task a repeating schedule.  Switching it off leaves "
             "the task exactly where it is and stops it coming back.");
-        gtk_box_pack_start(GTK_BOX(rec), ed->recur_enable, FALSE, FALSE, 0);
+        gtk_box_append(GTK_BOX(rec), ed->recur_enable);
 
-        /* Everything the switch governs, in ONE box so it can be shown or
-         * hidden — and MEASURED — as a unit (editor_recur_body_set).
-         * no_show_all keeps it out of the window's show_all AND out of the
-         * one editor_advanced_reveal runs over adv_box, which is what
-         * leaves that applier the only thing able to reveal it.           */
+        /* The body — hidden when the switch is off.                        */
         ed->recur_body = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-        gtk_widget_set_no_show_all(ed->recur_body, TRUE);
+        gtk_widget_set_visible(ed->recur_body, FALSE);
         GtkWidget *body = ed->recur_body;
-        gtk_box_pack_start(GTK_BOX(rec), body, FALSE, FALSE, 0);
+        gtk_box_append(GTK_BOX(rec), body);
 
-        /* The three rows below lead with a label of their own, and their
-         * first CONTROL lines up in a column: one size group over those
-         * labels, each left-aligned so the extra width lands to the right
-         * of the words rather than centring them.  Without it "Starting",
-         * "Repeat every" and "Reset to New" are three different widths and
-         * the entry, the spin and the spin start at three different x —
-         * which reads as three unrelated rows rather than one schedule. */
+        /* Size group aligns the three leading labels so their controls
+         * start at the same x.                                              */
         GtkSizeGroup *lead_col =
             gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
 
-        /* Row 1 — the ANCHOR: "Starting <date> at <time>".
-         *
-         * FIRST, above the repeat, because that is the order the sentence
-         * runs in — "starting on this date at this time, repeat every N
-         * units".  The schedule then reads top to bottom the way someone
-         * would say it out loud.
-         *
-         * The TIME sits here rather than on the Repeat row below, where
-         * it used to hang off the preset combo as "repeat weekly at
-         * 08:00".  It belongs with the start: it is the other half of one
-         * anchor, and saying so is what finally lets a minute-or-hour
-         * schedule state when it begins.  It used to be GREYED OUT for
-         * exactly those two units, on the reasoning that "every 3 hours at
-         * 8am" is not a thing anyone can mean — true of the old reading,
-         * but the phrase here is "STARTING at 8am, every 3 hours", which
-         * is both meaningful and what task_recur_seed now phase-locks to
-         * (see TASK_RECUR_TIME_DEFAULT in db.h).
-         *
-         * Both entries ARE their own pickers — the date opens the
-         * calendar on a click (on_recur_start_press), the time is typed
-         * like the due row's.  No 📅 button beside either, for the reason
-         * the due row has none: two controls for one field, where the
-         * click a user tries first is the one on the field itself.
-         *
-         * An EMPTY date is a real and ordinary value — it means "anchor on
-         * the due date", which is what most tasks want.  So the entry
-         * starts blank rather than seeded with today: a date filled in
-         * here is a date the user chose.                                 */
+        /* Row 1 — "Starting <date> at <time>".                             */
         GtkWidget *r_start = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *l_start = gtk_label_new("Starting");
         gtk_label_set_xalign(GTK_LABEL(l_start), 0.0);
         gtk_size_group_add_widget(lead_col, l_start);
-        gtk_box_pack_start(GTK_BOX(r_start), l_start, FALSE, FALSE, 0);
+        gtk_box_append(GTK_BOX(r_start), l_start);
+
         ed->recur_start_entry = gtk_entry_new();
-        gtk_entry_set_width_chars(GTK_ENTRY(ed->recur_start_entry), 12);
-        gtk_entry_set_max_width_chars(GTK_ENTRY(ed->recur_start_entry), 12);
+        gtk_editable_set_width_chars(GTK_EDITABLE(ed->recur_start_entry), 12);
+        gtk_editable_set_max_width_chars(GTK_EDITABLE(ed->recur_start_entry), 12);
         gtk_entry_set_placeholder_text(GTK_ENTRY(ed->recur_start_entry),
                                        "YYYY-MM-DD");
         gtk_widget_set_tooltip_text(ed->recur_start_entry,
             "Click to pick the day this schedule is anchored on "
-            "\xe2\x80\x94 the \"Monday\" of \"every Monday at 9:00 AM\".  A "
-            "start still in the future is the FIRST repeat, not a week "
+            "\xe2\x80\x94 the \"Monday\" of \"every Monday at 9:00 AM\".  "
+            "A start still in the future is the FIRST repeat, not a week "
             "after it.  Leave it empty to anchor on the task's own due "
             "date.");
-        g_signal_connect(ed->recur_start_entry, "button-press-event",
-                         G_CALLBACK(on_recur_start_press), ed);
-        gtk_box_pack_start(GTK_BOX(r_start), ed->recur_start_entry,
-                           FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(r_start), gtk_label_new("at"),
-                           FALSE, FALSE, 0);
-        /* 5 chars, the width the due row's time entry settled on — that
-         * row is the editor's widest and measured 4 px over at 6.  This
-         * row is far shorter, but one spelling of "an HH:MM entry" is
-         * worth more than the two characters.                           */
+        {
+            GtkGesture *gc = gtk_gesture_click_new();
+            gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gc),
+                                          GDK_BUTTON_PRIMARY);
+            gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(gc),
+                                                       GTK_PHASE_CAPTURE);
+            g_signal_connect(gc, "pressed",
+                             G_CALLBACK(on_recur_start_press), ed);
+            gtk_widget_add_controller(ed->recur_start_entry,
+                                      GTK_EVENT_CONTROLLER(gc));
+        }
+        g_signal_connect(ed->recur_start_entry, "changed",
+                         G_CALLBACK(on_recur_changed), ed);
+        gtk_box_append(GTK_BOX(r_start), ed->recur_start_entry);
+        gtk_box_append(GTK_BOX(r_start), gtk_label_new("at"));
+
         ed->recur_time_entry = gtk_entry_new();
-        gtk_entry_set_width_chars(GTK_ENTRY(ed->recur_time_entry), 5);
-        gtk_entry_set_max_width_chars(GTK_ENTRY(ed->recur_time_entry), 5);
+        gtk_editable_set_width_chars(GTK_EDITABLE(ed->recur_time_entry), 5);
+        gtk_editable_set_max_width_chars(GTK_EDITABLE(ed->recur_time_entry), 5);
         gtk_entry_set_placeholder_text(GTK_ENTRY(ed->recur_time_entry),
                                        "HH:MM");
         gtk_widget_set_tooltip_text(ed->recur_time_entry,
@@ -2092,172 +1813,127 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
             "repeat measured in days, weeks, months or years lands on this "
             "time every time; one measured in minutes or hours starts from "
             "it and steps on from there.");
-        gtk_box_pack_start(GTK_BOX(r_start), ed->recur_time_entry,
-                           FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(body), r_start, FALSE, FALSE, 0);
+        g_signal_connect(ed->recur_time_entry, "changed",
+                         G_CALLBACK(on_recur_changed), ed);
+        gtk_box_append(GTK_BOX(r_start), ed->recur_time_entry);
+        gtk_box_append(GTK_BOX(body), r_start);
 
-        /* Row 2 — the PERIOD: "repeat every N units".
-         *
-         * EVERY schedule is written this way.  A preset combo (Hourly /
-         * Daily / Weekly / Every 2 weeks / Monthly / Custom…) stood in
-         * front of this row until 2026-09-08 and kept it HIDDEN unless
-         * Custom… was picked — so the one row that can say any schedule
-         * at all was the one a user had to go looking for, and five of
-         * the six presets were just (interval, unit) pairs this row
-         * states directly.  Losing it took the enum, the table, three
-         * recur.h functions and the show/hide height bookkeeping with it.
-         *
-         * The spin starts at 0, and 0 IS "does not repeat" — the same
-         * value recur_interval carries on disk for a task with no
-         * schedule.  So there is no separate off switch and no state in
-         * which the row lies: the summary underneath reads "Does not
-         * repeat" and every control stays live.
-         *
-         * The unit combo's rows are the TaskRecurUnit values in order, so
-         * its active index is the enum value.                            */
+        /* Row 2 — "Repeat every <N> <unit>".                               */
         GtkWidget *r_every = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *l_every = gtk_label_new("Repeat every");
         gtk_label_set_xalign(GTK_LABEL(l_every), 0.0);
         gtk_size_group_add_widget(lead_col, l_every);
-        gtk_box_pack_start(GTK_BOX(r_every), l_every, FALSE, FALSE, 0);
-        /* From 1, not 0: "does not repeat" is the master switch's job now,
-         * so this spin never has to hold a value that means "off" and
-         * "Repeat every 0 days" is unreachable.                          */
-        ed->recur_every_spin = gtk_spin_button_new_with_range(1, 999, 1);
+        gtk_box_append(GTK_BOX(r_every), l_every);
+
+        ed->recur_every_spin =
+            gtk_spin_button_new_with_range(1, 999, 1);
         gtk_widget_set_tooltip_text(ed->recur_every_spin,
             "How often this task comes back.  A set time before each "
             "repeat, a COMPLETED task is put back to New and its due date "
             "moves to that repeat.");
-        gtk_box_pack_start(GTK_BOX(r_every), ed->recur_every_spin,
-                           FALSE, FALSE, 0);
-        ed->recur_unit_combo = gtk_combo_box_text_new();
-        for (gint i = 0; i < TASK_RECUR_N_UNITS; i++)
-            gtk_combo_box_text_append_text(
-                GTK_COMBO_BOX_TEXT(ed->recur_unit_combo),
-                task_recur_unit_label((TaskRecurUnit)i));
-        gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_unit_combo),
-                                 (gint)TASK_RECUR_DAY);
-        combo_match_fields(ed->recur_unit_combo, field_h);
-        gtk_box_pack_start(GTK_BOX(r_every), ed->recur_unit_combo,
-                           FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(body), r_every, FALSE, FALSE, 0);
+        g_signal_connect(ed->recur_every_spin, "value-changed",
+                         G_CALLBACK(on_recur_changed), ed);
+        gtk_box_append(GTK_BOX(r_every), ed->recur_every_spin);
 
-        /* Row 3 — the lead: how long before each repeat a completed task
-         * is reset to New.  A week by default, or half the period when
-         * that is shorter (task_recur_lead_default), so picking "every
-         * hour" leaves 30 minutes rather than a week the clamp would
-         * silently cut to 59 minutes.
-         *
-         * SET APART from the two rows above by a top margin: those say
-         * WHEN the task repeats, this says what happens to a completed
-         * one beforehand, which is a different question about the same
-         * schedule.  A margin on the row rather than a separator or a
-         * second box — the block is a plain GtkBox at 4 px spacing, and
-         * one child's margin is the whole of the change; GTK folds it
-         * into the preferred height, so adv_height still measures true
-         * (it is read AFTER the block is built).                          */
+        {
+            const gchar *unit_labels[TASK_RECUR_N_UNITS + 1];
+            for (gint i = 0; i < TASK_RECUR_N_UNITS; i++)
+                unit_labels[i] = task_recur_unit_label((TaskRecurUnit)i);
+            unit_labels[TASK_RECUR_N_UNITS] = NULL;
+            ed->recur_unit_combo =
+                gtk_drop_down_new_from_strings(unit_labels);
+        }
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(ed->recur_unit_combo),
+                                   (guint)TASK_RECUR_DAY);
+        g_signal_connect(ed->recur_unit_combo, "notify::selected",
+                         G_CALLBACK(on_recur_notify), ed);
+        gtk_box_append(GTK_BOX(r_every), ed->recur_unit_combo);
+        gtk_box_append(GTK_BOX(body), r_every);
+
+        /* Row 3 — "Reset to New <N> <unit> beforehand".
+         * Indented from rows 1–2 by 8 px top margin — a different question
+         * about the same schedule.                                          */
         GtkWidget *r3 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         gtk_widget_set_margin_top(r3, 8);
         GtkWidget *l_reset = gtk_label_new("Reset to New");
         gtk_label_set_xalign(GTK_LABEL(l_reset), 0.0);
         gtk_size_group_add_widget(lead_col, l_reset);
-        gtk_box_pack_start(GTK_BOX(r3), l_reset, FALSE, FALSE, 0);
-        ed->recur_lead_spin = gtk_spin_button_new_with_range(0, 999, 1);
+        gtk_box_append(GTK_BOX(r3), l_reset);
+
+        ed->recur_lead_spin =
+            gtk_spin_button_new_with_range(0, 999, 1);
         gtk_widget_set_tooltip_text(ed->recur_lead_spin,
             "How far ahead of each repeat a completed task is reopened.  "
             "It is shortened automatically when it would not fit inside "
             "the repeat itself.");
-        gtk_box_pack_start(GTK_BOX(r3), ed->recur_lead_spin,
-                           FALSE, FALSE, 0);
-        ed->recur_lead_unit = gtk_combo_box_text_new();
-        for (gint i = 0; i < RECUR_LEAD_N_UNITS; i++)
-            gtk_combo_box_text_append_text(
-                GTK_COMBO_BOX_TEXT(ed->recur_lead_unit),
-                task_recur_unit_label((TaskRecurUnit)i));
-        gtk_combo_box_set_active(GTK_COMBO_BOX(ed->recur_lead_unit),
-                                 (gint)TASK_RECUR_DAY);
-        combo_match_fields(ed->recur_lead_unit, field_h);
-        gtk_box_pack_start(GTK_BOX(r3), ed->recur_lead_unit,
-                           FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(r3), gtk_label_new("beforehand"),
-                           FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(body), r3, FALSE, FALSE, 0);
-        g_object_unref(lead_col);    /* the three labels hold it now        */
-
-        /* The summary.  Wrapped rather than allowed to widen the window:
-         * the editor asks for 490 px and takes its natural height, so a
-         * long line here would silently stretch every editor.             */
-        ed->recur_summary = gtk_label_new(NULL);
-        gtk_label_set_xalign(GTK_LABEL(ed->recur_summary), 0.0);
-        gtk_label_set_line_wrap(GTK_LABEL(ed->recur_summary), TRUE);
-        gtk_label_set_max_width_chars(GTK_LABEL(ed->recur_summary), 52);
-        gtk_box_pack_start(GTK_BOX(body), ed->recur_summary,
-                           FALSE, FALSE, 0);
-
-        /* Wired LAST, so the construction-time set_active calls above
-         * cannot fire the handler before every widget it reads exists.
-         * (ed->loading also guards it, but only once editor_load runs.)   */
-        g_signal_connect(ed->recur_enable, "toggled",
-                         G_CALLBACK(on_recur_changed), ed);
-        g_signal_connect(ed->recur_every_spin, "value-changed",
-                         G_CALLBACK(on_recur_changed), ed);
-        g_signal_connect(ed->recur_unit_combo, "changed",
-                         G_CALLBACK(on_recur_changed), ed);
-        g_signal_connect(ed->recur_time_entry, "changed",
-                         G_CALLBACK(on_recur_changed), ed);
-        g_signal_connect(ed->recur_start_entry, "changed",
-                         G_CALLBACK(on_recur_changed), ed);
         g_signal_connect(ed->recur_lead_spin, "value-changed",
                          G_CALLBACK(on_recur_changed), ed);
-        g_signal_connect(ed->recur_lead_unit, "changed",
+        gtk_box_append(GTK_BOX(r3), ed->recur_lead_spin);
+
+        {
+            const gchar *lead_labels[RECUR_LEAD_N_UNITS + 1];
+            for (gint i = 0; i < RECUR_LEAD_N_UNITS; i++)
+                lead_labels[i] = task_recur_unit_label((TaskRecurUnit)i);
+            lead_labels[RECUR_LEAD_N_UNITS] = NULL;
+            ed->recur_lead_unit =
+                gtk_drop_down_new_from_strings(lead_labels);
+        }
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(ed->recur_lead_unit),
+                                   (guint)TASK_RECUR_DAY);
+        g_signal_connect(ed->recur_lead_unit, "notify::selected",
+                         G_CALLBACK(on_recur_notify), ed);
+        gtk_box_append(GTK_BOX(r3), ed->recur_lead_unit);
+        gtk_box_append(GTK_BOX(r3), gtk_label_new("beforehand"));
+        gtk_box_append(GTK_BOX(body), r3);
+
+        g_object_unref(lead_col);
+
+        /* Summary.  Wrapped so a long phrase cannot widen the editor.      */
+        ed->recur_summary = gtk_label_new(NULL);
+        gtk_label_set_xalign(GTK_LABEL(ed->recur_summary), 0.0);
+        gtk_label_set_wrap(GTK_LABEL(ed->recur_summary), TRUE);
+        gtk_label_set_max_width_chars(GTK_LABEL(ed->recur_summary), 52);
+        gtk_box_append(GTK_BOX(body), ed->recur_summary);
+
+        /* Wire the master switch LAST — construction set_active cannot fire
+         * the handler before every widget it reads exists.                  */
+        g_signal_connect(ed->recur_enable, "toggled",
                          G_CALLBACK(on_recur_changed), ed);
 
-        gtk_box_pack_start(GTK_BOX(ed->adv_box), rec, FALSE, FALSE, 0);
+        gtk_box_append(GTK_BOX(ed->adv_box), rec);
     }
 
-    gtk_box_pack_start(GTK_BOX(vbox), ed->adv_box, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), ed->adv_box);
 
-    /* Contributed sections (see task_ui.h) — an integration's read-only
-     * view of this task, such as what a sync knows about it.  Empty and
-     * zero-height for a task nothing contributes to, which is most of
-     * them, so it costs the editor's natural height nothing.              */
-    ed->ext_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_box_pack_start(GTK_BOX(vbox), ed->ext_box, FALSE, FALSE, 0);
-
-    /* Bottom row: the Advanced disclosure link at the left, Save at the
-     * right (every editor) and Cancel to ITS right in the New Task variant
-     * — vbox's 12 px border puts them flush with the notes box's right
-     * edge.  The row is packed last so it stays at the foot of the window
-     * in both fold states.                                                 */
-    GtkWidget *foot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    /* ── Foot row: Advanced link | spacer | Save [Cancel] ────────────────
+     *
+     * Packed last so it stays at the window's bottom in both fold states.  */
+    GtkWidget *foot    = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *adv_btn = gtk_button_new();
-    gtk_button_set_relief(GTK_BUTTON(adv_btn), GTK_RELIEF_NONE);
+    gtk_widget_add_css_class(adv_btn, "flat");
     ed->adv_label = gtk_label_new(NULL);
-    /* The folded face, matching the state adv_box is built in.  The open
-     * path calls an applier only when it REVEALS, so without this the link
-     * carries no text at all in the folded case — which is every new task
-     * and every empty one.                                                 */
     gtk_label_set_markup(GTK_LABEL(ed->adv_label), ADV_LABEL_TO_SHOW);
-    gtk_container_add(GTK_CONTAINER(adv_btn), ed->adv_label);
-    /* Link-blue + underlined (the markup above and in editor_advanced_set,
-     * which owns the arrow direction from then on).                        */
-    task_app_widget_add_css(adv_btn,
-        "button { color: #1c71d8; padding: 2px 4px; }");
+    gtk_button_set_child(GTK_BUTTON(adv_btn), ed->adv_label);
+    task_app_css_install(
+        "button.flat { color: #1c71d8; padding: 2px 4px; }");
     gtk_widget_set_tooltip_text(adv_btn,
         "Show or hide the Recurrence, Subtasks and Attachments sections");
     g_signal_connect(adv_btn, "clicked",
                      G_CALLBACK(on_editor_advanced), ed);
-    gtk_box_pack_start(GTK_BOX(foot), adv_btn, FALSE, FALSE, 0);
-    /* pack_end puts the FIRST-packed child rightmost, so Cancel goes in
-     * before Save to end up on Save's right.                               */
+    gtk_box_append(GTK_BOX(foot), adv_btn);
+
+    GtkWidget *fspc2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(fspc2, TRUE);
+    gtk_box_append(GTK_BOX(foot), fspc2);
+
+    /* Save first → leftmost of the right group.                            */
+    gtk_box_append(GTK_BOX(foot),
+        small_button("Save", G_CALLBACK(on_editor_save), ed));
     if (is_new)
-        gtk_box_pack_end(GTK_BOX(foot),
-            small_button("Cancel", G_CALLBACK(on_editor_cancel), ed),
-            FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(foot),
-        small_button("Save", G_CALLBACK(on_editor_save), ed),
-        FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), foot, FALSE, FALSE, 0);
+        gtk_box_append(GTK_BOX(foot),
+            small_button("Cancel", G_CALLBACK(on_editor_cancel), ed));
+
+    gtk_box_append(GTK_BOX(vbox), foot);
 
     g_signal_connect(ed->window, "destroy",
                      G_CALLBACK(on_editor_destroy), ed);
@@ -2268,60 +1944,54 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     g_hash_table_insert(app->editors, key, ed->window);
     g_object_set_data(G_OBJECT(ed->window), "task-editor", ed);
     task_free(t);
-    /* The Notes load can destroy the window (item gone / CLI
-     * failure) — `ed` is freed then, so bail before touching it.           */
+
     if (!editor_load(ed))
-        return;
-    /* Fold state, decided once the stores are loaded (editor_load, just
-     * above) and applied BEFORE the window is ever shown: a task that
-     * already has subtasks or attachments opens expanded so they are on
-     * screen without a click; a new (or empty) task opens folded, which is
-     * the state adv_box is built in and so needs nothing done to it.
-     *
-     * Revealing FIRST is what makes the window appear at its final size in
-     * ONE step.  It used to show_all and then grow, which asks the window
-     * manager to present a folded window and resize it a moment later —
-     * two frames, and the second one only lands once the main loop gets
-     * back to it.  Off the Kanban board, where the click also restyles
-     * cards, that gap was long enough to watch the window scale and then
-     * unfold (reported 2026-08-26); from the list it usually beat the
-     * first frame, which is why it looked like a board-only problem.  It
-     * was neither view's fault — the sequence was wrong for both.
-     *
-     * The block's height still measures true here: a GtkBox counts only
-     * VISIBLE children, and adv_box is visible by the time it is measured
-     * (gotcha 15).  Realization is not required for a size request.        */
+        return;                      /* row gone, window destroyed           */
+
+    /* Reveal the Advanced block BEFORE presenting if the task already has
+     * content, so the window appears at its final size in one step.        */
     if (!is_new && editor_has_advanced_content(ed))
         editor_advanced_reveal(ed);
-    gtk_widget_show_all(ed->window);
+
+    gtk_window_present(GTK_WINDOW(ed->window));
 }
 
 /* ---------------------------------------------------------------------------
- * task_editor_open() / task_editor_open_new() — the public entry points
- * (see header).
+ * Public entry points.
  * ------------------------------------------------------------------------- */
+
+/*
+ * task_editor_open — open an editor for an existing task (see header).
+ */
 void
 task_editor_open(TaskApp *app, gint64 task_id)
 {
     editor_open_common(app, task_id, FALSE);
 }
 
+/*
+ * task_editor_open_new — open an editor for a just-created task (see header).
+ *
+ * Adds a Cancel button that tombstones the task.
+ */
 void
 task_editor_open_new(TaskApp *app, gint64 task_id)
 {
     editor_open_common(app, task_id, TRUE);
 }
 
-/* editor_windows() — every open editor window (new list; g_list_free).     */
+/*
+ * editor_windows — every open editor window (caller must g_list_free).
+ */
 static GList *
 editor_windows(TaskApp *app)
 {
     return g_hash_table_get_values(app->editors);
 }
 
-/* ---------------------------------------------------------------------------
- * task_editor_refresh_all() — reload every open editor (see header).
- * ------------------------------------------------------------------------- */
+/*
+ * task_editor_refresh_all — reload every open editor (see header).
+ */
 void
 task_editor_refresh_all(TaskApp *app)
 {
@@ -2329,18 +1999,20 @@ task_editor_refresh_all(TaskApp *app)
     for (GList *l = windows; l != NULL; l = l->next) {
         TaskEditor *ed = g_object_get_data(G_OBJECT(l->data), "task-editor");
         if (ed == NULL || ed->save_source != 0)
-            continue;                /* mid-edit: their version wins        */
+            continue;
         editor_load(ed);
     }
     g_list_free(windows);
 }
 
-/* task_editor_close_all() — destroy every open editor (flushing saves).    */
+/*
+ * task_editor_close_all — destroy every open editor, flushing saves.
+ */
 void
 task_editor_close_all(TaskApp *app)
 {
     GList *windows = editor_windows(app);
     for (GList *l = windows; l != NULL; l = l->next)
-        gtk_widget_destroy(GTK_WIDGET(l->data));
+        gtk_window_destroy(GTK_WINDOW(l->data));
     g_list_free(windows);
 }

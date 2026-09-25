@@ -4,11 +4,10 @@
 
 #include "settings_window.h"
 #include "db.h"
-#include "plugin_loader.h"
-#include "plugin_owner.h"
 #include "backup.h"
 #include "library_window.h"
 #include <glib/gstdio.h>          /* g_stat, GStatBuf                    */
+#include <stdlib.h>               /* atoi                                */
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -18,25 +17,31 @@ typedef struct {
     TaskApp     *app;
     gchar     *db_path;
     GtkWidget *window;
-    GtkWidget *scroller;             /* kept so a rebuild can restore the
-                                      * scroll position                     */
     gboolean   loading;              /* suppress write-through on load      */
 } TaskSettings;
 
 static TaskSettings *settings = NULL;  /* the singleton, or NULL            */
 
-#define SETTINGS_WIDTH 470           /* window width AND the width the      */
-                                     /* column's height is measured at      */
+#define SETTINGS_WIDTH 470           /* the width the column is measured    */
+                                     /* at, and so the width it opens at    */
 
-/* on_bold_titles_toggled() — Appearance: bold task titles on/off,
- * applied live (the task pane re-renders its markup).                      */
+/* The tallest the column opens before it scrolls.  A CONSTANT, where the
+ * GTK3 build asked the parent's monitor for its work area: GTK4 has no
+ * window positioning and no "which monitor is the parent on" to ask, so
+ * the cap is the same one Notes settled on.  A short screen still opens
+ * scrolled — the window manager clamps the window to the screen and the
+ * scroller then has less than this to work with.                           */
+#define SETTINGS_MAX_HEIGHT 600
+
+/* on_due_today_overdue_toggled() — Appearance: Due Today lists every
+ * past-due task, on/off, applied live.                                     */
 static void
-on_due_today_overdue_toggled(GtkWidget *w, gpointer data)
+on_due_today_overdue_toggled(GtkCheckButton *check, gpointer data)
 {
     TaskSettings *sw = data;
     if (sw->loading)
         return;
-    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    gboolean on = gtk_check_button_get_active(check);
     task_app_config_set("due_today_show_overdue", on ? "1" : "0");
     task_app_notify_changed(sw->app);
 }
@@ -46,45 +51,32 @@ on_due_today_overdue_toggled(GtkWidget *w, gpointer data)
  * refresh: the board skips its rebuild while the same cards are showing,
  * so a notify would leave the setting looking inert.                      */
 static void
-on_kanban_shadow_toggled(GtkWidget *w, gpointer data)
+on_kanban_shadow_toggled(GtkCheckButton *check, gpointer data)
 {
     TaskSettings *sw = data;
     if (sw->loading)
         return;
-    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    gboolean on = gtk_check_button_get_active(check);
     task_app_config_set("kanban_shadow", on ? "1" : "0");
     task_library_apply_kanban_shadow(sw->app, on);
 }
 
+/* on_bold_titles_toggled() — Appearance: bold task titles on/off,
+ * applied live (the task pane re-renders its markup).                      */
 static void
-on_bold_titles_toggled(GtkWidget *w, gpointer data)
+on_bold_titles_toggled(GtkCheckButton *check, gpointer data)
 {
     TaskSettings *sw = data;
     if (sw->loading)
         return;
-    gboolean bold = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    gboolean bold = gtk_check_button_get_active(check);
     task_app_config_set("bold_task_titles", bold ? "1" : "0");
     task_app_notify_changed(sw->app);
 }
 
-#ifdef HAVE_GTKOSX
-/* on_native_menubar_toggled() — move the library menu into (or out of)
- * the native macOS menu bar, live, and persist the choice.                 */
-static void
-on_native_menubar_toggled(GtkToggleButton *check, gpointer data)
-{
-    TaskSettings *sw = data;
-    if (sw->loading)
-        return;
-    gboolean native = gtk_toggle_button_get_active(check);
-    task_app_config_set("native_menubar", native ? "1" : "0");
-    task_library_apply_native_menubar(sw->app, native);
-}
-#endif /* HAVE_GTKOSX */
-
 /* ---------------------------------------------------------------------------
  * DbSection — widgets of the Database settings block, kept alive so
- * handlers can update them after a location switch.
+ * handlers can update them after a check, a backup or a folder change.
  * ------------------------------------------------------------------------- */
 typedef struct {
     TaskApp     *app;
@@ -279,7 +271,7 @@ db_health_refresh(DbSection *s)
      * lives on the tooltip: the row says WHAT, hovering says which.      */
     /* Set BEFORE the detail is read out of `h`, and the ternaries below
      * test `h` first: with no pass made there is no struct to read.     */
-    gtk_widget_set_tooltip_text(s->health_label,
+    task_app_set_tooltip(s->health_label,
         h != NULL && h->detail != NULL ? h->detail
       : h != NULL ? "PRAGMA integrity_check and PRAGMA foreign_key_check "
                     "both passed against this file."
@@ -300,7 +292,7 @@ db_health_refresh(DbSection *s)
 static void
 db_sha_refresh(DbSection *s)
 {
-    GtkWidget *lbl = gtk_bin_get_child(GTK_BIN(s->sha_btn));
+    GtkWidget *lbl = gtk_button_get_child(GTK_BUTTON(s->sha_btn));
     gchar     *sha = task_db_file_sha256(s->app->db->path);
 
     if (sha != NULL && strlen(sha) > SHA_HEAD + SHA_TAIL) {
@@ -314,7 +306,7 @@ db_sha_refresh(DbSection *s)
         gchar *tip = g_strdup_printf(
             "%s\n\nThe file as it stands.  A database in use changes with "
             "the next edit, so this moves.\n\nClick to copy.", sha);
-        gtk_widget_set_tooltip_text(s->sha_btn, tip);
+        task_app_set_tooltip(s->sha_btn, tip);
         g_free(tip);
         gtk_widget_set_sensitive(s->sha_btn, TRUE);
         /* The full digest rides the button, so the click that copies it
@@ -324,8 +316,8 @@ db_sha_refresh(DbSection *s)
     } else {
         gtk_label_set_markup(GTK_LABEL(lbl),
                              "<small>\xe2\x80\x94</small>");
-        gtk_widget_set_tooltip_text(s->sha_btn,
-                                    "The database file could not be read.");
+        task_app_set_tooltip(s->sha_btn,
+                             "The database file could not be read.");
         gtk_widget_set_sensitive(s->sha_btn, FALSE);
         g_object_set_data(G_OBJECT(s->sha_btn), "task-sha", NULL);
         g_free(sha);
@@ -405,67 +397,66 @@ on_db_sha_clicked(GtkButton *btn, gpointer user_data)
     const gchar *sha = g_object_get_data(G_OBJECT(btn), "task-sha");
     if (sha == NULL)
         return;
-    gtk_clipboard_set_text(
-        gtk_clipboard_get_for_display(gtk_widget_get_display(GTK_WIDGET(btn)),
-                                      GDK_SELECTION_CLIPBOARD), sha, -1);
+    gdk_clipboard_set_text(gtk_widget_get_clipboard(GTK_WIDGET(btn)), sha);
     task_app_status(s->app, "SHA-256 copied to the clipboard");
 }
 
-/* bk_pick_folder() — folder chooser for the BACKUP destination.  Starts at
- * the current choice when there is one.  Returns a new path, or NULL.      */
-static gchar *
-bk_pick_folder(DbSection *s)
-{
-    GtkWidget *chooser = gtk_file_chooser_dialog_new(
-        "Choose Backup Folder",
-        GTK_WINDOW(gtk_widget_get_toplevel(s->bk_check)),
-        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Select", GTK_RESPONSE_ACCEPT,
-        NULL);
-    gchar *cur = task_app_config_get("backup_dir");
-    if (cur != NULL && *cur != '\0')
-        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), cur);
-    g_free(cur);
-    gchar *dir = NULL;
-    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
-        dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
-    gtk_widget_destroy(chooser);
-    return dir;
-}
-
-/* on_bk_toggled() — the backup master switch: persist, re-arm the timer,
- * and prompt for a folder the first time it is switched on with none set
- * (enabling a backup that cannot run is not a useful state to leave in).   */
+/* on_bk_toggled() — the backup master switch: persist and re-arm the
+ * timer.  No folder prompt: task_backup_dir falls back to the default
+ * database location, so switching this on always does something.
+ * Choosing a folder is an improvement, not a prerequisite.                 */
 static void
-on_bk_toggled(GtkToggleButton *check, gpointer user_data)
+on_bk_toggled(GtkCheckButton *check, gpointer user_data)
 {
     DbSection *s = user_data;
-    gboolean on = gtk_toggle_button_get_active(check);
+    gboolean on = gtk_check_button_get_active(check);
     task_app_config_set("backup_enabled", on ? "1" : "0");
-    /* No folder prompt: task_backup_dir falls back to the default database
-     * location, so switching this on always does something.  Choosing a
-     * folder is an improvement, not a prerequisite.                       */
     task_backup_auto_start(s->app, s->app->db->path);
     bk_section_refresh(s);
 }
 
-/* on_bk_choose_clicked() — re-pick the destination folder.                 */
+/* ---------------------------------------------------------------------------
+ * on_bk_folder_picked() — task_app_pick_path()'s continuation for the
+ * backup destination: persist the new folder, re-arm the timer against it
+ * and re-render the block.
+ *
+ * Inputs:
+ *   dir       — the chosen folder (owned here, freed), or NULL if the
+ *               chooser was cancelled — nothing changes then.
+ *   user_data — the DbSection.  The chooser is modal over the settings
+ *               window, which is what keeps the section alive until this
+ *               runs.
+ * ------------------------------------------------------------------------- */
+static void
+on_bk_folder_picked(gchar *dir, gpointer user_data)
+{
+    DbSection *s = user_data;
+    if (dir == NULL)
+        return;
+    task_app_config_set("backup_dir", dir);
+    g_free(dir);
+    task_backup_auto_start(s->app, s->app->db->path);
+    bk_section_refresh(s);
+}
+
+/* on_bk_choose_clicked() — re-pick the destination folder.  Asynchronous:
+ * on_bk_folder_picked does the rest once the chooser closes.               */
 static void
 on_bk_choose_clicked(GtkButton *btn, gpointer user_data)
 {
     (void)btn;
     DbSection *s = user_data;
-    gchar *dir = bk_pick_folder(s);
-    if (dir != NULL) {
-        task_app_config_set("backup_dir", dir);
-        g_free(dir);
-        task_backup_auto_start(s->app, s->app->db->path);
-        bk_section_refresh(s);
-    }
+    /* Start where backups go NOW — the resolved folder, default included —
+     * so re-picking from wherever the chooser last was is not how backups
+     * end up in two places.                                             */
+    gchar *current = task_backup_dir();
+    task_app_pick_path(GTK_WINDOW(gtk_widget_get_root(s->bk_check)),
+                       "Choose Backup Folder", TASK_PICK_FOLDER, "_Select",
+                       NULL, NULL, current, on_bk_folder_picked, s);
+    g_free(current);
 }
 
-/* on_bk_interval_changed() / on_bk_keep_changed() — persist and re-arm.    */
+/* on_bk_interval_changed() — persist the cadence and re-arm the timer.     */
 static void
 on_bk_interval_changed(GtkSpinButton *spin, gpointer user_data)
 {
@@ -476,6 +467,8 @@ on_bk_interval_changed(GtkSpinButton *spin, gpointer user_data)
     task_backup_auto_start(s->app, s->app->db->path);
 }
 
+/* on_bk_keep_changed() — persist the retention bound.  No re-arm: the
+ * cadence has not moved, and the bound is read at the start of each pass.  */
 static void
 on_bk_keep_changed(GtkSpinButton *spin, gpointer user_data)
 {
@@ -496,7 +489,8 @@ on_bk_now_clicked(GtkButton *btn, gpointer user_data)
     task_backup_start(s->app, s->app->db->path, NULL, NULL);
 }
 
-/* on_settings_destroy() — clear the singleton.                             */
+/* on_settings_destroy() — clear the singleton.  Touches only the state it
+ * owns: GTK4 emits this AFTER the child tree is gone (D3).                 */
 static void
 on_settings_destroy(GtkWidget *w, gpointer data)
 {
@@ -509,37 +503,96 @@ on_settings_destroy(GtkWidget *w, gpointer data)
 }
 
 /* ---------------------------------------------------------------------------
+ * settings_css_install() — the window's stylesheet, installed ONCE for the
+ * display (a static guard) through task_app_css_install.  One rule per
+ * `task-*` class the window puts on its widgets; a per-widget provider is
+ * deprecated in GTK4 and could not follow a theme change anyway.
+ *
+ * 1. small_button: a compact button.  The theme FLOORS min-height and
+ *    min-width, so both are named or trimming the padding moves nothing.
+ * 2. small_spin: a spin button no wider than its digits.  GTK4 keeps the
+ *    floor and the 8 px side padding on the `spinbutton` node itself
+ *    (Default theme: `spinbutton:not(.vertical), entry { min-height: 32px;
+ *    padding-left: 8px; padding-right: 8px }`), with a `text` child for
+ *    the digits and `button` children for the steppers — GTK3 had them on
+ *    an `entry` child, which no longer exists, so the selector is
+ *    `spinbutton > text` (Notes measured it).  The pixel numbers recorded
+ *    in CLAUDE.md for this row (432 → 430 → 346) were measured on GTK3
+ *    and are to be RE-MEASURED in Phase 4; the two-lever RULE is what
+ *    carries over.
+ * 3. The health plate: a bordered frame in the theme's base colour.  The
+ *    colours are NAMED theme colours, never literals: @theme_base_color is
+ *    the white a light theme paints its entries and lists with, and it
+ *    follows the theme into dark instead of leaving a white slab there.
+ *    GTK re-resolves a named colour itself on a light/dark switch, which
+ *    is why nothing here reloads anything.  Both names are still defined
+ *    by GTK 4.22's Default theme (Notes verified it); a theme naming
+ *    neither renders the declarations transparent, which leaves the plate
+ *    flat — a plain look rather than an unreadable one.
+ * 4. The SHA-256 button: a relief-less label that happens to be clickable,
+ *    stripped of every trace of its own box — padding, border and margin
+ *    all offset the label, and the digest has to start at the same x as
+ *    the four values above it or the column the grid exists to make is
+ *    broken by the one row that is not a plain label.
+ * 5. The LED: sized like Notes' save-state dot, which is the indicator it
+ *    is meant to read as.
+ * ------------------------------------------------------------------------- */
+static void
+settings_css_install(void)
+{
+    static gboolean installed = FALSE;
+    if (installed)
+        return;
+    installed = TRUE;
+    task_app_css_install(
+        "button.task-small-button {"
+        "  padding: 1px 8px; min-height: 0; min-width: 0;"
+        "}"
+        "button.task-small-button > label { font-size: 85%; }"
+        "spinbutton.task-small-spin {"
+        "  min-width: 0; min-height: 0; padding: 1px 2px;"
+        "}"
+        "spinbutton.task-small-spin > text { min-width: 0; min-height: 0; }"
+        "spinbutton.task-small-spin > button {"
+        "  min-width: 0; min-height: 0; padding: 0 2px;"
+        "}"
+        "frame.task-plate {"
+        "  background-color: @theme_base_color;"
+        "  border: 1px solid @borders;"
+        "  border-radius: 6px;"
+        "  padding: 8px 10px;"
+        "}"
+        "button.task-sha-button {"
+        "  padding: 0; margin: 0; border: none; min-height: 0; min-width: 0;"
+        "}"
+        "button.task-sha-button > label { font-family: monospace; }"
+        "label.task-led-label { font-size: 70%; }");
+}
+
+/* ---------------------------------------------------------------------------
  * small_button() — a text button at about half the theme's default bulk,
- * and the one spelling of a PUSH BUTTON in this window: the Database
- * section's, the Plugins section's and — through
- * task_settings_section_button(), which a plugin reaches as
- * host->settings->button — every CONTRIBUTED section's all come from
- * here, so no two of them can come to be two sizes.  A plugin building
- * its own gtk_button_new_with_label() is the one way to get a full-size
- * button into this column, and it reads as a mistake beside the rest.
- * (The SHA-256 row's is not one of them and
+ * and the one spelling of a PUSH BUTTON in this window, so no two of them
+ * can come to be two sizes.  (The SHA-256 row's is not one of them and
  * should not become one — it is a relief-less label that happens to be
  * clickable, and it strips its box entirely to keep the digest on the
  * grid's value column.)
  *
  * These buttons sit UNDER the lines they act on rather than beside them —
- * the Database section's under its plate of quiet facts, the Plugins
- * section's under the folder line and the list — so a full-size button
- * reads as the loudest thing in a block whose point is the text above it.
+ * the Database section's under its plate of quiet facts — so a full-size
+ * button reads as the loudest thing in a block whose point is the text
+ * above it.
  * Shrunk by padding and font size rather than by a shorter label: the
  * words are what say what the button does.
  *
- * min-height/min-width are named because Adwaita floors both, so trimming
- * the padding alone moves nothing (the same floor small_spin has to name,
- * where it is the whole of the difference).
+ * min-height/min-width are named (settings_css_install) because the theme
+ * floors both, so trimming the padding alone moves nothing (the same floor
+ * small_spin has to name, where it is the whole of the difference).
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 small_button(const gchar *label)
 {
     GtkWidget *btn = gtk_button_new_with_label(label);
-    task_app_widget_add_css(btn,
-        "button { padding: 1px 8px; min-height: 0; min-width: 0; }"
-        "button label { font-size: 85%; }");
+    gtk_widget_add_css_class(btn, "task-small-button");
     gtk_widget_set_valign(btn, GTK_ALIGN_CENTER);
     return btn;
 }
@@ -549,31 +602,29 @@ small_button(const gchar *label)
  *   lo, hi — the range; `chars` — digits to size the entry for.
  *
  * A default GtkSpinButton is enormous for a three-digit number, and the
- * lever is NOT the obvious one: `gtk_entry_set_width_chars` alone moves
- * almost nothing, because Adwaita floors `min-width` on the entry and on
- * both stepper buttons, and a floor beats a request.  MEASURED over the
- * "Every N minutes, keeping M files" row: width_chars alone took it from
- * 432 px to 430 — two pixels, which reads exactly like "the setting is
- * ignored" and is very nearly is.  Naming the floors as well takes the
- * same row to 346.  (Same trap as small_button's min-height, and the same
- * lesson as gotcha 18: a property being DISCARDED looks identical to one
- * that is too subtle, so measure rather than nudging the number.)
+ * lever is NOT the obvious one: `width_chars` alone moves almost nothing,
+ * because the theme floors `min-width` on the spin button and on both
+ * stepper buttons, and a floor beats a request.  MEASURED on GTK3 over
+ * the "Every N minutes, keeping M files" row: width_chars alone took it
+ * from 432 px to 430 — two pixels, which reads exactly like "the setting
+ * is ignored" and very nearly is.  Naming the floors as well took the same
+ * row to 346.  (Same trap as small_button's min-height: a property being
+ * DISCARDED looks identical to one that is too subtle, so measure rather
+ * than nudging the number.)  Those numbers are GTK3's; the GTK4 row is
+ * re-measured in Phase 4.
  *
- * Both levers are kept, because they do different jobs: the CSS removes
- * the floor, and `chars` is what then decides the width — sized to the
- * RANGE, so the widest value a user can reach still fits without the
- * entry scrolling under them.
+ * Both levers are kept, because they do different jobs: the CSS
+ * (settings_css_install) removes the floor, and `chars` is what then
+ * decides the width — sized to the RANGE, so the widest value a user can
+ * reach still fits without the entry scrolling under them.
  * ------------------------------------------------------------------------- */
 static GtkWidget *
 small_spin(gdouble lo, gdouble hi, gdouble step, gint chars)
 {
     GtkWidget *spin = gtk_spin_button_new_with_range(lo, hi, step);
-    gtk_entry_set_width_chars(GTK_ENTRY(spin), chars);
-    gtk_entry_set_max_width_chars(GTK_ENTRY(spin), chars);
-    task_app_widget_add_css(spin,
-        "spinbutton { min-width: 0; min-height: 0; }"
-        "spinbutton entry { min-width: 0; min-height: 0; padding: 1px 2px; }"
-        "spinbutton button { min-width: 0; min-height: 0; padding: 0 2px; }");
+    gtk_editable_set_width_chars(GTK_EDITABLE(spin), chars);
+    gtk_editable_set_max_width_chars(GTK_EDITABLE(spin), chars);
+    gtk_widget_add_css_class(spin, "task-small-spin");
     return spin;
 }
 
@@ -612,7 +663,7 @@ info_row(GtkWidget *grid, gint row, const gchar *name)
     gtk_label_set_xalign(GTK_LABEL(value), 0.0);
     /* The path is the long one and the reason for both calls; on a short
      * value they cost nothing.                                          */
-    gtk_label_set_line_wrap(GTK_LABEL(value), TRUE);
+    gtk_label_set_wrap(GTK_LABEL(value), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(value), 44);
     gtk_label_set_selectable(GTK_LABEL(value), TRUE);
     /* Selectable labels come up with the whole text selected, which reads
@@ -635,479 +686,6 @@ section_label(const gchar *text)
 }
 
 /* ---------------------------------------------------------------------------
- * Contributed sections (see settings_window.h).  Registered once at
- * startup; never removed.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    TaskSettingsSectionFn fn;
-    gpointer              user_data;
-} Section;
-
-static GSList *sections = NULL;      /* Section*, registration order        */
-
-void
-task_settings_add_section(TaskSettingsSectionFn fn, gpointer user_data)
-{
-    if (fn == NULL)
-        return;
-    Section *s = g_new0(Section, 1);
-    s->fn        = fn;
-    s->user_data = user_data;
-    task_plugin_owner_stamp(s);
-    sections = g_slist_append(sections, s);
-}
-
-/* ---------------------------------------------------------------------------
- * task_settings_remove_owner() — drop `owner`'s sections (see header).
- *
- * Only the REGISTRATION goes.  Any widgets a previous opening built are
- * already owned by that window, and the window rebuilds its column from
- * this list — so a section removed here is simply not built next time.
- * ------------------------------------------------------------------------- */
-void
-task_settings_remove_owner(const gchar *owner)
-{
-    if (owner == NULL)
-        return;
-    GSList *n = sections;
-    while (n != NULL) {
-        GSList *next = n->next;
-        Section *sec = n->data;
-        if (task_plugin_owner_is(sec, owner)) {
-            task_plugin_owner_forget(sec);
-            sections = g_slist_delete_link(sections, n);
-            g_free(sec);
-        }
-        n = next;
-    }
-}
-
-/* wrapped_label() — a wrapping, left-aligned explanatory label.            */
-static GtkWidget *
-wrapped_label(const gchar *text)
-{
-    GtkWidget *label = gtk_label_new(text);
-    gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
-    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
-    gtk_widget_set_halign(label, GTK_ALIGN_START);
-    return label;
-}
-
-/* The same two, exported so a contributed section looks built-in.        */
-GtkWidget *
-task_settings_section_heading(const gchar *text)
-{
-    return section_label(text);
-}
-
-GtkWidget *
-task_settings_section_note(const gchar *text)
-{
-    return wrapped_label(text);
-}
-
-GtkWidget *
-task_settings_section_button(const gchar *label)
-{
-    return small_button(label);
-}
-
-GtkWidget *
-task_settings_section_spin(gdouble lo, gdouble hi, gdouble step, gint chars)
-{
-    return small_spin(lo, hi, step, chars);
-}
-
-/* ===========================================================================
- * The Plugins section.
- *
- * Built through task_settings_add_section() like any contributed one —
- * if the app's own section needed a shortcut, the registry would not be
- * good enough for a plugin's.
- * =========================================================================== */
-
-/* ---------------------------------------------------------------------------
- * Rebuilding the window after the section list changes.
- *
- * The window is built in ONE pass and has no incremental path, so a
- * changed section list is applied by closing and reopening it.  That is
- * the only route that is already correct for every section, in order,
- * with its separator — patching the column by hand would be a second
- * implementation of the build, and the two would drift.
- *
- * Geometry and scroll offset are carried across, because the click that
- * triggers this is a checkbox in the Plugins list — a long way down the
- * column — and a window that jumps back to the top reads as having lost
- * the user's place rather than as having refreshed.
- * ------------------------------------------------------------------------- */
-static gdouble settings_scroll_keep = 0.0;
-
-/* settings_scroll_restore() — put the offset back once the rebuilt column
- * has been laid out.  Idle-deferred for the reason every scroll restore
- * in this app is: the adjustment's upper bound is not final until the
- * new content has been sized, and setting a value against a stale upper
- * is silently clamped to it.                                             */
-static gboolean
-settings_scroll_restore(gpointer data)
-{
-    (void)data;
-    if (settings == NULL || settings->scroller == NULL)
-        return G_SOURCE_REMOVE;
-    GtkAdjustment *va = gtk_scrolled_window_get_vadjustment(
-        GTK_SCROLLED_WINDOW(settings->scroller));
-    if (va != NULL)
-        gtk_adjustment_set_value(va, settings_scroll_keep);
-    return G_SOURCE_REMOVE;
-}
-
-/* settings_reopen() — close and rebuild the settings window.  An idle
- * callback: it destroys the window that owns the widget whose handler
- * asked for it, so it must not run inside that handler.                  */
-static gboolean
-settings_reopen(gpointer data)
-{
-    TaskApp *app = data;
-    if (settings == NULL)
-        return G_SOURCE_REMOVE;      /* closed while this waited            */
-
-    GtkWindow *parent =
-        gtk_window_get_transient_for(GTK_WINDOW(settings->window));
-    gchar *db_path = g_strdup(settings->db_path);
-    gint x = 0, y = 0, w = 0, h = 0;
-    gtk_window_get_position(GTK_WINDOW(settings->window), &x, &y);
-    gtk_window_get_size(GTK_WINDOW(settings->window), &w, &h);
-
-    settings_scroll_keep = 0.0;
-    if (settings->scroller != NULL) {
-        GtkAdjustment *va = gtk_scrolled_window_get_vadjustment(
-            GTK_SCROLLED_WINDOW(settings->scroller));
-        if (va != NULL)
-            settings_scroll_keep = gtk_adjustment_get_value(va);
-    }
-
-    /* on_settings_destroy clears the singleton, which is what lets the
-     * open below build a new one instead of presenting the dead one.    */
-    gtk_widget_destroy(settings->window);
-    task_settings_window_open(app, parent, db_path);
-    g_free(db_path);
-
-    if (settings != NULL) {
-        gtk_window_move(GTK_WINDOW(settings->window), x, y);
-        gtk_window_resize(GTK_WINDOW(settings->window), w, h);
-        g_idle_add(settings_scroll_restore, NULL);
-    }
-    return G_SOURCE_REMOVE;
-}
-
-/* on_plugin_toggled() — write the enabled setting and apply it now.
- *
- * Switching off sweeps everything the plugin registered; switching on
- * loads it if it is not already mapped, then initialises it.  Either way
- * the change is live, and the status line says so rather than promising
- * a restart — a note that says "restart" after the section has visibly
- * gone reads as the app not knowing what it just did.  The failure
- * message is kept for the case where applying it now did not work.
- *
- * The window is REBUILT afterwards, not patched: the section list is what
- * just changed, and rebuilding is the one path that is already correct
- * for every section, in order, with its separator.                       */
-static void
-on_plugin_toggled(GtkWidget *check, gpointer data)
-{
-    const gchar *id = data;
-    gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(check));
-    TaskApp *app = g_object_get_data(G_OBJECT(check), "task-app");
-
-    gboolean now = task_plugins_set_enabled(app, id, on);
-    if (now)
-        task_app_status(app, "%s %s", id, on ? "enabled" : "disabled");
-    else
-        /* The setting is written either way, so it WILL apply next
-         * launch; what failed is applying it now.                      */
-        task_app_status(app, "%s could not be %s now \xe2\x80\x94 it will "
-                        "be %s the next time Tasks starts", id,
-                        on ? "loaded" : "unloaded",
-                        on ? "loaded" : "left unloaded");
-
-    /* Reopen so the contributed sections match the registry again.  Done
-     * from an idle: this runs inside the checkbox's own "toggled", and
-     * destroying the window that holds it from underneath would return
-     * into a dead widget.                                                */
-    if (now)
-        g_idle_add(settings_reopen, app);
-}
-
-/* on_readme_link() — open a plugin's README in whatever the desktop uses
- * for it.
- *
- * GTK's default handler for an <a href> in a label already calls
- * gtk_show_uri, so this exists for the FAILURE case: on a desktop with
- * no handler registered for Markdown, the default silently does nothing
- * and the click reads as a broken link.  Saying so on the status bar is
- * the difference between "no handler for .md" and "this app is buggy".
- *
- * Returning TRUE claims the signal so GTK does not then try again.       */
-static gboolean
-on_readme_link(GtkWidget *label, const gchar *uri, gpointer data)
-{
-    TaskApp *app = data;
-    GError *err = NULL;
-    if (!gtk_show_uri_on_window(
-            GTK_WINDOW(gtk_widget_get_toplevel(label)), uri,
-            GDK_CURRENT_TIME, &err)) {
-        task_app_status(app, "Could not open the README: %s",
-                        err != NULL ? err->message : "no application "
-                        "is set up to open Markdown files");
-        g_clear_error(&err);
-    }
-    return TRUE;
-}
-
-/* on_plugin_dir_choose() — pick the folder plugins are loaded from.
- *
- * The label is NOT updated afterwards: it reports where THIS run actually
- * looked, and that does not change until a restart.  Rewriting it to the
- * new folder would claim the running plugins came from somewhere they
- * did not.                                                               */
-static void
-on_plugin_dir_choose(GtkWidget *btn, gpointer data)
-{
-    TaskApp *app = data;
-    GtkWidget *chooser = gtk_file_chooser_dialog_new(
-        "Choose Plugin Folder",
-        GTK_WINDOW(gtk_widget_get_toplevel(btn)),
-        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Select", GTK_RESPONSE_ACCEPT,
-        NULL);
-    gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser),
-                                        task_plugins_dir());
-    if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT) {
-        gchar *dir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
-        if (dir != NULL) {
-            task_plugins_set_dir(dir);
-            task_app_status(app, "Plugins will load from %s the next time "
-                            "Tasks starts", dir);
-            g_free(dir);
-        }
-    }
-    gtk_widget_destroy(chooser);
-}
-
-/* on_plugin_dir_default() — go back to the standard location.            */
-static void
-on_plugin_dir_default(GtkWidget *btn, gpointer data)
-{
-    (void)btn;
-    TaskApp *app = data;
-    task_plugins_set_dir(NULL);
-    task_app_status(app, "Plugins will load from the default folder the "
-                    "next time Tasks starts");
-}
-
-/* ---------------------------------------------------------------------------
- * plugin_row_line() — one indented, left-aligned, wrapping markup line
- * under a plugin's checkbox, packed into `row`.
- *
- * Both lines a row can carry go through this: the dimmed detail line and
- * the README link below it.  Same indent (24 px, clearing the checkbox)
- * and same left alignment from one place, which is what makes the link
- * land in the SAME spot on every row.  "activate-link" is connected on
- * both because it costs nothing and a line with no link never emits it.
- * ------------------------------------------------------------------------- */
-static void
-plugin_row_line(GtkWidget *row, const gchar *markup, TaskApp *app)
-{
-    GtkWidget *lbl = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(lbl), markup);
-    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
-    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
-    gtk_widget_set_halign(lbl, GTK_ALIGN_START);
-    gtk_widget_set_margin_start(lbl, 24);
-    g_signal_connect(lbl, "activate-link", G_CALLBACK(on_readme_link), app);
-    gtk_box_pack_start(GTK_BOX(row), lbl, FALSE, FALSE, 0);
-}
-
-/* plugins_section() — the list of every plugin FOUND, running or not.    */
-static void
-plugins_section(TaskApp *app, GtkWidget *vbox, GtkWindow *window,
-                gpointer user_data)
-{
-    (void)window;
-    (void)user_data;
-
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Plugins"),
-                       FALSE, FALSE, 0);
-
-    /* Counted up here because the restart note below is gated on it and
-     * now sits ABOVE the folder buttons — the empty-case early return is
-     * still further down, after those buttons, since someone with no
-     * plugins yet is exactly who needs them.                            */
-    guint n = task_plugins_available();
-
-    /* Where they come from and how to add one.  Shown even when none are
-     * installed — that is precisely when someone needs to be told where
-     * to put the first.                                                  */
-    /* <small>, matching the Database section's "Current database:" line —
-     * both are the same thing: a path and what to do about it, under the
-     * controls that act on it.  g_markup_printf_escaped because the path
-     * is interpolated INTO markup, and a folder name may hold an "&".   */
-    GtkWidget *where_label = wrapped_label(NULL);
-    gchar *where = g_markup_printf_escaped(
-        "<small>Plugins are loaded from\n%s\nTo add one, copy it into "
-        "that folder and restart Tasks.</small>", task_plugins_dir());
-    gtk_label_set_markup(GTK_LABEL(where_label), where);
-    g_free(where);
-    gtk_box_pack_start(GTK_BOX(vbox), where_label, FALSE, FALSE, 0);
-
-    /* What a click below actually does, said in the same breath and the
-     * same size as the sentence above it.  No markup arguments, so a
-     * literal is safe.                                                  */
-    if (n > 0) {
-        GtkWidget *restart_label = wrapped_label(NULL);
-        gtk_label_set_markup(GTK_LABEL(restart_label),
-            "<small>Switching a plugin on or off takes effect "
-            "immediately \xe2\x80\x94 no restart needed.</small>");
-        gtk_box_pack_start(GTK_BOX(vbox), restart_label, FALSE, FALSE, 0);
-    }
-
-    GtkWidget *dir_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *choose  = small_button("Change Folder\xe2\x80\xa6");
-    g_signal_connect(choose, "clicked",
-                     G_CALLBACK(on_plugin_dir_choose), app);
-    gtk_box_pack_start(GTK_BOX(dir_row), choose, FALSE, FALSE, 0);
-
-    GtkWidget *reset = small_button("Use Default Folder");
-    gtk_widget_set_tooltip_text(reset,
-        "The plugins folder beside the database, in your home directory");
-    g_signal_connect(reset, "clicked",
-                     G_CALLBACK(on_plugin_dir_default), app);
-    gtk_box_pack_start(GTK_BOX(dir_row), reset, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), dir_row, FALSE, FALSE, 0);
-
-    if (n == 0) {
-        gtk_box_pack_start(GTK_BOX(vbox), wrapped_label(
-            "No plugins are installed."), FALSE, FALSE, 0);
-        return;
-    }
-
-    for (guint i = 0; i < n; i++) {
-        const TaskPluginInfo *pi = task_plugins_info(i);
-        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-
-        GtkWidget *check = gtk_check_button_new_with_label(
-            pi->name != NULL ? pi->name : pi->id);
-        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(check), pi->enabled);
-        g_object_set_data(G_OBJECT(check), "task-app", app);
-        /* The id string belongs to the loader and outlives this window,
-         * so the handler can borrow it.                                  */
-        g_signal_connect(check, "toggled",
-                         G_CALLBACK(on_plugin_toggled), (gpointer)pi->id);
-        gtk_box_pack_start(GTK_BOX(row), check, FALSE, FALSE, 0);
-
-        /* One dimmed line under the name: what it does, its version, and
-         * — the part that matters — why it is not running when it should
-         * be.  A plugin that failed silently is a plugin that looks
-         * broken for no reason.
-         *
-         * There is no "will load on restart" case any more: enabling a
-         * plugin loads it on the spot, so a row that still said so would
-         * be describing the old behaviour.
-         *
-         * The description reads the same whether the plugin is running
-         * or not — it comes from the README, not the module.  The
-         * version does NOT: it is the module's, so it is blank until
-         * something is actually loaded, which is the honest answer to
-         * "what version is running?".                                    */
-        GString *sub = g_string_new(NULL);
-        if (pi->description != NULL)
-            g_string_append(sub, pi->description);
-        if (pi->version != NULL) {
-            if (sub->len > 0)
-                g_string_append(sub, "  ");
-            g_string_append_printf(sub, "v%s", pi->version);
-        }
-        if (pi->problem != NULL) {
-            if (sub->len > 0)
-                g_string_append(sub, "  \xe2\x80\x94  ");
-            g_string_append_printf(sub, "Not loaded: %s", pi->problem);
-        }
-        if (sub->len > 0) {
-            /* The description is DB- and plugin-sourced text going into
-             * Pango markup, so it is escaped.  A bad byte or a stray "&"
-             * in a plugin's description would otherwise make
-             * pango_parse_markup reject the whole label and the row would
-             * draw blank.                                                */
-            gchar *esc = g_markup_escape_text(sub->str, -1);
-            gchar *m = g_strdup_printf(
-                "<small><span alpha=\"65%%\">%s</span></small>", esc);
-            plugin_row_line(row, m, app);
-            g_free(m);
-            g_free(esc);
-        }
-        g_string_free(sub, TRUE);
-
-        /* README on a LINE OF ITS OWN, left-aligned at the same indent as
-         * the detail line above it — one fixed place per row, found
-         * without reading the description first.
-         *
-         * It used to be appended to the end of that line after an em
-         * dash, which put it wherever the description happened to stop:
-         * a different column on every row, and on a long description it
-         * wrapped to the next line and moved again with the window's
-         * width.  A link is a control, and a control that moves per row
-         * has to be hunted for.
-         *
-         * NOT inside the alpha span any more either.  Dimming was right
-         * for text that supports the name above it; a dimmed link on its
-         * own line reads as a disabled one.  It keeps <small>, so the
-         * block still sits below the name in scale.                     */
-        if (pi->readme != NULL) {
-            gchar *uri = g_filename_to_uri(pi->readme, NULL, NULL);
-            if (uri != NULL) {
-                gchar *uesc = g_markup_escape_text(uri, -1);
-                gchar *m = g_strdup_printf(
-                    "<small><a href=\"%s\">README</a></small>", uesc);
-                plugin_row_line(row, m, app);
-                g_free(m);
-                g_free(uesc);
-                g_free(uri);
-            }
-        }
-        gtk_box_pack_start(GTK_BOX(vbox), row, FALSE, FALSE, 0);
-    }
-}
-
-/* task_settings_init() — register the app's own contributed sections.    */
-void
-task_settings_init(void)
-{
-    task_settings_add_section(plugins_section, NULL);
-}
-
-/* ---------------------------------------------------------------------------
- * settings_height_cap() — the tallest the settings column may open, in
- * pixels: the work area of the monitor the parent window is on, less room
- * for the titlebar and the dock/panel.  Falls back to a conservative
- * 900-px screen when the parent is not realized yet (no GdkWindow, so no
- * monitor to ask).
- * ------------------------------------------------------------------------- */
-static gint
-settings_height_cap(GtkWindow *parent)
-{
-    GdkRectangle area = { 0, 0, 0, 900 };     /* fallback screen height   */
-    GdkWindow   *ref  = parent != NULL
-                        ? gtk_widget_get_window(GTK_WIDGET(parent)) : NULL;
-    if (ref != NULL) {
-        GdkMonitor *mon = gdk_display_get_monitor_at_window(
-                              gdk_window_get_display(ref), ref);
-        if (mon != NULL)
-            gdk_monitor_get_workarea(mon, &area);
-    }
-    return MAX(320, area.height - 140);
-}
-
-/* ---------------------------------------------------------------------------
  * settings_scroller_new() — wrap the settings column in a vertical
  * scroller.  Both of the window's size problems come from the column
  * having been the window's DIRECT child: a plain GtkBox propagates its
@@ -1116,12 +694,15 @@ settings_height_cap(GtkWindow *parent)
  * grown, which reads as "it can't be resized" — and a column taller than
  * the screen ran off the bottom with no way to reach the last section.
  *
- * `propagate_natural_height` keeps the "opens at exactly the height it
- * needs" behaviour the -1 default size asks for; `max_content_height`
- * caps that at the monitor's work area, so a short screen opens scrolled
- * instead of oversized; `min_content_height` is what makes shrinking
- * possible at all.  Horizontal policy is NEVER — the column wraps its own
- * explanatory labels, so it must never scroll sideways.
+ * `propagate_natural_height` is what makes the window open at exactly the
+ * height it needs; `max_content_height` caps that at SETTINGS_MAX_HEIGHT,
+ * so a tall column opens scrolled instead of oversized;
+ * `min_content_height` is what makes shrinking possible at all.
+ * `propagate_natural_width` is the WIDTH's half of the same rule: there is
+ * no default width on the window (a default size is what a window opens
+ * AT, natural size or not), so the column's own request is what sets it.
+ * Horizontal policy is NEVER — the column wraps its own explanatory
+ * labels, so it must never scroll sideways.
  *
  * The child carries a SETTINGS_WIDTH width request because of those
  * wrapping labels: with NEVER, the scroller measures its natural height
@@ -1129,22 +710,28 @@ settings_height_cap(GtkWindow *parent)
  * several lines taller than the same label at 470 px — the window would
  * open with a band of empty space under the last section.  Requesting the
  * real width makes the measurement match what is drawn.
+ *
+ * No overlay-scrolling call here: classic scrollbars are the
+ * `gtk-overlay-scrolling` setting, set once in startup, which reaches
+ * this scroller like every other (D11).
  * ------------------------------------------------------------------------- */
 static GtkWidget *
-settings_scroller_new(GtkWidget *child, GtkWindow *parent)
+settings_scroller_new(GtkWidget *child)
 {
-    GtkWidget *sc = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *sc = gtk_scrolled_window_new();
     gtk_widget_set_size_request(child, SETTINGS_WIDTH, -1);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sc),
                                    GTK_POLICY_NEVER,
                                    GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_propagate_natural_height(
         GTK_SCROLLED_WINDOW(sc), TRUE);
+    gtk_scrolled_window_set_propagate_natural_width(
+        GTK_SCROLLED_WINDOW(sc), TRUE);
     gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(sc),
                                                240);
     gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(sc),
-                                               settings_height_cap(parent));
-    gtk_container_add(GTK_CONTAINER(sc), child);
+                                               SETTINGS_MAX_HEIGHT);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sc), child);
     return sc;
 }
 
@@ -1159,81 +746,67 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
         gtk_window_present(GTK_WINDOW(settings->window));
         return;
     }
+    settings_css_install();
+
     TaskSettings *sw = g_new0(TaskSettings, 1);
     settings = sw;
     sw->app = app;
     sw->db_path = g_strdup(db_path);
     sw->loading = TRUE;
 
-    sw->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    sw->window = gtk_window_new();
     gtk_window_set_title(GTK_WINDOW(sw->window), "Tasks - Settings");
     gtk_window_set_transient_for(GTK_WINDOW(sw->window), parent);
-    gtk_window_set_default_size(GTK_WINDOW(sw->window),
-                                SETTINGS_WIDTH, -1);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_set_border_width(GTK_CONTAINER(vbox), 14);
-    sw->scroller = settings_scroller_new(vbox, parent);
-    gtk_container_add(GTK_CONTAINER(sw->window), sw->scroller);
+    gtk_widget_set_margin_start(vbox, 14);
+    gtk_widget_set_margin_end(vbox, 14);
+    gtk_widget_set_margin_top(vbox, 14);
+    gtk_widget_set_margin_bottom(vbox, 14);
+    GtkWidget *scroller = settings_scroller_new(vbox);
+    gtk_window_set_child(GTK_WINDOW(sw->window), scroller);
 
     /* --- Appearance --------------------------------------------------------- */
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Appearance"),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), section_label("Appearance"));
 
     GtkWidget *bold_check = gtk_check_button_new_with_label(
         "Show task titles in bold");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(bold_check),
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(bold_check),
         task_app_config_get_bool("bold_task_titles", FALSE));
     g_signal_connect(bold_check, "toggled",
                      G_CALLBACK(on_bold_titles_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), bold_check, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), bold_check);
 
     GtkWidget *shadow_check = gtk_check_button_new_with_label(
         "Show drop shadows on Kanban cards");
-    gtk_widget_set_tooltip_text(shadow_check,
+    task_app_set_tooltip(shadow_check,
         "Lifts each card off its lane.  The shadow is blurred, and GTK "
         "redraws that blur\nevery time the board paints \xe2\x80\x94 turning it "
         "off costs the board nothing\nand gives back about 1 ms per lane "
         "repaint.");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(shadow_check),
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(shadow_check),
         task_app_config_get_bool("kanban_shadow", TRUE));
     g_signal_connect(shadow_check, "toggled",
                      G_CALLBACK(on_kanban_shadow_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), shadow_check, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), shadow_check);
 
     GtkWidget *overdue_check = gtk_check_button_new_with_label(
         "Include all past-due tasks in the Due Today view");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(overdue_check),
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(overdue_check),
         task_app_config_get_bool("due_today_show_overdue", FALSE));
     g_signal_connect(overdue_check, "toggled",
                      G_CALLBACK(on_due_today_overdue_toggled), sw);
-    gtk_box_pack_start(GTK_BOX(vbox), overdue_check, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), overdue_check);
 
-#ifdef __APPLE__
-    GtkWidget *mac_check = gtk_check_button_new_with_label(
-        "Use the native macOS menu bar (hide the in-window menu)");
-#ifdef HAVE_GTKOSX
-    gtk_toggle_button_set_active(
-        GTK_TOGGLE_BUTTON(mac_check),
-        task_app_config_get_bool("native_menubar", FALSE));
-    g_signal_connect(mac_check, "toggled",
-                     G_CALLBACK(on_native_menubar_toggled), sw);
-#else
-    gtk_widget_set_sensitive(mac_check, FALSE);
-    gtk_widget_set_tooltip_text(mac_check,
-        "Requires the gtk-mac-integration library:\n"
-        "sudo port install gtk-osx-application-gtk3, then rebuild "
-        "(make clean && make)");
-#endif
-    gtk_box_pack_start(GTK_BOX(vbox), mac_check, FALSE, FALSE, 0);
-#endif /* __APPLE__ */
-    gtk_box_pack_start(GTK_BOX(vbox),
-                       gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                       FALSE, FALSE, 2);
+    /* The rule between the two sections, with the 2 px of breathing room
+     * above and below that the box's own spacing does not give it.       */
+    GtkWidget *rule = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_set_margin_top(rule, 2);
+    gtk_widget_set_margin_bottom(rule, 2);
+    gtk_box_append(GTK_BOX(vbox), rule);
 
     /* --- Database ---------------------------------------------------------- */
-    gtk_box_pack_start(GTK_BOX(vbox), section_label("Database"),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), section_label("Database"));
 
     DbSection *dbs = g_new0(DbSection, 1);
     dbs->app = app;
@@ -1253,31 +826,15 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
      * is visibly a different kind of thing from the controls below that
      * CHANGE it.
      *
-     * A GtkFrame, and it matters that it is one: a frame is a NO-WINDOW
-     * widget, so CSS padding and border sit on it properly — where a
-     * visible-window GtkEventBox would ignore both for its own size and
-     * come out exactly as big as the grid, with the text hard against the
-     * border it had just drawn (gotcha 18).  Its own shadow is turned OFF
-     * so the theme's frame edge does not double up with the CSS one.
-     *
-     * The colours are NAMED theme colours, never literals.  @theme_base_color
-     * is the white a light theme paints its entries and lists with — so
-     * this is white on Adwaita, as asked — but it follows the theme into
-     * dark instead of leaving a white slab there, which is exactly what
-     * the compact float bar's hardcoded greys once did.  Named colours
-     * also mean GTK re-resolves them itself on a light/dark switch, so
-     * this needs none of themed_bg_css_apply's reload dance: that helper
-     * exists because it bakes a RESOLVED literal into its CSS from C.
-     * A theme naming neither colour drops the declarations and leaves the
-     * plate flat, which is a plain look rather than an unreadable one. */
+     * A GtkFrame: CSS padding and border sit on it properly, so the text
+     * is not hard against the border.  The CSS border REPLACES the theme's
+     * frame edge rather than doubling it up, since the rule restates the
+     * whole `border` property (there is no shadow type to switch off in
+     * GTK4).  The colours are named theme colours; the rule and the reason
+     * are in settings_css_install.                                      */
     GtkWidget *plate = gtk_frame_new(NULL);
-    gtk_frame_set_shadow_type(GTK_FRAME(plate), GTK_SHADOW_NONE);
-    task_app_widget_add_css(plate,
-        "frame { background-color: @theme_base_color;"
-        "        border: 1px solid @borders;"
-        "        border-radius: 6px;"
-        "        padding: 8px 10px; }");
-    gtk_container_add(GTK_CONTAINER(plate), info);
+    gtk_widget_add_css_class(plate, "task-plate");
+    gtk_frame_set_child(GTK_FRAME(plate), info);
 
     /* Plate and button in a box of their own, and the SECTION MARGINS GO
      * ON THE BOX rather than on the plate: that is what makes the two
@@ -1289,17 +846,17 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
     gtk_widget_set_margin_start(plate_box, 12);
     gtk_widget_set_margin_end(plate_box, 12);
     gtk_widget_set_margin_bottom(plate_box, 8);
-    gtk_box_pack_start(GTK_BOX(plate_box), plate, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(plate_box), plate);
 
     dbs->update_btn = small_button("Update");
-    gtk_widget_set_tooltip_text(dbs->update_btn,
+    task_app_set_tooltip(dbs->update_btn,
         "Re-read every line above: run PRAGMA integrity_check and PRAGMA "
         "foreign_key_check against this database, then re-count its tasks "
         "and lists and re-read its size and SHA-256.");
     /* Right edge against the plate's, which is what the shared margins
      * above are for.                                                   */
     gtk_widget_set_halign(dbs->update_btn, GTK_ALIGN_END);
-    gtk_box_pack_start(GTK_BOX(plate_box), dbs->update_btn, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(plate_box), dbs->update_btn);
 
     /* Ordered by what someone is actually asking.  Health leads: it is the
      * one line that can be BAD NEWS, and a block whose verdict is fourth
@@ -1318,14 +875,11 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
      * one line it used to refresh.                                     */
     GtkWidget *health_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     dbs->led_label = gtk_label_new(LED_UNKNOWN);
-    /* Sized like Notes' save-state dot, which is the indicator this is
-     * meant to read as.                                                 */
-    task_app_widget_add_css(dbs->led_label, "label { font-size: 70%; }");
-    gtk_box_pack_start(GTK_BOX(health_row), dbs->led_label, FALSE, FALSE, 0);
+    gtk_widget_add_css_class(dbs->led_label, "task-led-label");
+    gtk_box_append(GTK_BOX(health_row), dbs->led_label);
     dbs->health_label = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(dbs->health_label), 0.0);
-    gtk_box_pack_start(GTK_BOX(health_row), dbs->health_label,
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(health_row), dbs->health_label);
     info_row_attach(info, 0, "Health:", health_row);
 
     dbs->path_label = info_row(info, 1, "Current database:");
@@ -1333,21 +887,16 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
     dbs->size_label = info_row(info, 3, "Size on disk:");
 
     dbs->sha_btn = gtk_button_new_with_label("\xe2\x80\x94");
-    gtk_button_set_relief(GTK_BUTTON(dbs->sha_btn), GTK_RELIEF_NONE);
-    /* Every trace of the button's own box: padding, border and margin all
-     * offset the label, and the digest has to start at the same x as the
-     * four values above it or the column the grid exists to make is
-     * broken by the one row that is not a plain label.                  */
-    task_app_widget_add_css(dbs->sha_btn,
-        "button { padding: 0; margin: 0; border: none; min-height: 0;"
-        "         min-width: 0; }"
-        "button label { font-family: monospace; }");
+    gtk_button_set_has_frame(GTK_BUTTON(dbs->sha_btn), FALSE);
+    /* Every trace of the button's own box goes (settings_css_install), so
+     * the digest starts at the same x as the four values above it.      */
+    gtk_widget_add_css_class(dbs->sha_btn, "task-sha-button");
     /* Attached straight to the grid: with the button gone this row is one
      * widget, and a box holding a single child is a box that says nothing.
      */
     info_row_attach(info, 4, "SHA-256:", dbs->sha_btn);
 
-    gtk_box_pack_start(GTK_BOX(vbox), plate_box, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), plate_box);
 
     g_signal_connect(dbs->sha_btn, "clicked",
                      G_CALLBACK(on_db_sha_clicked), dbs);
@@ -1368,14 +917,14 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
         "Back up the database automatically");
     gtk_widget_set_margin_start(dbs->bk_check, 12);
     gtk_widget_set_margin_top(dbs->bk_check, 6);
-    gtk_widget_set_tooltip_text(dbs->bk_check,
+    task_app_set_tooltip(dbs->bk_check,
         "Writes a verified copy of the database into a folder of your "
         "choice on a timer, keeping only the most recent few.  Worth "
         "pointing at a disk INDEPENDENT of wherever the database itself "
         "lives, so one mishap cannot take both.");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dbs->bk_check),
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(dbs->bk_check),
         task_app_config_get_bool("backup_enabled", FALSE));
-    gtk_box_pack_start(GTK_BOX(vbox), dbs->bk_check, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), dbs->bk_check);
 
     /* Interval and retention, DIRECTLY under the switch: they are the
      * schedule that switch turns on, where the destination and the two
@@ -1384,10 +933,9 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
      * floor of 1 — a rotation that keeps nothing is not a rotation.       */
     GtkWidget *bk_opts = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_margin_start(bk_opts, 12);
-    gtk_box_pack_start(GTK_BOX(bk_opts), gtk_label_new("Every"),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(bk_opts), gtk_label_new("Every"));
     dbs->bk_interval_spin = small_spin(0, 10080, 15, 5);
-    gtk_widget_set_tooltip_text(dbs->bk_interval_spin,
+    task_app_set_tooltip(dbs->bk_interval_spin,
         "Minutes between backups.  0 backs up only when you press "
         "Back Up Now.  A pass whose database has not changed since the "
         "last backup writes nothing.");
@@ -1395,54 +943,50 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(dbs->bk_interval_spin),
         bkiv != NULL ? atoi(bkiv) : TASK_BACKUP_INTERVAL_DEFAULT);
     g_free(bkiv);
-    gtk_box_pack_start(GTK_BOX(bk_opts), dbs->bk_interval_spin,
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(bk_opts), gtk_label_new("minutes, keeping"),
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(bk_opts), dbs->bk_interval_spin);
+    gtk_box_append(GTK_BOX(bk_opts), gtk_label_new("minutes, keeping"));
     dbs->bk_keep_spin = small_spin(1, 500, 1, 3);
-    gtk_widget_set_tooltip_text(dbs->bk_keep_spin,
+    task_app_set_tooltip(dbs->bk_keep_spin,
         "How many backup files to retain.  The oldest are removed once a "
         "NEW backup has been verified, never before.");
     gchar *bkkeep = task_app_config_get("backup_keep");
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(dbs->bk_keep_spin),
         bkkeep != NULL ? atoi(bkkeep) : TASK_BACKUP_KEEP_DEFAULT);
     g_free(bkkeep);
-    gtk_box_pack_start(GTK_BOX(bk_opts), dbs->bk_keep_spin,
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(bk_opts), gtk_label_new("files"),
-                       FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), bk_opts, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(bk_opts), dbs->bk_keep_spin);
+    gtk_box_append(GTK_BOX(bk_opts), gtk_label_new("files"));
+    gtk_box_append(GTK_BOX(vbox), bk_opts);
 
     /* Where they land, said once at the foot of the block — and the two
      * buttons that change it directly under, so the line and the control
      * that answers it read together.                                    */
     dbs->bk_path_label = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(dbs->bk_path_label), 0.0);
-    gtk_label_set_line_wrap(GTK_LABEL(dbs->bk_path_label), TRUE);
+    gtk_label_set_wrap(GTK_LABEL(dbs->bk_path_label), TRUE);
     gtk_label_set_max_width_chars(GTK_LABEL(dbs->bk_path_label), 40);
     gtk_widget_set_margin_start(dbs->bk_path_label, 12);
     gtk_widget_set_margin_end(dbs->bk_path_label, 12);
     gtk_widget_set_margin_top(dbs->bk_path_label, 6);
-    gtk_box_pack_start(GTK_BOX(vbox), dbs->bk_path_label, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(vbox), dbs->bk_path_label);
 
     /* RIGHT-ALIGNED, and the right edge is the UPDATE button's: both rows
      * carry margin_end 12 and hug the right, so the section has one right
      * edge running down it rather than two that are nearly the same.
      * halign END shrinks the row to its natural width and parks it there,
-     * which is what puts "Back Up Now" — packed last, so rightmost — flush
-     * with Update above.  Do not swap this for pack_end on a full-width
-     * row: that reverses the pair, and the folder is chosen before the
-     * backup is taken.                                                  */
+     * which is what puts "Back Up Now" — appended last, so rightmost —
+     * flush with Update above.  Do not swap this for prepending into a
+     * full-width row: that reverses the pair, and the folder is chosen
+     * before the backup is taken.  (MEASURED on GTK3 at SETTINGS_WIDTH
+     * 470: both edges landed on x=444; re-measure in Phase 4.)          */
     GtkWidget *bk_btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_margin_start(bk_btns, 12);
     gtk_widget_set_margin_end(bk_btns, 12);
     gtk_widget_set_halign(bk_btns, GTK_ALIGN_END);
     dbs->bk_choose_btn = small_button("Change Folder\xe2\x80\xa6");
-    gtk_box_pack_start(GTK_BOX(bk_btns), dbs->bk_choose_btn,
-                       FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(bk_btns), dbs->bk_choose_btn);
     dbs->bk_now_btn = small_button("Back Up Now");
-    gtk_box_pack_start(GTK_BOX(bk_btns), dbs->bk_now_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), bk_btns, FALSE, FALSE, 0);
+    gtk_box_append(GTK_BOX(bk_btns), dbs->bk_now_btn);
+    gtk_box_append(GTK_BOX(vbox), bk_btns);
 
     bk_section_refresh(dbs);
     g_signal_connect(dbs->bk_check, "toggled",
@@ -1461,22 +1005,32 @@ task_settings_window_open(TaskApp *app, GtkWindow *parent,
      * report silence that means "not looked", which is the one answer it
      * must never give.                                                  */
 
-    /* --- Contributed sections ----------------------------------------------- */
-    /* After the app's own, in registration order.  The rule is packed by
-     * the LOOP, not before it: each section then gets exactly one, and
-     * none dangles under the last built-in section when nothing has
-     * registered.                                                        */
-    for (GSList *n = sections; n != NULL; n = n->next) {
-        Section *sec = n->data;
-        gtk_box_pack_start(GTK_BOX(vbox),
-                           gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
-                           FALSE, FALSE, 2);
-        sec->fn(app, vbox, GTK_WINDOW(sw->window), sec->user_data);
-    }
-
     sw->loading = FALSE;
 
     g_signal_connect(sw->window, "destroy",
                      G_CALLBACK(on_settings_destroy), sw);
-    gtk_widget_show_all(sw->window);
+
+    /* The scroller propagates the content's natural width, but a vertical
+     * scrollbar it will show (content taller than the cap) is NOT in that
+     * request — GtkScrolledWindow counts an AUTOMATIC scrollbar only once
+     * it is up.  The bar then takes its width out of the content, and the
+     * widgets on the right run under it with their margin clipped.  So
+     * when the content will scroll, the window opens that much wider.
+     * Measured before present, on the built tree (Notes' rule).          */
+    gint nat_w, nat_h;               /* the column's natural size           */
+    gtk_widget_measure(vbox, GTK_ORIENTATION_HORIZONTAL, -1, NULL, &nat_w,
+                       NULL, NULL);
+    gtk_widget_measure(vbox, GTK_ORIENTATION_VERTICAL, nat_w, NULL, &nat_h,
+                       NULL, NULL);
+    if (nat_h > SETTINGS_MAX_HEIGHT) {
+        gint bar_w;                  /* the scrollbar's own width           */
+        gtk_widget_measure(gtk_scrolled_window_get_vscrollbar(
+                               GTK_SCROLLED_WINDOW(scroller)),
+                           GTK_ORIENTATION_HORIZONTAL, -1, NULL, &bar_w,
+                           NULL, NULL);
+        gtk_window_set_default_size(GTK_WINDOW(sw->window),
+                                    nat_w + bar_w, -1);
+    }
+
+    gtk_window_present(GTK_WINDOW(sw->window));
 }

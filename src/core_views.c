@@ -2,14 +2,11 @@
  * core_views.c — the app's own virtual views, registered through the
  * public registry (see task_view.h).
  *
- * These four are built in, but they go through task_view_register() like
+ * These three are built in, but they go through task_view_register() like
  * anything else rather than being special-cased in the sidebar.  That is
- * deliberate: the registry is only trustworthy for a plugin's view if it
- * is already carrying the app's own.  If something here needs a back
+ * deliberate: the registry is only trustworthy for a view added later if
+ * it is already carrying the app's own.  If something here needs a back
  * door, the API is wrong and it should grow — not be bypassed.
- *
- * Weekly Forecast is NOT here; it is a panel view and moves out
- * separately.
  * =========================================================================== */
 
 #include "core_views.h"

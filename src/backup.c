@@ -144,10 +144,10 @@ task_backup_ready(gchar **reason)
  * removed the SECOND-oldest and kept the oldest — so the retention window
  * silently stopped being "the most recent N".
  *
- * Every other comparator in this codebase (entry_cmp, decor_cmp, view_cmp,
+ * Every other comparator in this codebase (entry_cmp, view_cmp,
  * done_recent_cmp) dereferences correctly; they are hand-written, which is
  * the whole difference.  `g_ptr_array_sort_values` is the other way out —
- * it passes the elements, and plugin_loader.c uses it with g_strcmp0.
+ * it passes the elements.
  * ------------------------------------------------------------------------- */
 static gint
 backup_name_cmp(gconstpointer a, gconstpointer b)

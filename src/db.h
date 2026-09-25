@@ -26,10 +26,8 @@
  * NOTHING belonging to a particular INTEGRATION is here.  A sync's
  * per-row state — a remote id, an etag, the baseline a done-only source
  * was last known to hold — lives in a SIDE TABLE keyed by row id, owned
- * and created by whichever plugin the integration is (v8 moved the
- * Google columns out, v9 the Notes ones).  The plugin registers a delete
- * hook when its own bookkeeping has to ride inside task_db_task_delete's
- * transaction — see task_db_add_delete_hook.
+ * by the integration (v8 moved the Google columns out, v9 the Notes
+ * ones).  The tables stay in the file across the integrations' absence.
  *
  * Deletion is a SOFT flag everywhere (`deleted` = tombstone): the Google
  * Tasks sync needs to see "this existed and was deleted locally" to
@@ -289,8 +287,8 @@ void task_db_close(TaskDatabase *db);
 
 /* ---------------------------------------------------------------------------
  * task_db_default_dir() — "<user data dir>/tasks", the ONE directory this
- * app keeps its per-user state in: the database, the plugins and the ini
- * all live here by default, so there is one place to back up and one
+ * app keeps its per-user state in: the database and the ini both live
+ * here by default, so there is one place to back up and one
  * place to look.  On Linux that is ~/.local/share/tasks (XDG_DATA_HOME).
  *
  * Created if missing.  Returns a new string; free with g_free.  Declared
@@ -519,35 +517,8 @@ void task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
                               gint due_time, gint64 next);
 void task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next);
 
-/* Tombstone the task and its subtasks.  Every registered delete hook
- * contributes its own statements to the SAME transaction — see
- * task_db_add_delete_hook().                                               */
+/* Tombstone the task and its subtasks, in one transaction.                */
 void task_db_task_delete(TaskDatabase *db, gint64 id);
-
-/* ---------------------------------------------------------------------------
- * Delete hooks — how a feature that keeps its own per-task row reacts to
- * a task being tombstoned, without db.c knowing that feature exists.
- *
- * A hook APPENDS complete, semicolon-terminated SQL to `sql`; those
- * statements run inside task_db_task_delete()'s transaction, BEFORE the
- * tombstone UPDATEs and while the row is still untouched.  Splicing SQL
- * rather than calling back out is what keeps the whole delete atomic: a
- * hook that ran as its own transaction could commit while the tombstone
- * rolled back, or vice versa.
- *
- * The registry is process-wide, not per-connection, because a worker
- * thread deletes through its OWN connection (see TaskDatabase above) and
- * must get the same treatment.  Registration is not undoable and is
- * expected once, at startup, before any thread exists.
- *
- *   db        — the connection the delete is running on, for context;
- *               a hook must NOT execute on it.
- *   task_id   — the task being tombstoned.
- *   sql       — append here; never read or truncate what is already in it.
- * ------------------------------------------------------------------------- */
-typedef void (*TaskDbDeleteSqlFn)(TaskDatabase *db, gint64 task_id,
-                                  GString *sql, gpointer user_data);
-void task_db_add_delete_hook(TaskDbDeleteSqlFn fn, gpointer user_data);
 
 /* Swap the display position of subtask `id` with its neighbor in the
  * current sorted order (direction = -1 up, +1 down).  No-op at the
@@ -616,32 +587,11 @@ void task_db_task_apply_done_source(TaskDatabase *db, gint64 id,
                                     gint64 due);
 
 /* ---------------------------------------------------------------------------
- * Generic query helpers.
- *
- * Not tied to any one feature: they exist because an integration keeping
- * its own side table needs to read and write it, and the alternative was
- * a public db.c function per integration — which is the coupling the
- * side tables were introduced to remove.  The plugin API exposes exactly
- * these (see plugin.h), so in-tree and out-of-tree callers use one
- * implementation.
- *
- * `task_db_exec_sql` runs statements with no result; FALSE on failure,
- * with sqlite's own message logged.
- *
- * `task_db_scalar` returns a one-value SELECT, or -1 when the statement
- * could not run AT ALL — a caller checking a count must be able to tell
- * "zero problems" from "the check never ran".
- *
- * `task_db_exec_query` is sqlite3_exec's callback shape without the
- * sqlite3 types.  Return non-zero from `cb` to stop early; that is the
- * documented way and is NOT reported as failure.
+ * task_db_scalar() — a one-value SELECT, or -1 when the statement could
+ * not run AT ALL — a caller checking a count must be able to tell "zero
+ * problems" from "the check never ran".
  * ------------------------------------------------------------------------- */
-gboolean task_db_exec_sql(TaskDatabase *db, const gchar *sql);
 gint64   task_db_scalar(TaskDatabase *db, const gchar *sql);
-gboolean task_db_exec_query(TaskDatabase *db, const gchar *sql,
-                            gint (*cb)(gpointer user_data, gint n_cols,
-                                       gchar **values, gchar **names),
-                            gpointer user_data);
 
 /* ------------------------------- sync state ------------------------------ */
 
@@ -689,12 +639,5 @@ void      task_db_group_rename(TaskDatabase *db, gint64 id, const gchar *name);
 /* Move a list into a group (group_id 0 = ungrouped → sets NULL).           */
 void      task_db_list_set_group(TaskDatabase *db, gint64 list_id,
                                  gint64 group_id);
-
-/* ---------------------------------------------------------------------------
- * task_db_remove_delete_hooks_owner() — remove everything plugin `owner`
- * registered here.  Called when a plugin is switched off while the app is
- * running; the app's OWN registrations are unowned and never match.
- * ------------------------------------------------------------------------- */
-void task_db_remove_delete_hooks_owner(const gchar *owner);
 
 #endif /* TASK_DB_H */

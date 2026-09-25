@@ -1,5 +1,16 @@
 /* ===========================================================================
  * app.c — shared application context for Tasks (see app.h)
+ *
+ * GTK4 port of the GTK3 app.c.  The listener system, date helpers and config
+ * code are kept exactly; GTK3 API (GtkToolItem, GtkMenu, GdkPixbuf surfaces,
+ * GtkDialog, GtkFileChooserDialog) is replaced throughout with GTK4
+ * equivalents following the Notes app (~/salt_development/notes/src/app.c)
+ * as the blueprint.
+ *
+ * Deleted from the GTK3 build:
+ *   dialog_run()               — blocking GTK3 modal loop
+ *   task_app_widget_add_css()  — per-widget provider (use task_app_css_install)
+ *   task_app_icon_image_rotated() — GdkPixbuf/cairo surface path
  * =========================================================================== */
 
 #include "app.h"
@@ -7,25 +18,36 @@
 #include "editor_window.h"
 #include "backup.h"
 #include "task_worker.h"
-#include "plugin_loader.h"
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
-/* ---------------------------------------------------------------------------
- * Change notification (see app.h).  One entry per subscription; `fn` is
- * a TaskAppNotifyFn on the changed/tasks lists and a TaskAppStatusFn on
- * the status list.
- * ------------------------------------------------------------------------- */
+/* ===========================================================================
+ * Change notification (see app.h).
+ * =========================================================================== */
+
+/* One entry per subscription.  `fn` is a TaskAppNotifyFn on the
+ * changed/tasks lists and a TaskAppStatusFn on the status list.            */
 typedef struct {
     guint    id;
     gpointer fn;
     gpointer user_data;
 } TaskAppListener;
 
-/* listener_add() — append a subscription, returning its id.               */
+/*
+ * listener_add — append a subscription.
+ *
+ * Inputs:
+ *   app       — the application context.
+ *   list      — the subscription list to add to.
+ *   fn        — the callback (not NULL).
+ *   user_data — passed through to fn.
+ *
+ * Output:
+ *   the subscription id (0 on failure).
+ */
 static guint
 listener_add(TaskApp *app, GSList **list, gpointer fn, gpointer user_data)
 {
@@ -57,7 +79,12 @@ task_app_listen_status(TaskApp *app, TaskAppStatusFn fn, gpointer user_data)
     return listener_add(app, &app->status_l, (gpointer)fn, user_data);
 }
 
-/* unlisten_from() — drop subscription `id` from one list; TRUE if found. */
+/*
+ * unlisten_from — drop subscription `id` from one list.
+ *
+ * Output:
+ *   TRUE when found and removed.
+ */
 static gboolean
 unlisten_from(GSList **list, guint id)
 {
@@ -82,14 +109,21 @@ task_app_unlisten(TaskApp *app, guint id)
     unlisten_from(&app->status_l,  id);
 }
 
-/* fire() — call every listener on `list`.
+/*
+ * fire — call every listener on `list`.
  *
  * The list is COPIED first because a listener may unsubscribe itself (or
- * another) while it runs — the library window's own refresh can close an
- * editor — and walking the live list would then step through a freed
- * link.  The copy holds borrowed pointers, so an entry unsubscribed
- * earlier in the same fire would be a use-after-free; ids are checked
- * against the live list to skip exactly that.                            */
+ * another) while it runs — the library window's refresh can close an editor
+ * — and walking the live list would then step through a freed link.  The
+ * copy holds borrowed pointers, so an entry unsubscribed earlier in the
+ * same fire would be a use-after-free; ids are checked against the live
+ * list to skip exactly that.
+ *
+ * Inputs:
+ *   app     — the application context.
+ *   list    — the subscription list to fire.
+ *   message — non-NULL for status listeners; NULL for notify listeners.
+ */
 static void
 fire(TaskApp *app, GSList *list, const gchar *message)
 {
@@ -97,7 +131,7 @@ fire(TaskApp *app, GSList *list, const gchar *message)
     for (GSList *n = snapshot; n != NULL; n = n->next) {
         TaskAppListener *l = n->data;
         if (g_slist_find(list, l) == NULL)
-            continue;                /* unsubscribed mid-fire              */
+            continue;                /* unsubscribed mid-fire                */
         if (message != NULL)
             ((TaskAppStatusFn)l->fn)(app, message, l->user_data);
         else
@@ -133,8 +167,8 @@ task_app_notify_changed(TaskApp *app)
 }
 
 /* ---------------------------------------------------------------------------
- * task_app_notify_tasks() — fire the task-pane event, falling back to
- * the full one when nothing listens for it (see app.h).
+ * task_app_notify_tasks() — fire the task-pane event, falling back to the
+ * full one when nothing listens for it (see app.h).
  * ------------------------------------------------------------------------- */
 void
 task_app_notify_tasks(TaskApp *app)
@@ -147,77 +181,407 @@ task_app_notify_tasks(TaskApp *app)
         fire(app, app->changed_l, NULL);
 }
 
-/* dialog_run() — shared core of notice/confirm: run a modal message
- * dialog and return its response.                                          */
-static gint
-dialog_run(GtkWindow *parent, GtkMessageType type, GtkButtonsType buttons,
-           const gchar *title, const gchar *msg)
+/* ===========================================================================
+ * Dialogs (GTK4: GtkAlertDialog, GtkFileDialog, custom GtkWindow).
+ * =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * task_app_notice() — non-blocking informational dialog (see app.h).
+ * GtkAlertDialog shows the title as the heading and fmt as the detail.
+ * ------------------------------------------------------------------------- */
+void
+task_app_notice(GtkWindow *parent, const gchar *title,
+                const gchar *fmt, ...)
 {
-    GtkWidget *dlg = gtk_message_dialog_new(parent,
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT, type,
-        buttons, "%s", msg);
+    va_list ap;
+    va_start(ap, fmt);
+    gchar *message = g_strdup_vprintf(fmt, ap);
+    va_end(ap);
+
+    /* The heading is the title when there is one, with the message as the
+     * detail; without a title the message IS the heading.
+     * gtk_alert_dialog_show copies everything into the window it presents,
+     * so the dialog object is not needed once it is up.                      */
+    GtkAlertDialog *dialog =
+        gtk_alert_dialog_new("%s", title != NULL ? title : message);
     if (title != NULL)
-        gtk_window_set_title(GTK_WINDOW(dlg), title);
-    gint resp = gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
-    return resp;
+        gtk_alert_dialog_set_detail(dialog, message);
+    gtk_alert_dialog_set_modal(dialog, TRUE);
+    gtk_alert_dialog_show(dialog, parent);
+    g_object_unref(dialog);
+    g_free(message);
+}
+
+/* ConfirmJob — what task_app_confirm() carries across the async gap.        */
+typedef struct {
+    TaskConfirmFn done;
+    gpointer      user_data;
+} ConfirmJob;
+
+/*
+ * confirm_done — GAsyncReadyCallback for task_app_confirm(): maps the
+ * button index to a yes/no and hands it to the caller's completion.
+ *   source    — the GtkAlertDialog.
+ *   result    — the async result.
+ *   user_data — the ConfirmJob.
+ */
+static void
+confirm_done(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    ConfirmJob     *job    = user_data;
+    GtkAlertDialog *dialog = GTK_ALERT_DIALOG(source);
+    /* button 0 = "_No", button 1 = "_Yes", -1 = dismissed                  */
+    gint button = gtk_alert_dialog_choose_finish(dialog, result, NULL);
+    job->done(button == 1, job->user_data);
+    g_free(job);
 }
 
 /* ---------------------------------------------------------------------------
- * task_app_notice() — modal OK message dialog.
+ * task_app_confirm() — async Yes/No dialog (see app.h).
+ * `message` is the already-formatted detail text.
  * ------------------------------------------------------------------------- */
 void
-task_app_notice(GtkWindow *parent, GtkMessageType type,
-                const gchar *title, const gchar *fmt, ...)
+task_app_confirm(GtkWindow *parent, const gchar *title, const gchar *message,
+                 TaskConfirmFn done, gpointer user_data)
 {
-    va_list ap;
-    va_start(ap, fmt);
-    gchar *msg = g_strdup_vprintf(fmt, ap);
-    va_end(ap);
-    dialog_run(parent, type, GTK_BUTTONS_OK, title, msg);
-    g_free(msg);
+    GtkAlertDialog *dialog = gtk_alert_dialog_new("%s", title);
+    gtk_alert_dialog_set_detail(dialog, message);
+    gtk_alert_dialog_set_modal(dialog, TRUE);
+    static const char *BUTTONS[] = { "_No", "_Yes", NULL };
+    gtk_alert_dialog_set_buttons(dialog, BUTTONS);
+    gtk_alert_dialog_set_cancel_button(dialog, 0);
+    gtk_alert_dialog_set_default_button(dialog, 1);
+
+    ConfirmJob *job   = g_new0(ConfirmJob, 1);
+    job->done      = done;
+    job->user_data = user_data;
+    gtk_alert_dialog_choose(dialog, parent, NULL, confirm_done, job);
+}
+
+/* PickJob — what task_app_pick_path() carries across the async gap.         */
+typedef struct {
+    TaskPickKind kind;                /* open / save / folder                 */
+    TaskPickFn   done;                /* the caller's completion              */
+    gpointer     user_data;
+} PickJob;
+
+/*
+ * pick_path_done — GAsyncReadyCallback for task_app_pick_path().
+ */
+static void
+pick_path_done(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    PickJob       *job    = user_data;
+    GtkFileDialog *dialog = GTK_FILE_DIALOG(source);
+    GFile *file;
+
+    /* A cancel comes back with a NULL file (GTK_DIALOG_ERROR_DISMISSED) —
+     * that is the answer, not an error worth reporting.                      */
+    switch (job->kind) {
+    case TASK_PICK_OPEN:
+        file = gtk_file_dialog_open_finish(dialog, result, NULL);
+        break;
+    case TASK_PICK_SAVE:
+        file = gtk_file_dialog_save_finish(dialog, result, NULL);
+        break;
+    default:
+        file = gtk_file_dialog_select_folder_finish(dialog, result, NULL);
+        break;
+    }
+    gchar *path = (file != NULL) ? g_file_get_path(file) : NULL;
+    g_clear_object(&file);
+
+    job->done(path, job->user_data);  /* the completion owns path            */
+    g_object_unref(dialog);           /* the ref task_app_pick_path took      */
+    g_free(job);
 }
 
 /* ---------------------------------------------------------------------------
- * task_app_confirm() — modal Yes/No question; TRUE on Yes.
- * ------------------------------------------------------------------------- */
-gboolean
-task_app_confirm(GtkWindow *parent, const gchar *title, const gchar *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    gchar *msg = g_strdup_vprintf(fmt, ap);
-    va_end(ap);
-    gint resp = dialog_run(parent, GTK_MESSAGE_QUESTION,
-                           GTK_BUTTONS_YES_NO, title, msg);
-    g_free(msg);
-    return resp == GTK_RESPONSE_YES;
-}
-
-/* ---------------------------------------------------------------------------
- * task_app_widget_add_css() — one-off CSS on a single widget (see app.h).
+ * task_app_pick_path() — async file/folder chooser (see app.h).
  * ------------------------------------------------------------------------- */
 void
-task_app_widget_add_css(GtkWidget *widget, const gchar *css_text)
+task_app_pick_path(GtkWindow *parent, const gchar *title,
+                   TaskPickKind kind, const gchar *accept_label,
+                   const gchar *filter_name, const gchar *filter_pattern,
+                   const gchar *start_dir,
+                   TaskPickFn done, gpointer user_data)
+{
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(dialog, title);
+    gtk_file_dialog_set_modal(dialog, TRUE);
+    gtk_file_dialog_set_accept_label(dialog, accept_label);
+    if (start_dir != NULL) {
+        GFile *folder = g_file_new_for_path(start_dir);
+        gtk_file_dialog_set_initial_folder(dialog, folder);
+        g_object_unref(folder);
+    }
+    if (filter_name != NULL) {
+        GtkFileFilter *filter = gtk_file_filter_new();
+        gtk_file_filter_set_name(filter, filter_name);
+        if (filter_pattern != NULL)
+            gtk_file_filter_add_pattern(filter, filter_pattern);
+        GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+        g_list_store_append(filters, filter);
+        gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+        gtk_file_dialog_set_default_filter(dialog, filter);
+        g_object_unref(filters);
+        g_object_unref(filter);
+    }
+
+    PickJob *job   = g_new0(PickJob, 1);
+    job->kind      = kind;
+    job->done      = done;
+    job->user_data = user_data;
+    switch (kind) {
+    case TASK_PICK_OPEN:
+        gtk_file_dialog_open(dialog, parent, NULL, pick_path_done, job);
+        break;
+    case TASK_PICK_SAVE:
+        gtk_file_dialog_save(dialog, parent, NULL, pick_path_done, job);
+        break;
+    default:
+        gtk_file_dialog_select_folder(dialog, parent, NULL, pick_path_done,
+                                      job);
+        break;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * task_app_dialog_new() — a custom modal window with Accept / Cancel (see
+ * app.h).  GTK4 has no GtkDialog; we build a plain GtkWindow.
+ *
+ * The close-request handler (window X or Escape) calls dialog_respond FALSE
+ * and returns TRUE (preventing GTK's default destroy) so every exit path
+ * goes through dialog_respond and the window is always destroyed there.
+ * The responded flag prevents a double-call when dialog_respond() is invoked
+ * from a button AND GTK later delivers a close-request on the same frame.
+ * ------------------------------------------------------------------------- */
+
+/* DialogJob — what the two button callbacks and the close-request share.    */
+typedef struct {
+    TaskDialogFn done;
+    gpointer     user_data;
+    gboolean     responded;          /* first response wins; prevents double-call */
+} DialogJob;
+
+/* dialog_respond() — deliver the result, then destroy the dialog window.    */
+static void
+dialog_respond(GtkWindow *dialog, gboolean accepted, DialogJob *job)
+{
+    if (job->responded)
+        return;
+    job->responded = TRUE;
+    job->done(accepted, dialog, job->user_data);
+    gtk_window_destroy(dialog);
+}
+
+static void
+dialog_on_accept(GtkButton *btn, gpointer data)
+{
+    (void)btn;
+    GtkRoot   *root   = gtk_widget_get_root(GTK_WIDGET(btn));
+    DialogJob *job    = data;
+    dialog_respond(GTK_WINDOW(root), TRUE, job);
+}
+
+static void
+dialog_on_cancel(GtkButton *btn, gpointer data)
+{
+    (void)btn;
+    GtkRoot   *root   = gtk_widget_get_root(GTK_WIDGET(btn));
+    DialogJob *job    = data;
+    dialog_respond(GTK_WINDOW(root), FALSE, job);
+}
+
+/* dialog_on_key() — Escape key → respond FALSE.                             */
+static gboolean
+dialog_on_key(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
+              GdkModifierType mods, gpointer data)
+{
+    (void)keycode; (void)mods;
+    if (keyval != GDK_KEY_Escape)
+        return FALSE;
+    GtkWidget *dialog = gtk_event_controller_get_widget(
+        GTK_EVENT_CONTROLLER(ctrl));
+    dialog_respond(GTK_WINDOW(dialog), FALSE, data);
+    return TRUE;
+}
+
+/* dialog_close_request() — window close button or destroy request.          */
+static gboolean
+dialog_close_request(GtkWindow *dialog, gpointer data)
+{
+    dialog_respond(dialog, FALSE, data);
+    return TRUE;                     /* we handle it; GTK must not also close */
+}
+
+GtkWindow *
+task_app_dialog_new(GtkWindow *parent, const gchar *title,
+                    GtkWidget *content, const gchar *accept_label,
+                    TaskDialogFn done, gpointer user_data)
+{
+    DialogJob *job    = g_new0(DialogJob, 1);
+    job->done      = done;
+    job->user_data = user_data;
+
+    GtkWidget *dialog = gtk_window_new();
+    gtk_window_set_title(GTK_WINDOW(dialog), title);
+    gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
+    gtk_window_set_transient_for(GTK_WINDOW(dialog), parent);
+    gtk_window_set_resizable(GTK_WINDOW(dialog), FALSE);
+    /* job's lifetime is tied to the dialog's object lifetime                 */
+    g_object_set_data_full(G_OBJECT(dialog), "task-dialog-job", job, g_free);
+
+    /* Escape key → cancel                                                    */
+    GtkEventController *key = gtk_event_controller_key_new();
+    g_signal_connect(key, "key-pressed", G_CALLBACK(dialog_on_key), job);
+    gtk_widget_add_controller(dialog, key);
+    /* Close-request (window X button) → cancel                               */
+    g_signal_connect(dialog, "close-request",
+                     G_CALLBACK(dialog_close_request), job);
+
+    /* Layout: content on top, button row at the bottom.                      */
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_margin_top(vbox, 16);
+    gtk_widget_set_margin_bottom(vbox, 12);
+    gtk_widget_set_margin_start(vbox, 16);
+    gtk_widget_set_margin_end(vbox, 16);
+    gtk_window_set_child(GTK_WINDOW(dialog), vbox);
+    gtk_box_append(GTK_BOX(vbox), content);
+
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign(hbox, GTK_ALIGN_END);
+    gtk_box_append(GTK_BOX(vbox), hbox);
+
+    GtkWidget *cancel_btn = gtk_button_new_with_mnemonic("_Cancel");
+    g_signal_connect(cancel_btn, "clicked", G_CALLBACK(dialog_on_cancel), job);
+    gtk_box_append(GTK_BOX(hbox), cancel_btn);
+
+    GtkWidget *accept_btn = gtk_button_new_with_mnemonic(accept_label);
+    gtk_widget_add_css_class(accept_btn, "suggested-action");
+    g_signal_connect(accept_btn, "clicked", G_CALLBACK(dialog_on_accept), job);
+    gtk_box_append(GTK_BOX(hbox), accept_btn);
+
+    gtk_window_present(GTK_WINDOW(dialog));
+    return GTK_WINDOW(dialog);
+}
+
+/* ===========================================================================
+ * task_app_menu_popup() — GtkPopoverMenu at a position (see app.h).
+ *
+ * Follows the Notes pattern exactly (on_app_menu_popup in notes/src/app.c).
+ * The popover is parented to the window's own child box, not to `attach`,
+ * because a popover on a GtkColumnView or GtkListView breaks GTK's CSS-node
+ * chain and comes up the wrong size (Notes D35).
+ * =========================================================================== */
+
+/* menu_popup_drop() — take the popover down for good.                        */
+static void
+menu_popup_drop(GtkWidget *popover)
+{
+    guint idle = GPOINTER_TO_UINT(
+        g_object_steal_data(G_OBJECT(popover), "task-popup-idle"));
+    if (idle != 0)
+        g_source_remove(idle);
+    gulong handler = GPOINTER_TO_SIZE(
+        g_object_steal_data(G_OBJECT(popover), "task-popup-unrealize"));
+    GtkWidget *parent = gtk_widget_get_parent(popover);
+    if (parent != NULL) {
+        if (handler != 0)
+            g_signal_handler_disconnect(parent, handler);
+        gtk_widget_unparent(popover);
+    }
+    if (g_object_steal_data(G_OBJECT(popover), "task-popup-ref") != NULL)
+        g_object_unref(popover);
+}
+
+static gboolean
+menu_popup_idle(gpointer data)
+{
+    g_object_set_data(G_OBJECT(data), "task-popup-idle", NULL);
+    menu_popup_drop(data);
+    return G_SOURCE_REMOVE;
+}
+
+static void
+menu_popup_closed(GtkPopover *popover, gpointer user_data)
+{
+    (void)user_data;
+    g_object_set_data(G_OBJECT(popover), "task-popup-idle",
+        GUINT_TO_POINTER(g_idle_add(menu_popup_idle, popover)));
+}
+
+static void
+menu_popup_parent_unrealize(GtkWidget *parent, gpointer user_data)
+{
+    (void)parent;
+    menu_popup_drop(user_data);
+}
+
+void
+task_app_menu_popup(GtkWidget *attach, GMenuModel *model, gdouble x, gdouble y)
+{
+    GtkRoot   *root   = gtk_widget_get_root(attach);
+    GtkWidget *parent = gtk_window_get_child(GTK_WINDOW(root));
+    graphene_point_t at_parent;
+    if (!gtk_widget_compute_point(attach, parent,
+                                  &GRAPHENE_POINT_INIT((float)x, (float)y),
+                                  &at_parent))
+        at_parent = GRAPHENE_POINT_INIT((float)x, (float)y);
+
+    GtkWidget *popover = gtk_popover_menu_new_from_model(model);
+    g_object_unref(model);
+    gtk_widget_set_parent(popover, parent);
+    g_object_set_data(G_OBJECT(popover), "task-popup-ref",
+                      g_object_ref(popover));
+    g_object_set_data(G_OBJECT(popover), "task-popup-unrealize",
+        GSIZE_TO_POINTER(g_signal_connect(parent, "unrealize",
+            G_CALLBACK(menu_popup_parent_unrealize), popover)));
+    gtk_popover_set_has_arrow(GTK_POPOVER(popover), FALSE);
+    GdkRectangle at = { (gint)at_parent.x, (gint)at_parent.y, 1, 1 };
+    gtk_popover_set_pointing_to(GTK_POPOVER(popover), &at);
+    g_signal_connect(popover, "closed", G_CALLBACK(menu_popup_closed), NULL);
+    gtk_popover_popup(GTK_POPOVER(popover));
+}
+
+/* ---------------------------------------------------------------------------
+ * task_app_menu_section_end() — see app.h.
+ * ------------------------------------------------------------------------- */
+void
+task_app_menu_section_end(GMenu *menu, GMenu **section)
+{
+    g_menu_append_section(menu, NULL, G_MENU_MODEL(*section));
+    g_object_unref(*section);
+    *section = g_menu_new();
+}
+
+/* ===========================================================================
+ * CSS helpers.
+ * =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+ * task_app_css_install() — load a CSS string once, globally (see app.h).
+ * ------------------------------------------------------------------------- */
+void
+task_app_css_install(const gchar *css)
 {
     GtkCssProvider *provider = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(provider, css_text, -1, NULL);
-    gtk_style_context_add_provider(
-        gtk_widget_get_style_context(widget),
+    gtk_css_provider_load_from_string(provider, css);
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(),
         GTK_STYLE_PROVIDER(provider),
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(provider);
 }
 
-/* The old copy_file() (a plain g_file_copy) was REMOVED on 2026-08-26.
- * Database copies go through task_db_copy_file (VACUUM INTO) instead: a
- * byte copy of a live SQLite file can capture a torn page, and this
- * database routinely lives in a sync folder where the source can be
- * rewritten mid-read.  If you need to copy the database, use the db.h
- * helper and VERIFY the result with task_db_verify_file.                   */
-
 /* ===========================================================================
- * Toolbar icons + style (see app.h).
+ * Toolbar icons (GTK4 icon theme path — see app.h).
+ *
+ * The executable puts its icons/ directory on the icon theme's search path
+ * (main.c, on_startup).  Once that is done, every local PNG can be loaded by
+ * name through the theme — the name is the extension-stripped basename, and
+ * GTK probes that path for the file.  Callers then work entirely through icon
+ * names, not file paths.
  * =========================================================================== */
 
 /* ---------------------------------------------------------------------------
@@ -229,119 +593,440 @@ task_app_init_icons_dir(TaskApp *app)
     app->icons_dir = g_build_filename(task_app_exe_dir(), "icons", NULL);
 }
 
-/* ---------------------------------------------------------------------------
- * task_app_icon_image_rotated() — HiDPI-sharp GtkImage for a local icon,
- * optionally turned by whole quarter turns (see app.h).  Rasterizes at the
- * display's scale factor: `size` is the LOGICAL size, the backing pixels
- * are size × sf, and the cairo surface's device scale maps between the two
- * (raw pixbufs render 1 buffer-pixel = 1 logical px and blur on Retina —
- * Notes gotcha #5).
- * ------------------------------------------------------------------------- */
-GtkWidget *
-task_app_icon_image_rotated(TaskApp *app, const gchar *name, gint size,
-                            GdkPixbufRotation rotation)
+/*
+ * display_scale_factor — the integer scale factor of the first listed monitor
+ * (2 on Retina), 1 when no display or monitor is known yet.
+ * GTK4 has no "primary" monitor; the first one is the app's home for icon
+ * rasterization.
+ */
+static gint
+display_scale_factor(void)
 {
-    static const gchar *EXTS[] = { "png", "svg" };
-
-    gint sf = 1;                     /* display scale factor                */
     GdkDisplay *display = gdk_display_get_default();
-    if (display != NULL) {
-        GdkMonitor *monitor = gdk_display_get_primary_monitor(display);
-        if (monitor == NULL)
-            monitor = gdk_display_get_monitor(display, 0);
-        if (monitor != NULL)
-            sf = gdk_monitor_get_scale_factor(monitor);
-    }
-
-    for (gsize i = 0; i < G_N_ELEMENTS(EXTS); i++) {
-        gchar *path = g_strdup_printf("%s%c%s.%s",
-                                      app->icons_dir, G_DIR_SEPARATOR,
-                                      name, EXTS[i]);
-        GdkPixbuf *pix = NULL;       /* decoded at backing resolution       */
-        if (g_file_test(path, G_FILE_TEST_EXISTS))
-            pix = gdk_pixbuf_new_from_file_at_size(path, size * sf,
-                                                   size * sf, NULL);
-        g_free(path);
-        if (pix != NULL) {
-            /* Rotate BEFORE the surface: gdk_pixbuf_rotate_simple works in
-             * whole quarter turns, so a square icon comes back the same
-             * size and stays pixel-exact — no resampling, no blur.  A
-             * 90-degree turn of a horizontal list icon is a columnar one,
-             * which is why the pane button needs only ONE image.        */
-            if (rotation != GDK_PIXBUF_ROTATE_NONE) {
-                GdkPixbuf *turned = gdk_pixbuf_rotate_simple(pix, rotation);
-                if (turned != NULL) {
-                    g_object_unref(pix);
-                    pix = turned;
-                }
-            }
-            cairo_surface_t *surface =
-                gdk_cairo_surface_create_from_pixbuf(pix, sf, NULL);
-            g_object_unref(pix);
-            GtkWidget *image = gtk_image_new_from_surface(surface);
-            cairo_surface_destroy(surface);
-            /* Which file this is.  A surface-backed GtkImage keeps no
-             * record of where it came from (and answers NULL to
-             * gtk_image_get_pixbuf), so a caller that SWAPS a button's
-             * icon by state — the completed, sort and pane toggles all do
-             * — has no way to ask what is on screen now.                 */
-            g_object_set_data_full(G_OBJECT(image), "task-icon-name",
-                                   g_strdup(name), g_free);
-            g_object_set_data(G_OBJECT(image), "task-icon-rotation",
-                              GINT_TO_POINTER((gint)rotation));
-            return image;
-        }
-    }
-    return NULL;
+    if (display == NULL)
+        return 1;
+    GdkMonitor *monitor =
+        g_list_model_get_item(gdk_display_get_monitors(display), 0);
+    if (monitor == NULL)
+        return 1;
+    gint sf = gdk_monitor_get_scale_factor(monitor);
+    g_object_unref(monitor);
+    return sf;
 }
 
-/* task_app_icon_image_sized() — the unrotated case (see app.h).            */
+/*
+ * icon_theme_has — does the icon theme know `name`?
+ * main.c adds icons/ as a search path, where GTK picks up PNGs as
+ * "unthemed" icons by basename, so this IS the test for "a local file
+ * exists and loads" — GTK would otherwise hand back its missing-image
+ * placeholder and the caller wants the text fallback instead.
+ */
+static gboolean
+icon_theme_has(const gchar *name)
+{
+    return gtk_icon_theme_has_icon(
+        gtk_icon_theme_get_for_display(gdk_display_get_default()), name);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_app_icon_image_sized() — a GtkImage at an explicit pixel size
+ * (see app.h).  Returns NULL when the icon is not in the theme (caller falls
+ * back to a markup label).
+ * ------------------------------------------------------------------------- */
 GtkWidget *
 task_app_icon_image_sized(TaskApp *app, const gchar *name, gint size)
 {
-    return task_app_icon_image_rotated(app, name, size,
-                                       GDK_PIXBUF_ROTATE_NONE);
+    (void)app;                        /* the theme knows the directory        */
+    if (!icon_theme_has(name))
+        return NULL;
+    GtkWidget *image = gtk_image_new_from_icon_name(name);
+    gtk_image_set_pixel_size(GTK_IMAGE(image), size);
+    return image;
 }
 
 /* ---------------------------------------------------------------------------
- * task_app_tool_item_new() — a toolbar button (see app.h).
+ * task_app_icon_paintable() — a GdkPaintable for a local icon, scaled for
+ * the display (see app.h).  Used for drag icons and other non-widget uses.
  * ------------------------------------------------------------------------- */
-GtkToolItem *
-task_app_tool_item_new(TaskApp *app, const gchar *icon_name,
-                       const gchar *fallback_markup, const gchar *label,
-                       const gchar *tooltip)
+GdkPaintable *
+task_app_icon_paintable(TaskApp *app, const gchar *name, gint size)
 {
-    GtkToolItem *item = gtk_tool_button_new(NULL, NULL);
-    gtk_tool_button_set_label(GTK_TOOL_BUTTON(item), label);
+    (void)app;
+    if (!icon_theme_has(name))
+        return NULL;
+    GtkIconPaintable *icon = gtk_icon_theme_lookup_icon(
+        gtk_icon_theme_get_for_display(gdk_display_get_default()),
+        name, NULL, size, display_scale_factor(), GTK_TEXT_DIR_NONE, 0);
+    return GDK_PAINTABLE(icon);
+}
 
-    /* Icon: the local PNG if present, else the fallback markup rendered
-     * as a label standing in for the icon.                                 */
+/* ===========================================================================
+ * Tooltips (see app.h).
+ *
+ * GTK4's tooltip-window mechanism fires "query-tooltip" frequently on a
+ * Retina/quartz display; a tooltip asked for within TOOLTIP_MIN_GAP_MS of the
+ * previous one hiding is refused and re-asked once the gap has passed.
+ * This prevents the resize crash recorded as Notes D32.
+ * =========================================================================== */
+
+/* A tooltip within this many ms of the previous one hiding is refused and
+ * re-asked.  550 ms is past GTK's browse-mode window (500 ms), so the
+ * re-ask goes through the normal hover delay.                                */
+#define TOOLTIP_MIN_GAP_MS 550
+
+/* The GtkLabel shown as the tooltip widget; one per watched widget.          */
+#define TOOLTIP_LABEL_KEY "task-tooltip-label"
+
+static GtkWidget *tooltip_mapped;     /* the label showing RIGHT NOW, if any  */
+static gint64     tooltip_hidden_at;  /* monotonic µs when the last one hid   */
+
+static void
+on_tooltip_label_map(GtkWidget *label, gpointer data)
+{
+    (void)data;
+    tooltip_mapped = label;
+}
+
+static void
+on_tooltip_label_unmap(GtkWidget *label, gpointer data)
+{
+    (void)data;
+    if (tooltip_mapped == label)
+        tooltip_mapped = NULL;
+    tooltip_hidden_at = g_get_monotonic_time();
+}
+
+static gboolean
+tooltip_ask_again(gpointer widget)
+{
+    gtk_widget_trigger_tooltip_query(widget);
+    g_object_unref(widget);
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean
+on_query_tooltip(GtkWidget *widget, gint x, gint y, gboolean keyboard,
+                 GtkTooltip *tooltip, gpointer data)
+{
+    (void)x; (void)y; (void)keyboard; (void)data;
+    GtkWidget *label = g_object_get_data(G_OBJECT(widget), TOOLTIP_LABEL_KEY);
+    if (label == NULL)
+        return FALSE;
+    /* Refused in a non-active window (macOS: a popup on an inactive library
+     * window orders it above the editor the user is typing in).              */
+    GtkRoot *root = gtk_widget_get_root(widget);
+    if (GTK_IS_WINDOW(root) && !gtk_window_is_active(GTK_WINDOW(root)))
+        return FALSE;
+    if (tooltip_mapped == NULL) {
+        gint64 gap = g_get_monotonic_time() - tooltip_hidden_at;
+        if (gap < TOOLTIP_MIN_GAP_MS * 1000) {
+            g_timeout_add(
+                (guint)((TOOLTIP_MIN_GAP_MS * 1000 - gap) / 1000) + 1,
+                tooltip_ask_again, g_object_ref(widget));
+            return FALSE;
+        }
+    }
+    gtk_tooltip_set_custom(tooltip, label);
+    return TRUE;
+}
+
+/* ---------------------------------------------------------------------------
+ * task_app_set_tooltip() — see app.h.  Installs a custom label widget so the
+ * query-tooltip gap guard above applies.
+ * ------------------------------------------------------------------------- */
+void
+task_app_set_tooltip(GtkWidget *widget, const gchar *text)
+{
+    if (text == NULL || *text == '\0') {
+        g_object_set_data(G_OBJECT(widget), TOOLTIP_LABEL_KEY, NULL);
+        gtk_widget_set_has_tooltip(widget, FALSE);
+        return;
+    }
+    GtkWidget *label = g_object_get_data(G_OBJECT(widget), TOOLTIP_LABEL_KEY);
+    if (label == NULL) {
+        label = gtk_label_new(text);
+        gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+        gtk_label_set_max_width_chars(GTK_LABEL(label), 70);
+        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+        g_signal_connect(label, "map",   G_CALLBACK(on_tooltip_label_map),   NULL);
+        g_signal_connect(label, "unmap", G_CALLBACK(on_tooltip_label_unmap), NULL);
+        g_object_set_data_full(G_OBJECT(widget), TOOLTIP_LABEL_KEY,
+                               g_object_ref_sink(label), g_object_unref);
+        g_signal_connect(widget, "query-tooltip",
+                         G_CALLBACK(on_query_tooltip), NULL);
+    } else {
+        gtk_label_set_text(GTK_LABEL(label), text);
+    }
+    gtk_widget_set_has_tooltip(widget, TRUE);
+}
+
+/* ===========================================================================
+ * Toolbar buttons (see app.h).
+ *
+ * GTK4 has no GtkToolbar or GtkToolItem.  A toolbar is a GtkBox with
+ * "toolbar" CSS class; each button is a flat GtkButton or GtkToggleButton.
+ * =========================================================================== */
+
+/* Object-data key that keeps a toolbar button's accessible label so
+ * task_app_tool_item_set_icon can rebuild the markup fallback from it.       */
+#define TOOL_LABEL_KEY "task-tool-label"
+
+/*
+ * tool_icon_widget — the icon widget for a toolbar button.
+ *
+ * Returns the local icon image when the name is in the theme, else a markup
+ * label as fallback.  THE single place that rule lives: shared by
+ * task_app_tool_item_new and task_app_tool_item_set_icon so a button built
+ * with an icon and one re-pointed at one cannot come to disagree about the
+ * fallback.
+ *
+ * Inputs:
+ *   app             — application context (holds icons_dir).
+ *   icon_name       — icon file basename, or NULL for markup only.
+ *   fallback_markup — Pango markup when the file does not load, or NULL.
+ *   label           — last-resort text when both are absent.
+ *
+ * Output:
+ *   a floating GtkWidget for the caller to parent.  Never NULL.
+ */
+static GtkWidget *
+tool_icon_widget(TaskApp *app, const gchar *icon_name,
+                 const gchar *fallback_markup, const gchar *label)
+{
     GtkWidget *icon = (icon_name != NULL)
                       ? task_app_icon_image_sized(app, icon_name, 24) : NULL;
     if (icon == NULL) {
         icon = gtk_label_new(NULL);
         gtk_label_set_markup(GTK_LABEL(icon),
-                             fallback_markup != NULL ? fallback_markup
-                                                     : label);
+                             fallback_markup != NULL ? fallback_markup : label);
     }
-    gtk_widget_show(icon);
-    gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(item), icon);
+    return icon;
+}
 
-    gtk_tool_item_set_tooltip_text(item, tooltip);
-    return item;
+/* ---------------------------------------------------------------------------
+ * task_app_tool_item_new() — a toolbar button (see app.h).
+ * ------------------------------------------------------------------------- */
+GtkWidget *
+task_app_tool_item_new(TaskApp *app, gboolean toggle,
+                       const gchar *icon_name,
+                       const gchar *fallback_markup,
+                       const gchar *label, const gchar *tooltip)
+{
+    GtkWidget *button = toggle ? gtk_toggle_button_new() : gtk_button_new();
+    gtk_button_set_has_frame(GTK_BUTTON(button), FALSE);  /* flat             */
+    /* A toolbar press must not steal the focus from any text view: editing
+     * actions are gated on focus.                                             */
+    gtk_widget_set_focus_on_click(button, FALSE);
+    gtk_button_set_child(GTK_BUTTON(button),
+        tool_icon_widget(app, icon_name, fallback_markup, label));
+    task_app_set_tooltip(button, tooltip);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(button),
+                                   GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+    g_object_set_data_full(G_OBJECT(button), TOOL_LABEL_KEY,
+                           g_strdup(label), g_free);
+    return button;
+}
+
+/* ---------------------------------------------------------------------------
+ * task_app_tool_item_set_icon() — swap a toolbar button's icon (see app.h).
+ * ------------------------------------------------------------------------- */
+void
+task_app_tool_item_set_icon(TaskApp *app, GtkWidget *button,
+                            const gchar *icon_name,
+                            const gchar *fallback_markup)
+{
+    /* set_child unparents and drops the old icon widget, which held the only
+     * reference to it, so the previous image is freed by this call.          */
+    gtk_button_set_child(GTK_BUTTON(button),
+        tool_icon_widget(app, icon_name, fallback_markup,
+                         g_object_get_data(G_OBJECT(button), TOOL_LABEL_KEY)));
 }
 
 /* ===========================================================================
- * Config — ini next to the binary, ~/.config fallback (see app.h).
+ * task_app_double_click_watch() / task_app_select_on_press() (see app.h).
+ *
+ * Both follow the Notes pattern exactly (on_app_double_click_watch /
+ * on_app_select_on_press in notes/src/app.c).
  * =========================================================================== */
 
-#define TASK_INI_GROUP "tasks"
+/* DoubleClick — the last primary press on a watched widget: time, position
+ * and the callback.  Stored as the gesture's data, NOT as gesture state, so
+ * a gesture reset does not lose the first press.                             */
+typedef struct {
+    TaskDoubleClickFn cb;
+    gpointer          data;
+    guint32           last_time;      /* ms, 0 = none                         */
+    gdouble           last_x, last_y;
+} DoubleClick;
 
-static GKeyFile *config_kf   = NULL; /* the in-memory config                */
-static gchar    *config_path = NULL; /* written through on every change     */
-static gchar    *exe_dir_cached = NULL;  /* binary's directory (owned)      */
+/*
+ * on_double_click_pressed — every primary press: a second one within the
+ * settings' time and distance of the first is the double-click.
+ * n_press is deliberately unused: it is what a gesture reset zeroes.
+ */
+static void
+on_double_click_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
+                        gpointer user_data)
+{
+    (void)n_press;
+    DoubleClick *dc = user_data;
+    GtkWidget *widget = gtk_event_controller_get_widget(
+        GTK_EVENT_CONTROLLER(g));
+    GdkEvent *event = gtk_gesture_get_last_event(GTK_GESTURE(g), NULL);
+    guint32 now     = event != NULL ? gdk_event_get_time(event) : 0;
+    gint time_ms = 400, dist = 5;    /* the settings' documented defaults    */
+    g_object_get(gtk_widget_get_settings(widget),
+                 "gtk-double-click-time",     &time_ms,
+                 "gtk-double-click-distance", &dist,
+                 NULL);
+    /* Cap at 400 ms — the GTK documented default.  On macOS the system
+     * accessibility slow-click preference can push this above 500 ms,
+     * which feels broken in a task-management UI.                           */
+    if (time_ms > 400)
+        time_ms = 400;
+    gboolean second = dc->last_time != 0 &&
+                      now - dc->last_time <= (guint32)time_ms &&
+                      ABS(x - dc->last_x) <= dist && ABS(y - dc->last_y) <= dist;
+    if (second) {
+        dc->last_time = 0;
+        gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
+        dc->cb(widget, dc->data);
+    } else {
+        dc->last_time = now;
+        dc->last_x    = x;
+        dc->last_y    = y;
+    }
+}
 
-/* exe_dir_from_argv0() — the directory holding the binary (new string).    */
+/* ---------------------------------------------------------------------------
+ * task_app_double_click_watch() — see app.h.
+ * ------------------------------------------------------------------------- */
+void
+task_app_double_click_watch(GtkWidget *widget, TaskDoubleClickFn cb,
+                            gpointer data)
+{
+    DoubleClick *dc = g_new0(DoubleClick, 1);
+    dc->cb   = cb;
+    dc->data = data;
+    GtkGesture *g = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(g), GDK_BUTTON_PRIMARY);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(g),
+                                               GTK_PHASE_CAPTURE);
+    g_object_set_data_full(G_OBJECT(g), "task-double-click", dc, g_free);
+    g_signal_connect(g, "pressed", G_CALLBACK(on_double_click_pressed), dc);
+    gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(g));
+}
+
+/* SelectPress — a watched row's list item, and whether the press left the
+ * selection alone for a drag that the release must then collapse.           */
+typedef struct {
+    GtkListItem *item;
+    gboolean     collapse;
+} SelectPress;
+
+/*
+ * select_press_modifiers — GTK's own reading of a press's modifiers:
+ * Shift extends, Control toggles; on macOS Command also toggles.
+ */
+static void
+select_press_modifiers(GtkGesture *g, gboolean *modify, gboolean *extend)
+{
+    GdkEvent *event = gtk_gesture_get_last_event(g, NULL);
+    GdkModifierType state = event != NULL ? gdk_event_get_modifier_state(event)
+                                          : 0;
+    *extend = (state & GDK_SHIFT_MASK)   != 0;
+    *modify = (state & GDK_CONTROL_MASK) != 0;
+#ifdef __APPLE__
+    *modify = *modify || (state & GDK_META_MASK) != 0;
+#endif
+}
+
+/* select_item() — run the view's "list.select-item" action for the row.     */
+static void
+select_item(GtkWidget *widget, guint pos, gboolean modify, gboolean extend)
+{
+    gtk_widget_activate_action(widget, "list.select-item", "(ubb)",
+                               pos, modify, extend);
+}
+
+static void
+on_select_pressed(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
+                  gpointer user_data)
+{
+    (void)x; (void)y;
+    SelectPress *sp = user_data;
+    sp->collapse = FALSE;
+    if (n_press != 1)
+        return;
+    guint pos = gtk_list_item_get_position(sp->item);
+    if (pos == GTK_INVALID_LIST_POSITION)
+        return;
+    gboolean modify, extend;
+    select_press_modifiers(GTK_GESTURE(g), &modify, &extend);
+    if (!modify && !extend && gtk_list_item_get_selected(sp->item)) {
+        sp->collapse = TRUE;
+        return;
+    }
+    select_item(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g)),
+                pos, modify, extend);
+}
+
+static void
+on_select_released(GtkGestureClick *g, gint n_press, gdouble x, gdouble y,
+                   gpointer user_data)
+{
+    (void)n_press; (void)x; (void)y;
+    SelectPress *sp = user_data;
+    gtk_gesture_set_state(GTK_GESTURE(g), GTK_EVENT_SEQUENCE_CLAIMED);
+    if (!sp->collapse)
+        return;
+    sp->collapse = FALSE;
+    guint pos = gtk_list_item_get_position(sp->item);
+    if (pos != GTK_INVALID_LIST_POSITION)
+        select_item(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g)),
+                    pos, FALSE, FALSE);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_app_select_on_press() — see app.h.
+ * ------------------------------------------------------------------------- */
+void
+task_app_select_on_press(GtkWidget *widget, GtkListItem *item)
+{
+    SelectPress *sp = g_new0(SelectPress, 1);
+    sp->item = item;
+    GtkGesture *g = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(g), GDK_BUTTON_PRIMARY);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(g),
+                                               GTK_PHASE_CAPTURE);
+    g_object_set_data_full(G_OBJECT(g), "task-select-press", sp, g_free);
+    g_signal_connect(g, "pressed",  G_CALLBACK(on_select_pressed),  sp);
+    g_signal_connect(g, "released", G_CALLBACK(on_select_released), sp);
+    gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(g));
+}
+
+/* ===========================================================================
+ * Config — ini next to the binary (see app.h).
+ *
+ * THE INI LIVES WITH THE DATABASE, in task_db_default_dir()
+ * (~/.local/share/tasks on Linux).  Three resolution steps (see the full
+ * comment in the GTK3 build): data-dir ini if it EXISTS, else binary-adjacent
+ * if it EXISTS (portable mode), else CREATE at data-dir.
+ * =========================================================================== */
+
+#define TASK_INI_GROUP    "tasks"
+#define TASK_INI_FILE     "tasks.ini"
+#define TASK_INI_DEFAULTS "tasks.ini.defaults"
+
+static GKeyFile *config_kf       = NULL;  /* the in-memory config            */
+static gchar    *config_path     = NULL;  /* written through on every change  */
+static gchar    *exe_dir_cached  = NULL;  /* binary's directory (owned)       */
+
+/*
+ * exe_dir_from_argv0 — the directory holding the binary (new string).
+ * When launched via a bare name from PATH there is no directory part, so fall
+ * back to the current working directory.
+ */
 static gchar *
 exe_dir_from_argv0(const gchar *argv0)
 {
@@ -354,43 +1039,14 @@ exe_dir_from_argv0(const gchar *argv0)
     return g_get_current_dir();
 }
 
-/* task_app_exe_dir() — see app.h.                                          */
 const gchar *
 task_app_exe_dir(void)
 {
     return exe_dir_cached;
 }
 
-/* The ini's names.                                                         */
-#define TASK_INI_FILE     "tasks.ini"
-#define TASK_INI_DEFAULTS "tasks.ini.defaults"
-
 /* ---------------------------------------------------------------------------
- * task_app_config_init() — resolve + load the config file once.
- *
- * THE INI LIVES WITH THE DATABASE AND THE PLUGINS, in
- * task_db_default_dir() — ~/.local/share/tasks on Linux.  One directory
- * holds everything this app keeps per user, so there is one place to back
- * up, one place to look, and no answer to "where are my settings?" that
- * depends on how the binary was started.
- *
- * Three steps, in this order:
- *   1. <data dir>/tasks/tasks.ini, if it EXISTS — the normal case;
- *   2. else tasks.ini NEXT TO THE BINARY, if it EXISTS — portable mode,
- *      and what keeps a source tree or a USB copy working with the ini it
- *      came with;
- *   3. else CREATE one at <data dir>/tasks/tasks.ini.
- *
- * Steps 1 and 2 are EXISTENCE tests, which is what makes the order
- * meaningful: the data dir wins when it has an ini, and a portable tree is
- * only consulted when it does not.  A writability test would not do — the
- * old rule took the binary's directory whenever it was WRITABLE, so a
- * development tree silently outranked the user's real settings.
- *
- * There is NO ~/.config/tasks fallback any more, and no migration from
- * one: this build has never shipped, so no other spelling exists in the
- * wild.  On first run the new file is seeded from tasks.ini.defaults NEXT
- * TO THE BINARY, which is where that file ships.
+ * task_app_config_init() — resolve + load the config file once (see app.h).
  * ------------------------------------------------------------------------- */
 void
 task_app_config_init(const gchar *argv0)
@@ -401,18 +1057,18 @@ task_app_config_init(const gchar *argv0)
     gchar *exe_dir = exe_dir_from_argv0(argv0);
     exe_dir_cached = g_strdup(exe_dir);
 
-    gchar *data_dir = task_db_default_dir();      /* creates it            */
+    gchar *data_dir = task_db_default_dir();
     gchar *shared   = g_build_filename(data_dir, TASK_INI_FILE, NULL);
-    gchar *local    = g_build_filename(exe_dir, TASK_INI_FILE, NULL);
+    gchar *local    = g_build_filename(exe_dir,  TASK_INI_FILE, NULL);
 
     if (g_file_test(shared, G_FILE_TEST_EXISTS)) {
-        config_path = shared;                     /* 1. the normal home    */
+        config_path = shared;
         g_free(local);
     } else if (g_file_test(local, G_FILE_TEST_EXISTS)) {
-        config_path = local;                      /* 2. portable mode      */
+        config_path = local;
         g_free(shared);
     } else {
-        config_path = shared;                     /* 3. create it there    */
+        config_path = shared;
         g_free(local);
     }
     g_free(data_dir);
@@ -420,10 +1076,8 @@ task_app_config_init(const gchar *argv0)
     config_kf = g_key_file_new();
     if (!g_key_file_load_from_file(config_kf, config_path,
                                    G_KEY_FILE_NONE, NULL)) {
-        /* First launch: seed from the committed defaults, if present.      */
         gchar *defaults = g_build_filename(exe_dir, TASK_INI_DEFAULTS, NULL);
-        g_key_file_load_from_file(config_kf, defaults,
-                                  G_KEY_FILE_NONE, NULL);
+        g_key_file_load_from_file(config_kf, defaults, G_KEY_FILE_NONE, NULL);
         g_free(defaults);
     }
     g_free(exe_dir);
@@ -460,43 +1114,6 @@ task_app_config_get_bool(const gchar *key, gboolean def)
 }
 
 /* ---------------------------------------------------------------------------
- * Namespaced config (see app.h) — "<ns>_<key>" against the same store.
- * ------------------------------------------------------------------------- */
-
-/* ns_key() — build the prefixed key.  g_free the result.                  */
-static gchar *
-ns_key(const gchar *ns, const gchar *key)
-{
-    return g_strdup_printf("%s_%s", ns, key);
-}
-
-gchar *
-task_app_config_get_ns(const gchar *ns, const gchar *key)
-{
-    gchar *k = ns_key(ns, key);
-    gchar *v = task_app_config_get(k);
-    g_free(k);
-    return v;
-}
-
-void
-task_app_config_set_ns(const gchar *ns, const gchar *key, const gchar *value)
-{
-    gchar *k = ns_key(ns, key);
-    task_app_config_set(k, value);
-    g_free(k);
-}
-
-gboolean
-task_app_config_get_bool_ns(const gchar *ns, const gchar *key, gboolean def)
-{
-    gchar *k = ns_key(ns, key);
-    gboolean b = task_app_config_get_bool(k, def);
-    g_free(k);
-    return b;
-}
-
-/* ---------------------------------------------------------------------------
  * task_app_config_set() — change one setting and write the ini through.
  * NULL removes the key.  Unchanged values skip the rewrite.
  * ------------------------------------------------------------------------- */
@@ -523,34 +1140,25 @@ task_app_config_set(const gchar *key, const gchar *value)
  * Date helpers (see app.h).
  *
  * EVERY GLib "_local" constructor resolves the local timezone from scratch,
- * and that resolution is the whole cost of a date operation here: measured
- * on GLib 2.88.2, g_time_zone_new_local() is 7318 ns against 175 ns for
- * building a GDateTime once a GTimeZone is in hand.  The helpers below run
- * per ROW (task_rows_append formats two dates each) and per DRAW
- * (task_due_color is the Due column's cell data func), so at 500 rows that
- * was 26.9 us a row — 13.5 ms of timezone lookups per refresh.
+ * and that resolution is the whole cost of a date operation at scale.
+ * Measured on GLib 2.88.2: g_time_zone_new_local() is 7318 ns against 175 ns
+ * for building a GDateTime once a GTimeZone is in hand — 40x.  Per row and
+ * per draw at 500 rows that was 13.5 ms of timezone lookups per refresh.
  *
- * So the zone is CACHED, and every constructor here takes it explicitly:
- * g_date_time_new_now(tz) and g_date_time_new(tz, …) do exist; a
- * from-unix one does NOT, which is why task_local_dt goes through
- * _from_unix_utc + g_date_time_to_timezone (160 ns against 8316).
+ * The zone is CACHED, and every constructor here takes it explicitly.
+ * There is no g_date_time_new_from_unix(tz, t), which is why task_local_dt
+ * goes through _from_unix_utc + g_date_time_to_timezone (160 ns vs 8316).
  * =========================================================================== */
 
-/* The cached zone, and the local DAY it was resolved in.  One piece of
- * state for two jobs, because they expire together: the day window is what
- * task_due_color compares against, and its rollover is also when a changed
- * SYSTEM timezone is picked up.  That is the accepted cost of caching —
- * a zone changed mid-session (travel, a TZ edit) is noticed at the next
- * local midnight rather than instantly.  DST is NOT affected: a GTimeZone
- * carries the whole transition table, so every conversion through it
- * resolves DST exactly as before.                                          */
-static GTimeZone *local_tz = NULL;   /* owned                              */
-static gint64     local_lo = 0;      /* [lo, hi) — today, in unix seconds  */
+static GTimeZone *local_tz = NULL;   /* owned                                */
+static gint64     local_lo = 0;      /* [lo, hi) today window, unix seconds  */
 static gint64     local_hi = 0;
 
-/* local_cache_ensure() — resolve the zone and today's bounds if the cache
- * is empty or the day has rolled over.  One time(NULL) (21 ns) and two
- * comparisons on the common path.                                          */
+/*
+ * local_cache_ensure — resolve the zone and today's bounds if the cache is
+ * empty or the day has rolled over.  One time(NULL) and two comparisons on
+ * the common path.
+ */
 static void
 local_cache_ensure(void)
 {
@@ -572,10 +1180,8 @@ local_cache_ensure(void)
         local_lo = g_date_time_to_unix(mid);
         local_hi = g_date_time_to_unix(nxt);
     } else {
-        /* Cannot happen from fields taken off a real GDateTime, but a
-         * window of [now, now) would re-resolve the zone on EVERY call.
-         * A minute's grace keeps a broken calendar from becoming a hot
-         * loop; the zone itself is still usable.                        */
+        /* Cannot happen from a real GDateTime, but [now, now) would
+         * re-resolve the zone on every call.  A minute's grace.             */
         local_lo = now;
         local_hi = now + 60;
     }
@@ -584,7 +1190,6 @@ local_cache_ensure(void)
     g_clear_pointer(&nxt, g_date_time_unref);
 }
 
-/* task_local_tz() — see app.h.                                             */
 GTimeZone *
 task_local_tz(void)
 {
@@ -592,7 +1197,6 @@ task_local_tz(void)
     return local_tz;
 }
 
-/* task_local_dt() — see app.h.                                             */
 GDateTime *
 task_local_dt(gint64 unix_ts)
 {
@@ -604,9 +1208,6 @@ task_local_dt(gint64 unix_ts)
     return local;
 }
 
-/* ---------------------------------------------------------------------------
- * task_day_bounds() — local midnight bounds of "today + offset_days".
- * ------------------------------------------------------------------------- */
 void
 task_day_bounds(gint offset_days, gint64 *lo, gint64 *hi)
 {
@@ -626,9 +1227,6 @@ task_day_bounds(gint offset_days, gint64 *lo, gint64 *hi)
     g_date_time_unref(nxt);
 }
 
-/* ---------------------------------------------------------------------------
- * task_due_format() — human-readable due date ("" for none).
- * ------------------------------------------------------------------------- */
 gchar *
 task_due_format(gint64 due)
 {
@@ -645,16 +1243,9 @@ task_due_format(gint64 due)
 /* ---------------------------------------------------------------------------
  * task_clock_format() — "8:00 AM" for minutes past local midnight.
  *
- * "%I:%M %p" with the leading zero dropped BY HAND, and that is
- * deliberate: GLib's "%l" (the 1–12 hour that would do it for us) pads
- * with U+2007 FIGURE SPACE, not an ASCII one, so g_strstrip leaves it in
- * place and the sentence reads "at  8:00 AM" with a stray gap (gotcha 23).
- * Measured against GLib 2.84 — don't "simplify" this back to %l.  A locale
- * whose %p is empty leaves a trailing space, which g_strchomp does remove.
- *
- * The DATE the formatting runs against is arbitrary — only the wall clock
- * is being rendered — but has to be a real one, so it goes through the
- * local calendar like every other date here.
+ * "%I:%M %p" with the leading zero dropped BY HAND.  GLib's "%l" pads with
+ * U+2007 FIGURE SPACE (not ASCII), so g_strstrip leaves it and the sentence
+ * reads "at  8:00 AM" (gotcha 23; measured against GLib 2.84).
  * ------------------------------------------------------------------------- */
 gchar *
 task_clock_format(gint minutes)
@@ -672,28 +1263,21 @@ task_clock_format(gint minutes)
     if (clock == NULL)
         return g_strdup("");
     g_strchomp(clock);
-    if (clock[0] == '0')             /* "08:00 AM" reads as a timestamp     */
+    if (clock[0] == '0')
         memmove(clock, clock + 1, strlen(clock));
     return clock;
 }
 
-/* ---------------------------------------------------------------------------
- * task_due_instant() — the MOMENT a task is due (see app.h).
- * ------------------------------------------------------------------------- */
 gint64
 task_due_instant(gint64 due, gint due_time)
 {
     if (due == 0)
-        return 0;                    /* no date, so no moment               */
+        return 0;
     if (due_time < 0 || due_time > 23 * 60 + 59)
         due_time = TASK_DUE_TIME_DEFAULT;
     return due + (gint64)due_time * 60;
 }
 
-/* ---------------------------------------------------------------------------
- * task_due_format_at() — the due date, with its time of day only when
- * that time is not the default (see app.h).
- * ------------------------------------------------------------------------- */
 gchar *
 task_due_format_at(gint64 due, gint due_time)
 {
@@ -707,9 +1291,6 @@ task_due_format_at(gint64 due, gint due_time)
     return out;
 }
 
-/* ---------------------------------------------------------------------------
- * task_due_format_iso() — canonical "YYYY-MM-DD" spelling ("" for none).
- * ------------------------------------------------------------------------- */
 gchar *
 task_due_format_iso(gint64 due)
 {
@@ -724,19 +1305,12 @@ task_due_format_iso(gint64 due)
 }
 
 /* ---------------------------------------------------------------------------
- * task_due_color() — urgency tint (see app.h).  Compares against the local
- * DAY's bounds so the colors roll over at midnight.
+ * task_due_color() — urgency tint (see app.h).
  *
- * THE HOTTEST FUNCTION IN THE APP: it is the Due column's cell data func,
- * so it runs per visible row per DRAW.  It used to build two GDateTimes a
- * call — 15114 ns measured — one of which ("now") was identical for every
- * row and every frame within a day.  Against the cached day window it is
- * 21 ns, the same answer 703 times faster (checked identical across
- * -5..+5 days).  Do not put a GDateTime back in here.
- *
- * `due` is the full INSTANT (task_due_instant, what TL_DUE_RAW holds), and
- * comparing an instant against [today_lo, today_hi) is exactly the
- * calendar-day test this used to spell the long way round.
+ * THE HOTTEST FUNCTION IN THE APP: the Due column's cell data func runs per
+ * visible row per DRAW.  With the cached day window it is 21 ns, 703x faster
+ * than building two GDateTimes a call (measured).  No GDateTime here.
+ * `due` is the full instant (task_due_instant, what TL_DUE_RAW holds).
  * ------------------------------------------------------------------------- */
 const gchar *
 task_due_color(gint64 due)
@@ -744,14 +1318,11 @@ task_due_color(gint64 due)
     if (due == 0)
         return NULL;
     local_cache_ensure();
-    return due < local_lo ? "#c01c28"        /* overdue: red                */
-         : due < local_hi ? "#d19a00"        /* today: gold                 */
-                          : "#26a269";       /* ahead: green                */
+    return due < local_lo ? "#c01c28"   /* overdue: red                       */
+         : due < local_hi ? "#d19a00"   /* today: gold                        */
+                          : "#26a269";  /* ahead: green                       */
 }
 
-/* ---------------------------------------------------------------------------
- * task_due_from_ymd() — validated calendar fields → local midnight unix.
- * ------------------------------------------------------------------------- */
 gint64
 task_due_from_ymd(gint y, gint m, gint d)
 {
@@ -774,7 +1345,7 @@ task_due_parse(const gchar *text)
     if (text == NULL)
         return 0;
     gchar *t = g_strstrip(g_strdup(text));
-    gint y = 0, m = 0, d = 0;        /* parsed calendar fields              */
+    gint y = 0, m = 0, d = 0;
     gboolean ok = FALSE;
     if (sscanf(t, "%d-%d-%d", &y, &m, &d) == 3) {
         ok = TRUE;

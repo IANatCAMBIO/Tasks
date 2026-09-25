@@ -4,50 +4,10 @@
 # The group name below is part of the file format: the app reads only
 # [tasks].
 [tasks]
-# Google Tasks sync — the OAuth client comes from Google's downloaded
-# client_secret.apps.googleusercontent.com.json placed next to the app
-# (gitignored — never commit it), or from a baked-in build default; the
-# legacy google_client_id/google_client_secret keys here still override
-# the baked-in client.  Signing in (once, in the browser) stores a
-# sync-only refresh token here as gtasks_refresh_token.
-# google_sync_enabled (1|0, default 1) is the master switch.
-
-
-# Minutes between automatic syncs while signed in (0 disables the
-# timer; the toolbar Sync button always works).
-sync_interval_min=5
-# Move the menu into the native macOS menu bar (1|0; needs a build with
-# gtk-mac-integration-gtk3 — see Settings → Appearance).
-native_menubar=0
 # Render task titles in bold in the task list (1|0, default 0; Settings → Appearance).
 bold_task_titles=0
 # Show completed tasks in the task list (1|0, default 1; toolbar toggle).
 show_completed=1
-google_sync_enabled=1
-# Show the Sync button in the toolbar (1|0; Settings → Google Tasks).
-sync_toolbar_button=1
-# Notes integration: mirror its action items as ordinary tasks (1|0),
-# and the notes CLI to reach them with (a path or a command name on
-# PATH; Settings → Notes).  Needs a Notes new enough to understand
-# `action list --uid` — the mirror keys tasks on that stable id and
-# refuses to run against an older build rather than guess.
-notes_sync=0
-# notes_cli=notes
-# Where mirrored action items are filed is NOT an ini key: the FILING
-# RULES table decides it (Settings → Notes), ending in a default rule
-# that catches whatever no rule claims.  It lives in the DATABASE, not
-# here, because a rule names a list by id and an id only means anything
-# in the file the lists live in.
-# How often the mirror runs, in minutes (0 = only when Sync is pressed).
-# Local done/due changes are cached until then and pushed in bulk.
-notes_sync_interval_min=5
-# Show the "Sync Notes" toolbar button (1|0; Settings → Notes).  Notes →
-# Sync Now in the menu bar does the same thing and is NOT gated on this:
-# the setting is about the toolbar, not about syncing by hand.
-notes_toolbar_button=1
-# Show the sidebar's "All Action Items" view — every mirrored item in one
-# place, whichever list each one lives in (1|0; Settings → Notes).
-notes_meta_row=1
 # Sidebar visibility (1|0, default 0; the toolbar Sidebar toggle and
 # View → Show Sidebar, which reads "Hide Sidebar" once it is up — every
 # View item is named for the action a click performs).
@@ -58,11 +18,6 @@ sidebar_visible=0
 # the task area instead.  It leaves the sidebar alone — that stays under
 # sidebar_visible above, in compact mode just the same.
 compact_layout=0
-# NOTE there is no key here for showing the Weekly Forecast or Overdue
-# views.  Both are PLUGINS, and a plugin's presence is its own switch:
-# the checkbox in Settings → Plugins loads or unloads it, taking its
-# sidebar row with it either way.  A second key meaning the same thing
-# is what "weekly_forecast" and "<id>_show_row" used to be.
 # Let the Due Today view also list everything already past due
 # (1|0, default 0; Settings → Appearance).
 due_today_show_overdue=0
@@ -84,11 +39,10 @@ due_today_show_overdue=0
 # Kanban View (1|0, default 0; View → Kanban View): show the selected
 # view's tasks as a three-lane board (New / In Progress / Done) instead
 # of a list, with cards you drag between lanes to change their status —
-# and up and down within a lane to order them.  The Weekly Forecast keeps
-# its own seven-day panel either way.  The card order is stored per view
-# in kanban_order_list_<id>, kanban_order_all, kanban_order_pinned,
-# kanban_order_today and kanban_order_bn_actions — written by the app,
-# not hand-edited, and separate from the manual_order_* keys above so a
+# and up and down within a lane to order them.  The card order is stored
+# per view in kanban_order_list_<id>, kanban_order_all,
+# kanban_order_pinned and kanban_order_today — written by the app, not
+# hand-edited, and separate from the manual_order_* keys above so a
 # board drag never rearranges a hand-sorted list view.
 kanban_view=0
 # Kanban card drop shadow (1|0, default 1; Settings -> Appearance).  Lit
@@ -102,8 +56,8 @@ kanban_shadow=1
 # Manual task ordering (1|0, default 0; the toolbar sort-mode toggle or
 # View → Manual Sort): shows a drag handle and lets rows be dragged.
 # The order itself is stored per view in manual_order_list_<id>,
-# manual_order_all, manual_order_pinned, manual_order_today and
-# manual_order_bn_actions — written by the app, not hand-edited.
+# manual_order_all, manual_order_pinned and manual_order_today — written
+# by the app, not hand-edited.
 task_list_manual_sort=0
 # Task-pane column visibility (1|0; right-click a column header).  The
 # Task column is always shown and has no key.  Status (New / In Progress
@@ -143,18 +97,3 @@ backup_keep=10
 # Per-machine, so it is not seeded here.
 # win_w/win_h — the library window size, written on clean close and
 # restored at launch (980x640 fallback); not meant for hand-editing.
-
-# --- Plugins -----------------------------------------------------------------
-# Folder plugins (.so / .dylib) are loaded from.  Commented out = the
-# default: a "plugins" folder beside the Tasks binary when one exists (a
-# portable or development install), otherwise <data dir>/tasks/plugins —
-# the same folder the database lives in, created on demand.
-#
-# The DEFAULT database folder is used rather than a relocated db_dir on
-# purpose: plugins are compiled code, and that folder is often a sync
-# folder, which would push architecture-specific binaries between
-# machines.  Settable in File -> Settings... -> Plugins.
-#plugin_dir=
-
-# Each plugin found also gets a "<id>_plugin_enabled" key (default 1).
-# Set to 0 and the plugin is never opened at all, not merely hidden.
