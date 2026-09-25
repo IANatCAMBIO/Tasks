@@ -723,6 +723,23 @@ sub_refresh(TaskEditor *ed)
 }
 
 /*
+ * sub_scroll_to_bottom — idle callback: scroll the subtask GtkScrolledWindow
+ * to its bottom so the newly appended row is visible.
+ *
+ * Called with a g_object_ref'd scrolled window; unref'd on completion so
+ * the object stays alive even if the editor closes before this fires.
+ */
+static gboolean
+sub_scroll_to_bottom(gpointer data)
+{
+    GtkScrolledWindow *sw = data;
+    GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(sw);
+    gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+    g_object_unref(sw);
+    return G_SOURCE_REMOVE;
+}
+
+/*
  * on_sub_add — create a subtask and focus its title entry.
  */
 static void
@@ -753,8 +770,17 @@ on_sub_add(GtkWidget *w, gpointer data)
             GtkWidget *box   = gtk_list_box_row_get_child(row);
             GtkWidget *check = gtk_widget_get_first_child(box);
             GtkWidget *entry = gtk_widget_get_next_sibling(check);
-            if (entry != NULL)
+            if (entry != NULL) {
                 gtk_widget_grab_focus(entry);
+                /* Scroll the list to show the new row.  Layout hasn't run
+                 * yet so the adjustment upper is stale; defer one idle tick.
+                 * g_object_ref keeps the window alive if the editor closes
+                 * before the idle fires.                                    */
+                GtkWidget *sw = gtk_widget_get_ancestor(ed->sub_box,
+                                                        GTK_TYPE_SCROLLED_WINDOW);
+                if (sw != NULL)
+                    g_idle_add(sub_scroll_to_bottom, g_object_ref(sw));
+            }
             break;
         }
     }
