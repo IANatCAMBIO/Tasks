@@ -1361,12 +1361,48 @@ make_list_section(const gchar *heading, GtkWidget *listbox,
 }
 
 /*
+ * editor_css_install — CSS for the editor's list sections (idempotent).
+ *
+ * Installs the same .task-small-button rule as settings_window so both
+ * windows share the compact-button look without cross-including each other.
+ * Also installs rules that shrink the per-row entries in the subtask listbox
+ * to roughly the same height as GTK3's tree-view text renderers.
+ */
+static void
+editor_css_install(void)
+{
+    static gboolean done = FALSE;
+    if (done) return;
+    done = TRUE;
+    task_app_css_install(
+        "button.task-small-button {"
+        "  padding: 1px 8px; min-height: 0; min-width: 0;"
+        "}"
+        "button.task-small-button > label { font-size: 85%; }"
+        /* Compact entries inside the subtask listbox: strip the theme's
+         * 32 px min-height floor so rows match GTK3's text-renderer height. */
+        "listbox.task-sub-listbox > row {"
+        "  padding: 2px 4px;"
+        "}"
+        "listbox.task-sub-listbox entry {"
+        "  min-height: 0;"
+        "  padding-top: 2px;"
+        "  padding-bottom: 2px;"
+        "}");
+}
+
+/*
  * small_button — compact labelled button wired to `cb`.
+ *
+ * Uses the task-small-button CSS class (installed by editor_css_install) so
+ * the button stays the same size regardless of which theme is active.
  */
 static GtkWidget *
 small_button(const gchar *label, GCallback cb, gpointer data)
 {
     GtkWidget *b = gtk_button_new_with_label(label);
+    gtk_widget_add_css_class(b, "task-small-button");
+    gtk_widget_set_valign(b, GTK_ALIGN_CENTER);
     g_signal_connect(b, "clicked", cb, data);
     return b;
 }
@@ -1561,31 +1597,45 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     ed->adv_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_widget_set_visible(ed->adv_box, FALSE);
 
+    /* Shared size group: all list-section buttons get the same width so the
+     * subtask column and the attachment column align across both sections.    */
+    editor_css_install();
+    GtkSizeGroup *btn_sg = gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
+
     /* ── Subtasks (top-level tasks only) ─────────────────────────────────  */
     if (ed->parent_id == 0) {
         ed->sub_box = gtk_list_box_new();
         gtk_list_box_set_selection_mode(GTK_LIST_BOX(ed->sub_box),
                                         GTK_SELECTION_SINGLE);
+        /* CSS class targets compact entry CSS installed by editor_css_install. */
+        gtk_widget_add_css_class(ed->sub_box, "task-sub-listbox");
+
+        GtkWidget *sub_add = small_button("Add",    G_CALLBACK(on_sub_add),    ed);
+        GtkWidget *sub_rem = small_button("Remove", G_CALLBACK(on_sub_remove), ed);
+        gtk_size_group_add_widget(btn_sg, sub_add);
+        gtk_size_group_add_widget(btn_sg, sub_rem);
+
+        GtkWidget *move_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+        GtkWidget *up_btn   = gtk_button_new_with_label("\xe2\x96\xb2");
+        GtkWidget *dn_btn   = gtk_button_new_with_label("\xe2\x96\xbc");
+        gtk_widget_add_css_class(up_btn, "task-small-button");
+        gtk_widget_add_css_class(dn_btn, "task-small-button");
+        gtk_widget_set_valign(up_btn, GTK_ALIGN_CENTER);
+        gtk_widget_set_valign(dn_btn, GTK_ALIGN_CENTER);
+        g_object_set_data(G_OBJECT(up_btn), "task-direction", GINT_TO_POINTER(-1));
+        g_object_set_data(G_OBJECT(dn_btn), "task-direction", GINT_TO_POINTER( 1));
+        g_signal_connect(up_btn, "clicked", G_CALLBACK(on_sub_move), ed);
+        g_signal_connect(dn_btn, "clicked", G_CALLBACK(on_sub_move), ed);
+        gtk_widget_set_hexpand(up_btn, TRUE);
+        gtk_widget_set_hexpand(dn_btn, TRUE);
+        gtk_box_append(GTK_BOX(move_box), up_btn);
+        gtk_box_append(GTK_BOX(move_box), dn_btn);
+        /* Size the move_box as a whole so ▲▼ together match the other buttons. */
+        gtk_size_group_add_widget(btn_sg, move_box);
 
         GtkWidget *sub_btns = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-        gtk_box_append(GTK_BOX(sub_btns),
-            small_button("Add", G_CALLBACK(on_sub_add), ed));
-        gtk_box_append(GTK_BOX(sub_btns),
-            small_button("Remove", G_CALLBACK(on_sub_remove), ed));
-
-        GtkWidget *move_box   = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
-        GtkWidget *up_btn     = gtk_button_new_with_label("\xe2\x96\xb2");
-        GtkWidget *down_btn   = gtk_button_new_with_label("\xe2\x96\xbc");
-        g_object_set_data(G_OBJECT(up_btn),   "task-direction",
-                          GINT_TO_POINTER(-1));
-        g_object_set_data(G_OBJECT(down_btn), "task-direction",
-                          GINT_TO_POINTER(1));
-        g_signal_connect(up_btn,   "clicked", G_CALLBACK(on_sub_move), ed);
-        g_signal_connect(down_btn, "clicked", G_CALLBACK(on_sub_move), ed);
-        gtk_widget_set_hexpand(up_btn,   TRUE);
-        gtk_widget_set_hexpand(down_btn, TRUE);
-        gtk_box_append(GTK_BOX(move_box), up_btn);
-        gtk_box_append(GTK_BOX(move_box), down_btn);
+        gtk_box_append(GTK_BOX(sub_btns), sub_add);
+        gtk_box_append(GTK_BOX(sub_btns), sub_rem);
         gtk_box_append(GTK_BOX(sub_btns), move_box);
 
         GtkWidget *sub_section =
@@ -1612,17 +1662,24 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     g_signal_connect(ed->att_box, "row-activated",
                      G_CALLBACK(on_att_row_activated), ed);
 
+    GtkWidget *att_add = small_button("Add\xe2\x80\xa6", G_CALLBACK(on_att_add),    ed);
+    GtkWidget *att_rem = small_button("Remove",          G_CALLBACK(on_att_remove), ed);
+    GtkWidget *att_opn = small_button("Open",            G_CALLBACK(on_att_open),   ed);
+    gtk_size_group_add_widget(btn_sg, att_add);
+    gtk_size_group_add_widget(btn_sg, att_rem);
+    gtk_size_group_add_widget(btn_sg, att_opn);
+
     GtkWidget *att_btns = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_box_append(GTK_BOX(att_btns),
-        small_button("Add\xe2\x80\xa6", G_CALLBACK(on_att_add), ed));
-    gtk_box_append(GTK_BOX(att_btns),
-        small_button("Remove", G_CALLBACK(on_att_remove), ed));
-    gtk_box_append(GTK_BOX(att_btns),
-        small_button("Open", G_CALLBACK(on_att_open), ed));
+    gtk_box_append(GTK_BOX(att_btns), att_add);
+    gtk_box_append(GTK_BOX(att_btns), att_rem);
+    gtk_box_append(GTK_BOX(att_btns), att_opn);
 
     GtkWidget *att_section =
         make_list_section("Attachments", ed->att_box, att_btns);
     gtk_box_append(GTK_BOX(ed->adv_box), att_section);
+
+    /* All list-section buttons are now in btn_sg; release our reference.     */
+    g_object_unref(btn_sg);
 
     /* ── Recurrence (LAST in adv_box — at the foot above the disclosure) ─  */
     {
