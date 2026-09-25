@@ -272,6 +272,14 @@ task_list_install_css(void)
         /* No pressed-state shadow */
         "columnview.task-list > listview > row:active"
         " { box-shadow: none; }"
+        /* Remove the theme's default row and cell min-height so widget
+         * margins alone set the row height, matching GTK3 cell renderer
+         * sizing.  The cell wrapper (GtkColumnViewCellWidget) adds its
+         * own padding independently of the row's.                        */
+        "columnview.task-list > listview > row"
+        " { min-height: 0; padding: 0; }"
+        "columnview.task-list > listview > row > cell"
+        " { min-height: 0; padding: 0; }"
         /* Due urgency tints */
         "columnview.task-list label.task-overdue   { color: #c01c28; }"
         "columnview.task-list label.task-due-today { color: #d19a00; }"
