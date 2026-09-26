@@ -58,6 +58,10 @@ typedef struct {
                                       * refused by reverting                */
     GtkWidget           *sb_view;    /* the GtkListView                     */
     GtkWidget           *sidebar_box;/* the pane the toolbar toggle shows   */
+    GtkWidget           *sidebar_paned; /* the GtkPaned (sidebar | task pane) */
+    gulong               sb_fit_idle;  /* after-paint handler id, or 0       */
+    GdkFrameClock       *sb_fit_clock; /* the clock it is connected to       */
+    gboolean             sb_fit_force; /* the pending fit is a force-fit     */
     /* List drag-reorder: hand-rolled on GtkGestureDrag.  The row is not
      * moved until release; CSS classes on the source/mark widgets give
      * live feedback.  Only SB_KIND_LIST rows drag.                        */

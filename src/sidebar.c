@@ -1314,6 +1314,147 @@ on_sidebar_activated(GtkListView *view, guint pos, gpointer data)
     g_object_unref(trow);
 }
 
+/* ===========================================================================
+ * Auto-fitting the sidebar width to its content.
+ *
+ * The paned divider is moved to the list view's natural width after every
+ * model change (rows added, removed, expanded or collapsed) and once on
+ * startup.  The fit waits for the frame clock's after-paint signal so GTK
+ * has created and measured the row widgets before we ask for the width.
+ * Multiple changes on the same frame coalesce onto a single callback.
+ * =========================================================================== */
+
+/* Narrowest / widest the sidebar is ever fitted to.                         */
+#define SB_FIT_MIN_WIDTH    160
+#define SB_FIT_MAX_PERCENT   50    /* never more than half the paned width   */
+
+/*
+ * sidebar_fit_apply() — move the divider so the visible rows fit exactly.
+ *
+ * Uses gtk_widget_measure() on the list view: GTK only realises the rows
+ * currently on screen, and each row's natural width is its full label (the
+ * label only ellipsises below its natural size), so the measure IS "the
+ * widest visible row".  The vertical scrollbar's width is added when
+ * visible.  Nothing here reads the current allocation, so the arithmetic
+ * is the same before and after the first layout pass.
+ *
+ * Inputs:
+ *   lw — library window state.
+ *
+ * Output: none; moves the paned divider as a side-effect.
+ */
+static void
+sidebar_fit_apply(TaskLibrary *lw)
+{
+    if (!gtk_widget_get_mapped(lw->sb_view))
+        return;
+    gint nat_w;
+    gtk_widget_measure(lw->sb_view, GTK_ORIENTATION_HORIZONTAL,
+                       -1, NULL, &nat_w, NULL, NULL);
+    gint want = MAX(nat_w, SB_FIT_MIN_WIDTH);
+    GtkWidget *bar = gtk_scrolled_window_get_vscrollbar(
+        GTK_SCROLLED_WINDOW(gtk_widget_get_parent(lw->sb_view)));
+    if (bar != NULL && gtk_widget_get_visible(bar)) {
+        gint bar_w;
+        gtk_widget_measure(bar, GTK_ORIENTATION_HORIZONTAL,
+                           -1, NULL, &bar_w, NULL, NULL);
+        want += bar_w;
+    }
+    gint full = gtk_widget_get_width(lw->sidebar_paned);
+    if (full > 0)
+        want = MIN(want, full * SB_FIT_MAX_PERCENT / 100);
+    if (want != gtk_paned_get_position(GTK_PANED(lw->sidebar_paned)))
+        gtk_paned_set_position(GTK_PANED(lw->sidebar_paned), want);
+}
+
+/*
+ * sidebar_fit_after_paint() — frame clock "after-paint" callback: the frame
+ * that laid out the change has been painted; fit now and stop listening.
+ *
+ * Inputs:
+ *   clock     — the frame clock (unused beyond disconnecting).
+ *   user_data — TaskLibrary *.
+ *
+ * Output: none.
+ */
+static void
+sidebar_fit_after_paint(GdkFrameClock *clock, gpointer user_data)
+{
+    (void)clock;
+    TaskLibrary *lw = user_data;
+    g_signal_handler_disconnect(lw->sb_fit_clock, lw->sb_fit_idle);
+    lw->sb_fit_idle = 0;
+    g_clear_object(&lw->sb_fit_clock);
+    gboolean force = lw->sb_fit_force;
+    lw->sb_fit_force = FALSE;
+    (void)force;                         /* no per-force logic yet            */
+    sidebar_fit_apply(lw);
+}
+
+/*
+ * sidebar_fit_queue() — schedule sidebar_fit_apply() for the next frame.
+ *
+ * Waits for the frame clock's after-paint so GTK has created and measured
+ * the row widgets; multiple calls on the same frame coalesce onto one.
+ *
+ * Inputs:
+ *   lw    — library window state.
+ *   force — TRUE for the one-shot startup fit (runs even before mapping).
+ *
+ * Output: none.
+ */
+static void
+sidebar_fit_queue(TaskLibrary *lw, gboolean force)
+{
+    lw->sb_fit_force |= force;
+    if (lw->sb_fit_idle != 0)
+        return;                          /* already waiting for the frame     */
+    GdkFrameClock *clock = gtk_widget_get_frame_clock(lw->sb_view);
+    if (clock == NULL)
+        return;                          /* not mapped: the startup fit covers */
+    lw->sb_fit_clock = g_object_ref(clock);
+    lw->sb_fit_idle = g_signal_connect(clock, "after-paint",
+                                       G_CALLBACK(sidebar_fit_after_paint),
+                                       lw);
+    gdk_frame_clock_request_phase(clock, GDK_FRAME_CLOCK_PHASE_PAINT);
+}
+
+/*
+ * on_sidebar_rows_changed() — items-changed on the flattened sb_tree model:
+ * a row was expanded, collapsed, added or removed.  Queue a fit.
+ *
+ * Inputs:
+ *   model     — the flat GtkTreeListModel (unused).
+ *   position/removed/added — change details (unused).
+ *   user_data — TaskLibrary *.
+ *
+ * Output: none.
+ */
+static void
+on_sidebar_rows_changed(GListModel *model, guint position, guint removed,
+                        guint added, gpointer user_data)
+{
+    (void)model; (void)position; (void)removed; (void)added;
+    sidebar_fit_queue(user_data, FALSE);
+}
+
+/*
+ * on_sidebar_mapped() — "map" on the sb_view: the list is on screen for the
+ * first time; trigger the one-shot startup fit.
+ *
+ * Inputs:
+ *   widget    — the sidebar list view (unused).
+ *   user_data — TaskLibrary *.
+ *
+ * Output: none.
+ */
+static void
+on_sidebar_mapped(GtkWidget *widget, gpointer user_data)
+{
+    (void)widget;
+    sidebar_fit_queue(user_data, TRUE);
+}
+
 /* ---------------------------------------------------------------------------
  * task_sidebar_build() — build the sidebar pane and install it into `paned`
  * as the start child (see library_priv.h).
@@ -1339,6 +1480,8 @@ task_sidebar_build(TaskLibrary *lw, GtkWidget *paned)
 
     g_signal_connect(lw->sb_sel, "notify::selected-item",
                      G_CALLBACK(on_sidebar_changed), lw);
+    g_signal_connect(lw->sb_tree, "items-changed",
+                     G_CALLBACK(on_sidebar_rows_changed), lw);
 
     GtkListItemFactory *factory = task_row_factory_new(
         G_CALLBACK(on_sb_setup), G_CALLBACK(on_sb_bind), lw);
@@ -1348,6 +1491,8 @@ task_sidebar_build(TaskLibrary *lw, GtkWidget *paned)
     gtk_widget_add_css_class(lw->sb_view, "task-sidebar");
     g_signal_connect(lw->sb_view, "activate",
                      G_CALLBACK(on_sidebar_activated), lw);
+    g_signal_connect(lw->sb_view, "map",
+                     G_CALLBACK(on_sidebar_mapped), lw);
 
     GtkWidget *sb_scroll = gtk_scrolled_window_new();
     /* EXTERNAL horizontally: NEVER makes the scroller demand its child's

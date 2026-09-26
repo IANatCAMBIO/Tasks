@@ -1393,6 +1393,10 @@ on_library_destroy(GtkWidget *w, gpointer data)
     g_clear_object(&lw->drag_cursor);
     g_clear_object(&lw->board.card_grab);
     g_clear_object(&lw->board.card_grabbing);
+    if (lw->sb_fit_idle != 0) {
+        g_signal_handler_disconnect(lw->sb_fit_clock, lw->sb_fit_idle);
+        g_object_unref(lw->sb_fit_clock);
+    }
     if (lw->group_expanded != NULL)
         g_hash_table_destroy(lw->group_expanded);
     if (lw->board.kanban_sel != NULL)
@@ -1799,6 +1803,7 @@ task_library_window_new(TaskApp *app)
     g_free(sbw);
     if (lw->sb_width <= 0)
         lw->sb_width = 220;
+    lw->sidebar_paned = paned;
     gtk_paned_set_position(GTK_PANED(paned), lw->sb_width);
     g_signal_connect(paned, "notify::position",
                      G_CALLBACK(on_paned_position), lw);
