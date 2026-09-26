@@ -1440,7 +1440,14 @@ on_sidebar_rows_changed(GListModel *model, guint position, guint removed,
 
 /*
  * on_sidebar_mapped() — "map" on the sb_view: the list is on screen for the
- * first time; trigger the one-shot startup fit.
+ * first time; trigger the one-shot startup fit and ensure the selection
+ * highlight appears.
+ *
+ * The selection is set in lib_refresh_sidebar before the widget realizes.
+ * GTK's GtkListView may not apply the :selected CSS state to rows created
+ * during first realization from a selection-changed signal emitted earlier
+ * (before any row widgets existed).  Re-emitting the signal after mapping
+ * tells GtkListView to re-read the model and style the correct row.
  *
  * Inputs:
  *   widget    — the sidebar list view (unused).
@@ -1452,7 +1459,14 @@ static void
 on_sidebar_mapped(GtkWidget *widget, gpointer user_data)
 {
     (void)widget;
-    sidebar_fit_queue(user_data, TRUE);
+    TaskLibrary *lw = user_data;
+    /* Re-notify GtkListView of the current selection state so it applies
+     * :selected to the correct row now that the row widgets exist.         */
+    guint n = g_list_model_get_n_items(G_LIST_MODEL(lw->sb_tree));
+    if (n > 0)
+        gtk_selection_model_selection_changed(
+            GTK_SELECTION_MODEL(lw->sb_sel), 0, n);
+    sidebar_fit_queue(lw, TRUE);
 }
 
 /* ---------------------------------------------------------------------------
