@@ -546,9 +546,8 @@ settings_css_install(void)
     installed = TRUE;
     task_app_css_install(
         "button.task-small-button {"
-        "  padding: 1px 8px; min-height: 0; min-width: 0;"
+        "  padding: 4px 13px; min-width: 0;"
         "}"
-        "button.task-small-button > label { font-size: 85%; }"
         "spinbutton.task-small-spin {"
         "  min-width: 0; min-height: 0; padding: 1px 2px;"
         "}"

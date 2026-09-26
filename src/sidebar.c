@@ -24,8 +24,8 @@
 typedef struct {
     TaskLibrary *lw;
     GtkWidget   *name_entry;
-    GtkWidget   *emoji_entry;
-    gint64       edit_id;   /* 0 = create; non-zero = update existing list  */
+    GtkWidget   *emoji_btn;   /* button showing current emoji; value via object data */
+    gint64       edit_id;     /* 0 = create; non-zero = update existing list */
 } ListDialogCtx;
 
 /* GroupDialogCtx — New Group dialog.                                        */
@@ -115,7 +115,11 @@ sb_css_install(void)
         "}"
         ".task-sb-drag-mark {"
         "  border-top: 2px solid @accent_color;"
-        "}");
+        "}"
+        /* halign=CENTER on the label widget positions it at the geometric
+         * centre of the button's content area; min-width:0 removes the
+         * theme's default floor so the button hugs the emoji.              */
+        "button.task-emoji-btn { min-width: 0; }");
 }
 
 /* ---------------------------------------------------------------------------
@@ -911,15 +915,32 @@ lib_on_toggle_sidebar(TaskLibrary *lw)
  * needed.  A click on the emoji entry opens the GTK emoji chooser.
  * ------------------------------------------------------------------------- */
 
-/* on_emoji_entry_pressed() — primary click on the emoji entry: clear any
- * previous pick and open the chooser.                                       */
+/* on_emoji_picked() — GtkEmojiChooser "emoji-picked": update the button label. */
 static void
-on_emoji_entry_pressed(GtkGestureClick *gesture, gint n_press,
-                       gdouble x, gdouble y, gpointer entry)
+on_emoji_picked(GtkEmojiChooser *chooser, const gchar *text, gpointer data)
 {
-    (void)gesture; (void)n_press; (void)x; (void)y;
-    gtk_editable_set_text(GTK_EDITABLE(entry), "");
-    g_signal_emit_by_name(entry, "insert-emoji");
+    (void)chooser;
+    GtkWidget *btn = data;
+    GtkWidget *lbl = gtk_button_get_child(GTK_BUTTON(btn));
+    gtk_label_set_text(GTK_LABEL(lbl), text);
+    g_object_set_data_full(G_OBJECT(btn), "task-emoji-value",
+                           g_strdup(text), g_free);
+}
+
+/* on_emoji_btn_clicked() — open the emoji chooser popover.                 */
+static void
+on_emoji_btn_clicked(GtkButton *btn, gpointer data)
+{
+    (void)data;
+    GtkWidget *chooser = g_object_get_data(G_OBJECT(btn), "task-emoji-chooser");
+    if (chooser == NULL) {
+        chooser = gtk_emoji_chooser_new();
+        gtk_widget_set_parent(chooser, GTK_WIDGET(btn));
+        g_object_set_data(G_OBJECT(btn), "task-emoji-chooser", chooser);
+        g_signal_connect(chooser, "emoji-picked",
+                         G_CALLBACK(on_emoji_picked), btn);
+    }
+    gtk_popover_popup(GTK_POPOVER(chooser));
 }
 
 /* ---------------------------------------------------------------------------
@@ -937,8 +958,9 @@ on_list_dialog_done(gboolean accepted, GtkWindow *dialog, gpointer data)
     if (accepted) {
         gchar *name  = g_strstrip(g_strdup(
             gtk_editable_get_text(GTK_EDITABLE(ctx->name_entry))));
-        gchar *emoji = g_strstrip(g_strdup(
-            gtk_editable_get_text(GTK_EDITABLE(ctx->emoji_entry))));
+        const gchar *ev = g_object_get_data(G_OBJECT(ctx->emoji_btn),
+                                            "task-emoji-value");
+        gchar *emoji = g_strdup(ev != NULL ? ev : "");
 
         if (*name != '\0') {
             if (ctx->edit_id == 0) {
@@ -983,49 +1005,44 @@ open_list_dialog(TaskLibrary *lw, const gchar *title, gint64 edit_id,
     gtk_widget_set_margin_start(box, 12);
     gtk_widget_set_margin_end(box, 12);
 
-    /* Emoji row. */
-    GtkWidget *emoji_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *emoji_lbl = gtk_label_new("List Emoji:");
-    gtk_label_set_xalign(GTK_LABEL(emoji_lbl), 0.0f);
-    gtk_box_append(GTK_BOX(emoji_row), emoji_lbl);
-    GtkWidget *emoji_entry = gtk_entry_new();
-    gtk_entry_set_max_length(GTK_ENTRY(emoji_entry), 4);
-    gtk_editable_set_width_chars(GTK_EDITABLE(emoji_entry), 2);
-    gtk_entry_set_alignment(GTK_ENTRY(emoji_entry), 0.5f);
-    gtk_widget_set_halign(emoji_entry, GTK_ALIGN_START);
-    gtk_widget_set_tooltip_text(emoji_entry,
-        "Optional emoji \xe2\x80\x94 click to pick");
-    if (initial_emoji != NULL)
-        gtk_editable_set_text(GTK_EDITABLE(emoji_entry), initial_emoji);
-    /* Primary-button click opens the emoji chooser. */
-    GtkGesture *emoji_click = gtk_gesture_click_new();
-    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(emoji_click),
-                                  GDK_BUTTON_PRIMARY);
-    g_signal_connect(emoji_click, "pressed",
-                     G_CALLBACK(on_emoji_entry_pressed), emoji_entry);
-    gtk_widget_add_controller(emoji_entry,
-                              GTK_EVENT_CONTROLLER(emoji_click));
-    gtk_box_append(GTK_BOX(emoji_row), emoji_entry);
-    gtk_box_append(GTK_BOX(box), emoji_row);
+    /* Single row: [emoji btn] [name entry].  No labels.                     */
+    GtkWidget *input_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
 
-    /* Name row. */
-    GtkWidget *name_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *name_lbl = gtk_label_new("List name:");
-    gtk_label_set_xalign(GTK_LABEL(name_lbl), 0.0f);
-    gtk_box_append(GTK_BOX(name_row), name_lbl);
+    /* Emoji button: shows the current emoji (or "…" if none); clicking
+     * pops up the GTK emoji chooser.  halign=CENTER on the inner label
+     * positions the glyph at the geometric centre of the content area.    */
+    const gchar *init_emoji = (initial_emoji != NULL && *initial_emoji != '\0')
+                              ? initial_emoji : "\xe2\x80\xa6";
+    GtkWidget *emoji_btn = gtk_button_new();
+    GtkWidget *emoji_icon = gtk_label_new(init_emoji);
+    gtk_widget_set_halign(emoji_icon, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(emoji_icon, GTK_ALIGN_CENTER);
+    gtk_button_set_child(GTK_BUTTON(emoji_btn), emoji_icon);
+    gtk_widget_set_valign(emoji_btn, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class(emoji_btn, "task-emoji-btn");
+    gtk_widget_set_tooltip_text(emoji_btn,
+        "Optional emoji \xe2\x80\x94 click to pick");
+    if (initial_emoji != NULL && *initial_emoji != '\0')
+        g_object_set_data_full(G_OBJECT(emoji_btn), "task-emoji-value",
+                               g_strdup(initial_emoji), g_free);
+    g_signal_connect(emoji_btn, "clicked",
+                     G_CALLBACK(on_emoji_btn_clicked), NULL);
+    gtk_box_append(GTK_BOX(input_row), emoji_btn);
+
     GtkWidget *name_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(name_entry), "List name");
     gtk_editable_set_width_chars(GTK_EDITABLE(name_entry), 28);
     gtk_entry_set_activates_default(GTK_ENTRY(name_entry), TRUE);
     if (initial_name != NULL)
         gtk_editable_set_text(GTK_EDITABLE(name_entry), initial_name);
     gtk_widget_set_hexpand(name_entry, TRUE);
-    gtk_box_append(GTK_BOX(name_row), name_entry);
-    gtk_box_append(GTK_BOX(box), name_row);
+    gtk_box_append(GTK_BOX(input_row), name_entry);
+    gtk_box_append(GTK_BOX(box), input_row);
 
     ListDialogCtx *ctx  = g_new0(ListDialogCtx, 1);
     ctx->lw             = lw;
     ctx->name_entry     = name_entry;
-    ctx->emoji_entry    = emoji_entry;
+    ctx->emoji_btn      = emoji_btn;
     ctx->edit_id        = edit_id;
 
     GtkWindow *dlg = task_app_dialog_new(GTK_WINDOW(lw->window), title,
@@ -1068,7 +1085,6 @@ on_new_group(TaskLibrary *lw)
     gtk_widget_set_margin_bottom(box, 6);
     gtk_widget_set_margin_start(box, 12);
     gtk_widget_set_margin_end(box, 12);
-    gtk_box_append(GTK_BOX(box), gtk_label_new("Group name:"));
     GtkWidget *entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Group name");
     gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
@@ -1114,7 +1130,6 @@ on_rename_group(GSimpleAction *action, GVariant *param, gpointer data)
     gtk_widget_set_margin_bottom(box, 6);
     gtk_widget_set_margin_start(box, 12);
     gtk_widget_set_margin_end(box, 12);
-    gtk_box_append(GTK_BOX(box), gtk_label_new("Group name:"));
     GtkWidget *entry = gtk_entry_new();
     gtk_editable_set_text(GTK_EDITABLE(entry), current);
     gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);

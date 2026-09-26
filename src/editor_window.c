@@ -1406,9 +1406,8 @@ editor_css_install(void)
     done = TRUE;
     task_app_css_install(
         "button.task-small-button {"
-        "  padding: 1px 8px; min-height: 0; min-width: 0;"
+        "  padding: 4px 13px; min-width: 0;"
         "}"
-        "button.task-small-button > label { font-size: 85%; }"
         /* Compact subtask rows: flat GtkEntry — transparent background and
          * no border so it reads as a text row, with a subtle highlight on
          * focus.  Shrink the checkbutton indicator to match line height.   */
@@ -1709,6 +1708,7 @@ editor_open_common(TaskApp *app, gint64 task_id, gboolean is_new)
     ed->att_box = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(ed->att_box),
                                     GTK_SELECTION_SINGLE);
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(ed->att_box), FALSE);
     g_signal_connect(ed->att_box, "row-activated",
                      G_CALLBACK(on_att_row_activated), ed);
 
