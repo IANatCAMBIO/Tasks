@@ -5,8 +5,8 @@
  * syncs that used to live here) each wanted the same thing: a
  * config-driven timer that runs a pass every N minutes against the
  * database path it was armed with.  Each grew its own copy — an
- * identical flag, GSource id, g_strdup'd path, tick, GDestroyNotify and
- * arm function, differing only in which config keys they read.
+ * identical flag, timer id, copied path, tick, destroy hook and arm
+ * function, differing only in which config keys they read.
  *
  * Three copies is how they drifted.  The Settings "move the database"
  * flow (since deleted — gotcha 14) re-armed all three; the File → Open
@@ -24,13 +24,14 @@
  *
  * Main thread only.  A worker's `run` is called on the main thread and
  * is expected to spawn its own thread with its own SQLite connection —
- * this schedules passes, it does not run them.
+ * this schedules passes, it does not run them.  The timers are task_loop
+ * timers (task_loop.h), so they fire under the Cocoa run loop.
  * =========================================================================== */
 
 #ifndef TASK_WORKER_H
 #define TASK_WORKER_H
 
-#include "app.h"
+#include "task_app.h"
 
 /* Whether arming also runs a pass immediately.
  *
@@ -60,18 +61,18 @@ typedef enum {
  *                      "no preference".  It exists because one ordering
  *                      is load-bearing: the recurrence pass runs before
  *                      anything that would push its results elsewhere.
- *   enabled_key      — config master switch; NULL means always enabled.
- *   enabled_default  — its default when the key is unset.
- *   interval_key     — config key holding the period in MINUTES; <= 0
- *                      means "no timer" (manual only).
- *   interval_default — its default when the key is unset.
+ *   enabled_key      — config master switch (its default is the config
+ *                      registry's); NULL means always enabled.
+ *   interval_key     — config key holding the period in MINUTES (default
+ *                      from the registry); <= 0 means "no timer" (manual
+ *                      only).  NULL means the worker has no period.
  *   initial          — see above.
  *   running          — the subsystem's own in-flight flag, so a tick that
  *                      lands on a still-running pass is skipped.  Every
  *                      run() also guards internally; this only avoids the
  *                      pointless call.  May be NULL.
- *   timer            — where to keep the GSource id.  Borrowed, and owned
- *                      by whoever declared it.
+ *   timer            — where to keep the task_loop timer id (0 = none).
+ *                      Borrowed, and owned by whoever declared it.
  *   run              — start one pass (main thread).
  *   ready            — may a pass run right now?  NULL means always.
  *   on_arm           — run just after the master switch passes and BEFORE
@@ -81,9 +82,7 @@ typedef struct {
     const gchar      *id;
     gint              sort;
     const gchar      *enabled_key;
-    gboolean          enabled_default;
     const gchar      *interval_key;
-    gint              interval_default;
     TaskWorkerInitial initial;
     gboolean         *running;
     guint            *timer;
@@ -117,5 +116,13 @@ void task_worker_arm(TaskApp *app, const TaskWorkerDef *def,
  * individual workers there is what let one go missing.
  * ------------------------------------------------------------------------- */
 void task_worker_arm_all(TaskApp *app, const gchar *db_path);
+
+/* ---------------------------------------------------------------------------
+ * task_worker_disarm_all() — cancel every registered worker's timer and
+ * free what it held.  Called once at quit, before the TaskApp is freed, so
+ * no tick can fire into a closed database.  Passes already running on
+ * their own thread are not interrupted; they hold their own connection.
+ * ------------------------------------------------------------------------- */
+void task_worker_disarm_all(void);
 
 #endif /* TASK_WORKER_H */

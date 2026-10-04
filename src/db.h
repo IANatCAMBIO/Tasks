@@ -42,15 +42,9 @@
 #include <glib.h>
 #include <sqlite3.h>
 
-/* ---------------------------------------------------------------------------
- * The app's on-disk names.  They live here, in the lowest header everyone
- * already includes, because three subsystems need the same two strings:
- * the database (this file), the ini (app.c) and the OAuth client-file
- * lookup (oauth.c).  TASK_APP_DIR is the per-user directory name under the
- * data and config dirs.
- * ------------------------------------------------------------------------- */
+/* The database's file name inside whichever directory holds it (the data
+ * directory of task_paths.h, or the configured db_dir).                   */
 #define TASK_DB_FILENAME "tasks.db"
-#define TASK_APP_DIR     "tasks"
 
 /* The schema version this build writes.  Kept here rather than spelled as
  * a literal in task_db_open so the pre-migration backup and the version
@@ -279,28 +273,21 @@ void task_free(Task *t);
 /* ---------------------------------------------------------------------------
  * task_db_open() — open (creating/migrating as needed) the database at
  * `path`.  Returns the handle, or NULL with `err` set.
+ *
+ * A path inside the GTK app's live data directory (task_paths.h) is
+ * REFUSED, as it is by task_db_verify_file, task_db_file_sha256 and
+ * task_db_copy_file: this experimental build never reads or writes there.
  * ------------------------------------------------------------------------- */
 TaskDatabase *task_db_open(const gchar *path, GError **err);
 
 /* task_db_close() — close the connection and free the handle.  NULL-safe.  */
 void task_db_close(TaskDatabase *db);
 
-/* ---------------------------------------------------------------------------
- * task_db_default_dir() — "<user data dir>/tasks", the ONE directory this
- * app keeps its per-user state in: the database and the ini both live
- * here by default, so there is one place to back up and one
- * place to look.  On Linux that is ~/.local/share/tasks (XDG_DATA_HOME).
- *
- * Created if missing.  Returns a new string; free with g_free.  Declared
- * here rather than in app.h because db.h is the header that already owns
- * TASK_APP_DIR, and the config loader needs this before a database
- * exists.
- * ------------------------------------------------------------------------- */
-gchar *task_db_default_dir(void);
-
-/* task_db_default_path() — "<user data dir>/tasks/tasks.db" (the names are
- * TASK_APP_DIR / TASK_DB_FILENAME), creating the directory.  Returns a new
- * string (g_free it).                                                      */
+/* task_db_default_path() — "<data dir>/tasks.db": the database's default
+ * location, in the ONE directory this app keeps its per-user state in
+ * (task_data_dir, task_paths.h — the ini lives there too).  Creates the
+ * directory.  Returns a new string (g_free it), or NULL when the data
+ * directory cannot be determined or created.                              */
 gchar *task_db_default_path(void);
 
 /* ---------------------------------------------------------------------------

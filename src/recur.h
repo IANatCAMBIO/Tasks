@@ -60,7 +60,7 @@
  * ONE PASS OVER ALL OF THEM, ARMED FOR THE NEXT DEADLINE.  Two decisions,
  * and they answer different objections:
  *
- *   - A PASS rather than a GSource per recurring task, because a pass is
+ *   - A PASS rather than a timer per recurring task, because a pass is
  *     O(recurring tasks) with no state to leak, catches up correctly after
  *     the app has been closed for a week (occurrences are SKIPPED forward,
  *     not replayed one per period), and needs nothing cancelled when a
@@ -107,7 +107,7 @@
 #ifndef TASK_RECUR_H
 #define TASK_RECUR_H
 
-#include "app.h"
+#include "task_app.h"
 
 /* task_recur_unit_label() — the user-facing plural of a unit ("minutes",
  * "hours", …), for the editor's unit combos.  Static string; out-of-range

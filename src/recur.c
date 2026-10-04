@@ -7,6 +7,8 @@
  * =========================================================================== */
 
 #include "recur.h"
+#include "task_dates.h"
+#include "task_loop.h"
 #include "task_worker.h"
 #include <string.h>
 #include <time.h>
@@ -539,10 +541,10 @@ recur_due_of(gint64 ts, gint *due_min)
  * sooner is still timed exactly, and only a deadline further out than this
  * is broken into steps.
  *
- * It exists because a GLib timeout runs on the MONOTONIC clock, which does
- * not advance while the machine is suspended on either X11 or quartz — so
- * a timer armed for Thursday and spanning a laptop sleep would fire late by
- * the length of the sleep.  Three more things move a deadline underneath a
+ * It exists because a task_loop timer runs on the MONOTONIC clock, which
+ * does not advance while the machine is suspended — so a timer armed for
+ * Thursday and spanning a laptop sleep would fire late by the length of
+ * the sleep.  Three more things move a deadline underneath a
  * sleeping timer: an NTP step, a timezone or DST change (which moves where
  * "Monday at 9:00 AM" actually lands), and the database being replaced by
  * the sync folder it routinely lives in.  The pass stays CORRECT through
@@ -551,7 +553,7 @@ recur_due_of(gint64 ts, gint *due_min)
  * deadline that was days away anyway.                                      */
 #define RECUR_MAX_SLEEP_SEC 900
 
-/* The GSource id lives HERE rather than on TaskApp: nothing outside this
+/* The task_loop timer id lives HERE rather than on TaskApp: nothing outside this
  * file arms, disarms or reads it, and the scheduler only borrows the
  * pointer (task_worker.h) — which is exactly what makes it disarm this
  * timer for us whenever the worker is re-armed (a database switch, say).
@@ -562,7 +564,7 @@ recur_due_of(gint64 ts, gint *due_min)
 static guint  recur_timer  = 0;
 static gint64 recur_due_at = 0;      /* unix time; 0 = nothing recurring    */
 
-static gboolean recur_deadline_cb(gpointer data);
+static void recur_deadline_cb(void *data);
 
 /* ---------------------------------------------------------------------------
  * recur_arm_deadline() — wake the pass at `fire_ts` (unix seconds).
@@ -575,10 +577,8 @@ static gboolean recur_deadline_cb(gpointer data);
 static void
 recur_arm_deadline(TaskApp *app, gint64 fire_ts)
 {
-    if (recur_timer != 0) {
-        g_source_remove(recur_timer);
-        recur_timer = 0;
-    }
+    task_loop_timer_cancel(recur_timer);
+    recur_timer  = 0;
     recur_due_at = fire_ts;
     if (app == NULL || fire_ts <= 0)
         return;
@@ -588,18 +588,24 @@ recur_arm_deadline(TaskApp *app, gint64 fire_ts)
         delay = 1;
     if (delay > RECUR_MAX_SLEEP_SEC)
         delay = RECUR_MAX_SLEEP_SEC;
-    recur_timer = g_timeout_add_seconds((guint)delay, recur_deadline_cb, app);
+    recur_timer = task_loop_timer_once((double)delay, recur_deadline_cb, app,
+                                       NULL);
 }
 
-/* recur_deadline_cb() — the deadline came round.  ONE-SHOT: the pass
- * arms the next one itself, so the id is cleared BEFORE it runs and the
- * source that is ending cannot take the fresh one with it.                 */
-static gboolean
-recur_deadline_cb(gpointer data)
+/*
+ * recur_deadline_cb — the deadline came round (the one-shot timer's
+ * callback).  The pass arms the next deadline itself, so the id is cleared
+ * BEFORE it runs: the timer that is ending must not be mistaken for the
+ * fresh one.
+ *
+ * Inputs:
+ *   data — the TaskApp
+ */
+static void
+recur_deadline_cb(void *data)
 {
     recur_timer = 0;
     task_recur_pass(data);
-    return G_SOURCE_REMOVE;
 }
 
 /* task_recur_wake_by() — see recur.h.                                    */
@@ -738,14 +744,13 @@ static const TaskWorkerDef recur_worker = {
      * at all (recur_arm_deadline of 0) and the feature costs one query at
      * launch.  recur_enabled was a key until 2026-09-08.                  */
     .enabled_key      = NULL,
-    /* NO interval either: this worker is not periodic.  A NULL key with a 0
-     * default makes the scheduler install no timer of its own, which is
-     * exactly right — the pass arms its own deadline (recur_arm_deadline)
-     * for the earliest occurrence in the database instead of waking on a
-     * cadence.  The scheduler still owns `timer` below, so arming or
-     * disarming the worker disarms that deadline for us.                  */
+    /* NO interval either: this worker is not periodic.  A NULL key makes
+     * the scheduler install no timer of its own, which is exactly right —
+     * the pass arms its own deadline (recur_arm_deadline) for the earliest
+     * occurrence in the database instead of waking on a cadence.  The
+     * scheduler still owns `timer` below, so arming or disarming the
+     * worker disarms that deadline for us.                               */
     .interval_key     = NULL,
-    .interval_default = 0,
     /* ALWAYS: occurrences that came due while the app was closed have to
      * be applied at launch — and with no interval it is also what puts
      * the first deadline on the clock.                                    */

@@ -3,7 +3,8 @@
  * =========================================================================== */
 
 #include "task_worker.h"
-#include <stdlib.h>
+#include "task_config.h"
+#include "task_loop.h"
 
 static GSList *workers = NULL;       /* const TaskWorkerDef*, in order      */
 
@@ -46,44 +47,73 @@ typedef struct {
     gchar               *db_path;
 } Tick;
 
-/* tick_free() — GDestroyNotify for the payload.  Re-arming on every
- * Settings change would otherwise leak the previous one.                   */
+/*
+ * tick_free — the timer's destroy hook for its payload.  Re-arming on every
+ * Settings change would otherwise leak the previous one.
+ *
+ * Inputs:
+ *   data — the Tick
+ */
 static void
-tick_free(gpointer data)
+tick_free(void *data)
 {
     Tick *t = data;
     g_free(t->db_path);
     g_free(t);
 }
 
-/* tick_cb() — one scheduled pass.                                          */
-static gboolean
-tick_cb(gpointer data)
+/*
+ * tick_cb — one scheduled pass (the repeating timer's callback).  A tick
+ * that lands on a pass still in flight, or on a worker that is not ready,
+ * is skipped; the timer keeps running.
+ *
+ * Inputs:
+ *   data — the Tick
+ */
+static void
+tick_cb(void *data)
 {
     Tick *t = data;
     const TaskWorkerDef *def = t->def;
     if (def->running != NULL && *def->running)
-        return G_SOURCE_CONTINUE;    /* previous pass still in flight       */
+        return;                      /* previous pass still in flight       */
     if (def->ready != NULL && !def->ready(t->app))
-        return G_SOURCE_CONTINUE;
+        return;
     def->run(t->app, t->db_path);
-    return G_SOURCE_CONTINUE;
 }
 
-/* interval_minutes() — the worker's period from config, or its default.
+/*
+ * interval_minutes — the worker's period from config.
  *
- * A negative value from a hand-edited ini folds to 0 (manual only)
- * rather than through to the arming arithmetic, where the cast to guint
- * would turn it into a period of some decades.                            */
+ * A negative value from a hand-edited ini folds to 0 (manual only) rather
+ * than through to the arming arithmetic.
+ *
+ * Inputs:
+ *   def — the worker
+ *
+ * Output:
+ *   minutes between passes; 0 for "no timer".
+ */
 static gint
 interval_minutes(const TaskWorkerDef *def)
 {
     if (def->interval_key == NULL)
-        return def->interval_default;
-    gchar *v = task_app_config_get(def->interval_key);
-    gint minutes = v != NULL ? atoi(v) : def->interval_default;
-    g_free(v);
+        return 0;
+    gint minutes = task_config_get_int(def->interval_key);
     return minutes < 0 ? 0 : minutes;
+}
+
+/*
+ * worker_disarm — cancel one worker's timer, which also frees its payload.
+ *
+ * Inputs:
+ *   def — the worker
+ */
+static void
+worker_disarm(const TaskWorkerDef *def)
+{
+    task_loop_timer_cancel(*def->timer);
+    *def->timer = 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -95,13 +125,9 @@ task_worker_arm(TaskApp *app, const TaskWorkerDef *def, const gchar *db_path)
     if (app == NULL || def == NULL)
         return;
 
-    if (*def->timer != 0) {
-        g_source_remove(*def->timer);   /* also frees the old payload       */
-        *def->timer = 0;
-    }
+    worker_disarm(def);
 
-    if (def->enabled_key != NULL &&
-        !task_app_config_get_bool(def->enabled_key, def->enabled_default))
+    if (def->enabled_key != NULL && !task_config_get_bool(def->enabled_key))
         return;                      /* switched off: no timer, no pass     */
 
     if (def->on_arm != NULL)
@@ -113,9 +139,10 @@ task_worker_arm(TaskApp *app, const TaskWorkerDef *def, const gchar *db_path)
         t->app     = app;
         t->def     = def;
         t->db_path = g_strdup(db_path);
-        *def->timer = g_timeout_add_seconds_full(G_PRIORITY_DEFAULT,
-                                                 (guint)(minutes * 60),
-                                                 tick_cb, t, tick_free);
+        *def->timer = task_loop_timer_every((double)minutes * 60.0,
+                                            tick_cb, t, tick_free);
+        if (*def->timer == 0)
+            tick_free(t);            /* never started: nothing owns it      */
     }
 
     /* The initial pass.  ARMED deliberately does nothing at interval 0:
@@ -137,4 +164,14 @@ task_worker_arm_all(TaskApp *app, const gchar *db_path)
 {
     for (GSList *n = workers; n != NULL; n = n->next)
         task_worker_arm(app, n->data, db_path);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_worker_disarm_all() — every timer down (see task_worker.h).
+ * ------------------------------------------------------------------------- */
+void
+task_worker_disarm_all(void)
+{
+    for (GSList *n = workers; n != NULL; n = n->next)
+        worker_disarm(n->data);
 }

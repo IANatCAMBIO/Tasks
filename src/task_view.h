@@ -14,7 +14,7 @@
  * board, with the manual sort, the stripes, the ✓ column and everything
  * else, for free.
  *
- * ORDER KEYS ARE DERIVED FROM `id`.  "manual_order_<id>" and
+ * ORDER KEYS ARE DERIVED FROM `id` (task_order.h): "manual_order_<id>" and
  * "kanban_order_<id>", which is exactly the existing spelling:
  * manual_order_all, kanban_order_today.  So `id` is part of the ini
  * format and must not be renamed once a view has shipped.
@@ -25,7 +25,7 @@
 #ifndef TASK_VIEW_H
 #define TASK_VIEW_H
 
-#include "app.h"
+#include "task_app.h"
 
 typedef struct TaskView TaskView;
 
@@ -90,17 +90,8 @@ const TaskView  *task_view_nth(guint index);
 /* task_view_find() — by id, or NULL.                                      */
 const TaskView  *task_view_find(const gchar *id);
 
-/* task_view_index_of() — a view's index, or -1 when not registered.       */
+/* task_view_index_of() — a view's index, or -1 when not registered (or
+ * NULL).  The index is what a sidebar selection carries (task_pane.h).    */
 gint             task_view_index_of(const TaskView *v);
-
-/* ---------------------------------------------------------------------------
- * task_view_order_key() — "manual_order_<id>" / "kanban_order_<id>" for
- * a view.  New string.
- *
- * `family` is "manual_order" or "kanban_order".  The two families are
- * deliberately separate — a board drag must not silently rearrange a
- * list the user hand-sorted in the list view.
- * ------------------------------------------------------------------------- */
-gchar *task_view_order_key(const TaskView *v, const gchar *family);
 
 #endif /* TASK_VIEW_H */

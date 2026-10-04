@@ -3,11 +3,16 @@
  * =========================================================================== */
 
 #include "backup.h"
+#include "task_config.h"
+#include "task_loop.h"
+#include "task_paths.h"
 #include "task_worker.h"             /* the shared periodic-pass scheduler  */
 #include "db.h"
 #include <glib/gstdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 /* Backup filenames: sortable, so lexical order IS chronological order and
  * the prune can pick victims without parsing dates or trusting mtimes on
@@ -55,10 +60,8 @@ source_stamp(const gchar *path, const gchar *dest_dir)
 static gint
 backup_keep(void)
 {
-    gchar *v = task_app_config_get("backup_keep");
-    gint n = v != NULL ? atoi(v) : TASK_BACKUP_KEEP_DEFAULT;
-    g_free(v);
-    return CLAMP(n, 1, 500);
+    return CLAMP(task_config_get_int(TASK_CFG_BACKUP_KEEP),
+                 TASK_BACKUP_KEEP_MIN, TASK_BACKUP_KEEP_MAX);
 }
 
 /* The default destination: a folder of its own inside the database's
@@ -68,9 +71,9 @@ backup_keep(void)
 /* ---------------------------------------------------------------------------
  * task_backup_dir() — the resolved destination (see backup.h).
  *
- * The fallback is BACKUP_SUBDIR inside the default database directory,
- * built off task_db_default_dir so the two can never drift apart, and
- * created here so the fallback is usable with no setup at all.
+ * The fallback is BACKUP_SUBDIR inside the data directory, built off
+ * task_data_dir_ensure so the two can never drift apart, and created here
+ * so the fallback is usable with no setup at all.
  *
  * It is a SUBDIRECTORY rather than the database's own folder (changed
  * 2026-09-09) because backups and the live file mixed together is a
@@ -84,13 +87,14 @@ backup_keep(void)
 gchar *
 task_backup_dir(void)
 {
-    gchar *dir = task_app_config_get("backup_dir");
-    if (dir != NULL && *dir != '\0')
+    gchar *dir = task_config_get(TASK_CFG_BACKUP_DIR);
+    if (dir != NULL)
         return dir;
-    g_free(dir);
-    gchar *base = task_db_default_dir();   /* creates <data>/tasks/         */
-    gchar *sub  = g_build_filename(base, BACKUP_SUBDIR, NULL);
-    g_free(base);
+    char *base = task_data_dir_ensure();   /* creates the data directory    */
+    if (base == NULL)
+        return NULL;
+    gchar *sub = g_build_filename(base, BACKUP_SUBDIR, NULL);
+    free(base);
     g_mkdir_with_parents(sub, 0755);
     return sub;
 }
@@ -101,7 +105,7 @@ task_backup_ready(gchar **reason)
 {
     if (reason != NULL)
         *reason = NULL;
-    if (!task_app_config_get_bool("backup_enabled", FALSE)) {
+    if (!task_config_get_bool(TASK_CFG_BACKUP_ENABLED)) {
         if (reason != NULL)
             *reason = g_strdup("Backups are switched off "
                                "(Settings \xe2\x86\x92 Database)");
@@ -114,7 +118,17 @@ task_backup_ready(gchar **reason)
      * redirecting somewhere the user is not looking.                       */
     gchar *dir = task_backup_dir();
     gboolean ok = FALSE;
-    if (!g_file_test(dir, G_FILE_TEST_IS_DIR)) {
+    if (dir == NULL) {
+        if (reason != NULL)
+            *reason = g_strdup("No backup folder: the data directory "
+                               "cannot be determined");
+    } else if (task_path_is_live_data(dir)) {
+        if (reason != NULL)
+            *reason = g_strdup_printf("Backup folder is inside the live "
+                                      "Tasks data directory, which this "
+                                      "experimental build never touches: "
+                                      "%s", dir);
+    } else if (!g_file_test(dir, G_FILE_TEST_IS_DIR)) {
         if (reason != NULL)
             *reason = g_strdup_printf("Backup folder does not exist: %s",
                                       dir);
@@ -210,9 +224,15 @@ backup_job_free(BackupJob *job)
     g_free(job);
 }
 
-/* backup_finish() — main-thread tail: report and release the guard.        */
-static gboolean
-backup_finish(gpointer data)
+/*
+ * backup_finish — the pass's main-thread tail (queued by the worker with
+ * task_loop_main_async): report, release the in-flight guard, free the job.
+ *
+ * Inputs:
+ *   data — the BackupJob
+ */
+static void
+backup_finish(void *data)
 {
     BackupJob *job = data;
     job->app->backup_running = FALSE;
@@ -221,7 +241,6 @@ backup_finish(gpointer data)
     if (job->done != NULL)
         job->done(job->app, job->ok, job->message, job->user_data);
     backup_job_free(job);
-    return G_SOURCE_REMOVE;
 }
 
 /* ---------------------------------------------------------------------------
@@ -237,8 +256,8 @@ backup_finish(gpointer data)
  * Step 5 last is what keeps a run of failing backups from eating the
  * good history that is already on disk.
  * ------------------------------------------------------------------------- */
-static gpointer
-backup_thread(gpointer data)
+static void
+backup_thread(void *data)
 {
     BackupJob *job = data;
     GError    *gerr = NULL;
@@ -248,8 +267,8 @@ backup_thread(gpointer data)
         job->message = g_strdup_printf("Backup failed: cannot open the "
             "database (%s)", gerr != NULL ? gerr->message : "?");
         g_clear_error(&gerr);
-        g_idle_add(backup_finish, job);
-        return NULL;
+        task_loop_main_async(backup_finish, job);
+        return;
     }
 
     gchar *stamp = source_stamp(job->db_path, job->dir);
@@ -261,8 +280,8 @@ backup_thread(gpointer data)
         g_free(stamp);
         g_free(last);
         task_db_close(db);
-        g_idle_add(backup_finish, job);
-        return NULL;
+        task_loop_main_async(backup_finish, job);
+        return;
     }
     g_free(last);
 
@@ -271,9 +290,13 @@ backup_thread(gpointer data)
      * manual press), so a suffix is appended until the name is free —
      * VACUUM INTO refuses an existing file, and silently overwriting one
      * is exactly what this module must never do.                          */
-    GDateTime *now = g_date_time_new_now(task_local_tz());
-    gchar *when = g_date_time_format(now, "%Y%m%d-%H%M%S");
-    g_date_time_unref(now);
+    /* localtime_r, not the date helpers: their timezone cache belongs to
+     * the main thread and this is the worker.                              */
+    time_t    now = time(NULL);
+    struct tm local;
+    char      when[32];
+    localtime_r(&now, &local);
+    strftime(when, sizeof when, "%Y%m%d-%H%M%S", &local);
     gchar *dest = NULL;
     for (gint n = 0; n < 100; n++) {
         g_free(dest);
@@ -285,7 +308,6 @@ backup_thread(gpointer data)
         if (!g_file_test(dest, G_FILE_TEST_EXISTS))
             break;
     }
-    g_free(when);
 
     gchar *cerr = NULL;
     if (!task_db_copy_file(db, dest, &cerr)) {
@@ -295,8 +317,8 @@ backup_thread(gpointer data)
         g_free(dest);
         g_free(stamp);
         task_db_close(db);
-        g_idle_add(backup_finish, job);
-        return NULL;
+        task_loop_main_async(backup_finish, job);
+        return;
     }
     g_free(cerr);
 
@@ -312,8 +334,8 @@ backup_thread(gpointer data)
         g_free(dest);
         g_free(stamp);
         task_db_close(db);
-        g_idle_add(backup_finish, job);
-        return NULL;
+        task_loop_main_async(backup_finish, job);
+        return;
     }
     g_free(detail);
 
@@ -342,8 +364,7 @@ backup_thread(gpointer data)
         : g_strdup_printf("Backed up to %s (%u kept)", base, kept);
     g_free(base);
     g_free(dest);
-    g_idle_add(backup_finish, job);
-    return NULL;
+    task_loop_main_async(backup_finish, job);
 }
 
 /* task_backup_start() — see backup.h.                                      */
@@ -371,8 +392,7 @@ task_backup_start(TaskApp *app, const gchar *db_path, TaskBackupDoneFn done,
     job->keep      = backup_keep();
     job->done      = done;
     job->user_data = user_data;
-    GThread *th = g_thread_new("task-backup", backup_thread, job);
-    g_thread_unref(th);
+    task_loop_background(backup_thread, job);
 }
 
 /* ---------------------------------------------------------------------------
@@ -390,10 +410,8 @@ backup_run(TaskApp *app, const gchar *db_path)
 
 static const TaskWorkerDef backup_worker = {
     .id               = "backup",
-    .enabled_key      = "backup_enabled",
-    .enabled_default  = FALSE,
-    .interval_key     = "backup_interval_min",
-    .interval_default = TASK_BACKUP_INTERVAL_DEFAULT,
+    .enabled_key      = TASK_CFG_BACKUP_ENABLED,
+    .interval_key     = TASK_CFG_BACKUP_INTERVAL_MIN,
     .initial          = TASK_WORKER_INITIAL_NEVER,
     .running          = NULL,        /* completed by task_backup_init       */
     .timer            = NULL,

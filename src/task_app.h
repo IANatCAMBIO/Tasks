@@ -1,0 +1,138 @@
+/*
+ * task_app — the shared application context and its event bus.
+ *
+ * One TaskApp is created at startup and passed to every part of the
+ * program.  It owns the open database and hosts the three events the
+ * windows subscribe to.  It holds NO user-interface objects: windows are
+ * owned by the AppKit layer (see porting/INTERFACES.md), which is what lets
+ * the core, the seed tool and the tests link without AppKit.
+ *
+ * The three events are lists rather than single hooks because more than one
+ * subscriber is normal.  They start empty, and firing an empty list is a
+ * no-op — which is what makes every notify safe both before the library
+ * window exists and after it has gone.
+ *
+ * MAIN THREAD ONLY.  A background job hands its result to the main thread
+ * with task_loop_main_async before it touches the TaskApp.
+ */
+
+#ifndef TASK_APP_H
+#define TASK_APP_H
+
+#include <glib.h>
+#include "db.h"
+
+/*
+ * TaskApp — global application state.
+ *
+ *   db             — the open tasks database, or NULL before one is opened.
+ *                    Owned: task_app_free closes it.
+ *   changed_l      — listeners for a FULL refresh (sidebar + task pane +
+ *                    open editors): lists created, renamed or deleted.
+ *   tasks_l        — listeners for the LIGHTER event, the task pane only.
+ *                    Editor saves and subtask/attachment edits use it —
+ *                    they can never change the sidebar.
+ *   status_l       — listeners for a one-line event message.
+ *   listener_next  — the next subscription id.
+ *   backup_running — TRUE while the rotating backup's worker (backup.h) is
+ *                    in flight; blocks a second concurrent pass.
+ *   backup_timer   — the backup's periodic task_loop timer id, or 0.
+ */
+typedef struct TaskApp {
+    TaskDatabase *db;
+    GSList       *changed_l;
+    GSList       *tasks_l;
+    GSList       *status_l;
+    guint         listener_next;
+    gboolean      backup_running;
+    guint         backup_timer;
+} TaskApp;
+
+/*
+ * task_app_new — allocate an empty context (no database, no listeners).
+ *
+ * Output:
+ *   the new context; free it with task_app_free.  Never NULL.
+ */
+TaskApp *task_app_new(void);
+
+/*
+ * task_app_free — close the database, drop any listener still subscribed
+ * and free the context.  The backup timer must already be cancelled (the
+ * caller disarms the workers first; see task_worker_disarm_all).
+ *
+ * Inputs:
+ *   app — the context, or NULL (ignored)
+ */
+void task_app_free(TaskApp *app);
+
+/*
+ * task_app_status — post a one-line event message to every status listener
+ * (printf-style).  A no-op until something is listening.
+ *
+ * Inputs:
+ *   app — the context; NULL is ignored
+ *   fmt — printf format, then its arguments
+ */
+void task_app_status(TaskApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
+
+/*
+ * task_app_notify_changed — fire the FULL refresh event.  For structural
+ * changes.  Safe with no listeners.
+ *
+ * Inputs:
+ *   app — the context; NULL is ignored
+ */
+void task_app_notify_changed(TaskApp *app);
+
+/*
+ * task_app_notify_tasks — fire the task-pane event, for changes that cannot
+ * touch the sidebar.  Falls back to the full event when nothing listens for
+ * this one, so a caller never has to ask which listeners exist.
+ *
+ * Inputs:
+ *   app — the context; NULL is ignored
+ */
+void task_app_notify_tasks(TaskApp *app);
+
+/* Listener signatures: a notify listener, and a status listener that also
+ * receives the message (borrowed; copy it to keep it). */
+typedef void (*TaskAppNotifyFn)(TaskApp *app, gpointer user_data);
+typedef void (*TaskAppStatusFn)(TaskApp *app, const gchar *message,
+                                gpointer user_data);
+
+/*
+ * task_app_listen_changed / _tasks / _status — subscribe to an event.
+ *
+ * Listeners fire in registration order.  A listener MUST be removed before
+ * the thing it refreshes is destroyed; the library window drops its three
+ * BEFORE the editors close, because a closing editor's final save fires
+ * the task event.  Removing a listener from inside its own callback is
+ * safe; one added during a fire is not called until the next fire.
+ *
+ * Inputs:
+ *   app       — the context
+ *   fn        — the callback, not NULL
+ *   user_data — passed through to fn (borrowed, never freed here)
+ *
+ * Output:
+ *   a subscription id for task_app_unlisten (ids are never reused), or 0
+ *   when app or fn is NULL.
+ */
+guint task_app_listen_changed(TaskApp *app, TaskAppNotifyFn fn,
+                              gpointer user_data);
+guint task_app_listen_tasks(TaskApp *app, TaskAppNotifyFn fn,
+                            gpointer user_data);
+guint task_app_listen_status(TaskApp *app, TaskAppStatusFn fn,
+                             gpointer user_data);
+
+/*
+ * task_app_unlisten — remove a subscription from whichever event holds it.
+ *
+ * Inputs:
+ *   app — the context; NULL is ignored
+ *   id  — a subscription id; 0 and unknown ids are ignored
+ */
+void task_app_unlisten(TaskApp *app, guint id);
+
+#endif /* TASK_APP_H */

@@ -13,7 +13,7 @@
 #ifndef TASK_OPS_H
 #define TASK_OPS_H
 
-#include "app.h"
+#include "task_app.h"
 
 /* ---------------------------------------------------------------------------
  * task_ops_move_to_list() — move a TOP-LEVEL task and its subtasks to

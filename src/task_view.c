@@ -78,11 +78,3 @@ task_view_index_of(const TaskView *v)
             return (gint)i;
     return -1;
 }
-
-gchar *
-task_view_order_key(const TaskView *v, const gchar *family)
-{
-    if (v == NULL)
-        return NULL;
-    return g_strdup_printf("%s_%s", family, v->id);
-}

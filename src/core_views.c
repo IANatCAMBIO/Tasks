@@ -10,6 +10,8 @@
  * =========================================================================== */
 
 #include "core_views.h"
+#include "task_config.h"
+#include "task_dates.h"
 #include "task_view.h"
 
 /* --- Favorites ----------------------------------------------------------- */
@@ -51,7 +53,7 @@ today_query(TaskApp *app, gpointer d)
     (void)d;
     gint64 lo, hi;
     task_day_bounds(0, &lo, &hi);
-    if (task_app_config_get_bool("due_today_show_overdue", FALSE))
+    if (task_config_get_bool(TASK_CFG_DUE_TODAY_OVERDUE))
         lo = 1;
     return task_db_tasks_due_between(app->db, lo, hi);
 }

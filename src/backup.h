@@ -3,10 +3,9 @@
  *
  * OFF by default.  Enabled in Settings → Database, where the user may
  * also pick a destination directory — and when they have not, backups go
- * to the DEFAULT DATABASE LOCATION under the home directory
- * (`<user data dir>/tasks`, i.e. ~/.local/share/tasks).  Switching the
- * feature on therefore always does something; there is no enabled-but-
- * inert state to fall into.
+ * to a `backups/` folder inside the app's data directory (task_paths.h).
+ * Switching the feature on therefore always does something; there is no
+ * enabled-but-inert state to fall into.
  *
  * The reason to choose a folder anyway: the point of the feature is a copy
  * somewhere INDEPENDENT of wherever the live file lives, so one mishap
@@ -32,15 +31,16 @@
  *   - PRUNING HAPPENS ONLY AFTER a new backup has verified, so a failing
  *     backup can never erode the history that is already there.
  *
- * Threading matches the sync engines: a worker thread with its OWN
- * SQLite connection (a connection never crosses threads), so a slow or
+ * Threading: a background job (task_loop_background) with its OWN SQLite
+ * connection (a connection never crosses threads), so a slow or
  * unreachable destination — a network mount, a sleeping external disk —
- * never blocks the UI.  Completion is marshalled back with g_idle_add.
+ * never blocks the UI.  Completion is handed back to the main thread with
+ * task_loop_main_async.
  *
  * Config keys (all in the [tasks] group):
  *   backup_enabled       1|0, default 0 — the master switch.
- *   backup_dir           destination directory; absent = the default
- *                        database location under the home directory.
+ *   backup_dir           destination directory; absent = backups/ in the
+ *                        data directory.
  *   backup_interval_min  minutes between passes, default 60; 0 = only
  *                        when "Back Up Now" is pressed.
  *   backup_keep          how many files to retain, default 10.
@@ -49,12 +49,13 @@
 #ifndef TASK_BACKUP_H
 #define TASK_BACKUP_H
 
-#include "app.h"
+#include "task_app.h"
 
-/* Default retention and cadence, shared with the Settings spin buttons so
- * the UI and the timer cannot disagree about what "unset" means.           */
-#define TASK_BACKUP_KEEP_DEFAULT     10
-#define TASK_BACKUP_INTERVAL_DEFAULT 60
+/* The retention bound's limits.  The defaults of both settings live in the
+ * config registry (task_config.h), which is what the Settings window and
+ * the timer both read, so they cannot disagree about what "unset" means.   */
+#define TASK_BACKUP_KEEP_MIN 1
+#define TASK_BACKUP_KEEP_MAX 500
 
 /* Completion callback; runs on the main thread.  `message` is a short
  * human-readable summary or error (not owned by the callee).               */
@@ -63,12 +64,14 @@ typedef void (*TaskBackupDoneFn)(TaskApp *app, gboolean ok, const gchar *message
 
 /* ---------------------------------------------------------------------------
  * task_backup_dir() — where backups actually go: `backup_dir` when it names
- * something, otherwise a `backups/` folder inside the default database
- * directory under the home directory, CREATED if missing so the fallback
- * is always usable.  That default is TIDY, not independent: it shares the
- * fate of the folder holding the database, and Settings says so.
+ * something, otherwise a `backups/` folder inside the data directory,
+ * CREATED if missing so the fallback is always usable.  That default is
+ * TIDY, not independent: it shares the fate of the folder holding the
+ * database, and Settings says so.
  *
- * Returns a new string (g_free).  Never NULL.  This is the single answer
+ * Returns a new string (g_free), or NULL only when no data directory can
+ * be determined (task_config_init would already have failed).  This is the
+ * single answer
  * to "where?" — Settings displays it and the worker writes to it, so the
  * label can never disagree with the behavior.
  * ------------------------------------------------------------------------- */
@@ -78,8 +81,10 @@ gchar *task_backup_dir(void);
  * task_backup_ready() — is the feature usable right now?
  *
  * Returns TRUE when backups are enabled and task_backup_dir() is a writable
- * directory.  On FALSE, *reason (optional; g_free) says which of those
- * failed, in words fit for a status bar or a dialog.  Callers use it to
+ * directory outside the GTK app's live data directory (task_paths.h — a
+ * backup pass prunes old files, so it must never be pointed there).  On
+ * FALSE, *reason (optional; g_free) says which of those failed, in words
+ * fit for a status bar or a dialog.  Callers use it to
  * explain themselves rather than failing silently.
  * ------------------------------------------------------------------------- */
 gboolean task_backup_ready(gchar **reason);

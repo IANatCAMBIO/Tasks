@@ -3,7 +3,9 @@
  * =========================================================================== */
 
 #include "db.h"
+#include "task_paths.h"
 #include <glib/gstdio.h>             /* g_unlink, g_stat                    */
+#include <stdlib.h>
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -217,26 +219,17 @@ task_ptr_array_free_attachments(GPtrArray *a)
     g_ptr_array_free(a, TRUE);
 }
 
-/* ---------------------------------------------------------------------------
- * task_db_default_dir() — the app's per-user state directory (see db.h).
- * ------------------------------------------------------------------------- */
-gchar *
-task_db_default_dir(void)
-{
-    gchar *dir = g_build_filename(g_get_user_data_dir(), TASK_APP_DIR, NULL);
-    g_mkdir_with_parents(dir, 0755);
-    return dir;
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_default_path() — the standard db location (see db.h).
- * ------------------------------------------------------------------------- */
+/*
+ * task_db_default_path — the standard db location (see db.h).
+ */
 gchar *
 task_db_default_path(void)
 {
-    gchar *dir  = task_db_default_dir();
+    char *dir = task_data_dir_ensure();
+    if (dir == NULL) return NULL;
+
     gchar *path = g_build_filename(dir, TASK_DB_FILENAME, NULL);
-    g_free(dir);
+    free(dir);
     return path;
 }
 
@@ -405,6 +398,13 @@ db_check_pragmas(sqlite3 *sq, gboolean *ran, gchar **detail)
     return ok;
 }
 
+/* What every entry point that takes a path says when that path is inside
+ * the GTK app's live data directory (task_paths.h).  This fork is
+ * experimental: it refuses to read or write there, whoever asks.          */
+#define LIVE_DATA_REFUSAL \
+    "refused: %s is inside the live Tasks data directory, which this " \
+    "experimental build never opens"
+
 /* task_db_verify_file() — the same checks on a file nothing has open
  * (see db.h).                                                             */
 gboolean
@@ -412,6 +412,11 @@ task_db_verify_file(const gchar *path, gchar **detail)
 {
     if (detail != NULL)
         *detail = NULL;
+    if (task_path_is_live_data(path)) {
+        if (detail != NULL)
+            *detail = g_strdup_printf(LIVE_DATA_REFUSAL, path);
+        return FALSE;
+    }
     gchar   *uri = g_strdup_printf("file:%s?mode=ro", path);
     sqlite3 *sq  = NULL;
     if (sqlite3_open_v2(uri, &sq, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
@@ -442,6 +447,8 @@ task_db_verify_file(const gchar *path, gchar **detail)
 gchar *
 task_db_file_sha256(const gchar *path)
 {
+    if (task_path_is_live_data(path))
+        return NULL;
     FILE *f = g_fopen(path, "rb");
     if (f == NULL)
         return NULL;
@@ -495,6 +502,11 @@ task_db_copy_file(TaskDatabase *db, const gchar *dest, gchar **err)
 {
     if (err != NULL)
         *err = NULL;
+    if (task_path_is_live_data(dest)) {
+        if (err != NULL)
+            *err = g_strdup_printf(LIVE_DATA_REFUSAL, dest);
+        return FALSE;
+    }
     gchar *q   = sqlite3_mprintf("VACUUM INTO %Q", dest);
     gchar *msg = NULL;
     gboolean ok = (sqlite3_exec(db->sq, q, NULL, NULL, &msg) == SQLITE_OK);
@@ -511,6 +523,11 @@ task_db_copy_file(TaskDatabase *db, const gchar *dest, gchar **err)
 TaskDatabase *
 task_db_open(const gchar *path, GError **err)
 {
+    if (task_path_is_live_data(path)) {
+        g_set_error(err, g_quark_from_static_string("task-db"), 2,
+                    LIVE_DATA_REFUSAL, path);
+        return NULL;
+    }
     sqlite3 *sq = NULL;
     if (sqlite3_open(path, &sq) != SQLITE_OK) {
         g_set_error(err, g_quark_from_static_string("task-db"), 1,
