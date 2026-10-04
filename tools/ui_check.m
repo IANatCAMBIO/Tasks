@@ -1777,6 +1777,168 @@ check_editor_window(TaskApp *app)
     check_spin(0.1);
 }
 
+
+/*
+ * check_settings — drive the Settings window through its own controls:
+ * every Appearance box writes its key, Update records a verdict from the
+ * background, a number is held to its range, a backup folder the core
+ * refuses (a stand-in live data directory under dev/) is not kept,
+ * Back Up Now writes a backup into a folder under dev/, and a window
+ * closed with a probe in flight is released.  Every setting is put back.
+ * The "copy" links are not pressed: they would replace the clipboard of
+ * whoever is running this.
+ *
+ * Inputs:
+ *   app — the application context
+ *   dir — the snapshot folder; the scratch folders are made beside it
+ */
+static void
+check_settings(TaskApp *app, NSString *dir)
+{
+    NSFileManager *files   = NSFileManager.defaultManager;
+    NSString      *parent  = dir.stringByDeletingLastPathComponent;
+    NSString      *backups = [parent stringByAppendingPathComponent:@"ui-check-backups"];
+    NSString      *xdg     = [parent stringByAppendingPathComponent:@"ui-check-xdg"];
+    NSString      *live    = [xdg stringByAppendingPathComponent:@"tasks"];
+    __weak NSWindow *weak_window = nil;
+
+    /* The app delegate's job in the app: Settings re-arms the backup's
+     * timer, which has to be registered first.  The backup settings start
+     * from their defaults (off, default folder) whatever an earlier run
+     * left in the sandbox, and are put back to them at the end. */
+    task_backup_init(app);
+    task_config_set(TASK_CFG_BACKUP_ENABLED, NULL);
+    task_config_set(TASK_CFG_BACKUP_DIR, NULL);
+
+    [files createDirectoryAtPath:backups withIntermediateDirectories:YES attributes:nil error:NULL];
+    [files createDirectoryAtPath:live withIntermediateDirectories:YES attributes:nil error:NULL];
+
+    @autoreleasepool {
+        tasks_settings_window_open(app);
+        check_spin(0.2);
+        NSWindow *window = nil;
+        for (NSWindow *open in NSApp.windows) {
+            if (open.visible && [open.title isEqualToString:@"Settings"]) window = open;
+        }
+        weak_window = window;
+
+        /* The first view, breadth first, that a test accepts. */
+        NSView *(^find)(BOOL (^)(NSView *)) = ^NSView *(BOOL (^wanted)(NSView *)) {
+            NSMutableArray<NSView *> *todo = [NSMutableArray arrayWithObject:window.contentView];
+            while (todo.count > 0) {
+                NSView *view = todo.firstObject;
+                [todo removeObjectAtIndex:0];
+                if (wanted(view)) return view;
+                [todo addObjectsFromArray:view.subviews];
+            }
+            return nil;
+        };
+        NSButton *(^button)(NSString *) = ^NSButton *(NSString *title) {
+            return (NSButton *)find(^BOOL(NSView *view) {
+                return [view isKindOfClass:NSButton.class] &&
+                       [((NSButton *)view).title isEqualToString:title];
+            });
+        };
+        NSTextField *(^label)(NSString *) = ^NSTextField *(NSString *prefix) {
+            return (NSTextField *)find(^BOOL(NSView *view) {
+                return [view isKindOfClass:NSTextField.class] && !view.hiddenOrHasHiddenAncestor &&
+                       [((NSTextField *)view).stringValue hasPrefix:prefix];
+            });
+        };
+
+        window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        check(snapshot(window, dir, @"settings-dark"), "settings: snapshot, dark");
+        window.appearance = nil;
+
+        /* Appearance: each box writes its key at once, both ways. */
+        NSDictionary<NSString *, NSString *> *boxes = @{
+            @"Show task titles in bold":                         @TASK_CFG_BOLD_TITLES,
+            @"Show drop shadows on Kanban cards":                @TASK_CFG_KANBAN_SHADOW,
+            @"Include all past-due tasks in the Due Today view": @TASK_CFG_DUE_TODAY_OVERDUE,
+        };
+        BOOL boxes_write = YES;
+        for (NSString *title in boxes) {
+            const char *key    = boxes[title].UTF8String;
+            gboolean    before = task_config_get_bool(key);
+            [button(title) performClick:nil];
+            boxes_write = boxes_write && task_config_get_bool(key) != before;
+            [button(title) performClick:nil];
+            boxes_write = boxes_write && task_config_get_bool(key) == before;
+        }
+        check(boxes_write, "settings: every Appearance box writes its setting, on and off");
+
+        /* Update: the check runs in the background and lands on the handle. */
+        int64_t pressed = (int64_t)time(NULL);
+        [button(@"Update") performClick:nil];
+        check(!button(@"Update").enabled && label(@"Checking") != nil,
+              "settings: Update is busy while the check runs");
+        for (int i = 0; i < 100 && !button(@"Update").enabled; i++) check_spin(0.05);
+        const TaskDbHealth *health = task_db_health(app->db);
+        check(health != NULL && health->ok && health->when >= pressed,
+              "settings: Update records a fresh verdict on the database");
+        check(label(@"Healthy — checked") != nil && button(@"Update").enabled,
+              "settings: ... and the plate says so");
+
+        /* Backups: the switch, then a number held to its range. */
+        gint interval = task_config_get_int(TASK_CFG_BACKUP_INTERVAL_MIN);
+        [button(@"Back up the database automatically") performClick:nil];
+        check(task_config_get_bool(TASK_CFG_BACKUP_ENABLED) && button(@"Back Up Now").enabled,
+              "settings: the backup switch writes its setting and wakes the controls");
+        check(label(@"⚠ alongside the database") != nil,
+              "settings: the default backup folder is flagged as alongside the database");
+
+        NSTextField *interval_field = (NSTextField *)find(^BOOL(NSView *view) {
+            return [view isKindOfClass:NSTextField.class] && ((NSTextField *)view).editable;
+        });
+        interval_field.stringValue = @"99999";
+        [interval_field sendAction:interval_field.action to:interval_field.target];
+        check(task_config_get_int(TASK_CFG_BACKUP_INTERVAL_MIN) == 10080 &&
+              interval_field.integerValue == 10080,
+              "settings: a typed interval is held to its range and written");
+        interval_field.integerValue = interval;
+        [interval_field sendAction:interval_field.action to:interval_field.target];
+
+        /* A folder the core refuses is not kept, and the refusal is shown.
+         * The stand-in live directory is under dev/: XDG_DATA_HOME moves
+         * what the fence calls live data for as long as it is set. */
+        SEL use_folder = NSSelectorFromString(@"use_backup_folder:");
+        setenv("XDG_DATA_HOME", xdg.fileSystemRepresentation, 1);
+        [NSApp sendAction:use_folder to:window.delegate from:live];
+        check_spin(0.3);
+        gchar *kept = task_config_get(TASK_CFG_BACKUP_DIR);
+        check(kept == NULL && window.attachedSheet != nil,
+              "settings: a backup folder inside live data is refused with a notice, not kept");
+        g_free(kept);
+        if (window.attachedSheet) [window endSheet:window.attachedSheet];
+        check_spin(0.3);
+        unsetenv("XDG_DATA_HOME");
+
+        /* A folder away from the database: kept, no warning, backed up to. */
+        [NSApp sendAction:use_folder to:window.delegate from:backups];
+        check(label([@"Backing up to " stringByAppendingString:backups]) != nil &&
+              label(@"⚠ alongside the database") == nil,
+              "settings: a folder away from the database is used, without the warning");
+        [button(@"Back Up Now") performClick:nil];
+        for (int i = 0; i < 100 && label(@"Backed up to") == nil; i++) check_spin(0.05);
+        NSArray<NSString *> *made = [files contentsOfDirectoryAtPath:backups error:NULL];
+        check(label(@"Backed up to") != nil && made.count == 1 && [made[0] hasPrefix:@"tasks-"],
+              "settings: Back Up Now writes one backup there and reports it");
+        check(snapshot(window, dir, @"settings-backups"), "settings: snapshot, backups on");
+
+        /* Put the settings back, then close with a probe still in flight. */
+        task_config_set(TASK_CFG_BACKUP_DIR, NULL);
+        [button(@"Back up the database automatically") performClick:nil];
+        check(!task_config_get_bool(TASK_CFG_BACKUP_ENABLED), "settings: (backups off again)");
+        [button(@"Update") performClick:nil];
+        [window close];
+    }
+    check_spin(0.5);
+    check(weak_window == nil, "settings: a window closed during a check is released");
+    [files removeItemAtPath:backups error:NULL];
+    [files removeItemAtPath:xdg error:NULL];
+}
+
+
 /*
  * main — run the checks.
  *
@@ -1840,6 +2002,7 @@ main(int argc, const char *argv[])
         check_task_list(app, dir);
         check_kanban(app, dir);
         check_editor_window(app);
+        check_settings(app, dir);
         check_memory_and_ownership(app);
 
         if (argc > 2) {

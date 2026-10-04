@@ -264,6 +264,32 @@ task_path_is_live_data(const char *path)
 }
 
 /*
+ * task_path_shares_fate — whether one directory is, or is inside, another.
+ * Inputs/output are documented in task_paths.h.
+ */
+bool
+task_path_shares_fate(const char *dir, const char *other)
+{
+    if (dir == NULL || other == NULL) return false;
+
+    char *dir_abs    = absolute(dir);
+    char *other_abs  = absolute(other);
+    char *dir_norm   = dir_abs != NULL ? normalized(dir_abs) : NULL;
+    char *other_norm = other_abs != NULL ? normalized(other_abs) : NULL;
+
+    /* is_inside wants a root with no trailing slash.  The file system root
+     * is the one directory spelled with one, and everything is inside it. */
+    bool shared = dir_norm != NULL && other_norm != NULL &&
+                  (strcmp(other_norm, "/") == 0 || is_inside(dir_norm, other_norm));
+
+    free(other_norm);
+    free(dir_norm);
+    free(other_abs);
+    free(dir_abs);
+    return shared;
+}
+
+/*
  * task_data_dir — the data directory, not created.
  * Inputs/output are documented in task_paths.h.
  */

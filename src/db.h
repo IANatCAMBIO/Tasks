@@ -336,6 +336,31 @@ gboolean task_db_health_check(TaskDatabase *db);
 const TaskDbHealth *task_db_health(TaskDatabase *db);
 
 /* ---------------------------------------------------------------------------
+ * task_db_health_check_file() — the health pass made over the FILE at
+ * `path` instead of an open handle, for a caller that must not hold the
+ * main thread while it runs (the Settings window's Update).
+ *
+ * Runs on the separate read-only connection task_db_verify_file uses, so
+ * it may be called from any thread and can never create or change the
+ * file.  The verdict is RETURNED in *out — `ran` included, which
+ * task_db_verify_file does not report — and stored nowhere:
+ * task_db_health_record is what puts it on the open handle, back on the
+ * main thread.  out->detail is the caller's (g_free), NULL when sound.
+ * Returns out->ok.
+ * ------------------------------------------------------------------------- */
+gboolean task_db_health_check_file(const gchar *path, TaskDbHealth *out);
+
+/* ---------------------------------------------------------------------------
+ * task_db_health_record() — make `verdict` the stored result of `db`: what
+ * task_db_health answers with from now on.  The one writer of the stored
+ * verdict; task_db_health_check goes through it too.
+ *
+ * Takes verdict->detail over (it is NULL afterwards).  The caller is
+ * responsible for the verdict being about the file `db` has open.
+ * ------------------------------------------------------------------------- */
+void task_db_health_record(TaskDatabase *db, TaskDbHealth *verdict);
+
+/* ---------------------------------------------------------------------------
  * task_db_file_sha256() — hex SHA-256 of the file at `path`, or NULL when
  * it cannot be read (g_free the result).
  *
