@@ -78,4 +78,30 @@ char *task_data_dir_ensure(void);
  */
 bool task_path_is_live_data(const char *path);
 
+/*
+ * task_path_shares_fate — whether `dir` is `other`, or sits inside it: the
+ * test behind the backup destination's warning in Settings.
+ *
+ * It is a containment test, not a comparison, because the DEFAULT backup
+ * folder is a `backups/` directory inside the database's own: a child goes
+ * to the trash at the same moment as its parent, so it is the one
+ * arrangement the warning most needs to describe.
+ *
+ * Both paths are made absolute and have "//", "." and ".." collapsed by the
+ * text alone, so "/a/b" and "/a/./b" are one answer, and "/a/backups-old"
+ * is not read as living inside "/a/backups".  Compared without regard to
+ * case, as the fence is.  Symbolic links are NOT resolved: that needs the
+ * paths to exist, and would make the answer depend on whether a removable
+ * disk happens to be plugged in.  Nothing is opened.
+ *
+ * Inputs:
+ *   dir   — the directory asked about; NULL is "no"
+ *   other — the directory it might share the fate of; NULL is "no"
+ *
+ * Output:
+ *   true when losing `other` would lose `dir` too.  false also when a path
+ *   cannot be made absolute or memory runs out.
+ */
+bool task_path_shares_fate(const char *dir, const char *other);
+
 #endif /* TASK_PATHS_H */
