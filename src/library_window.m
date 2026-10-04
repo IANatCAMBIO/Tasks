@@ -8,16 +8,14 @@
 
 #include "task_config.h"
 #include "task_ops.h"
+#include "task_switch.h"
 
 /*
- * FOUNDATION SKELETON of the shell (work package "shell": see
- * porting/INTERFACES.md).  What is here is real and is the contract the
- * panes are built against: the shared state and its single writers, the
- * refresh orchestration, the command dispatch and validation, the event
- * listeners and the teardown order.  What the shell's owner still has to
- * add is listed in INTERFACES.md (Compact mode, Open Database, the status
- * message's fade, the first-run choice); the two commands not yet carried
- * out are disabled, never silently inert.
+ * The shell: the window's own furniture (toolbar, search field, status
+ * bar, Compact mode's floating buttons), the shared state and its single
+ * writers, the refresh orchestration, command dispatch and validation, the
+ * app-event listeners and the teardown order.  The contract with the panes
+ * is in library_window.h.
  */
 
 /* The toolbar's own identifiers (command items use the command table's). */
@@ -44,7 +42,14 @@ static const CGFloat sidebar_initial_w = 200.0;
 @property (nonatomic, strong) NSTextField *status_left;    /* "<view> - N tasks"        */
 @property (nonatomic, strong) NSTextField *status_right;   /* the latest event message  */
 @property (nonatomic, weak) NSSearchField *search_field;   /* owned by its toolbar item */
-/* Bumped by every status message, so only the latest one's timer clears it. */
+/* Compact mode's floating controls: the plate, and the command buttons on
+ * it (kept so that their state can be refreshed; see windowDidUpdate:). */
+@property (nonatomic, strong) NSView *float_bar;
+@property (nonatomic, copy) NSArray<NSButton *> *float_buttons;
+/* YES while a Compact toggle's slide and resize are running; a second
+ * toggle is ignored until they finish. */
+@property (nonatomic, assign) BOOL compact_animating;
+/* Bumped by every status message, so only the latest one's timer fades it. */
 @property (nonatomic, assign) NSUInteger status_message_id;
 /* Subscriptions to the app's three events; 0 once dropped. */
 @property (nonatomic, assign) guint listen_changed;
@@ -108,6 +113,79 @@ on_app_status(TaskApp *app, const gchar *message, gpointer data)
     [(__bridge TasksLibraryWindow *)data show_status_message:tasks_string(message)];
 }
 
+/* ── Compact mode's plate ────────────────────────────────────────────── */
+
+/*
+ * TasksFloatPlate — the plate behind Compact mode's floating buttons: a
+ * rounded rectangle in the window's background colour with a hairline
+ * border, so the buttons read as controls and not as part of the rows they
+ * sit over.  It is drawn here rather than given to a layer because both
+ * colours are dynamic: drawRect: runs again when the appearance changes,
+ * where a layer's colours would stay as they were set.
+ */
+@interface TasksFloatPlate : NSView
+@end
+
+@implementation TasksFloatPlate
+
+/*
+ * drawRect: — fill and outline the plate.
+ *
+ * Inputs:
+ *   dirty — the area to redraw (unused: the plate is small and drawn whole)
+ */
+- (void)
+drawRect:(NSRect)dirty
+{
+    /* Half a point in, so the 1 pt outline falls on whole pixels. */
+    NSBezierPath *plate =
+        [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5)
+                                        xRadius:tasks_look_float_radius
+                                        yRadius:tasks_look_float_radius];
+
+    [NSColor.windowBackgroundColor setFill];
+    [plate fill];
+    [NSColor.separatorColor setStroke];
+    [plate stroke];
+}
+
+@end
+
+/* ── Saved sizes ─────────────────────────────────────────────────────── */
+
+/*
+ * saved_size — a window content size kept in the config as a width key and
+ * a height key (each has a default in the config's registry).
+ *
+ * Inputs:
+ *   w_key — the width's key
+ *   h_key — the height's key
+ *
+ * Output:
+ *   the size in points.
+ */
+static NSSize
+saved_size(const char *w_key, const char *h_key)
+{
+    return NSMakeSize(task_config_get_int(w_key), task_config_get_int(h_key));
+}
+
+/*
+ * save_size — remember a window content size under a width key and a
+ * height key.
+ *
+ * Inputs:
+ *   w_key — the width's key
+ *   h_key — the height's key
+ *   size  — the size in points
+ */
+static void
+save_size(const char *w_key, const char *h_key, NSSize size)
+{
+    task_config_set_int(w_key, (gint)size.width);
+    task_config_set_int(h_key, (gint)size.height);
+}
+
 @implementation TasksLibraryWindow
 
 /* ── Construction ────────────────────────────────────────────────────── */
@@ -115,14 +193,18 @@ on_app_status(TaskApp *app, const gchar *message, gpointer data)
 /*
  * init_with_app: — build the window and show the default selection.
  * Inputs/output are documented in library_window.h.
+ *
+ * The window opens at the size it had when it last closed IN THE MODE IT
+ * OPENS IN: a Compact window comes back at the Compact size.
  */
 - (instancetype)
 init_with_app:(TaskApp *)app
 {
-    NSRect content = NSMakeRect(0, 0, task_config_get_int(TASK_CFG_WIN_W),
-                                task_config_get_int(TASK_CFG_WIN_H));
+    NSSize size = task_config_get_bool(TASK_CFG_COMPACT)
+        ? saved_size(TASK_CFG_COMPACT_W, TASK_CFG_COMPACT_H)
+        : saved_size(TASK_CFG_WIN_W, TASK_CFG_WIN_H);
     NSWindow *window = [[NSWindow alloc]
-        initWithContentRect:content
+        initWithContentRect:NSMakeRect(0, 0, size.width, size.height)
                   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                             NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                     backing:NSBackingStoreBuffered
@@ -137,12 +219,14 @@ init_with_app:(TaskApp *)app
     _kanban_on   = task_config_get_bool(TASK_CFG_KANBAN_VIEW);
 
     window.title        = @TASKS_APP_NAME;
-    window.minSize      = NSMakeSize(tasks_look_window_min_w, tasks_look_window_min_h);
     window.toolbarStyle = NSWindowToolbarStyleExpanded;
     window.delegate     = self;
-    [self place_window];
     [self build_layout];
     [self build_toolbar];
+    /* The size first, then the place: placing keeps the window on a
+     * screen, which depends on how big it is. */
+    [self apply_compact_layout_at:size animated:NO];
+    [self place_window];
 
     self.listen_changed = task_app_listen_changed(app, on_app_changed, (__bridge void *)self);
     self.listen_tasks   = task_app_listen_tasks(app, on_app_tasks, (__bridge void *)self);
@@ -151,6 +235,8 @@ init_with_app:(TaskApp *)app
     [self apply_pane_mode];
     [self refresh_sidebar];
     [self refresh_tasks];
+    /* The keyboard starts in the task pane, not in the search field. */
+    window.initialFirstResponder = (NSView *)[self visible_pane];
     return self;
 }
 
@@ -234,10 +320,49 @@ pin_edges(NSView *view)
 }
 
 /*
+ * build_float_bar: — Compact mode's floating controls: New Task and Delete
+ * Task on a plate, tasks_look_float_margin in from the bottom-right corner
+ * of the task pane and above both of its presentations.  Hidden until
+ * apply_compact_layout_at:animated: shows it.
+ *
+ * Inputs:
+ *   pane — the task pane's container, the list and the board already in it
+ */
+- (void)
+build_float_bar:(NSView *)pane
+{
+    self.float_buttons = @[
+        tasks_command_button(TasksCommandNewTask, self),
+        tasks_command_button(TasksCommandDeleteTask, self),
+    ];
+
+    NSStackView *buttons = [NSStackView stackViewWithViews:self.float_buttons];
+    buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    buttons.spacing     = tasks_look_float_pad;
+    buttons.edgeInsets  = NSEdgeInsetsMake(tasks_look_float_pad, tasks_look_float_pad,
+                                           tasks_look_float_pad, tasks_look_float_pad);
+
+    /* The plate takes its size from the buttons pinned inside it. */
+    self.float_bar = [[TasksFloatPlate alloc] initWithFrame:NSZeroRect];
+    self.float_bar.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.float_bar addSubview:buttons];
+    pin_edges(buttons);
+
+    [pane addSubview:self.float_bar positioned:NSWindowAbove relativeTo:nil];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.float_bar.trailingAnchor constraintEqualToAnchor:pane.trailingAnchor
+                                                      constant:-tasks_look_float_margin],
+        [self.float_bar.bottomAnchor constraintEqualToAnchor:pane.bottomAnchor
+                                                    constant:-tasks_look_float_margin],
+    ]];
+}
+
+/*
  * build_layout — the window's content: a split view (sidebar | task pane)
  * over a separator and the status bar.  The task pane holds BOTH
  * presentations, the list and the board, of which apply_pane_mode shows
- * one; neither is ever reparented.
+ * one; neither is ever reparented.  Whether the sidebar starts collapsed
+ * is apply_compact_layout_at:animated:'s decision, not made here.
  */
 - (void)
 build_layout
@@ -253,6 +378,7 @@ build_layout
     [pane addSubview:self.kanban];
     pin_edges(self.task_list);
     pin_edges(self.kanban);
+    [self build_float_bar:pane];
 
     /* Bare view controllers wrap the existing views; a split view
      * controller gives collapse, minimum thickness and animation. */
@@ -266,13 +392,16 @@ build_layout
     self.sidebar_item.minimumThickness = tasks_look_sidebar_min_w;
     /* Window resizes go to the task pane, not the sidebar. */
     self.sidebar_item.holdingPriority  = NSLayoutPriorityDefaultLow + 1;
-    self.sidebar_item.collapsed        = !task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE);
+
+    /* A sidebar dragged wide stops here rather than squeezing the pane away. */
+    NSSplitViewItem *pane_item = [NSSplitViewItem splitViewItemWithViewController:pane_vc];
+    pane_item.minimumThickness = tasks_look_pane_min_w;
 
     self.split_vc = [[NSSplitViewController alloc] init];
     self.split_vc.splitView.vertical     = YES;
     self.split_vc.splitView.dividerStyle = NSSplitViewDividerStyleThin;
     [self.split_vc addSplitViewItem:self.sidebar_item];
-    [self.split_vc addSplitViewItem:[NSSplitViewItem splitViewItemWithViewController:pane_vc]];
+    [self.split_vc addSplitViewItem:pane_item];
 
     NSView *split = self.split_vc.view;
     NSBox  *rule  = [[NSBox alloc] initWithFrame:NSZeroRect];
@@ -445,9 +574,27 @@ validateToolbarItem:(NSToolbarItem *)item
 }
 
 /*
+ * acts_on_group — whether a command's parameter is the group it acts on.
+ * Such a command sent without one (from the main menu) means the group
+ * selected in the sidebar (commands.h).
+ *
+ * Inputs:
+ *   command — the command
+ *
+ * Output:
+ *   YES for Rename Group... and Remove Group.
+ */
+static BOOL
+acts_on_group(TasksCommand command)
+{
+    return command == TasksCommandRenameGroup || command == TasksCommandDeleteGroup;
+}
+
+/*
  * validateMenuItem: — AppKit asks whether a command's menu item is enabled;
  * the answer also sets its title and check mark.  An item carrying a
- * parameter keeps the title it was built with (commands.h).
+ * parameter keeps the title it was built with (commands.h).  A group
+ * command carrying none needs a group to be selected.
  *
  * Inputs:
  *   item — a command item made by tasks_command_menu_item
@@ -458,9 +605,14 @@ validateToolbarItem:(NSToolbarItem *)item
 - (BOOL)
 validateMenuItem:(NSMenuItem *)item
 {
-    TasksCommandState *state = [self state_of_command:(TasksCommand)item.tag];
+    TasksCommand       command = (TasksCommand)item.tag;
+    TasksCommandState *state   = [self state_of_command:command];
 
-    if (item.representedObject) state.title = item.title;
+    if (item.representedObject) {
+        state.title = item.title;
+    } else if (acts_on_group(command) && self.selection.kind != task_sel_group) {
+        state.enabled = NO;
+    }
     tasks_command_apply(state, item);
     return state.enabled;
 }
@@ -485,6 +637,26 @@ search_changed:(NSSearchField *)sender
 }
 
 /*
+ * clear_search — empty the search field and drop the filter, by the same
+ * path as the user clearing the field: ONE place knows how a search ends.
+ */
+- (void)
+clear_search
+{
+    self.search_field.stringValue = @"";
+    [self search_changed:self.search_field];
+}
+
+/*
+ * focus_task_pane — give the keyboard to the task pane on screen.
+ */
+- (void)
+focus_task_pane
+{
+    [self.window makeFirstResponder:(NSView *)[self visible_pane]];
+}
+
+/*
  * control:textView:doCommandBySelector: — Escape in the search field clears
  * the search and gives the keyboard back to the task pane.
  *
@@ -503,9 +675,8 @@ doCommandBySelector:(SEL)selector
 {
     if (selector != @selector(cancelOperation:)) return NO;
 
-    control.stringValue = @"";
-    [self search_changed:(NSSearchField *)control];
-    [self.window makeFirstResponder:self.kanban_on ? self.kanban : self.task_list];
+    [self clear_search];
+    [self focus_task_pane];
     return YES;
 }
 
@@ -619,8 +790,31 @@ full_refresh
 }
 
 /*
- * show_status_message: — put an event message in the status bar and clear
- * it after the hold time, unless a newer message has replaced it.
+ * set_status_alpha:over:then: — set the event message's opacity through its
+ * animator.  EVERY change goes this way, even an instant one: a new value
+ * set through the animator replaces a fade in progress, where a plain
+ * assignment would be drawn over by the fade's remaining frames.
+ *
+ * Inputs:
+ *   alpha    — 1 to show the message, 0 to hide it
+ *   duration — seconds the change takes; 0 for at once
+ *   done     — called when the change has finished or been replaced; may
+ *              be nil
+ */
+- (void)
+set_status_alpha:(CGFloat)alpha over:(NSTimeInterval)duration then:(void (^)(void))done
+{
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        context.duration = duration;
+        self.status_right.animator.alphaValue = alpha;
+    } completionHandler:done];
+}
+
+/*
+ * show_status_message: — put an event message in the status bar, hold it
+ * for tasks_look_status_hold, then fade it out over tasks_look_status_fade
+ * and clear it.  A newer message replaces it at once, at full strength,
+ * whatever stage this one had reached.
  *
  * Inputs:
  *   message — the message
@@ -629,22 +823,29 @@ full_refresh
 show_status_message:(NSString *)message
 {
     NSUInteger message_id = ++self.status_message_id;
+
     self.status_right.stringValue = message;
+    [self set_status_alpha:1.0 over:0.0 then:nil];
 
     __weak TasksLibraryWindow *ws = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(tasks_look_status_hold * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         TasksLibraryWindow *s = ws;
-        if (!s || s.status_message_id != message_id) return;   /* superseded */
-        s.status_right.stringValue = @"";
+        if (!s || s.status_message_id != message_id) return;   /* gone, or superseded */
+        [s set_status_alpha:0.0 over:tasks_look_status_fade then:^{
+            TasksLibraryWindow *faded = ws;
+            /* A message that arrived during the fade owns the label now. */
+            if (!faded || faded.status_message_id != message_id) return;
+            faded.status_right.stringValue = @"";
+        }];
     });
 }
 
 /* ── Task context menu ───────────────────────────────────────────────── */
 
 /*
- * titled_item — a command item wearing its own title (a direction of a
- * flag, a destination list).
+ * titled_item — a command item wearing its own title (a destination list
+ * or group).
  *
  * Inputs:
  *   command — the command
@@ -665,30 +866,65 @@ titled_item:(TasksCommand)command param:(NSNumber *)param title:(NSString *)titl
 }
 
 /*
- * move_menu_excluding: — the "Move to List" submenu: every list but one.
+ * add_list_destinations: — the lists the selected tasks can move to: every
+ * list, less the one a single selected task is already in.
  *
  * Inputs:
- *   list_id — the list to leave out (a single selection's own list), or 0
- *
- * Output:
- *   the submenu; empty when there is nowhere to move to.
+ *   menu — the submenu to add to
  */
-- (NSMenu *)
-move_menu_excluding:(int64_t)list_id
+- (void)
+add_list_destinations:(NSMenu *)menu
 {
-    NSMenu    *menu  = [[NSMenu alloc] initWithTitle:@""];
+    NSArray<NSNumber *> *ids = [self selected_task_ids];
+    Task      *only  = ids.count == 1 ? task_db_task_get(self.app->db, ids[0].longLongValue) : NULL;
     GPtrArray *lists = task_db_lists(self.app->db, FALSE);
 
     for (guint i = 0; i < lists->len; i++) {
         const TaskList *list = g_ptr_array_index(lists, i);
-        if (list->id == list_id) continue;
+        if (only != NULL && list->id == only->list_id) continue;
         NSString *title = *list->emoji != '\0'
             ? [NSString stringWithFormat:@"%@  %@", tasks_string(list->emoji), tasks_string(list->name)]
             : tasks_string(list->name);
         [menu addItem:[self titled_item:TasksCommandMoveToList param:@(list->id) title:title]];
     }
     task_ptr_array_free_lists(lists);
-    return menu;
+    task_free(only);
+}
+
+/*
+ * add_group_destinations: — the groups the selected list can move to.
+ *
+ * Inputs:
+ *   menu — the submenu to add to
+ */
+- (void)
+add_group_destinations:(NSMenu *)menu
+{
+    GPtrArray *groups = task_db_groups(self.app->db);
+
+    for (guint i = 0; i < groups->len; i++) {
+        const TaskGroup *group = g_ptr_array_index(groups, i);
+        [menu addItem:[self titled_item:TasksCommandMoveToGroup param:@(group->id)
+                                  title:tasks_string(group->name)]];
+    }
+    task_ptr_array_free_groups(groups);
+}
+
+/*
+ * fill_menu:with_destinations_of: — rebuild a "Move to" submenu.
+ * Inputs are documented in library_window.h.
+ */
+- (void)
+fill_menu:(NSMenu *)menu with_destinations_of:(TasksCommand)command
+{
+    [menu removeAllItems];
+    if (self.is_shut_down) return;
+
+    if (command == TasksCommandMoveToList) {
+        [self add_list_destinations:menu];
+    } else if (command == TasksCommandMoveToGroup) {
+        [self add_group_destinations:menu];
+    }
 }
 
 /*
@@ -714,29 +950,27 @@ task_context_menu
     }
 
     if (task != NULL) {
-        BOOL to_done = task->status != TASK_STATUS_DONE;
-        [menu addItem:[self titled_item:TasksCommandMarkDone param:@(to_done)
-                                  title:to_done ? @"Mark Complete" : @"Mark Incomplete"]];
+        [menu addItem:tasks_command_flag_item(TasksCommandMarkDone,
+                                              task->status != TASK_STATUS_DONE, NO, self)];
         [menu addItem:NSMenuItem.separatorItem];
-        [menu addItem:[self titled_item:TasksCommandSetPinned param:@(!task->pinned)
-                                  title:task->pinned ? @"Remove from Favorites" : @"Add to Favorites"]];
-        [menu addItem:[self titled_item:TasksCommandSetPriority param:@(!task->priority)
-                                  title:task->priority ? @"Clear High Priority" : @"Set High Priority"]];
+        [menu addItem:tasks_command_flag_item(TasksCommandSetPinned, !task->pinned, NO, self)];
+        [menu addItem:tasks_command_flag_item(TasksCommandSetPriority, !task->priority, NO, self)];
     } else {
-        [menu addItem:[self titled_item:TasksCommandMarkDone param:@YES title:@"Mark All Complete"]];
-        [menu addItem:[self titled_item:TasksCommandMarkDone param:@NO title:@"Mark All Incomplete"]];
+        [menu addItem:tasks_command_flag_item(TasksCommandMarkDone, YES, YES, self)];
+        [menu addItem:tasks_command_flag_item(TasksCommandMarkDone, NO, YES, self)];
         [menu addItem:NSMenuItem.separatorItem];
-        [menu addItem:[self titled_item:TasksCommandSetPinned param:@YES title:@"Add All to Favorites"]];
-        [menu addItem:[self titled_item:TasksCommandSetPinned param:@NO title:@"Remove All from Favorites"]];
-        [menu addItem:[self titled_item:TasksCommandSetPriority param:@YES title:@"Set All High Priority"]];
-        [menu addItem:[self titled_item:TasksCommandSetPriority param:@NO title:@"Clear All High Priority"]];
+        [menu addItem:tasks_command_flag_item(TasksCommandSetPinned, YES, YES, self)];
+        [menu addItem:tasks_command_flag_item(TasksCommandSetPinned, NO, YES, self)];
+        [menu addItem:tasks_command_flag_item(TasksCommandSetPriority, YES, YES, self)];
+        [menu addItem:tasks_command_flag_item(TasksCommandSetPriority, NO, YES, self)];
     }
     [menu addItem:NSMenuItem.separatorItem];
 
     /* Move to List: left out for a lone subtask (subtasks travel with their
      * parent) and when there is nowhere to move to. */
     if (task == NULL || task->parent_id == 0) {
-        NSMenu *move = [self move_menu_excluding:task != NULL ? task->list_id : 0];
+        NSMenu *move = [[NSMenu alloc] initWithTitle:@""];
+        [self fill_menu:move with_destinations_of:TasksCommandMoveToList];
         if (move.numberOfItems > 0) {
             NSMenuItem *holder = [[NSMenuItem alloc]
                 initWithTitle:tasks_command_spec(TasksCommandMoveToList)->title
@@ -758,14 +992,23 @@ task_context_menu
 /*
  * run_command: — the action every command control sends.
  * Inputs are documented in library_window.h.
+ *
+ * A group command whose control names no group (the main menu's) is given
+ * the group selected in the sidebar; validateMenuItem: has it disabled
+ * when there is none.
  */
 - (void)
 run_command:(id)sender
 {
-    NSNumber *param = [sender isKindOfClass:NSMenuItem.class]
+    TasksCommand command = (TasksCommand)[sender tag];
+    NSNumber    *param   = [sender isKindOfClass:NSMenuItem.class]
         ? ((NSMenuItem *)sender).representedObject : nil;
 
-    [self perform_command:(TasksCommand)[sender tag] param:param];
+    if (param == nil && acts_on_group(command)) {
+        if (self.selection.kind != task_sel_group) return;
+        param = @(self.selection.id);
+    }
+    [self perform_command:command param:param];
 }
 
 /*
@@ -955,6 +1198,225 @@ toggle_sidebar
     task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, show);
 }
 
+/* ── Compact mode ────────────────────────────────────────────────────── */
+
+/*
+ * apply_compact_layout_at:animated: — THE applier of Compact mode: make
+ * the window match the compact_layout setting, at a given content size.
+ * Everything that differs between the two modes is set here and nowhere
+ * else — the toolbar, the floating controls, the sidebar, the minimum
+ * size, the search (which Compact mode ends, because the field that would
+ * show and clear it is hidden) and the window's size.
+ *
+ * In full mode the sidebar follows the sidebar_visible setting; in Compact
+ * mode it is always hidden.  The resize keeps the window's top-left corner
+ * where it is, so the title bar does not move under the pointer.
+ *
+ * Inputs:
+ *   content  — the content size to give the window (it is held to the
+ *              mode's minimum)
+ *   animated — YES to slide the sidebar and resize the window together
+ *              (a toggle); NO to set everything at once (at launch)
+ */
+- (void)
+apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
+{
+    BOOL   compact  = task_config_get_bool(TASK_CFG_COMPACT);
+    BOOL   collapse = compact || !task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE);
+    NSSize least    = compact
+        ? NSMakeSize(tasks_look_pane_min_w, tasks_look_compact_min_h)
+        : NSMakeSize(tasks_look_window_min_w, tasks_look_window_min_h);
+    NSRect old      = self.window.frame;
+
+    self.window.toolbar.visible = !compact;
+    self.window.contentMinSize  = least;
+    self.float_bar.hidden       = !compact;
+    if (compact && self.search != NULL) [self clear_search];
+
+    /* The frame is worked out AFTER the toolbar has come or gone, because
+     * the toolbar is part of the frame and not of the content. */
+    NSRect frame = [self.window frameRectForContentRect:
+        NSMakeRect(0, 0, MAX(content.width, least.width), MAX(content.height, least.height))];
+    frame.origin = NSMakePoint(NSMinX(old), NSMaxY(old) - NSHeight(frame));
+    frame = [self.window constrainFrameRect:frame toScreen:self.window.screen];
+
+    if (!animated) {
+        self.sidebar_item.collapsed = collapse;
+        [self.window setFrame:frame display:NO];
+        return;
+    }
+
+    self.compact_animating = YES;
+    __weak TasksLibraryWindow *ws = self;
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+        self.sidebar_item.animator.collapsed = collapse;
+        [self.window.animator setFrame:frame display:YES];
+    } completionHandler:^{
+        ws.compact_animating = NO;
+    }];
+}
+
+/*
+ * toggle_compact — View > Compact Controls / Full Controls: switch modes.
+ * Each mode has its own remembered window size: the size being left is
+ * saved for the next time that mode is entered, and the window goes to the
+ * size remembered for the mode being entered (compact_w/h for Compact,
+ * compact_pre_w/h — the size it had before going Compact — for full).
+ * Leaving Compact always brings the sidebar back, and records that.
+ */
+- (void)
+toggle_compact
+{
+    if (self.compact_animating) return;
+
+    BOOL   compact = !task_config_get_bool(TASK_CFG_COMPACT);
+    NSSize now     = self.window.contentView.frame.size;
+
+    if (compact) {
+        save_size(TASK_CFG_COMPACT_PRE_W, TASK_CFG_COMPACT_PRE_H, now);
+    } else {
+        save_size(TASK_CFG_COMPACT_W, TASK_CFG_COMPACT_H, now);
+        task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, TRUE);
+    }
+    task_config_set_bool(TASK_CFG_COMPACT, compact);
+
+    NSSize target = compact ? saved_size(TASK_CFG_COMPACT_W, TASK_CFG_COMPACT_H)
+                            : saved_size(TASK_CFG_COMPACT_PRE_W, TASK_CFG_COMPACT_PRE_H);
+    [self apply_compact_layout_at:target animated:YES];
+}
+
+/*
+ * windowDidUpdate: — AppKit has finished handling an event: the moment it
+ * re-validates toolbar items.  The floating buttons are ordinary buttons,
+ * which nothing validates, so while they are showing they are brought up
+ * to date here from the same state_of_command: the toolbar uses.
+ *
+ * Inputs:
+ *   note — NSWindowDidUpdateNotification (unused)
+ */
+- (void)
+windowDidUpdate:(NSNotification *)note
+{
+    if (self.float_bar.hidden) return;
+
+    for (NSButton *button in self.float_buttons) {
+        tasks_command_apply([self state_of_command:(TasksCommand)button.tag], button);
+    }
+}
+
+/* ── The database ────────────────────────────────────────────────────── */
+
+/*
+ * report_database_health — check the open database and say what was found.
+ * Documented in library_window.h.
+ */
+- (void)
+report_database_health
+{
+    if (task_db_health_check(self.app->db)) {
+        task_app_status(self.app, "DB at %s loaded, integrity check passed",
+                        self.app->db->path);
+        return;
+    }
+    const TaskDbHealth *health = task_db_health(self.app->db);
+    NSString *lead = health->ran ? @"The database integrity check found issues:"
+                                 : @"The database integrity check did not complete:";
+    tasks_ui_notice(self.window, @"Database Integrity Check",
+                    [NSString stringWithFormat:@"%@\n\n%@", lead,
+                        tasks_string(health->detail != NULL ? health->detail : "?")],
+                    nil);
+}
+
+/*
+ * offer_default_database: — after a database was opened by hand, ask
+ * whether it should be the one opened at every launch.  Nothing is asked
+ * when it cannot be (task_switch_default_dir says which files can).
+ * Declining leaves it open for this session only.
+ *
+ * Inputs:
+ *   path — the database just opened
+ */
+- (void)
+offer_default_database:(NSString *)path
+{
+    char *dir = task_switch_default_dir(path.fileSystemRepresentation);
+    if (dir == NULL) return;
+    NSString *folder = tasks_string(dir);
+    free(dir);
+
+    __weak TasksLibraryWindow *ws = self;
+    tasks_ui_confirm(self.window, @"Make this the default database?",
+                     [NSString stringWithFormat:
+                         @"%@\n\n" @TASKS_APP_NAME @" will open it at every launch.  "
+                         @"Cancel keeps it open for this session only.", path],
+                     @"Make Default", NO, ^(BOOL confirmed) {
+        TasksLibraryWindow *s = ws;
+        if (!s || s.is_shut_down || !confirmed) return;
+        /* Only if it is still the open database: another may have been
+         * opened while the question was up. */
+        if (strcmp(s.app->db->path, path.fileSystemRepresentation) != 0) return;
+        task_config_set(TASK_CFG_DB_DIR, folder.fileSystemRepresentation);
+        task_app_status(s.app, "Default database folder set to %s",
+                        folder.fileSystemRepresentation);
+    });
+}
+
+/*
+ * open_database: — switch the running app to another database file.
+ * Inputs and the full behaviour are documented in library_window.h.
+ */
+- (void)
+open_database:(NSString *)path
+{
+    if (self.is_shut_down) return;
+
+    const char *file = path.fileSystemRepresentation;
+    char       *why  = NULL;
+    task_switch_check_t verdict = task_switch_check(self.app, file, &why);
+
+    if (verdict == task_switch_already_open) {
+        task_app_status(self.app, "%s is already open", file);
+        return;
+    }
+    if (verdict == task_switch_can_open) {
+        /* The editors close first: each flushes its pending save, which
+         * must land in the database the task came from. */
+        tasks_editor_close_all();
+        if (task_switch_database(self.app, file, &why)) {
+            /* The selection named a row of the old database. */
+            [self select:task_sel_default()];
+            task_app_notify_changed(self.app);
+            [self report_database_health];
+            [self offer_default_database:path];
+            return;
+        }
+    }
+    tasks_ui_notice(self.window, @"Could not open the database",
+                    [NSString stringWithFormat:@"%@\n\n%@", path, tasks_string(why)], nil);
+    free(why);
+}
+
+/*
+ * pick_database — File > Open Database File...: let the user pick a .db
+ * file, then switch to it.
+ */
+- (void)
+pick_database
+{
+    __weak TasksLibraryWindow *ws = self;
+    tasks_ui_pick_path(self.window, TasksPickFile, @"Choose a Tasks database to open.",
+                       @"Open", @[@"db"], nil, ^(NSString *path) {
+        if (!path) return;
+        /* On the next pass: the panel's sheet is still coming down, and
+         * what follows may put up a sheet of its own. */
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [ws open_database:path];
+        });
+    });
+}
+
+/* ── Command dispatch ────────────────────────────────────────────────── */
+
 /*
  * perform_shell_command:param: — carry out one of the window's own
  * commands.  Every toggle FLIPS its flag: the control that sent it shows
@@ -982,6 +1444,9 @@ perform_shell_command:(TasksCommand)command param:(NSNumber *)param
     case TasksCommandClearCompleted:
         [self clear_completed];
         break;
+    case TasksCommandOpenDatabase:
+        [self pick_database];
+        break;
     case TasksCommandFind:
         [self.window makeFirstResponder:self.search_field];
         break;
@@ -998,11 +1463,16 @@ perform_shell_command:(TasksCommand)command param:(NSNumber *)param
     case TasksCommandToggleSidebar:
         [self toggle_sidebar];
         break;
+    case TasksCommandToggleCompact:
+        [self toggle_compact];
+        break;
     case TasksCommandTogglePane:
         _kanban_on = !_kanban_on;
         task_config_set_bool(TASK_CFG_KANBAN_VIEW, _kanban_on);
         [self apply_pane_mode];
         [self refresh_tasks];
+        /* The keyboard follows the pane: the one it was in is now hidden. */
+        [self focus_task_pane];
         break;
     case TasksCommandMarkDone:
     case TasksCommandSetPinned:
@@ -1013,9 +1483,7 @@ perform_shell_command:(TasksCommand)command param:(NSNumber *)param
         [self move_to_list:param.longLongValue];
         break;
     default:
-        /* Open Database and Compact Controls: not in the skeleton, and
-         * disabled by state_of_command: so this is never reached for them. */
-        break;
+        break;                      /* not one of the window's own commands */
     }
     [self.window.toolbar validateVisibleItems];
 }
@@ -1122,12 +1590,17 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
             state.tooltip = @"Show the tasks as a list";
         }
         break;
-    case TasksCommandOpenDatabase:
     case TasksCommandToggleCompact:
-        state.enabled = NO;         /* not in the skeleton (see the file comment) */
+        if (task_config_get_bool(TASK_CFG_COMPACT)) state.title = @"Full Controls";
+        /* A full-screen window has no size of its own to shrink or restore. */
+        state.enabled = (self.window.styleMask & NSWindowStyleMaskFullScreen) == 0;
+        break;
+    case TasksCommandFind:
+        /* Compact mode hides the search field with the toolbar. */
+        state.enabled = !task_config_get_bool(TASK_CFG_COMPACT);
         break;
     default:
-        break;                      /* New Task, Find: always available */
+        break;                      /* New Task, Open Database: always available */
     }
 }
 
@@ -1177,21 +1650,28 @@ windowWillClose:(NSNotification *)note
 }
 
 /*
- * save_geometry — remember the window's place and size, and the sidebar's
- * width, for the next launch.
+ * save_geometry — remember the sidebar's width and the window's place and
+ * size for the next launch.  The size always goes to win_w/h; a window
+ * closing in Compact mode also saves it as the Compact size, which is what
+ * the next launch (still in Compact mode) opens at.  A full-screen window
+ * saves no place or size: the screen's are not the window's own.
  */
 - (void)
 save_geometry
 {
+    if (!self.sidebar_item.collapsed) {
+        task_config_set_int(TASK_CFG_SIDEBAR_WIDTH, (gint)NSWidth(self.sidebar.frame));
+    }
+    if (self.window.styleMask & NSWindowStyleMaskFullScreen) return;
+
     NSRect frame   = self.window.frame;
     NSSize content = self.window.contentView.frame.size;
 
     task_config_set_int(TASK_CFG_WIN_X, (gint)frame.origin.x);
     task_config_set_int(TASK_CFG_WIN_Y, (gint)frame.origin.y);
-    task_config_set_int(TASK_CFG_WIN_W, (gint)content.width);
-    task_config_set_int(TASK_CFG_WIN_H, (gint)content.height);
-    if (!self.sidebar_item.collapsed) {
-        task_config_set_int(TASK_CFG_SIDEBAR_WIDTH, (gint)NSWidth(self.sidebar.frame));
+    save_size(TASK_CFG_WIN_W, TASK_CFG_WIN_H, content);
+    if (task_config_get_bool(TASK_CFG_COMPACT)) {
+        save_size(TASK_CFG_COMPACT_W, TASK_CFG_COMPACT_H, content);
     }
 }
 
@@ -1211,7 +1691,7 @@ shut_down
     task_app_unlisten(self.app, self.listen_tasks);
     task_app_unlisten(self.app, self.listen_status);
     self.listen_changed = self.listen_tasks = self.listen_status = 0;
-    self.status_message_id++;       /* a pending status clear finds nothing to do */
+    self.status_message_id++;       /* a pending status fade finds nothing to do */
 
     [self.task_list cancel_drag];
     [self.kanban cancel_drag];

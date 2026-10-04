@@ -18,6 +18,11 @@
  *   │ <view> - N tasks                         latest event message │
  *   └──────────────────────────────────────────────────────────────┘
  *
+ * In COMPACT mode (View > Compact Controls) the window shrinks to a
+ * remembered small size, the toolbar and the sidebar are hidden, and New
+ * and Delete float as a two-button plate at the bottom-right of the task
+ * pane.  porting/INTERFACES.md §11 is the specification.
+ *
  * THE WINDOW OWNS THE SHARED STATE.  Which sidebar row is selected, the
  * search, the manual-sort and Kanban flags all live here, each with ONE
  * writer; panes read them through the properties below and never keep
@@ -192,6 +197,53 @@
  */
 - (NSMenu *)task_context_menu;
 
+/*
+ * fill_menu:with_destinations_of: — rebuild a "Move to" submenu: one item
+ * per place the command can send things, each carrying that place's id as
+ * the command's parameter and targeting this window.  The task context
+ * menu fills its submenu with this when it is built; the main menu's
+ * submenus are filled each time they open, so they always show the lists
+ * and groups there are now.
+ *
+ * Inputs:
+ *   menu    — the submenu; its items are replaced
+ *   command — TasksCommandMoveToList: every list, less the list a single
+ *             selected task is already in.  TasksCommandMoveToGroup: every
+ *             group.  Any other command leaves the menu empty.
+ */
+- (void)fill_menu:(NSMenu *)menu with_destinations_of:(TasksCommand)command;
+
+/* ── The database ───────────────────────────────────────────────────── */
+
+/*
+ * report_database_health — run the integrity check on the open database
+ * and say what it found: a status message when it is sound, an alert on
+ * this window when it is not.  Called after every open — at launch by the
+ * app delegate, and by open_database: — because the check is the only
+ * thing that catches a file gone bad before more is written into it.
+ */
+- (void)report_database_health;
+
+/*
+ * open_database: — switch the running app to another database file (what
+ * File > Open Database File... does with the file the user picked).
+ *
+ * The file is checked first, read-only (task_switch.h): one that is
+ * damaged, is not a database, or lies inside the GTK app's live data
+ * directory is refused with an alert giving the core's reason, and nothing
+ * changes — the editors stay open and the old database stays in use.
+ * Otherwise the editors are closed (flushing their saves into the OLD
+ * database), the databases are swapped, the workers re-armed, every pane
+ * refreshed on the default selection, and the new database's health
+ * reported.  If the file can be the default (it is named tasks.db and is
+ * not the default already) the user is then asked whether to open it at
+ * every launch; declining keeps it for this session only.
+ *
+ * Inputs:
+ *   path — absolute path of the database file
+ */
+- (void)open_database:(NSString *)path;
+
 /* ── Commands (see commands.h) ──────────────────────────────────────── */
 
 /*
@@ -229,7 +281,8 @@
 
 /*
  * shut_down — tear the window's connections down, in the order that
- * matters: persist the window size; drop the app-event listeners; cancel
+ * matters: persist the window's place and size (to the Compact size as
+ * well when it closes in Compact mode); drop the app-event listeners; cancel
  * any drag; close every editor (each flushes its pending save); shut the
  * panes down.  The listeners go BEFORE the editors because a closing
  * editor's final save fires the task event, which must not reach a window
