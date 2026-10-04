@@ -1,67 +1,117 @@
-# Tasks
+# Tasks AppKit
 
-Make lists of tasks. You can give them a due date, or if the task is too big, break it down into subtasks.
+An experimental macOS-only fork of [Tasks](https://github.com/IANatCAMBIO/Tasks):
+the same task manager — lists, tall task rows, a Kanban board, subtasks, due
+dates, recurring tasks, all in one SQLite file — with the GTK4 interface being
+replaced by a native AppKit one.
 
-Tasks is written in plain C with GTK4 and SQLite. It is a companion app to
-[Notes](https://github.com/IANatCAMBIO/Records), built the same way and **with the help
-of Claude Code for edits, testing, and code organization**.
-No Electron or interpreted code.
-Low resource usage, and runs on Linux and macOS.
+**Status: foundation only.**  The non-UI core is carried over and runs under
+the Cocoa run loop; the AppKit interface is a working skeleton with
+placeholder panes.  What works today:
 
-![Tasks](Screenshot.png)
+- the main window: toolbar, search field, sidebar (flat list of views and
+  lists), task list (tall rows, read-only), status bar, the standard menus;
+- task commands from the menus, the toolbar and the context menu: new,
+  delete, mark complete, favourite, high priority, move to list, clear
+  completed; show/hide completed; show/hide sidebar; list/board toggle;
+- recurring tasks roll forward while the app runs.
 
-TLDR; Your tasks live in a single SQLite file you can take anywhere.
-You organize them in a Library window — lists in the sidebar, tasks in a listview
-or on a Kanban board. 
-Add subtasks and a color-coded due date to each item, and set a repeat on
-the ones that come back round — daily, weekly, monthly or an interval of
-your own — and Tasks reopens them and moves the due date on as each one
-falls due.
+Not yet ported (placeholders): the Kanban board, the task editor, Settings,
+list groups and list editing in the sidebar, sorting and manual order in the
+list, Compact Controls, Open Database File.  The plan and the interfaces the
+UI is being built against are in [porting/INTERFACES.md](porting/INTERFACES.md).
 
-Want more detail?
+The code is plain C for the core (with GLib, to be removed in a later phase)
+and Objective-C written in a C style for the interface.  No Xcode project, no
+nibs.
 
-- **[User Guide](User_Guide.md)** — everything in depth: the library,
-  the task editor, settings and storage.
-- **[Internals](Internals.md)** — for the curious: code layout and the
-  database schema.
+## Requirements
 
-Google Tasks sync and the Notes action-item mirror, which earlier
-builds carried as plugins, are not in this build. They return as
-integrated features once the GTK4 port is complete.
+- macOS 14 or later to build against; the built app runs on the macOS version
+  it was built on, or later (see [BUILD.md](BUILD.md), "Platform notes").
+- Xcode Command Line Tools (`xcode-select --install`).
+- MacPorts with `glib2`, `sqlite3` and `pkgconf`:
 
-## Building
+  ```sh
+  sudo port install glib2 sqlite3 pkgconf
+  ```
 
-You'll need a C compiler, GTK4 (4.10+), SQLite3, and pkg-config.
-
-macOS (MacPorts):
-
-```sh
-sudo port install pkgconf gtk4 +quartz
-make
-make run
-```
-
-Debian/Ubuntu:
+## Build and try it
 
 ```sh
-sudo apt install build-essential pkg-config libgtk-4-dev libsqlite3-dev
-make
-make run
+make          # builds TasksAppKit.app
+make seed     # creates a test database in dev/data
+make run      # runs the app against dev/data
+make test     # core tests
 ```
 
-Tasks uses emoji extensively (list icons, sidebar labels, task
-markers). Debian ships the Noto Color Emoji font, but for Apple-style
-emoji install the Apple Color Emoji TTF:
+`make run` never touches real data: it points the app at `dev/data` inside
+the source tree.
+
+## Install
 
 ```sh
-curl -L "https://github.com/samuelngs/apple-emoji-ttf/releases/download/macos-26-20260722-484daf4e/fonts-apple-color-emoji.deb" \
-     -o fonts-apple-color-emoji.deb
-sudo dpkg -i fonts-apple-color-emoji.deb
+make install  # copies TasksAppKit.app to ~/Applications
 ```
 
-On macOS, `make app` wraps the binary into `dist/Tasks.app` (it still
-links against the MacPorts GTK libraries, so the bundle runs on the
-machine that built it).
+A running installed copy is asked to quit first and reopened afterwards.
 
-See [BUILD.md](BUILD.md) for the full build reference: all targets,
-install instructions, and platform notes.
+## Where the data lives
+
+Everything the app keeps is in one folder:
+
+```
+~/Library/Application Support/TasksAppKit/
+    tasks.db        the database
+    tasks.ini       the settings
+    backups/        rotating backups, when switched on
+```
+
+On first run the folder and an empty database are created.
+
+Setting the environment variable `TASKS_DATA_DIR` to another folder moves all
+of it there; that is what `make run`, `make seed` and `make test` do.
+
+**The fork does not share data with the GTK Tasks app** and cannot open that
+app's folder (`~/.local/share/tasks`): the database code refuses any path
+inside it.  This is deliberate while the fork is experimental.  To try the
+fork on a copy of real tasks, copy `tasks.db` yourself into another folder
+and point `TASKS_DATA_DIR` at it.
+
+## Configuration
+
+Settings are changed in the app and stored in `tasks.ini` (group `[tasks]`,
+written by the app; comments are not preserved).  The Settings window is not
+ported yet, so for now the few settings that have a control are the View-menu
+toggles.  Every key and its default is listed in `src/task_config.h`.
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| ⌘N | New Task (in the selected list) |
+| ⇧⌘N | New List… *(not ported yet)* |
+| ⌘I | Info… — open the task editor |
+| ⌘⌫ | Delete the selected task(s) |
+| ⌘F | Find — search the selected view |
+| ⌃⌘S | Hide / Show Sidebar |
+| ⇧⌘K | Kanban View / List View |
+| ⌘, | Settings… |
+| ⌘W | Close the window (closing the main window quits) |
+
+## Documents
+
+- [BUILD.md](BUILD.md) — toolchain, dependencies, targets, platform notes.
+- [porting/INTERFACES.md](porting/INTERFACES.md) — the contract for the UI
+  work: frozen headers, ownership rules, the command table, work packages.
+- [porting/GTK_PORTING_MAP.md](porting/GTK_PORTING_MAP.md) — what the GTK
+  app does, feature by feature.
+- [porting/FILES_PLAYBOOK.md](porting/FILES_PLAYBOOK.md) — AppKit
+  conventions and lessons from the Files app.
+- `porting/gtk_reference/` — the GTK sources and documents, kept as the
+  behavioural reference until the port is complete.  They describe the GTK
+  app, not this fork.
+
+## License
+
+BSD 3-Clause — see [LICENSE](LICENSE).
