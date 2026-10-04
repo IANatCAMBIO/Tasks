@@ -1,3 +1,9 @@
+> **GTK reference — not this fork.** This document describes the GTK4 app the
+> AppKit fork was made from.  It is kept as a behavioural reference only: paths,
+> build steps and data locations in it do NOT apply here, and it is stale in
+> the places listed in `porting/GTK_PORTING_MAP.md` §8.2.  The fork's own rules
+> are in `porting/INTERFACES.md`.
+
 # Tasks — project guide
 
 Task-list app in **plain C + GTK4 + SQLite**, the companion app to
