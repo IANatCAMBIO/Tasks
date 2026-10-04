@@ -19,7 +19,12 @@
  *
  * What it checks:
  *   - each window builds, lays out and renders (PNG snapshots, light and
- *     dark, list and board, an editor, Settings);
+ *     dark, list and board, Compact mode, an editor, Settings);
+ *   - the shell behaves: the window opens at its saved size, Compact mode
+ *     hides and restores what it should and remembers both sizes, a status
+ *     message fades and is superseded, Open Database File switches, refuses
+ *     and offers the default, and the menu bar reaches every command with
+ *     no shortcut used twice;
  *   - a closed window is RELEASED: the library window controller, its
  *     window and every pane are gone after shut_down, and the editor and
  *     Settings windows leave nothing behind in NSApp.windows;
@@ -50,9 +55,13 @@
 
 #import <Cocoa/Cocoa.h>
 
+#import "app_delegate.h"
 #import "editor_window.h"
 #import "library_window.h"
+#import "look.h"
+#import "row_text.h"
 #import "settings_window.h"
+#import "sidebar.h"
 #import "ui_util.h"
 
 #include "check.h"
@@ -410,6 +419,471 @@ other_windows(NSWindow *except)
     return windows;
 }
 
+/* ── The shell (work package 1) ──────────────────────────────────────── */
+
+/*
+ * is_light_under — whether a colour comes out light under an appearance.
+ *
+ * Inputs:
+ *   color — the colour
+ *   name  — the appearance to resolve it under
+ *
+ * Output:
+ *   YES when its red component there is above one half.
+ */
+static BOOL
+is_light_under(NSColor *color, NSAppearanceName name)
+{
+    __block BOOL light = NO;
+
+    [[NSAppearance appearanceNamed:name] performAsCurrentDrawingAppearance:^{
+        light = [color colorUsingColorSpace:NSColorSpace.sRGBColorSpace].redComponent > 0.5;
+    }];
+    return light;
+}
+
+/*
+ * check_row_text — the shared row renderer (row_text.h): every colour in a
+ * row's text, the dimmed lines' included, must follow the appearance it is
+ * DRAWN under, not the one it was built under.
+ *
+ * Inputs:
+ *   app — the application context
+ */
+static void
+check_row_text(TaskApp *app)
+{
+    task_pane_content_t *content = task_pane_collect(app, task_sel_default(), NULL);
+    __block int colors = 0, fixed = 0, dimmed = 0;
+
+    for (size_t i = 0; i < content->rows->count; i++) {
+        NSAttributedString *text = tasks_row_text(content->rows->rows[i], NO, TasksRowLayoutWrap);
+        [text enumerateAttribute:NSForegroundColorAttributeName
+                         inRange:NSMakeRange(0, text.length)
+                         options:0
+                      usingBlock:^(NSColor *color, NSRange range, BOOL *stop) {
+            colors++;
+            if (color != NSColor.labelColor) dimmed++;
+            if (is_light_under(color, NSAppearanceNameAqua) ||
+                !is_light_under(color, NSAppearanceNameDarkAqua)) fixed++;
+        }];
+    }
+    task_pane_content_free(content);
+    check(colors > 0 && dimmed > 0 && fixed == 0,
+          "row text: every colour, dimmed ones included, follows light and dark");
+}
+
+/* Long enough for a Compact toggle's slide and resize to finish. */
+#define SLIDE_SECONDS 0.8
+
+/*
+ * find_view — the first view of a class in a view tree, depth first.
+ *
+ * Inputs:
+ *   root — where to look (it is examined too)
+ *   kind — the class wanted
+ *
+ * Output:
+ *   the view, or nil.
+ */
+static NSView *
+find_view(NSView *root, Class kind)
+{
+    if ([root isKindOfClass:kind]) return root;
+    for (NSView *child in root.subviews) {
+        NSView *found = find_view(child, kind);
+        if (found) return found;
+    }
+    return nil;
+}
+
+/*
+ * find_text — the first text field in a view tree whose text contains a
+ * string.
+ *
+ * Inputs:
+ *   root — where to look
+ *   text — what its text must contain
+ *
+ * Output:
+ *   the field, or nil.
+ */
+static NSTextField *
+find_text(NSView *root, NSString *text)
+{
+    if ([root isKindOfClass:NSTextField.class] &&
+        [((NSTextField *)root).stringValue containsString:text]) {
+        return (NSTextField *)root;
+    }
+    for (NSView *child in root.subviews) {
+        NSTextField *found = find_text(child, text);
+        if (found) return found;
+    }
+    return nil;
+}
+
+/*
+ * content_is — whether a window's content area has a given size.
+ *
+ * Inputs:
+ *   window — the window
+ *   w_key  — config key of the expected width
+ *   h_key  — config key of the expected height
+ *
+ * Output:
+ *   YES when they match.
+ */
+static BOOL
+content_is(NSWindow *window, const char *w_key, const char *h_key)
+{
+    NSSize size = window.contentView.frame.size;
+
+    return size.width == task_config_get_int(w_key) && size.height == task_config_get_int(h_key);
+}
+
+/*
+ * search_field_of — the toolbar's search field.
+ *
+ * Inputs:
+ *   window — the library window
+ *
+ * Output:
+ *   the field, or nil when the toolbar has none.
+ */
+static NSSearchField *
+search_field_of(NSWindow *window)
+{
+    for (NSToolbarItem *item in window.toolbar.items) {
+        if ([item isKindOfClass:NSSearchToolbarItem.class]) {
+            return ((NSSearchToolbarItem *)item).searchField;
+        }
+    }
+    return nil;
+}
+
+/*
+ * check_compact — the window's saved size, and Compact mode there and back
+ * (porting/INTERFACES.md §11), including a close and reopen in Compact.
+ *
+ * Inputs:
+ *   app — the application context
+ *   dir — the snapshot folder
+ */
+static void
+check_compact(TaskApp *app, NSString *dir)
+{
+    Class plate_class = NSClassFromString(@"TasksFloatPlate");
+    __weak TasksLibraryWindow *weak_library = nil;
+
+    /* Start from full mode, whatever an earlier run left behind. */
+    task_config_set_bool(TASK_CFG_COMPACT, FALSE);
+    task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, FALSE);
+
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        NSWindow *window  = library.window;
+        NSView   *content = window.contentView;
+        [library showWindow:nil];
+        check_spin(0.2);
+
+        check(content_is(window, TASK_CFG_WIN_W, TASK_CFG_WIN_H),
+              "geometry: the window opens at its saved content size");
+        check(find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor,
+              "geometry: ... with the sidebar hidden when it was left hidden");
+        check(window.toolbar.visible && find_view(content, plate_class).hidden,
+              "compact: full mode shows the toolbar and no floating controls");
+
+        /* A search, so that entering Compact has one to clear. */
+        NSSearchField *field = search_field_of(window);
+        field.stringValue = @"the";
+        [field sendAction:field.action to:field.target];
+        check(library.search != NULL, "search: text in the field filters the pane");
+
+        NSSize full = content.frame.size;
+        NSRect before = window.frame;
+        [library perform_command:TasksCommandToggleCompact param:nil];
+        check_spin(SLIDE_SECONDS);
+
+        check(task_config_get_bool(TASK_CFG_COMPACT) && !window.toolbar.visible,
+              "compact: entering hides the toolbar");
+        check(find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor,
+              "compact: ... and the sidebar");
+        check(!find_view(content, plate_class).hiddenOrHasHiddenAncestor,
+              "compact: ... and shows the floating controls");
+        check(library.search == NULL && [field.stringValue isEqualToString:@""],
+              "compact: ... and clears the search");
+        check(content_is(window, TASK_CFG_COMPACT_W, TASK_CFG_COMPACT_H),
+              "compact: ... and resizes the window to the Compact size");
+        check(NSMinX(window.frame) == NSMinX(before) && NSMaxY(window.frame) == NSMaxY(before),
+              "compact: ... keeping its top-left corner");
+        check(task_config_get_int(TASK_CFG_COMPACT_PRE_W) == full.width &&
+              task_config_get_int(TASK_CFG_COMPACT_PRE_H) == full.height,
+              "compact: ... and remembers the size it had");
+        check([[library state_of_command:TasksCommandToggleCompact].title
+                  isEqualToString:@"Full Controls"] &&
+              ![library state_of_command:TasksCommandFind].enabled,
+              "compact: the command now offers Full Controls, and Find is unavailable");
+
+        [window update];        /* what AppKit does after every event */
+        NSArray<NSView *> *buttons = find_view(content, plate_class).subviews.firstObject.subviews;
+        check(buttons.count == 2 && ((NSButton *)buttons[0]).enabled &&
+              !((NSButton *)buttons[1]).enabled,
+              "compact: New Task is live and Delete Task is not, with nothing selected");
+
+        check(snapshot(window, dir, @"library-compact"), "snapshot: library, Compact");
+        window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        check(snapshot(window, dir, @"library-compact-dark"), "snapshot: library, Compact, dark");
+        window.appearance = nil;
+
+        /* Resize by hand, then close in Compact: that size is the one kept. */
+        [window setContentSize:NSMakeSize(640, 420)];
+        weak_library = library;
+        [library close];
+    }
+    check_spin(0.3);
+    check(weak_library == nil, "compact: the window is released after a toggle");
+    check(task_config_get_int(TASK_CFG_COMPACT_W) == 640 &&
+          task_config_get_int(TASK_CFG_COMPACT_H) == 420,
+          "compact: closing in Compact saves the Compact size");
+
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        NSWindow *window  = library.window;
+        NSView   *content = window.contentView;
+        [library showWindow:nil];
+        check_spin(0.2);
+
+        check(content_is(window, TASK_CFG_COMPACT_W, TASK_CFG_COMPACT_H) &&
+              !window.toolbar.visible &&
+              find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor &&
+              !find_view(content, plate_class).hiddenOrHasHiddenAncestor,
+              "compact: a launch in Compact opens Compact, at that size");
+
+        [library perform_command:TasksCommandToggleCompact param:nil];
+        check_spin(SLIDE_SECONDS);
+
+        check(!task_config_get_bool(TASK_CFG_COMPACT) && window.toolbar.visible &&
+              find_view(content, plate_class).hidden,
+              "compact: leaving shows the toolbar and hides the floating controls");
+        check(!find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor &&
+              task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE),
+              "compact: ... and brings the sidebar back, and records it");
+        check(content_is(window, TASK_CFG_COMPACT_PRE_W, TASK_CFG_COMPACT_PRE_H),
+              "compact: ... and restores the size the window had before");
+        [library close];
+    }
+    check_spin(0.2);
+}
+
+/*
+ * check_status_message — the status bar's event message: shown at once,
+ * faded out and cleared after its hold, and replaced at full strength by a
+ * message that arrives while it is fading.
+ *
+ * Inputs:
+ *   app — the application context
+ */
+static void
+check_status_message(TaskApp *app)
+{
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        NSView *content = library.window.contentView;
+        [library showWindow:nil];
+
+        task_app_status(app, "first message");
+        NSTextField *label = find_text(content, @"first message");
+        check(label != nil && label.alphaValue == 1.0, "status: a message shows at once");
+
+        /* Into the fade, then a second message. */
+        check_spin(tasks_look_status_hold + tasks_look_status_fade / 2.0);
+        check([label.stringValue isEqualToString:@"first message"],
+              "status: it is still there while it fades");
+        task_app_status(app, "second message");
+        check_spin(tasks_look_status_fade);
+        check([label.stringValue isEqualToString:@"second message"] && label.alphaValue == 1.0,
+              "status: a newer message replaces a fading one, at full strength");
+
+        check_spin(tasks_look_status_hold + 0.5);
+        check([label.stringValue isEqualToString:@""] && label.alphaValue == 0.0,
+              "status: a message fades out and is cleared after its hold");
+        [library close];
+    }
+    check_spin(0.2);
+}
+
+/*
+ * end_sheet — dismiss the sheet on a window as one of its buttons would.
+ *
+ * Inputs:
+ *   window   — the window
+ *   response — the button's response code
+ */
+static void
+end_sheet(NSWindow *window, NSModalResponse response)
+{
+    [window endSheet:window.attachedSheet returnCode:response];
+    check_spin(0.3);
+}
+
+/*
+ * secondary_windows — how many windows are open besides the library window
+ * and any sheet: the task editors and Settings.
+ *
+ * Inputs:
+ *   library — the library window
+ *
+ * Output:
+ *   the count.
+ */
+static NSUInteger
+secondary_windows(NSWindow *library)
+{
+    NSUInteger count = 0;
+
+    for (NSWindow *window in NSApp.windows) {
+        if (window != library && window.visible && !window.sheet) count++;
+    }
+    return count;
+}
+
+/*
+ * check_open_database — File > Open Database File..., from the picked path
+ * onwards: a switch, the default question, the refusals, and back.  The
+ * live data directory is a FAKE one inside the sandbox ($XDG_DATA_HOME).
+ *
+ * Inputs:
+ *   app — the application context, the sandbox database open
+ */
+static void
+check_open_database(TaskApp *app)
+{
+    NSFileManager *files   = NSFileManager.defaultManager;
+    NSString      *sandbox = tasks_string(getenv(TASK_DATA_DIR_ENV));
+    NSString      *home    = tasks_string(app->db->path);
+    NSString      *folder  = [sandbox stringByAppendingPathComponent:@"ui-check"];
+    NSString      *other   = [folder stringByAppendingPathComponent:@TASK_DB_FILENAME];
+    NSString      *junk    = [folder stringByAppendingPathComponent:@"junk.db"];
+    NSString      *live    = [folder stringByAppendingPathComponent:@"xdg/tasks/tasks.db"];
+
+    /* A second database holding one task; a file that is not a database. */
+    [files removeItemAtPath:folder error:NULL];
+    [files createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:NULL];
+    TaskDatabase *db = task_db_open(other.fileSystemRepresentation, NULL);
+    task_db_task_create(db, task_db_list_create(db, "Elsewhere", ""), 0, "The only task");
+    task_db_close(db);
+    [@"not a database" writeToFile:junk atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        NSWindow *window = library.window;
+        [library showWindow:nil];
+        tasks_editor_open(app, first_task_ids(app, 1).firstObject.longLongValue);
+        check_spin(0.2);
+
+        [library open_database:junk];
+        check_spin(0.3);
+        check(window.attachedSheet != nil && [tasks_string(app->db->path) isEqualToString:home],
+              "open database: a file that is not a database is refused with an alert");
+        check(secondary_windows(window) == 1, "open database: ... and the editors stay open");
+        end_sheet(window, NSAlertFirstButtonReturn);
+
+        setenv("XDG_DATA_HOME", [folder stringByAppendingPathComponent:@"xdg"].fileSystemRepresentation, 1);
+        [library open_database:live];
+        check_spin(0.3);
+        check(find_text(window.attachedSheet.contentView, @"refused") != nil &&
+              [tasks_string(app->db->path) isEqualToString:home],
+              "open database: a path in the live data directory shows the core's refusal");
+        end_sheet(window, NSAlertFirstButtonReturn);
+        unsetenv("XDG_DATA_HOME");
+
+        [library open_database:other];
+        check_spin(0.3);
+        check([tasks_string(app->db->path) isEqualToString:other] && secondary_windows(window) == 0,
+              "open database: a sound database is switched to, the editors closed first");
+        check(find_text(window.contentView, @"All Tasks - 1 task") != nil,
+              "open database: ... and the panes show its tasks");
+        check(find_text(window.attachedSheet.contentView, @"default database") != nil,
+              "open database: ... and a tasks.db is offered as the default");
+        end_sheet(window, NSAlertSecondButtonReturn);
+        gchar *db_dir = task_config_get(TASK_CFG_DB_DIR);
+        check(db_dir == NULL, "open database: declining leaves the default alone");
+        g_free(db_dir);
+
+        [library open_database:other];
+        check_spin(0.3);
+        check(window.attachedSheet == nil && find_text(window.contentView, @"already open") != nil,
+              "open database: the open database again only says so");
+
+        [library open_database:home];
+        check_spin(0.3);
+        check([tasks_string(app->db->path) isEqualToString:home] && window.attachedSheet == nil,
+              "open database: back to the default database, with no question to ask");
+        [library close];
+    }
+    check_spin(0.2);
+    [files removeItemAtPath:folder error:NULL];
+}
+
+/*
+ * collect_menu — note every command a menu reaches and every shortcut it
+ * uses, submenus included.  A "Move to" submenu is empty until it opens, so
+ * it counts as reaching the command its identifier names.
+ *
+ * Inputs:
+ *   menu      — the menu to walk
+ *   commands  — receives the commands found
+ *   shortcuts — receives one string per shortcut found
+ *   repeats   — incremented for each shortcut already in `shortcuts`
+ */
+static void
+collect_menu(NSMenu *menu, NSMutableIndexSet *commands, NSMutableSet<NSString *> *shortcuts,
+             int *repeats)
+{
+    const tasks_command_spec_t *filled = tasks_command_with_ident(menu.identifier);
+    if (filled) [commands addIndex:(NSUInteger)filled->command];
+
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.action == @selector(run_command:)) [commands addIndex:(NSUInteger)item.tag];
+        if (item.keyEquivalent.length > 0) {
+            NSString *shortcut = [NSString stringWithFormat:@"%lu+%@",
+                (unsigned long)item.keyEquivalentModifierMask, item.keyEquivalent];
+            if ([shortcuts containsObject:shortcut]) (*repeats)++;
+            [shortcuts addObject:shortcut];
+        }
+        if (item.submenu) collect_menu(item.submenu, commands, shortcuts, repeats);
+    }
+}
+
+/*
+ * check_menu_bar — the menu bar the app delegate builds: every command in
+ * the command table can be reached from it, and no shortcut is used twice.
+ */
+static void
+check_menu_bar(void)
+{
+    TasksAppDelegate *delegate = [[TasksAppDelegate alloc] init];
+    [delegate build_menu_bar];
+
+    NSMutableIndexSet        *commands  = [NSMutableIndexSet indexSet];
+    NSMutableSet<NSString *> *shortcuts = [NSMutableSet set];
+    int repeats = 0, missing = 0, total = 0;
+    collect_menu(NSApp.mainMenu, commands, shortcuts, &repeats);
+
+    for (NSInteger command = TasksCommandAbout; tasks_command_spec(command) != NULL; command++) {
+        total++;
+        if (![commands containsIndex:(NSUInteger)command]) {
+            printf("     not in the menu bar: %s\n", tasks_command_spec(command)->title.UTF8String);
+            missing++;
+        }
+    }
+    check(total > 0 && missing == 0, "menus: every command is in the menu bar");
+    check(repeats == 0, "menus: no shortcut is used twice");
+    check(NSApp.mainMenu.numberOfItems == 6 && NSApp.windowsMenu != nil && NSApp.helpMenu != nil,
+          "menus: App, File, Edit, View, Window and Help");
+    NSApp.mainMenu = nil;
+}
+
 /*
  * check_memory_and_ownership — build the library window, use it for two
  * runs of cycles (the heap must not grow across the second), then close it
@@ -523,8 +997,16 @@ main(int argc, const char *argv[])
             return 2;
         }
 
+        /* One call per group of checks; each builds and closes its own
+         * windows, so a package can add its own here without touching the
+         * others. */
         snapshot_windows(app, dir);
         check_utilities(app);
+        check_row_text(app);
+        check_compact(app, dir);
+        check_status_message(app);
+        check_open_database(app);
+        check_menu_bar();
         check_memory_and_ownership(app);
 
         if (argc > 2) {
