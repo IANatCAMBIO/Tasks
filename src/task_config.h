@@ -66,6 +66,9 @@
 #define TASK_CFG_COL_DUE             "col_due_visible"       /* bool, 1 */
 #define TASK_CFG_COL_COMPLETED       "col_completed_visible" /* bool, 1 */
 
+/* Task-list header sort (written by the list; spelling in task_sort.h) */
+#define TASK_CFG_LIST_SORT           "task_list_sort"        /* column names, e.g. "due,-title"; none = unsorted */
+
 /* Per-view order keys are built in task_order.c (see task_order.h):
  * "<family>_list_<id>", "<family>_group_<id>", "<family>_<view id>", with
  * these two families.  Value: task ids, comma separated.  No default. */
