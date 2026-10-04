@@ -405,13 +405,27 @@ db_check_pragmas(sqlite3 *sq, gboolean *ran, gchar **detail)
     "refused: %s is inside the live Tasks data directory, which this " \
     "experimental build never opens"
 
-/* task_db_verify_file() — the same checks on a file nothing has open
- * (see db.h).                                                             */
-gboolean
-task_db_verify_file(const gchar *path, gchar **detail)
+/* ---------------------------------------------------------------------------
+ * verify_file() — the checks on a file nothing has open, over a separate
+ * read-only connection: the body shared by task_db_verify_file and
+ * task_db_health_check_file, which differ only in what they report.
+ *
+ * Inputs:
+ *   path   — the database file
+ *   ran    — optional out: TRUE when both PRAGMAs actually executed; FALSE
+ *            when the file was refused or could not be opened
+ *   detail — optional out: what went wrong (g_free), NULL when sound
+ *
+ * Output:
+ *   TRUE only when both checks ran and both passed.
+ * ------------------------------------------------------------------------- */
+static gboolean
+verify_file(const gchar *path, gboolean *ran, gchar **detail)
 {
     if (detail != NULL)
         *detail = NULL;
+    if (ran != NULL)
+        *ran = FALSE;
     if (task_path_is_live_data(path)) {
         if (detail != NULL)
             *detail = g_strdup_printf(LIVE_DATA_REFUSAL, path);
@@ -430,9 +444,16 @@ task_db_verify_file(const gchar *path, gchar **detail)
     }
     g_free(uri);
 
-    gboolean ok = db_check_pragmas(sq, NULL, detail);
+    gboolean ok = db_check_pragmas(sq, ran, detail);
     sqlite3_close(sq);
     return ok;
+}
+
+/* task_db_verify_file() — see db.h.                                        */
+gboolean
+task_db_verify_file(const gchar *path, gchar **detail)
+{
+    return verify_file(path, NULL, detail);
 }
 
 /* ---------------------------------------------------------------------------
@@ -478,16 +499,30 @@ task_db_file_sha256(const gchar *path)
 gboolean
 task_db_health_check(TaskDatabase *db)
 {
-    gboolean ran = FALSE;            /* did both PRAGMAs execute?           */
-    gchar   *detail = NULL;          /* sqlite's words on failure           */
-    gboolean ok = db_check_pragmas(db->sq, &ran, &detail);
+    TaskDbHealth verdict = { 0 };
 
+    verdict.ok   = db_check_pragmas(db->sq, &verdict.ran, &verdict.detail);
+    verdict.when = g_get_real_time() / G_USEC_PER_SEC;
+    task_db_health_record(db, &verdict);
+    return db->health.ok;
+}
+
+/* task_db_health_check_file() — see db.h.                                  */
+gboolean
+task_db_health_check_file(const gchar *path, TaskDbHealth *out)
+{
+    out->ok   = verify_file(path, &out->ran, &out->detail);
+    out->when = g_get_real_time() / G_USEC_PER_SEC;
+    return out->ok;
+}
+
+/* task_db_health_record() — see db.h.                                      */
+void
+task_db_health_record(TaskDatabase *db, TaskDbHealth *verdict)
+{
     g_free(db->health.detail);
-    db->health.ok     = ok;
-    db->health.ran    = ran;
-    db->health.detail = detail;      /* handed over                         */
-    db->health.when   = g_get_real_time() / G_USEC_PER_SEC;
-    return ok;
+    db->health      = *verdict;      /* the detail changes hands            */
+    verdict->detail = NULL;
 }
 
 const TaskDbHealth *
