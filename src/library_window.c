@@ -616,11 +616,9 @@ selected_task_ids(TaskLibrary *lw)
  *
  * Compact hides the whole top toolbar (and its rule) and shows the
  * floating New/Delete Task pair pinned to the bottom-right of the task
- * area instead.  It does NOT touch the lists pane: the sidebar follows
- * the user's own `sidebar_visible` preference in both modes, so entering
- * compact no longer makes an open sidebar vanish (it used to force-hide
- * it, which read as compact silently overriding the toggle — and the
- * Show Sidebar override it left behind was the only way back).
+ * area instead.  It also hides the sidebar; on exit, the sidebar is
+ * restored to the state it had before compact mode was entered
+ * (`pre_compact_sidebar`, falling back to `sidebar_visible`).
  *
  * gtk_widget_show() — never show_all() — on the toolbar: its children
  * carry their own visibility (a hidden Sync button must stay hidden).
@@ -638,8 +636,15 @@ compact_layout_apply(TaskLibrary *lw)
     gtk_widget_set_visible(lw->toolbar,      !compact);
     gtk_widget_set_visible(lw->toolbar_rule, !compact);
     gtk_widget_set_visible(lw->float_bar,     compact);
-    gtk_widget_set_visible(lw->sidebar_box,
-        task_app_config_get_bool("sidebar_visible", FALSE));
+
+    if (compact) {
+        /* Compact: always hide the sidebar.                                 */
+        gtk_widget_set_visible(lw->sidebar_box, FALSE);
+    } else {
+        /* Full: always show the sidebar.                                    */
+        gtk_widget_set_visible(lw->sidebar_box, TRUE);
+        task_app_config_set("sidebar_visible", "1");
+    }
     lib_sidebar_ui_sync(lw);
 
     lib_menu_pair_sync(lw, "controls-full", "controls-compact", compact);
@@ -1182,17 +1187,107 @@ on_toggle_kanban(TaskLibrary *lw)
     lib_refresh_tasks(lw);
 }
 
+/* ---------------------------------------------------------------------------
+ * compact_resize_fin() / compact_resize_to() — force the library window to
+ * a specific pixel size.
+ *
+ * GTK4's gtk_window_set_default_size only applies before the window is
+ * committed by the WM; it cannot shrink a shown window.  The reliable path
+ * for both shrink and grow is:
+ *   1. set_size_request(tw, th) — minimum = target
+ *   2. set_resizable(FALSE)     — maximum = minimum = target (forces WM)
+ *   3. on the next idle tick: restore resizable, clear size_request, then
+ *      set_default_size so the user can resize freely from the new baseline.
+ * ------------------------------------------------------------------------- */
+typedef struct { GtkWindow *win; gint tw; gint th; } ResizeFin;
+
+static gboolean
+compact_resize_fin(gpointer data)
+{
+    ResizeFin *rf = data;
+    gtk_window_set_resizable(rf->win, TRUE);
+    gtk_widget_set_size_request(GTK_WIDGET(rf->win), -1, -1);
+    gtk_window_set_default_size(rf->win, rf->tw, rf->th);
+    g_free(rf);
+    return G_SOURCE_REMOVE;
+}
+
+static void
+compact_resize_to(TaskLibrary *lw, gint tw, gint th)
+{
+    if (tw <= 0 || th <= 0)
+        return;
+    ResizeFin *rf  = g_new(ResizeFin, 1);
+    rf->win = GTK_WINDOW(lw->window);
+    rf->tw  = tw;
+    rf->th  = th;
+    gtk_widget_set_size_request(GTK_WIDGET(lw->window), tw, th);
+    gtk_window_set_resizable(GTK_WINDOW(lw->window), FALSE);
+    g_idle_add(compact_resize_fin, rf);
+}
+
 /* on_menu_toggle_compact() — View → Compact Controls / Full Controls:
  * FLIP the persisted flag and re-apply the layout (toolbar out, floating
  * New/Delete pair in).  Flips rather than reading the widget: the label
  * names the controls a click switches TO, so the item carries no state.
- * compact_layout_apply re-labels it.                                       */
+ * compact_layout_apply re-labels it.
+ *
+ * Size pairs managed here:
+ *   compact_pre_w / compact_pre_h — full-mode size, saved on entry to compact.
+ *   compact_w     / compact_h     — compact-mode size, saved on exit.
+ * win_w/win_h are not touched; they remain the startup-restore size written
+ * at close time.  On first toggle the target pair is unset, so no resize
+ * happens; after one complete round-trip both pairs are set and subsequent
+ * toggles snap the window correctly.                                        */
 static void
 on_menu_toggle_compact(TaskLibrary *lw)
 {
-    task_app_config_set("compact_layout",
-        task_app_config_get_bool("compact_layout", FALSE) ? "0" : "1");
+    gboolean going_compact = !task_app_config_get_bool("compact_layout", FALSE);
+    gint cur_w = gtk_widget_get_width(GTK_WIDGET(lw->window));
+    gint cur_h = gtk_widget_get_height(GTK_WIDGET(lw->window));
+    gchar *v;
+    gint tw = 0, th = 0;
+
+    if (going_compact) {
+        /* Save full-mode size as the restore point for when compact exits.  */
+        if (cur_w > 0) {
+            v = g_strdup_printf("%d", cur_w);
+            task_app_config_set("compact_pre_w", v);
+            g_free(v);
+            v = g_strdup_printf("%d", cur_h);
+            task_app_config_set("compact_pre_h", v);
+            g_free(v);
+        }
+        /* Resize target: the previously-saved compact size, else the default. */
+        gchar *cw = task_app_config_get("compact_w");
+        gchar *ch = task_app_config_get("compact_h");
+        tw = cw != NULL ? atoi(cw) : 600;
+        th = ch != NULL ? atoi(ch) : 500;
+        g_free(cw);
+        g_free(ch);
+    } else {
+        /* Save compact size so the next entry to compact restores it.       */
+        if (cur_w > 0) {
+            v = g_strdup_printf("%d", cur_w);
+            task_app_config_set("compact_w", v);
+            g_free(v);
+            v = g_strdup_printf("%d", cur_h);
+            task_app_config_set("compact_h", v);
+            g_free(v);
+        }
+        /* Resize target: the full-mode size saved when compact was entered,
+         * else the same default the startup code uses.                      */
+        gchar *pw = task_app_config_get("compact_pre_w");
+        gchar *ph = task_app_config_get("compact_pre_h");
+        tw = pw != NULL ? atoi(pw) : 980;
+        th = ph != NULL ? atoi(ph) : 640;
+        g_free(pw);
+        g_free(ph);
+    }
+
+    task_app_config_set("compact_layout", going_compact ? "1" : "0");
     compact_layout_apply(lw);
+    compact_resize_to(lw, tw, th);
 }
 
 /* on_menu_about() — File → About: the standard about dialog.  GTK4 has no
@@ -1349,7 +1444,9 @@ on_library_destroy(GtkWidget *w, gpointer data)
 {
     (void)w;
     TaskLibrary *lw = data;
-    /* The closing size becomes the next launch's window size.              */
+    /* The closing size is always written to win_w/win_h (startup restore).
+     * When closing in compact mode, it is also written to compact_w/compact_h
+     * so the next entry into compact restores the right size.               */
     if (lw->win_w > 0 && lw->win_h > 0) {
         gchar *v = g_strdup_printf("%d", lw->win_w);
         task_app_config_set("win_w", v);
@@ -1357,6 +1454,14 @@ on_library_destroy(GtkWidget *w, gpointer data)
         v = g_strdup_printf("%d", lw->win_h);
         task_app_config_set("win_h", v);
         g_free(v);
+        if (task_app_config_get_bool("compact_layout", FALSE)) {
+            v = g_strdup_printf("%d", lw->win_w);
+            task_app_config_set("compact_w", v);
+            g_free(v);
+            v = g_strdup_printf("%d", lw->win_h);
+            task_app_config_set("compact_h", v);
+            g_free(v);
+        }
     }
     /* Likewise the divider: a sidebar narrowed by hand has to come back
      * that width, or every launch undoes the adjustment.  Written here,
@@ -1684,15 +1789,28 @@ task_library_window_new(TaskApp *app)
     lw->window = gtk_application_window_new(app->gtk_app);
     gtk_window_set_title(GTK_WINDOW(lw->window), "Tasks");
     library_install_actions(lw);     /* before anything can name one       */
-    /* The last session's closing size (win_w/win_h), else the default.     */
-    gchar *ww = task_app_config_get("win_w");
-    gchar *wh = task_app_config_get("win_h");
-    gint w = ww != NULL ? atoi(ww) : 0;
-    gint hgt = wh != NULL ? atoi(wh) : 0;
-    gtk_window_set_default_size(GTK_WINDOW(lw->window),
-                                w > 0 ? w : 980, hgt > 0 ? hgt : 640);
-    g_free(ww);
-    g_free(wh);
+    /* The last session's closing size.  When compact mode is active, restore
+     * the compact window's size (compact_w/compact_h); otherwise the full
+     * window size (win_w/win_h).  Falls back to 980×640.                    */
+    {
+        gboolean in_compact = task_app_config_get_bool("compact_layout", FALSE);
+        const gchar *wkey = in_compact ? "compact_w" : "win_w";
+        const gchar *hkey = in_compact ? "compact_h" : "win_h";
+        gchar *ww = task_app_config_get(wkey);
+        gchar *wh = task_app_config_get(hkey);
+        /* Fall back to win_w/win_h if compact keys are not yet set.         */
+        if (in_compact && (ww == NULL || wh == NULL)) {
+            g_free(ww); g_free(wh);
+            ww = task_app_config_get("win_w");
+            wh = task_app_config_get("win_h");
+        }
+        gint w = ww != NULL ? atoi(ww) : 0;
+        gint hgt = wh != NULL ? atoi(wh) : 0;
+        gtk_window_set_default_size(GTK_WINDOW(lw->window),
+                                    w > 0 ? w : 980, hgt > 0 ? hgt : 640);
+        g_free(ww);
+        g_free(wh);
+    }
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
     /* --- Menubar ---------------------------------------------------------- */
