@@ -62,6 +62,7 @@
 #import "row_text.h"
 #import "settings_window.h"
 #import "sidebar.h"
+#import "task_list.h"
 #import "ui_util.h"
 
 #include "check.h"
@@ -1255,6 +1256,220 @@ check_sidebar(TaskApp *app, NSString *dir)
 }
 
 /*
+ * check_task_list — the task list in the library window: with a few
+ * thousand generated rows (a large real database) for speed, row heights,
+ * sorting and selection, then with the sandbox's own tasks for the
+ * checkbox and the Return key.  It knows the list from outside only: the
+ * pane and its table are found in the view tree, cells by column
+ * identifier.  Everything it changes (settings, a task's status) is put
+ * back.
+ *
+ * Inputs:
+ *   app — the application context
+ *   dir — the snapshot folder
+ */
+static void
+check_task_list(TaskApp *app, NSString *dir)
+{
+    enum { many = 5000 };
+
+    /* Rows for `many` tasks that exist only in memory: every third has a
+     * note long enough to wrap, every fifth is Done. */
+    task_row_list_t *(^generate)(void) = ^{
+        task_row_list_t *rows = calloc(1, sizeof *rows);
+        TaskRowCtx ctx;
+        gint64 today, tomorrow;
+
+        task_day_bounds(0, &today, &tomorrow);
+        task_row_ctx_init(app, &ctx, FALSE);
+        rows->rows  = calloc(many, sizeof *rows->rows);
+        rows->count = many;
+        for (int i = 0; i < many; i++) {
+            char title[64];
+            snprintf(title, sizeof title, "Generated task %04d", (i * 7919) % many);
+            Task task = {
+                .id = 1000000 + i, .title = title, .priority = i % 7 == 0,
+                .notes = i % 3 == 0 ? "A note long enough that it has to wrap onto a second "
+                                      "line when the window is made narrow, as notes often are."
+                                    : "",
+                .due = i % 4 == 0 ? 0 : today + (i % 9 - 4) * 86400,
+                .due_time = TASK_DUE_TIME_DEFAULT,
+                .status = i % 5 == 0 ? TASK_STATUS_DONE : TASK_STATUS_NEW,
+                .completed_at = i % 5 == 0 ? today : 0,
+            };
+            rows->rows[i] = task_row_describe(&task, &ctx);
+        }
+        task_row_ctx_clear(&ctx);
+        return rows;
+    };
+
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        NSWindow *window = library.window;
+        [library showWindow:nil];
+
+        /* The list pane, wherever the window keeps it. */
+        TasksTaskList *list = nil;
+        NSMutableArray<NSView *> *pending = [NSMutableArray arrayWithObject:window.contentView];
+        while (list == nil && pending.count > 0) {
+            NSView *view = pending.firstObject;
+            [pending removeObjectAtIndex:0];
+            [pending addObjectsFromArray:view.subviews];
+            if ([view isKindOfClass:TasksTaskList.class]) list = (TasksTaskList *)view;
+        }
+        NSScrollView *scroll = list.subviews.firstObject;
+        NSTableView  *table  = scroll.documentView;
+        NSInteger task_col   = [table columnWithIdentifier:@"task"];
+
+        /* Whether every row on screen is exactly as tall as its text needs
+         * at the width its cell really has. */
+        BOOL (^heights_exact)(void) = ^{
+            NSRange shown = [table rowsInRect:table.visibleRect];
+            BOOL    exact = shown.length > 0;
+
+            for (NSUInteger row = shown.location; row < NSMaxRange(shown); row++) {
+                NSView *cell = [table viewAtColumn:task_col row:(NSInteger)row makeIfNecessary:NO];
+                NSAttributedString *text = [cell valueForKey:@"text"];
+                CGFloat want = tasks_row_text_height(
+                    text, NSWidth(cell.bounds) - 2.0 * tasks_look_row_pad_h) +
+                    2.0 * tasks_look_row_pad_v;
+                if (cell == nil || fabs(NSHeight([table rectOfRow:(NSInteger)row]) - want) > 0.01) {
+                    exact = NO;
+                }
+            }
+            return exact;
+        };
+        BOOL (^columns_fit)(void) = ^{
+            return (BOOL)(NSWidth(table.frame) <= scroll.contentSize.width + 0.5);
+        };
+        /* Lay out and draw, as a turn of the run loop would; timed. */
+        double (^settle)(CFAbsoluteTime) = ^(CFAbsoluteTime began) {
+            [window layoutIfNeeded];
+            [window display];
+            double took = CFAbsoluteTimeGetCurrent() - began;
+            check_spin(0.05);
+            return took;
+        };
+
+        CFAbsoluteTime began = CFAbsoluteTimeGetCurrent();
+        [list show_rows:generate()];
+        double first_show = settle(began);
+        check(table.numberOfRows == many, "list: thousands of rows are shown");
+        check(heights_exact(), "list: rows on screen are as tall as their text");
+        check(columns_fit(), "list: the columns fill the pane without overflowing it");
+        check(snapshot(window, dir, @"task-list-many"), "snapshot: task list, 5000 rows");
+
+        /* A refresh in the middle of the list keeps its place. */
+        [table scrollRowToVisible:many / 2];
+        settle(0);
+        check(heights_exact(), "list: rows scrolled to are as tall as their text");
+        CGFloat place = NSMinY(table.visibleRect);
+        began = CFAbsoluteTimeGetCurrent();
+        [list show_rows:generate()];
+        double refresh = settle(began);
+        check(fabs(NSMinY(table.visibleRect) - place) < 0.5, "list: a refresh keeps the scroll position");
+
+        NSSize full_size = window.contentView.frame.size;
+        began = CFAbsoluteTimeGetCurrent();
+        [window setContentSize:NSMakeSize(tasks_look_window_min_w + 100.0, full_size.height)];
+        double resize = settle(began);
+        check(heights_exact(), "list: rows are re-measured when the pane gets narrower");
+        check(columns_fit(), "list: ... and the columns still fit");
+        check(snapshot(window, dir, @"task-list-narrow"), "snapshot: task list, narrow");
+        [window setContentSize:full_size];
+        printf("     %d rows: first show %.0f ms, refresh %.0f ms, resize %.0f ms\n", many,
+               first_show * 1000.0, refresh * 1000.0, resize * 1000.0);
+        check(first_show < 0.5 && refresh < 0.5 && resize < 0.5,
+              "list: showing, refreshing and resizing thousands of rows is quick");
+
+        /* Header sort: by title, descending.  The selection follows its
+         * tasks, and the sort is remembered. */
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(3, 2)]
+           byExtendingSelection:NO];
+        NSSet<NSNumber *> *chosen = [NSSet setWithArray:[list selected_task_ids]];
+        table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"title" ascending:NO]];
+        settle(0);
+        check([chosen isEqualToSet:[NSSet setWithArray:[list selected_task_ids]]] && chosen.count == 2,
+              "list: sorting keeps the same tasks selected");
+        int64_t last_title = 0;
+        for (int i = 0; i < many; i++) {
+            if ((i * 7919) % many == many - 1) last_title = 1000000 + i;
+        }
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+        check([list selected_task_ids].firstObject.longLongValue == last_title,
+              "list: a header sort orders the rows");
+        gchar *saved = task_config_get(TASK_CFG_LIST_SORT);
+        check(saved != NULL && strcmp(saved, "-title") == 0, "list: the header sort is remembered");
+        g_free(saved);
+
+        /* A column shown from the header menu's command. */
+        [table deselectAll:nil];
+        [table scrollRowToVisible:0];
+        [library perform_command:TasksCommandColumnStatus param:nil];
+        settle(0);
+        check(![table tableColumnWithIdentifier:@"status"].hidden && columns_fit() && heights_exact(),
+              "list: a column command shows its column and the rest make room");
+        check(snapshot(window, dir, @"task-list-sorted"), "snapshot: task list, sorted, Status shown");
+        [library perform_command:TasksCommandColumnStatus param:nil];
+
+        /* Manual sorting: the handle shows and the header sort is dropped. */
+        [library perform_command:TasksCommandToggleSort param:nil];
+        [list show_rows:generate()];
+        settle(0);
+        check(library.manual_sort && ![table tableColumnWithIdentifier:@"handle"].hidden &&
+              table.sortDescriptors.count == 0 && task_config_get(TASK_CFG_LIST_SORT) == NULL,
+              "list: manual sorting shows the handle and drops the header sort");
+        window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        check(snapshot(window, dir, @"task-list-manual-dark"), "snapshot: task list, manual, dark");
+        window.appearance = nil;
+        /* Back to automatic: the window refreshes with the sandbox's tasks. */
+        [library perform_command:TasksCommandToggleSort param:nil];
+        settle(0);
+        check([table tableColumnWithIdentifier:@"handle"].hidden,
+              "list: automatic sorting hides the handle");
+
+        /* Tick the first task's checkbox while sorted by Done, so that the
+         * row has to move as well as change. */
+        table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"done" ascending:YES]];
+        settle(0);
+        NSInteger rows_shown = table.numberOfRows;
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)]
+           byExtendingSelection:NO];
+        NSArray<NSNumber *> *picked = [list selected_task_ids];
+        Task *before = task_db_task_get(app->db, picked[0].longLongValue);
+        NSButton *box = [table viewAtColumn:[table columnWithIdentifier:@"done"] row:0
+                            makeIfNecessary:YES].subviews.firstObject;
+        [box performClick:nil];
+        settle(0);
+        Task *after = task_db_task_get(app->db, picked[0].longLongValue);
+        check(before->status != TASK_STATUS_DONE && after->status == TASK_STATUS_DONE,
+              "list: the checkbox completes its task");
+        NSArray<NSNumber *> *still = [list selected_task_ids];
+        check(still.count == 2 && [still.firstObject isEqual:picked[1]] &&
+              [still.lastObject isEqual:picked[0]] && table.numberOfRows == rows_shown,
+              "list: ... in place: its row moves to the Done rows, still selected");
+        check(heights_exact(), "list: ... and the rows are still as tall as their text");
+        task_db_task_set_status(app->db, before->id, before->status);
+        task_free(before);
+        task_free(after);
+        table.sortDescriptors = @[];
+
+        /* Return opens the editor of the one selected task. */
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:1] byExtendingSelection:NO];
+        NSUInteger open_before = visible_windows();
+        [list keyDown:[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+                                  modifierFlags:0 timestamp:0 windowNumber:window.windowNumber
+                                        context:nil characters:@"\r"
+                    charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36]];
+        check_spin(0.05);
+        check(visible_windows() == open_before + 1, "list: Return opens the selected task's editor");
+
+        [library close];
+    }
+    check_spin(0.2);
+}
+
+/*
  * main — run the checks.
  *
  * Inputs:
@@ -1314,6 +1529,7 @@ main(int argc, const char *argv[])
         check_open_database(app);
         check_menu_bar();
         check_sidebar(app, dir);
+        check_task_list(app, dir);
         check_memory_and_ownership(app);
 
         if (argc > 2) {
