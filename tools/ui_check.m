@@ -59,6 +59,7 @@
 
 #include "core_views.h"
 #include "task_config.h"
+#include "task_order.h"
 #include "task_paths.h"
 
 #include <libproc.h>
@@ -471,6 +472,244 @@ check_memory_and_ownership(TaskApp *app)
 }
 
 /*
+ * check_kanban — the Kanban board, exercised without a real mouse: the
+ * cards a view should show, the selection rules (mouse events handed
+ * straight to the cards), the refresh that keeps every card's view and the
+ * scroll position, a saved order moving the same views, the Done lane's cap
+ * and link, the shadow setting, double-click, resizing, and release on
+ * close.  Snapshots: kanban-selected, kanban-dark, kanban-flat,
+ * kanban-flat-dark, kanban-done-link, kanban-empty.
+ *
+ * NOT covered here: the drag itself.  A dragging session needs a real
+ * pointer; what a drop DOES is tested in tests/board_test.c.
+ *
+ * The Done link needs more completed tasks than the seed has, so six are
+ * created and deleted again (tombstoned: no view shows them afterwards).
+ *
+ * Inputs:
+ *   app — the application context
+ *   dir — the snapshot folder
+ */
+static void
+check_kanban(TaskApp *app, NSString *dir)
+{
+    __weak NSView *weak_card = nil;
+
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        NSWindow *window     = library.window;
+        Class     card_class = NSClassFromString(@"TasksKanbanCard");
+        BOOL      was_kanban = library.kanban_on;
+        BOOL      was_shadow = task_config_get_bool(TASK_CFG_KANBAN_SHADOW);
+        NSRect    was_frame  = window.frame;
+
+        [library showWindow:nil];
+        if (!was_kanban) [library perform_command:TasksCommandTogglePane param:nil];
+        [window layoutIfNeeded];
+
+        /* Every view of a class under the window, in board order: lane by
+         * lane, top to bottom. */
+        NSArray<NSView *> *(^views_of)(Class) = ^(Class wanted) {
+            NSMutableArray<NSView *> *found = [NSMutableArray array];
+            NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:window.contentView];
+            while (queue.count > 0) {
+                NSView *view = queue.firstObject;
+                [queue removeObjectAtIndex:0];
+                if ([view isKindOfClass:wanted] && !view.hiddenOrHasHiddenAncestor) {
+                    [found addObject:view];
+                }
+                [queue addObjectsFromArray:view.subviews];
+            }
+            [found sortUsingComparator:^NSComparisonResult(NSView *a, NSView *b) {
+                NSRect ra = [a convertRect:a.bounds toView:nil];
+                NSRect rb = [b convertRect:b.bounds toView:nil];
+                if (NSMinX(ra) != NSMinX(rb)) return NSMinX(ra) < NSMinX(rb) ? NSOrderedAscending
+                                                                             : NSOrderedDescending;
+                return NSMaxY(ra) > NSMaxY(rb) ? NSOrderedAscending : NSOrderedDescending;
+            }];
+            return found;
+        };
+        /* A mouse event over a card's text, handed to the card itself (the
+         * window is not key, and must not be made key under the user). */
+        void (^mouse)(NSView *, NSEventType, NSEventModifierFlags, NSInteger) =
+            ^(NSView *card, NSEventType type, NSEventModifierFlags flags, NSInteger clicks) {
+            NSRect   rect  = [card convertRect:card.bounds toView:nil];
+            NSEvent *event = [NSEvent mouseEventWithType:type
+                                                location:NSMakePoint(NSMaxX(rect) - 10.0, NSMidY(rect))
+                                           modifierFlags:flags
+                                               timestamp:NSProcessInfo.processInfo.systemUptime
+                                            windowNumber:window.windowNumber
+                                                 context:nil
+                                             eventNumber:0
+                                              clickCount:clicks
+                                                pressure:1.0];
+            if (type == NSEventTypeLeftMouseDown) [card mouseDown:event]; else [card mouseUp:event];
+        };
+        void (^click)(NSView *, NSEventModifierFlags) = ^(NSView *card, NSEventModifierFlags flags) {
+            mouse(card, NSEventTypeLeftMouseDown, flags, 1);
+            mouse(card, NSEventTypeLeftMouseUp, flags, 1);
+        };
+
+        /* The cards: one per row the window collected (All Tasks: fewer
+         * than the cap are Done, so every task has a card). */
+        task_pane_content_t *content = task_pane_collect(app, library.selection, NULL);
+        NSUInteger           n_tasks = content->rows->count;
+        task_pane_content_free(content);
+        NSArray<NSView *> *cards = views_of(card_class);
+        weak_card = cards.firstObject;
+        check(n_tasks > 8 && cards.count == n_tasks, "kanban: one card per task of the view");
+        if (cards.count <= 8) return;
+
+        NSRect  first = [cards[0] convertRect:cards[0].bounds toView:nil];
+        NSView *hit   = [window.contentView hitTest:
+            [window.contentView.superview convertPoint:NSMakePoint(NSMidX(first), NSMidY(first))
+                                              fromView:nil]];
+        check(hit == cards[0], "kanban: a click on a card reaches the card");
+        check(library.selected_task_ids.count == 0, "kanban: nothing is selected to begin with");
+
+        /* Selection.  cards[0..] are the New lane, top to bottom. */
+        NSUInteger new_count = 0;
+        while (new_count < cards.count &&
+               cards[new_count].superview == cards[0].superview) new_count++;
+        NSView *other_lane_card = new_count < cards.count ? cards[new_count] : nil;
+
+        click(cards[0], 0);
+        NSNumber *id_0 = library.selected_task_ids.firstObject;
+        check(library.selected_task_ids.count == 1, "kanban: a click selects one card");
+        click(cards[2], NSEventModifierFlagCommand);
+        check(library.selected_task_ids.count == 2 &&
+              [library.selected_task_ids[0] isEqual:id_0],
+              "kanban: a Command-click adds a card; ids come back in display order");
+        click(cards[4], NSEventModifierFlagShift);
+        check(library.selected_task_ids.count == 4,
+              "kanban: a Shift-click selects the run from the last Command-clicked card");
+        click(cards[3], NSEventModifierFlagCommand);
+        check(library.selected_task_ids.count == 3, "kanban: a Command-click removes a selected card");
+        if (other_lane_card != nil) {
+            click(other_lane_card, NSEventModifierFlagShift);
+            check(library.selected_task_ids.count == 4,
+                  "kanban: a Shift-click in another lane only adds its card");
+        }
+        check(snapshot(window, dir, @"kanban-selected"), "snapshot: board with a selection");
+        window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        check(snapshot(window, dir, @"kanban-dark"), "snapshot: board, dark");
+
+        /* The shadow setting, changed the way Settings changes it. */
+        task_config_set_bool(TASK_CFG_KANBAN_SHADOW, !was_shadow);
+        task_app_notify_tasks(app);
+        check(snapshot(window, dir, @"kanban-flat-dark"), "snapshot: board, dark, shadow toggled");
+        window.appearance = nil;
+        check(snapshot(window, dir, @"kanban-flat"), "snapshot: board, shadow toggled");
+        task_config_set_bool(TASK_CFG_KANBAN_SHADOW, was_shadow);
+        task_app_notify_tasks(app);
+
+        mouse(cards[2], NSEventTypeLeftMouseDown, 0, 1);
+        check(library.selected_task_ids.count == 4,
+              "kanban: a press inside a multi-selection keeps it (a drag may follow)");
+        mouse(cards[2], NSEventTypeLeftMouseUp, 0, 1);
+        check(library.selected_task_ids.count == 1,
+              "kanban: ... and the release collapses it to the clicked card");
+
+        /* A refresh keeps every card's view, the selection and the scroll. */
+        NSScrollView *scroll = cards[0].enclosingScrollView;
+        [scroll.documentView scrollPoint:NSMakePoint(0.0, 90.0)];
+        CGFloat scrolled_to = scroll.contentView.bounds.origin.y;
+        [library full_refresh];
+        check([views_of(card_class) isEqualToArray:cards],
+              "kanban: a refresh with nothing changed keeps every card view");
+        check(scrolled_to > 0.0 && scroll.contentView.bounds.origin.y == scrolled_to,
+              "kanban: ... and the scroll position");
+        check(library.selected_task_ids.count == 1, "kanban: ... and the selection");
+
+        /* A saved order (what a drop writes) moves the SAME views. */
+        click(cards[1], 0);
+        NSNumber *id_1 = library.selected_task_ids.firstObject;
+        int64_t swapped[] = { id_1.longLongValue, id_0.longLongValue };
+        task_order_save(TASK_CFG_FAMILY_KANBAN, library.selection, swapped, 2);
+        [library refresh_tasks];
+        NSArray<NSView *> *reordered = views_of(card_class);
+        check(reordered.count == cards.count && reordered[0] == cards[1] && reordered[1] == cards[0],
+              "kanban: a saved order rearranges the existing card views");
+        check([library.selected_task_ids isEqual:@[id_1]], "kanban: the selection follows its card");
+        task_order_save(TASK_CFG_FAMILY_KANBAN, library.selection, NULL, 0);
+        [library refresh_tasks];
+        check([views_of(card_class) isEqualToArray:cards], "kanban: ... and back");
+
+        /* The Done cap and its link. */
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        int64_t    extra[6];
+        for (int i = 0; i < 6; i++) {
+            int64_t list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+            extra[i] = task_db_task_create(app->db, list_id, 0, "ui-check: completed");
+            task_db_task_set_status(app->db, extra[i], TASK_STATUS_DONE);
+        }
+        [library refresh_tasks];
+        NSButton *link = nil;
+        for (NSView *view in views_of(NSButton.class)) {
+            if (view.enclosingScrollView == scroll) link = (NSButton *)view;
+        }
+        NSUInteger capped = views_of(card_class).count;
+        check(link != nil && capped < n_tasks + 6 &&
+              [link.title isEqualToString:[NSString stringWithFormat:@"Show all %lu completed",
+                                           (unsigned long)(n_tasks + 6 - capped + 10)]],
+              "kanban: more than ten Done tasks are capped, behind a link naming the total");
+        check(snapshot(window, dir, @"kanban-done-link"), "snapshot: board with the Done link");
+        [link performClick:nil];
+        check(views_of(card_class).count == n_tasks + 6 &&
+              [link.title isEqualToString:@"Show recent only"],
+              "kanban: the link shows every completed task and offers the way back");
+        [library select:(task_sel_t){ task_sel_list, ((const TaskList *)g_ptr_array_index(lists, 0))->id }];
+        [library select:task_sel_default()];
+        check(views_of(card_class).count == capped && library.selected_task_ids.count == 0,
+              "kanban: changing view resets the expansion and the selection");
+        for (int i = 0; i < 6; i++) task_db_task_delete(app->db, extra[i]);
+        [library refresh_tasks];
+        check(link.hidden && views_of(card_class).count == n_tasks,
+              "kanban: the link goes when ten or fewer tasks are Done");
+
+        /* An empty view: three lanes that say they take drops. */
+        for (guint i = 0; i < lists->len; i++) {
+            const TaskList *list = g_ptr_array_index(lists, i);
+            if (strcmp(list->name, "Empty List") != 0) continue;
+            [library select:(task_sel_t){ task_sel_list, list->id }];
+            [library refresh_sidebar];
+            check(views_of(card_class).count == 0 && snapshot(window, dir, @"kanban-empty"),
+                  "snapshot: board of an empty list");
+            [library select:task_sel_default()];
+            [library refresh_sidebar];
+        }
+        task_ptr_array_free_lists(lists);
+
+        /* Resizing the window re-lays the lanes. */
+        cards = views_of(card_class);
+        CGFloat card_width = NSWidth(cards[0].frame);
+        [window setFrame:NSInsetRect(was_frame, 90.0, 0.0) display:YES];
+        [window layoutIfNeeded];
+        check(NSWidth(cards[0].frame) < card_width, "kanban: a narrower window narrows the lanes");
+        [window setFrame:was_frame display:YES];
+        [window layoutIfNeeded];
+        check(NSWidth(cards[0].frame) == card_width, "kanban: ... and back");
+
+        /* A double click opens the card's editor. */
+        NSUInteger windows_before = visible_windows();
+        mouse(cards[0], NSEventTypeLeftMouseDown, 0, 2);
+        mouse(cards[0], NSEventTypeLeftMouseUp, 0, 2);
+        check_spin(0.1);
+        check(visible_windows() == windows_before + 1, "kanban: a double click opens the editor");
+        tasks_editor_close_all();
+
+        [library perform_command:TasksCommandTogglePane param:nil];
+        [library perform_command:TasksCommandTogglePane param:nil];
+        check(library.selected_task_ids.count == 0,
+              "kanban: hiding the board drops its selection");
+        if (!was_kanban) [library perform_command:TasksCommandTogglePane param:nil];
+        [library close];
+    }
+    check_spin(0.2);
+    check(weak_card == nil, "kanban: the cards are released with the window");
+}
+
+/*
  * main — run the checks.
  *
  * Inputs:
@@ -522,6 +761,7 @@ main(int argc, const char *argv[])
         snapshot_windows(app, dir);
         check_utilities(app);
         check_memory_and_ownership(app);
+        check_kanban(app, dir);
 
         if (argc > 2) {
             printf("     holding for %s s as pid %d\n", argv[2], getpid());
