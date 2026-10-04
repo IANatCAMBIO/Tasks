@@ -2,6 +2,7 @@
 
 #include <dispatch/dispatch.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 /*
@@ -122,13 +123,14 @@ timer_start(double seconds, bool repeats, task_loop_fn fn, void *user_data,
     t->next      = timers;
     timers       = t;
 
-    /* A tenth of the interval of slack lets the system batch wakeups; a
-     * timer armed for minutes does not need millisecond accuracy. */
-    uint64_t nsec = (uint64_t)(seconds * (double)NSEC_PER_SEC);
+    /* A little slack lets the system batch wakeups: a tenth of the
+     * interval, but never more than a second, so a deadline minutes away
+     * is still met to the second (as a GLib seconds-timer was). */
+    uint64_t nsec   = (uint64_t)(seconds * (double)NSEC_PER_SEC);
+    uint64_t leeway = nsec / 10 < NSEC_PER_SEC ? nsec / 10 : NSEC_PER_SEC;
     dispatch_source_set_timer(t->source,
                               dispatch_time(DISPATCH_TIME_NOW, (int64_t)nsec),
-                              repeats ? nsec : DISPATCH_TIME_FOREVER,
-                              nsec / 10);
+                              repeats ? nsec : DISPATCH_TIME_FOREVER, leeway);
     dispatch_set_context(t->source, (void *)(uintptr_t)t->id);
     dispatch_source_set_event_handler_f(t->source, timer_fired);
     dispatch_resume(t->source);

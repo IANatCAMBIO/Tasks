@@ -66,7 +66,7 @@
 #define TASK_CFG_COL_DUE             "col_due_visible"       /* bool, 1 */
 #define TASK_CFG_COL_COMPLETED       "col_completed_visible" /* bool, 1 */
 
-/* Per-view order keys are built by task_order_key (task_order.h):
+/* Per-view order keys are built in task_order.c (see task_order.h):
  * "<family>_list_<id>", "<family>_group_<id>", "<family>_<view id>", with
  * these two families.  Value: task ids, comma separated.  No default. */
 #define TASK_CFG_FAMILY_MANUAL       "manual_order"
@@ -79,8 +79,9 @@
  *
  * Output:
  *   TRUE when the config is usable.  FALSE when the data directory cannot
- *   be determined or created, or lies inside the GTK app's live data
- *   directory — the caller must then stop: nothing may be read or written.
+ *   be determined or created, or it (or the ini in it) lies inside the GTK
+ *   app's live data directory — the caller must then stop: nothing may be
+ *   read or written.
  */
 gboolean task_config_init(void);
 

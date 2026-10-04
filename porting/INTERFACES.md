@@ -24,9 +24,13 @@ Read with it:
    `~/.local/share/tasks/`.  Do not open, read, list or write anything there —
    not from code, not from a shell, not "just to look".  The code refuses:
    `task_db_open`, `task_db_verify_file`, `task_db_file_sha256`,
-   `task_db_copy_file` and the backup all reject any path inside it
-   (`src/task_paths.h`).  Do not weaken or bypass the fence; a file chooser
-   that lands there must show the refusal, not work around it.
+   `task_db_copy_file`, the config loader and the backup all reject any path
+   inside it (`src/task_paths.h`), whether it gets there as written, through
+   `..`, or through a symbolic link.  Do not weaken or bypass the fence; a
+   file chooser that lands there must show the refusal, not work around it.
+   The fence knows that directory by its LOCATION only: it cannot recognise a
+   GTK database kept somewhere else.  Anything that opens a database the
+   user picks (Open Database File…) needs the owner's decision first (§15).
 2. **Every build, run and test uses the sandbox.**  `make run`, `make seed`,
    `make test`, `make ui-check` set `TASKS_DATA_DIR` to a directory under
    `dev/` (gitignored).  Never run the binary by hand without
@@ -267,7 +271,9 @@ One table (`src/commands.m`) drives menu items, toolbar items and validation.
 | Done / Status / Due Date / Completion Date columns | task list | | |
 
 A bare key is never destructive: Delete is ⌘⌫ through the menu, not a
-`keyDown:` case.  To add a command: one enum member, one table row, one case
+`keyDown:` case.  Delete Task is disabled while any text is being edited (the
+key window's first responder is an `NSText`), because ⌘⌫ is also "delete to
+the start of the line" there; a disabled item lets the key through.  To add a command: one enum member, one table row, one case
 in its owner's `perform…` and (if its state varies) `update_state…`.
 
 ---
@@ -287,9 +293,9 @@ port (GTK had light values only) and are open to the owner's taste.  Add a
 constant there rather than a literal in your file.
 
 **Utilities** (`src/ui_util.h`): `tasks_string`, `tasks_icon`,
-`tasks_image_view`, `tasks_ui_notice`, `tasks_ui_confirm`,
-`tasks_ui_pick_path`, `tasks_ui_sheet`.  All dialogs are asynchronous with a
-completion block.
+`tasks_app_icon`, `tasks_image_view`, `tasks_ui_notice`, `tasks_ui_confirm`,
+`tasks_ui_pick_path`, `tasks_ui_sheet`.  Every dialog takes a completion
+block; with a parent window it is a sheet and the call returns at once.
 
 **Focus rings**: `NSFocusRingTypeNone` on toolbar text fields ONLY (the search
 field has it).  Every other field keeps the system ring: use a stock bezeled
@@ -352,8 +358,10 @@ form a cycle — but the window may have shut down meanwhile: check
   `(__bridge void *)self` holds an UNRETAINED pointer.  Cancel / unlisten in
   `shut_down`, before the object can go away (the library window does both).
 - `dealloc` is not teardown.  Every window-scoped object has an idempotent
-  `shut_down`, called from `windowWillClose:`; `dealloc` may call it as a
-  backstop and must do nothing else.
+  `shut_down`, called from `windowWillClose:`.  `dealloc` frees only what the
+  object alone owns (a pane's row list); it must not write config, close
+  windows or touch the `TaskApp`, which may already be gone.  The library
+  window's `dealloc` asserts that `shut_down` ran.
 
 ### 9.5 C memory in Objective-C objects
 
@@ -619,6 +627,20 @@ screenshots the running app where that permission exists.
 - **§8.5(9)**: `task_library_apply_kanban_shadow` is gone — the board re-reads
   the setting on refresh and Settings fires `task_app_notify_tasks`.
   `tasks_editor_close(task_id)` was added (delete closes the editor first).
+- **Interface-phase scaffolding.**  Some things exist with no caller yet,
+  because they are the agreed interface for packages not written: the
+  config keys for Compact mode, column visibility and the Kanban shadow;
+  most `tasks_look_*` constants and `TasksColor` members; `tasks_due_color`,
+  `tasks_ui_pick_path`, `tasks_image_view`; the sidebar and column rows of
+  the command table; `task_order_*` (tests only so far).  The no-unused-code
+  rule applies again at integration: whatever still has no caller then is
+  deleted.
+- **Open question — databases outside the fence.**  The fence protects the
+  live directory by location.  A stronger rule (stamp every database the
+  fork creates and refuse to open one without the stamp) would also stop a
+  GTK database kept elsewhere being opened by mistake, but would forbid
+  opening a COPY of real data, which is how the fork is meant to be tried.
+  Not implemented; the owner decides before Open Database File… is built.
 - Not swept: comments inside the carried core files (`db.c`, `recur.c`,
   `backup.c`, …) still mention sync, plugins and GTK-era names in places.
 - The unused sync-era `task_db_*` functions listed in map §2.2 are still in

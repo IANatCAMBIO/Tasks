@@ -20,9 +20,8 @@ static NSString * const about_license_url = @"https://opensource.org/license/bsd
 /* The Info.plist key the Makefile stamps with the build time (UTC, ISO 8601). */
 static NSString * const build_date_key = @"TasksBuildDate";
 
-/* The bundled icon used as the running app's icon and in the About panel. */
-static NSString * const app_icon_name = @"document";
-static const CGFloat app_icon_size    = 128.0;
+/* The size of the app icon in the Dock tile and the About panel. */
+static const CGFloat app_icon_size = 128.0;
 
 @interface TasksAppDelegate () <NSMenuItemValidation>
 /* The application context: the open database and the event bus.  Owned;
@@ -133,8 +132,9 @@ watch_sigterm
  * database.  The workers are armed AFTER the window exists so that a
  * status message posted while arming has somewhere to land.
  *
- * If the core cannot start, the reason is shown and the app quits; nothing
- * has been written.
+ * If the core cannot start, the reason is shown and the app quits.  By then
+ * the data directory may have been created; no existing data has been
+ * changed.
  *
  * Inputs:
  *   note — NSApplicationDidFinishLaunchingNotification (unused)
@@ -142,7 +142,7 @@ watch_sigterm
 - (void)
 applicationDidFinishLaunching:(NSNotification *)note
 {
-    NSImage *icon = tasks_icon(app_icon_name, app_icon_size);
+    NSImage *icon = tasks_app_icon(app_icon_size);
     if (icon) NSApp.applicationIconImage = icon;
     [self build_menu_bar];
     [self watch_sigterm];
@@ -193,8 +193,10 @@ applicationSupportsSecureRestorableState:(NSApplication *)app
 /* ── Quit ────────────────────────────────────────────────────────────── */
 
 /*
- * library_will_close: — the library window is closing, which ends the app:
- * the window has already shut itself down (closing every editor), so quit.
+ * library_will_close: — the library window is closing, which ends the app.
+ * The quit is queued for the next run-loop pass rather than made from
+ * inside the notification, so the window finishes closing (and shutting
+ * itself down, which closes every editor) before the app comes down.
  *
  * Inputs:
  *   note — NSWindowWillCloseNotification for the library window (unused)
@@ -202,7 +204,9 @@ applicationSupportsSecureRestorableState:(NSApplication *)app
 - (void)
 library_will_close:(NSNotification *)note
 {
-    [NSApp terminate:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp terminate:nil];
+    });
 }
 
 /*
@@ -329,7 +333,7 @@ show_about
     NSMutableDictionary *options = [NSMutableDictionary dictionary];
     options[NSAboutPanelOptionCredits] = about_credits();
 
-    NSImage *icon = tasks_icon(app_icon_name, app_icon_size);
+    NSImage *icon = tasks_app_icon(app_icon_size);
     if (icon) options[NSAboutPanelOptionApplicationIcon] = icon;
 
     NSString *stamp = NSBundle.mainBundle.infoDictionary[build_date_key];

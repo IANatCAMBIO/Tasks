@@ -6,7 +6,7 @@ typedef struct {
     guint    id;
     gpointer fn;
     gpointer user_data;
-} TaskAppListener;
+} task_app_listener_t;
 
 /*
  * task_app_new — an empty context.
@@ -52,7 +52,7 @@ listener_add(TaskApp *app, GSList **list, gpointer fn, gpointer user_data)
 {
     if (app == NULL || fn == NULL) return 0;
 
-    TaskAppListener *l = g_new0(TaskAppListener, 1);
+    task_app_listener_t *l = g_new0(task_app_listener_t, 1);
     l->id        = ++app->listener_next;
     l->fn        = fn;
     l->user_data = user_data;
@@ -107,7 +107,7 @@ static gboolean
 unlisten_from(GSList **list, guint id)
 {
     for (GSList *n = *list; n != NULL; n = n->next) {
-        TaskAppListener *l = n->data;
+        task_app_listener_t *l = n->data;
         if (l->id == id) {
             *list = g_slist_delete_link(*list, n);
             g_free(l);
@@ -145,7 +145,7 @@ static gboolean
 listed(GSList *list, guint id)
 {
     for (GSList *n = list; n != NULL; n = n->next) {
-        if (((TaskAppListener *)n->data)->id == id) return TRUE;
+        if (((task_app_listener_t *)n->data)->id == id) return TRUE;
     }
     return FALSE;
 }
@@ -170,11 +170,11 @@ static void
 fire(TaskApp *app, GSList **list, const gchar *message)
 {
     guint            count    = g_slist_length(*list);
-    TaskAppListener *snapshot = g_new(TaskAppListener, count);
+    task_app_listener_t *snapshot = g_new(task_app_listener_t, count);
     guint            i        = 0;
 
     for (GSList *n = *list; n != NULL; n = n->next) {
-        snapshot[i++] = *(TaskAppListener *)n->data;
+        snapshot[i++] = *(task_app_listener_t *)n->data;
     }
     for (i = 0; i < count; i++) {
         if (!listed(*list, snapshot[i].id)) continue;   /* gone mid-fire */

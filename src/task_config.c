@@ -55,6 +55,13 @@ task_config_init(void)
     config_path = g_build_filename(dir, CONFIG_FILE, NULL);
     free(dir);
 
+    /* The directory passed the fence; the file could still be a link into
+     * the live directory. */
+    if (task_path_is_live_data(config_path)) {
+        g_clear_pointer(&config_path, g_free);
+        return FALSE;
+    }
+
     /* A missing file is the ordinary first run and loads as empty: every
      * key then reads as its registry default. */
     config_kf = g_key_file_new();

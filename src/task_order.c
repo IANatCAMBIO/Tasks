@@ -182,7 +182,7 @@ task_order_save(const char *family, task_sel_t sel, const int64_t *ids, int n)
         used += (size_t)snprintf(text + used, room - used, "%s%" PRId64,
                                  used > 0 ? "," : "", ids[i]);
     }
-    task_config_set(key, text);
+    task_config_set(key, used > 0 ? text : NULL);   /* no ids: no key */
     free(text);
     free(key);
 }

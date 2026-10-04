@@ -14,14 +14,21 @@
 #include "search.h"
 #include "recur.h"
 #include "task_dates.h"
+#include "task_paths.h"
 
 /* ---------------------------------------------------------------------------
  * Helpers
  * ------------------------------------------------------------------------- */
 
 /*
- * make_task — allocate a stack-initialised Task with title + notes.
- * The caller owns it; free with task_free().
+ * make_task — a heap-allocated Task with a title and notes, status New.
+ *
+ * Inputs:
+ *   title — the title; NULL reads as ""
+ *   notes — the notes; NULL reads as ""
+ *
+ * Output:
+ *   the task; free with task_free().
  */
 static Task *
 make_task(const gchar *title, const gchar *notes)
@@ -33,10 +40,32 @@ make_task(const gchar *title, const gchar *notes)
     return t;
 }
 
+/*
+ * scratch_dir — a fresh directory for one database test, inside the sandbox
+ * (never the system temporary folder: every test keeps its data in dev/).
+ *
+ * Output:
+ *   the directory's path (g_free); the test stops if it cannot be made.
+ */
+static gchar *
+scratch_dir(void)
+{
+    const gchar *base = g_getenv(TASK_DATA_DIR_ENV);
+    g_assert_nonnull(base);
+    g_assert_false(task_path_is_live_data(base));
+
+    gchar *dir = g_build_filename(base, "core-XXXXXX", NULL);
+    g_assert_nonnull(g_mkdtemp(dir));
+    return dir;
+}
+
 /* ---------------------------------------------------------------------------
  * Search tests
  * ------------------------------------------------------------------------- */
 
+/*
+ * test_search_null_returns_null — a query with no usable term parses to NULL ("no filter").
+ */
 static void
 test_search_null_returns_null(void)
 {
@@ -46,6 +75,9 @@ test_search_null_returns_null(void)
     g_assert_null(task_search_parse("-"));          /* bare exclude: no terms */
 }
 
+/*
+ * test_search_basic_match — a single term matches a title containing it and not another.
+ */
 static void
 test_search_basic_match(void)
 {
@@ -63,6 +95,9 @@ test_search_basic_match(void)
     task_search_free(q);
 }
 
+/*
+ * test_search_case_insensitive — matching ignores case.
+ */
 static void
 test_search_case_insensitive(void)
 {
@@ -75,6 +110,9 @@ test_search_case_insensitive(void)
     task_search_free(q);
 }
 
+/*
+ * test_search_multi_term_and — several terms must all be present.
+ */
 static void
 test_search_multi_term_and(void)
 {
@@ -92,6 +130,9 @@ test_search_multi_term_and(void)
     task_search_free(q);
 }
 
+/*
+ * test_search_exclude — a -term excludes tasks containing it.
+ */
 static void
 test_search_exclude(void)
 {
@@ -109,6 +150,9 @@ test_search_exclude(void)
     task_search_free(q);
 }
 
+/*
+ * test_search_notes_field — the notes are searched as well as the title.
+ */
 static void
 test_search_notes_field(void)
 {
@@ -130,7 +174,15 @@ test_search_notes_field(void)
  * Recurrence arithmetic tests
  * ------------------------------------------------------------------------- */
 
-/* Convenience: unix time for a specific local date at midnight. */
+/*
+ * local_midnight — the unix time of a local calendar day's midnight.
+ *
+ * Inputs:
+ *   year, month, day — the day
+ *
+ * Output:
+ *   the timestamp.
+ */
 static gint64
 local_midnight(gint year, gint month, gint day)
 {
@@ -141,6 +193,9 @@ local_midnight(gint year, gint month, gint day)
     return ts;
 }
 
+/*
+ * test_recur_advance_daily — one day on from a local midnight is the next local midnight.
+ */
 static void
 test_recur_advance_daily(void)
 {
@@ -150,6 +205,9 @@ test_recur_advance_daily(void)
     g_assert_cmpint(result, ==, jan2);
 }
 
+/*
+ * test_recur_advance_weekly — one week on.
+ */
 static void
 test_recur_advance_weekly(void)
 {
@@ -159,6 +217,9 @@ test_recur_advance_weekly(void)
     g_assert_cmpint(result, ==, jan8);
 }
 
+/*
+ * test_recur_advance_monthly — one month on keeps the day of the month.
+ */
 static void
 test_recur_advance_monthly(void)
 {
@@ -168,6 +229,10 @@ test_recur_advance_monthly(void)
     g_assert_cmpint(result, ==, feb1);
 }
 
+/*
+ * test_recur_monthly_clamp — a month step from the 31st clamps to the month's last day,
+ * and the clamp is sticky on the next step.
+ */
 static void
 test_recur_monthly_clamp(void)
 {
@@ -184,6 +249,9 @@ test_recur_monthly_clamp(void)
     g_assert_cmpint(step2, ==, mar28);
 }
 
+/*
+ * test_recur_advance_interval — an interval of 2 weeks advances 14 days.
+ */
 static void
 test_recur_advance_interval(void)
 {
@@ -194,6 +262,9 @@ test_recur_advance_interval(void)
     g_assert_cmpint(result, ==, jan15);
 }
 
+/*
+ * test_recur_lead_default_weekly — the default lead of a weekly schedule is 3 days.
+ */
 static void
 test_recur_lead_default_weekly(void)
 {
@@ -202,6 +273,9 @@ test_recur_lead_default_weekly(void)
     g_assert_cmpint(lead, ==, 3 * 24 * 60);
 }
 
+/*
+ * test_recur_lead_default_daily — the default lead of a daily schedule is 12 hours.
+ */
 static void
 test_recur_lead_default_daily(void)
 {
@@ -210,6 +284,9 @@ test_recur_lead_default_daily(void)
     g_assert_cmpint(lead, ==, 12 * 60);
 }
 
+/*
+ * test_recur_lead_default_hourly — the default lead of an hourly schedule is 30 minutes.
+ */
 static void
 test_recur_lead_default_hourly(void)
 {
@@ -218,6 +295,9 @@ test_recur_lead_default_hourly(void)
     g_assert_cmpint(lead, ==, 30);
 }
 
+/*
+ * test_recur_lead_default_nonrecurring — no schedule, no lead.
+ */
 static void
 test_recur_lead_default_nonrecurring(void)
 {
@@ -230,13 +310,15 @@ test_recur_lead_default_nonrecurring(void)
  * Database schema tests
  * ------------------------------------------------------------------------- */
 
+/*
+ * test_db_fresh_schema — a new database file opens (the full schema is created) and
+ * closes.
+ */
 static void
 test_db_fresh_schema(void)
 {
     GError *err   = NULL;
-    gchar  *tmpdir = g_dir_make_tmp("tasks-test-XXXXXX", &err);
-    g_assert_no_error(err);
-    g_assert_nonnull(tmpdir);
+    gchar  *tmpdir = scratch_dir();
 
     gchar *path = g_build_filename(tmpdir, "tasks.db", NULL);
 
@@ -252,12 +334,15 @@ test_db_fresh_schema(void)
     g_free(tmpdir);
 }
 
+/*
+ * test_db_create_read_task — a list and a task can be created and the task read back
+ * with its fields.
+ */
 static void
 test_db_create_read_task(void)
 {
     GError *err    = NULL;
-    gchar  *tmpdir = g_dir_make_tmp("tasks-test-XXXXXX", &err);
-    g_assert_no_error(err);
+    gchar  *tmpdir = scratch_dir();
 
     gchar *path = g_build_filename(tmpdir, "tasks.db", NULL);
     TaskDatabase *db = task_db_open(path, &err);
@@ -288,12 +373,15 @@ test_db_create_read_task(void)
     g_free(tmpdir);
 }
 
+/*
+ * test_db_status_stamps_updated_at — a status change stamps updated_at (sleeps one
+ * second so the clock moves).
+ */
 static void
 test_db_status_stamps_updated_at(void)
 {
     GError *err    = NULL;
-    gchar  *tmpdir = g_dir_make_tmp("tasks-test-XXXXXX", &err);
-    g_assert_no_error(err);
+    gchar  *tmpdir = scratch_dir();
 
     gchar *path = g_build_filename(tmpdir, "tasks.db", NULL);
     TaskDatabase *db = task_db_open(path, &err);
@@ -323,10 +411,15 @@ test_db_status_stamps_updated_at(void)
     g_free(tmpdir);
 }
 
-/* ---------------------------------------------------------------------------
- * main
- * ------------------------------------------------------------------------- */
-
+/*
+ * main — register the cases with the g_test harness and run them.
+ *
+ * Inputs:
+ *   argc, argv — passed to g_test_init (its options, e.g. -p to pick a case)
+ *
+ * Output:
+ *   0 when every case passed.
+ */
 int
 main(int argc, char **argv)
 {

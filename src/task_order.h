@@ -64,7 +64,7 @@ int *task_order_load(const char *family, task_sel_t sel, const int64_t *ids,
  *   family — TASK_CFG_FAMILY_MANUAL or TASK_CFG_FAMILY_KANBAN
  *   sel    — the sidebar selection
  *   ids    — the task ids in the order to remember; ids of 0 are skipped
- *   n      — how many
+ *   n      — how many; with no ids to store the saved order is removed
  */
 void task_order_save(const char *family, task_sel_t sel, const int64_t *ids,
                      int n);

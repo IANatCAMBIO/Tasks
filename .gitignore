@@ -2,9 +2,9 @@
 build/
 /*.app/
 
-# The development sandbox: `make run`, `make seed` and `make test` keep all
-# their data here (dev/data, dev/test-data), never in the per-user data
-# directory.
+# The development sandbox: `make run`, `make seed`, `make test` and
+# `make ui-check` keep all their data here (dev/data, dev/test-data,
+# dev/snapshots), never in the per-user data directory.
 dev/
 
 # Any .bak — a schema migration leaves <db>.pre-v<N>.bak beside the

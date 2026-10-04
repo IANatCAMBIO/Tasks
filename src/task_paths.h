@@ -34,8 +34,9 @@
  * task_data_dir — the directory holding the database and the ini.
  *
  * The directory is NOT created here; task_data_dir_ensure does that.  A
- * relative $TASKS_DATA_DIR is made absolute against the current directory,
- * so the answer does not change if the process later changes directory.
+ * $TASKS_DATA_DIR is made absolute against the current directory and has
+ * its "." and ".." collapsed, so the answer does not change if the process
+ * later changes directory and every user of the path reads it the same way.
  *
  * Output:
  *   new absolute path (free it), or NULL when the home directory cannot be
@@ -54,13 +55,19 @@ char *task_data_dir_ensure(void);
 
 /*
  * task_path_is_live_data — whether `path` is, or lies inside, the GTK app's
- * live data directory: <home>/.local/share/tasks, and $XDG_DATA_HOME/tasks
- * when that variable is set.
+ * live data directory: <home>/.local/share/tasks — for the home directory
+ * of the password database and for $HOME — and $XDG_DATA_HOME/tasks when
+ * that variable is set.
  *
- * Compared after resolving symbolic links on both sides (the deepest
- * existing ancestor of `path` is resolved, so a file that does not exist
- * yet is still caught), so a link into the live directory does not get
- * round the fence.  Only names are examined; nothing is opened.
+ * The path is judged both AS WRITTEN (".." collapsed by the text alone,
+ * which is how SQLite reads it, even past a component that does not exist)
+ * and AS RESOLVED (symbolic links followed for the part that exists), and
+ * so is the live directory: a link into it, a ".." detour and a live file
+ * that is itself a link elsewhere are all refused.  Only names are
+ * examined; nothing is opened.
+ *
+ * The fence knows the live directory by its LOCATION.  It cannot recognise
+ * a GTK database kept somewhere else (a db_dir the GTK app was pointed at).
  *
  * Inputs:
  *   path — a file or directory path, absolute or relative; NULL is "no"

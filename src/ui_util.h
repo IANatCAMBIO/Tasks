@@ -5,11 +5,14 @@
  * exactly once: the bundled icons, correctly framed image views, and the
  * four kinds of dialog (notice, confirm, path picker, custom sheet).
  *
- * Every dialog is ASYNCHRONOUS and takes a completion block, called once on
- * the main thread.  The block is released when the dialog ends, so it may
- * capture its owner strongly without creating a cycle — but it must cope
- * with the owner's window having closed while the dialog was up (check
- * whatever state it is about to act on).
+ * Every dialog takes a completion block, called once on the main thread.
+ * Given a parent window the dialog is a sheet and the call returns at once
+ * (ASYNCHRONOUS: the rest of the caller's work belongs in the block); with
+ * a nil parent it is app-modal and the block has run by the time the call
+ * returns.  The block is released when the dialog ends, so it may capture
+ * its owner strongly without creating a cycle — but it must cope with the
+ * owner's window having closed while the dialog was up (check whatever
+ * state it is about to act on).
  *
  * All functions are main thread only.
  */
@@ -55,6 +58,20 @@ NSString *tasks_string(const char *text);
  *   the bundle has no such icon.
  */
 NSImage *tasks_icon(NSString *name, CGFloat size);
+
+/*
+ * tasks_app_icon — the app's own icon (the bundled "document" artwork), for
+ * the Dock tile, alerts and the About panel.  macOS 26 puts a bundle icon
+ * that is not its rounded-square shape on a grey backdrop; handing those
+ * places the image explicitly shows just the icon.
+ *
+ * Inputs:
+ *   size — edge length in points
+ *
+ * Output:
+ *   shared NSImage, or nil when the bundle has no such icon.
+ */
+NSImage *tasks_app_icon(CGFloat size);
 
 /*
  * tasks_image_view — an image view created AT ITS FINAL SIZE and only then

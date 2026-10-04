@@ -63,7 +63,48 @@ home_dir(void)
 }
 
 /*
- * absolute — `path` made absolute against the current directory.
+ * normalized — an absolute path with "//", "." and ".." collapsed by the
+ * rules of the text alone, no file system consulted.  This is how SQLite
+ * reads a path (it tolerates ".." after a component that does not exist),
+ * and it is what creating missing directories turns a path into.
+ *
+ * Inputs:
+ *   abs — an absolute path
+ *
+ * Output:
+ *   new string (free it), "/" at least; NULL when memory runs out.
+ */
+static char *
+normalized(const char *abs)
+{
+    char *out = malloc(strlen(abs) + 2);
+    if (out == NULL) return NULL;
+
+    size_t len = 0;                      /* out[0..len) is the result so far */
+    for (const char *p = abs; *p != '\0'; ) {
+        while (*p == '/') p++;
+        const char *name = p;
+        while (*p != '\0' && *p != '/') p++;
+        size_t n = (size_t)(p - name);
+
+        if (n == 0 || (n == 1 && name[0] == '.')) continue;
+        if (n == 2 && name[0] == '.' && name[1] == '.') {
+            while (len > 0 && out[len - 1] != '/') len--;   /* drop a name */
+            if (len > 0) len--;                             /* and its '/' */
+            continue;
+        }
+        out[len++] = '/';
+        memcpy(out + len, name, n);
+        len += n;
+    }
+    if (len == 0) out[len++] = '/';
+    out[len] = '\0';
+    return out;
+}
+
+/*
+ * absolute — `path` made absolute against the current directory, otherwise
+ * exactly as written.
  *
  * Inputs:
  *   path — absolute or relative path, not NULL
@@ -82,44 +123,46 @@ absolute(const char *path)
 }
 
 /*
- * resolve — `path` with symbolic links resolved, whether or not it exists:
- * the deepest ancestor that does exist is resolved with realpath() and the
- * missing tail is put back on unchanged.
+ * physical — an absolute path as the kernel would resolve it: symbolic
+ * links followed for the deepest part that exists (realpath), the rest —
+ * which, not existing, cannot contain links — put back and normalized.
  *
  * Inputs:
- *   path — absolute or relative path, not NULL
+ *   abs — an absolute path, not NULL
  *
  * Output:
- *   new absolute path (free it), or NULL when no ancestor can be resolved.
+ *   new string (free it); NULL when the existing part cannot be resolved
+ *   for any reason other than "does not exist" (the caller then refuses).
  */
 static char *
-resolve(const char *path)
+physical(const char *abs)
 {
-    char *abs = absolute(path);
-    if (abs == NULL) return NULL;
+    char *work = strdup(abs);
+    if (work == NULL) return NULL;
 
     char   real[PATH_MAX];
-    size_t cut = strlen(abs);            /* abs[cut..] is the missing tail */
+    size_t cut = strlen(work);           /* work[cut..] is the missing tail */
 
     for (;;) {
-        char saved = abs[cut];
-        abs[cut]   = '\0';
-        char *ok   = realpath(cut == 0 ? "/" : abs, real);
-        abs[cut]   = saved;
+        char saved = work[cut];
+        work[cut]  = '\0';
+        char *ok   = realpath(cut == 0 ? "/" : work, real);
+        int   why  = errno;
+        work[cut]  = saved;
         if (ok != NULL) break;
-        if (cut == 0) {
-            free(abs);
+        if (cut == 0 || (why != ENOENT && why != ENOTDIR)) {
+            free(work);
             return NULL;
         }
-        while (cut > 0 && abs[cut - 1] != '/') cut--;   /* drop a name ...  */
-        while (cut > 0 && abs[cut - 1] == '/') cut--;   /* ... and its '/'  */
+        while (cut > 0 && work[cut - 1] != '/') cut--;   /* drop a name ...  */
+        while (cut > 0 && work[cut - 1] == '/') cut--;   /* ... and its '/'  */
     }
 
-    const char *tail = abs + cut;
-    while (*tail == '/') tail++;
-    char *out = *tail != '\0' ? join(strcmp(real, "/") == 0 ? "" : real, tail)
-                              : strdup(real);
-    free(abs);
+    char *joined = join(real, work + cut);
+    char *out    = joined != NULL ? normalized(joined) : NULL;
+
+    free(joined);
+    free(work);
     return out;
 }
 
@@ -129,8 +172,8 @@ resolve(const char *path)
  * a wrong refusal is harmless where a wrong pass is not.
  *
  * Inputs:
- *   path — resolved absolute path
- *   root — resolved absolute directory
+ *   path — normalized absolute path
+ *   root — normalized absolute directory
  *
  * Output:
  *   true when path is inside root.
@@ -145,26 +188,36 @@ is_inside(const char *path, const char *root)
 }
 
 /*
- * is_under_base — whether `resolved` lies inside "<base>/tasks".
+ * is_under_base — whether any reading of a path lies inside "<base>/tasks".
+ * Both the path and the live directory are compared as written AND as
+ * resolved, so neither a link into the live directory nor a live file that
+ * is itself a link to somewhere else gets past.
  *
  * Inputs:
- *   resolved — the candidate path, already resolved
- *   base     — an XDG data directory (e.g. "<home>/.local/share"), not NULL
+ *   forms — the candidate path's readings (lexical and physical), each not
+ *           NULL
+ *   count — how many
+ *   base  — an XDG data directory (e.g. "<home>/.local/share"), not NULL
  *
  * Output:
- *   true when it does, or when the live directory cannot be resolved.
+ *   true when one does, or when the live directory cannot be resolved.
  */
 static bool
-is_under_base(const char *resolved, const char *base)
+is_under_base(char * const *forms, int count, const char *base)
 {
-    char *root = join(base, LIVE_DIR_NAME);
-    if (root == NULL) return true;
+    char *named   = join(base, LIVE_DIR_NAME);
+    char *abs     = named != NULL ? absolute(named) : NULL;
+    char *written = abs != NULL ? normalized(abs) : NULL;
+    char *real    = written != NULL ? physical(written) : NULL;
+    bool  inside  = written == NULL || real == NULL;
 
-    char *real_root = resolve(root);
-    bool  inside    = real_root == NULL || is_inside(resolved, real_root);
-
-    free(real_root);
-    free(root);
+    for (int i = 0; !inside && i < count; i++) {
+        inside = is_inside(forms[i], written) || is_inside(forms[i], real);
+    }
+    free(real);
+    free(written);
+    free(abs);
+    free(named);
     return inside;
 }
 
@@ -177,22 +230,36 @@ task_path_is_live_data(const char *path)
 {
     if (path == NULL) return false;
 
-    char *resolved = resolve(path);
-    char *home     = home_dir();
-    bool  live     = true;               /* unresolvable: refuse */
-
-    if (resolved != NULL && home != NULL) {
-        char *xdg_default = join(home, ".local/share");
-        live = xdg_default == NULL || is_under_base(resolved, xdg_default);
-        free(xdg_default);
-
-        const char *xdg = getenv("XDG_DATA_HOME");
-        if (!live && xdg != NULL && xdg[0] != '\0') {
-            live = is_under_base(resolved, xdg);
-        }
+    /* Three readings of the path: as written, ".." collapsed by the text
+     * (how SQLite and mkdir -p read it); that, with links followed; and as
+     * the kernel resolves the original (".." applied AFTER links). */
+    char *abs = absolute(path);
+    char *forms[3] = { NULL, NULL, NULL };
+    if (abs != NULL) {
+        forms[0] = normalized(abs);
+        forms[1] = forms[0] != NULL ? physical(forms[0]) : NULL;
+        forms[2] = physical(abs);
+        free(abs);
     }
+
+    char *home = home_dir();
+    bool  live = forms[0] == NULL || forms[1] == NULL || forms[2] == NULL || home == NULL;
+
+    /* The live directory hangs off the home directory.  GLib takes that
+     * from $HOME, the password database may say otherwise, and
+     * $XDG_DATA_HOME moves it: all three are fenced. */
+    const char *homes[2] = { home, getenv("HOME") };
+    for (int i = 0; !live && i < 2; i++) {
+        if (homes[i] == NULL || homes[i][0] == '\0') continue;
+        char *base = join(homes[i], ".local/share");
+        live = base == NULL || is_under_base(forms, 3, base);
+        free(base);
+    }
+    const char *xdg = getenv("XDG_DATA_HOME");
+    if (!live && xdg != NULL && xdg[0] != '\0') live = is_under_base(forms, 3, xdg);
+
     free(home);
-    free(resolved);
+    for (int i = 0; i < 3; i++) free(forms[i]);
     return live;
 }
 
@@ -204,7 +271,12 @@ char *
 task_data_dir(void)
 {
     const char *env = getenv(TASK_DATA_DIR_ENV);
-    if (env != NULL && env[0] != '\0') return absolute(env);
+    if (env != NULL && env[0] != '\0') {
+        char *abs = absolute(env);
+        char *dir = abs != NULL ? normalized(abs) : NULL;
+        free(abs);
+        return dir;
+    }
 
     char *home = home_dir();
     if (home == NULL) return NULL;
@@ -247,7 +319,11 @@ task_data_dir_ensure(void)
     char *dir = task_data_dir();
 
     if (dir == NULL) return NULL;
-    if (task_path_is_live_data(dir) || make_dirs(dir) != 0) {
+
+    /* Checked again once the directories exist: what a path resolves to is
+     * only certain when every component of it is there. */
+    if (task_path_is_live_data(dir) || make_dirs(dir) != 0 ||
+        task_path_is_live_data(dir)) {
         free(dir);
         return NULL;
     }

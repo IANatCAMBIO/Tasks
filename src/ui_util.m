@@ -3,7 +3,7 @@
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
-/* The bundled icon alerts and the About panel show. */
+/* The bundled artwork that is the app's icon, and its size in an alert. */
 static NSString * const app_icon_name = @"document";
 static const CGFloat alert_icon_size  = 64.0;
 
@@ -100,6 +100,16 @@ tasks_icon(NSString *name, CGFloat size)
 }
 
 /*
+ * tasks_app_icon — the app's own icon.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSImage *
+tasks_app_icon(CGFloat size)
+{
+    return tasks_icon(app_icon_name, size);
+}
+
+/*
  * tasks_image_view — an image view framed before it gets its image.
  * Inputs/output are documented in ui_util.h.
  */
@@ -118,9 +128,7 @@ tasks_image_view(NSImage *image, CGFloat size)
 /* ── Dialogs ────────────────────────────────────────────────────────── */
 
 /*
- * new_alert — an NSAlert showing the app's own icon.  macOS 26 puts a
- * bundle icon that is not its rounded-square shape on a grey backdrop;
- * handing the alert the image explicitly shows just the icon.
+ * new_alert — an NSAlert showing the app's own icon (see tasks_app_icon).
  *
  * Inputs:
  *   title   — the headline
@@ -133,7 +141,7 @@ static NSAlert *
 new_alert(NSString *title, NSString *message)
 {
     NSAlert *alert        = [[NSAlert alloc] init];
-    NSImage *icon         = tasks_icon(app_icon_name, alert_icon_size);
+    NSImage *icon         = tasks_app_icon(alert_icon_size);
     if (icon) alert.icon  = icon;
     alert.messageText     = title;
     alert.informativeText = message ?: @"";

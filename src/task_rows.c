@@ -14,6 +14,10 @@
 #define UNTITLED_TASK    "Untitled Task"
 #define UNTITLED_SUBTASK "Untitled"
 
+/* Declared ahead of its definition only to carry the format attribute, so
+ * the compiler checks every call's arguments against its format. */
+static char *text_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
 /*
  * text_printf — printf into a new malloc'd string.  Out of memory aborts,
  * as it does everywhere else in the core (GLib's allocator does the same).
@@ -24,8 +28,6 @@
  * Output:
  *   new string (free it); never NULL.
  */
-static char *text_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-
 static char *
 text_printf(const char *fmt, ...)
 {

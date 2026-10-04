@@ -64,6 +64,8 @@ tasks_row_text(const task_row_t *row, BOOL emphasized, TasksRowLayout layout)
         const task_row_line_t *line = &row->lines[i];
         NSFont *font = row_font(line->small, line->bold, line->italic);
 
+        /* A character appended to the plain string takes the attributes of
+         * the one before it, the paragraph style among them. */
         if (i > 0) [text.mutableString appendString:@"\n"];
 
         /* The glyph prefix: the line's size, never bold, struck or dimmed. */
@@ -87,11 +89,6 @@ tasks_row_text(const task_row_t *row, BOOL emphasized, TasksRowLayout layout)
         [text appendAttributedString:[[NSAttributedString alloc]
             initWithString:tasks_string(line->text) attributes:attrs]];
     }
-
-    /* The separating newlines carry the paragraph style of their line. */
-    [text addAttribute:NSParagraphStyleAttributeName
-                 value:para
-                 range:NSMakeRange(0, text.length)];
     return text;
 }
 

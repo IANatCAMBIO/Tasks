@@ -1,11 +1,12 @@
 #import "commands.h"
-#import "library_window.h"
 #import "look.h"
 #import "ui_util.h"
 
-/* The table.  Shortcuts follow Mac conventions; a toggling command's title,
- * icon and tooltip here are the face it wears when the feature is in its
- * default state (the library window swaps them, see state_of_command:). */
+/* The table.  Shortcuts follow Mac conventions.  A toggling command's
+ * title, icon and tooltip here are its FIRST face: what it offers while
+ * completed tasks are shown, sorting is automatic, the sidebar is visible
+ * and the list is up.  The library window supplies only the other face
+ * (update_shell_state:for_command:). */
 static const tasks_command_spec_t command_specs[] = {
     { TasksCommandAbout,           TasksCommandOwnerApp,      @"tasks.about",
       @"About " @TASKS_APP_NAME,   @"",  0, nil, nil },
@@ -27,7 +28,7 @@ static const tasks_command_spec_t command_specs[] = {
     { TasksCommandToggleCompleted, TasksCommandOwnerShell,    @"tasks.toggle-completed",
       @"Hide Completed",           @"",  0, @"hidden", @"Hide completed tasks" },
     { TasksCommandToggleSort,      TasksCommandOwnerShell,    @"tasks.toggle-sort",
-      @"Manual Sorting",           @"",  0, @"manual", @"Sort by hand: drag tasks into order" },
+      @"Manual Sorting",           @"",  0, @"manual", @"Switch to manual drag sorting" },
     { TasksCommandToggleSidebar,   TasksCommandOwnerShell,    @"tasks.toggle-sidebar",
       @"Hide Sidebar",             @"s", NSEventModifierFlagControl,
       @"left-and-right",           @"Hide the lists pane" },

@@ -16,7 +16,8 @@
 typedef struct {
     int          fired;
     int          destroyed;
-    bool         on_main;
+    bool         on_main;           /* the callback ran on the main thread */
+    bool         work_on_main;      /* the background work did (it must not) */
     unsigned int cancel_id;         /* a timer to cancel from the callback */
 } probe_t;
 
@@ -74,7 +75,7 @@ background_work(void *data)
 {
     probe_t *p = data;
 
-    p->destroyed = pthread_main_np() != 0;   /* reused: "ran on main?" */
+    p->work_on_main = pthread_main_np() != 0;
     task_loop_main_async(probe_fire, p);
 }
 
@@ -185,10 +186,10 @@ test_background(void)
 {
     probe_t p = { 0 };
 
-    p.destroyed = 1;
+    p.work_on_main = true;          /* until the work says otherwise */
     task_loop_background(background_work, &p);
     for (int i = 0; i < 40 && p.fired == 0; i++) check_spin(0.05);
-    check(p.destroyed == 0, "background: runs off the main thread");
+    check(!p.work_on_main, "background: runs off the main thread");
     check(p.fired == 1 && p.on_main, "background: hands back to the main thread");
 }
 

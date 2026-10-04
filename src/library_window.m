@@ -31,16 +31,6 @@ static NSString * const search_tooltip       =
     @"Search the selected view's task titles, notes and subtasks.\n"
     @"\"quoted words\" matches the phrase; -word leaves out tasks containing it.";
 
-/* The faces of the toggling commands: each names what a click will DO. */
-static NSString * const title_hide_completed = @"Hide Completed";
-static NSString * const title_show_completed = @"Show Completed";
-static NSString * const title_sort_manual    = @"Manual Sorting";
-static NSString * const title_sort_auto      = @"Automatic Sorting";
-static NSString * const title_hide_sidebar   = @"Hide Sidebar";
-static NSString * const title_show_sidebar   = @"Show Sidebar";
-static NSString * const title_pane_kanban    = @"Kanban View";
-static NSString * const title_pane_list      = @"List View";
-
 /* Initial sidebar width, until the sidebar fits itself to its content. */
 static const CGFloat sidebar_initial_w = 200.0;
 
@@ -165,13 +155,16 @@ init_with_app:(TaskApp *)app
 }
 
 /*
- * dealloc — a window released without having been closed still drops its
- * listeners (they hold an unretained pointer to it).
+ * dealloc — nothing to release here; teardown is shut_down's job and must
+ * already have happened.  The app's listener lists hold an unretained
+ * pointer to this object, and by now the TaskApp may be gone, so a window
+ * that reaches dealloc without shut_down is a programming error worth
+ * stopping on.
  */
 - (void)
 dealloc
 {
-    [self shut_down];
+    NSAssert(_is_shut_down, @"TasksLibraryWindow released without shut_down");
 }
 
 /*
@@ -1067,7 +1060,11 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
 
     switch (command) {
     case TasksCommandDeleteTask:
-        state.enabled = selected > 0;
+        /* Not while text is being edited, in any window: its shortcut is
+         * also the text system's "delete to the start of the line", and a
+         * disabled menu item lets the key through to the field. */
+        state.enabled = selected > 0 &&
+                        ![NSApp.keyWindow.firstResponder isKindOfClass:NSText.class];
         if (selected > 1) {
             state.title = [NSString stringWithFormat:@"Delete %lu Tasks", (unsigned long)selected];
         }
@@ -1084,19 +1081,24 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
     case TasksCommandClearCompleted:
         state.enabled = task_sel_list_id(self.selection) != 0;
         break;
-    case TasksCommandToggleCompleted: {
-        BOOL shown    = task_config_get_bool(TASK_CFG_SHOW_COMPLETED);
-        state.title   = shown ? title_hide_completed : title_show_completed;
-        state.icon    = shown ? @"hidden" : @"visible";
-        state.tooltip = shown ? @"Hide completed tasks" : @"Show completed tasks";
+    /* The toggles: the command table holds each one's first face; only the
+     * other face is spelled here. */
+    case TasksCommandToggleCompleted:
+        if (!task_config_get_bool(TASK_CFG_SHOW_COMPLETED)) {
+            state.title   = @"Show Completed";
+            state.icon    = @"visible";
+            state.tooltip = @"Show completed tasks";
+        }
         break;
-    }
     case TasksCommandToggleSort:
+        if (self.manual_sort) {
+            state.title   = @"Automatic Sorting";
+            state.icon    = @"automatic";
+            state.tooltip = @"Switch to automatic sorting";
+        }
         /* Two reasons the sort control can be unavailable, and each gets
          * its own tooltip: one control greyed for two unrelated causes is
          * only honest if it says which is in force. */
-        state.title   = self.manual_sort ? title_sort_auto : title_sort_manual;
-        state.icon    = self.manual_sort ? @"automatic" : @"manual";
         state.enabled = !self.kanban_on && self.search == NULL;
         if (self.kanban_on) {
             state.tooltip = @"The Kanban board is always drag-sorted — "
@@ -1105,22 +1107,20 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
             state.tooltip = @"A search hides rows, and saving an order from a filtered list "
                             @"would lose the hidden tasks' places — clear the search box "
                             @"to drag-sort again";
-        } else {
-            state.tooltip = self.manual_sort ? @"Switch to automatic sorting"
-                                             : @"Switch to manual drag sorting";
         }
         break;
-    case TasksCommandToggleSidebar: {
-        BOOL shown    = !self.sidebar_item.collapsed;
-        state.title   = shown ? title_hide_sidebar : title_show_sidebar;
-        state.tooltip = shown ? @"Hide the lists pane" : @"Show the lists pane";
+    case TasksCommandToggleSidebar:
+        if (self.sidebar_item.collapsed) {
+            state.title   = @"Show Sidebar";
+            state.tooltip = @"Show the lists pane";
+        }
         break;
-    }
     case TasksCommandTogglePane:
-        state.title   = self.kanban_on ? title_pane_list : title_pane_kanban;
-        state.icon    = self.kanban_on ? @"menu" : @"board";
-        state.tooltip = self.kanban_on ? @"Show the tasks as a list"
-                                       : @"Show the tasks as a Kanban board";
+        if (self.kanban_on) {
+            state.title   = @"List View";
+            state.icon    = @"menu";
+            state.tooltip = @"Show the tasks as a list";
+        }
         break;
     case TasksCommandOpenDatabase:
     case TasksCommandToggleCompact:

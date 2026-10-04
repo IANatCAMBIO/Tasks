@@ -12,7 +12,8 @@
  * porting/INTERFACES.md, "Verification").
  *
  * Run through `make ui-check`, which sets TASKS_DATA_DIR to the sandbox.
- * It links every app object except main.o.
+ * It links every app object except main.o, and shares the tests' harness
+ * (tests/check.h).
  *
  *   ui_check <snapshot dir> [hold seconds]
  *
@@ -52,6 +53,9 @@
 #import "editor_window.h"
 #import "library_window.h"
 #import "settings_window.h"
+#import "ui_util.h"
+
+#include "check.h"
 
 #include "core_views.h"
 #include "task_config.h"
@@ -74,35 +78,6 @@
  * icon bitmap occupies, with and without its guard page. */
 #define ICON_REGION_BYTES  (4096 * 1024)
 #define ICON_REGION_GUARD  (4112 * 1024)
-
-static int failures;
-
-/*
- * check — record one assertion.
- *
- * Inputs:
- *   ok   — the condition that should hold
- *   what — what was being checked, printed either way
- */
-static void
-check(BOOL ok, NSString *what)
-{
-    printf("%s %s\n", ok ? "ok  " : "FAIL", what.UTF8String);
-    if (!ok) failures++;
-}
-
-/*
- * spin — run the main run loop for a while, so layout, drawing, queued
- * blocks and deferred releases happen.
- *
- * Inputs:
- *   seconds — how long to run
- */
-static void
-spin(NSTimeInterval seconds)
-{
-    [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:seconds]];
-}
 
 /*
  * heap_bytes — bytes currently allocated from the default malloc zone.
@@ -208,7 +183,7 @@ snapshot(NSWindow *window, NSString *dir, NSString *name)
 
     [window layoutIfNeeded];
     [window display];
-    spin(0.2);
+    check_spin(0.2);
 
     NSBitmapImageRep *rep = [frame_view bitmapImageRepForCachingDisplayInRect:frame_view.bounds];
     [frame_view cacheDisplayInRect:frame_view.bounds toBitmapImageRep:rep];
@@ -254,52 +229,106 @@ snapshot_windows(TaskApp *app, NSString *dir)
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
         [library showWindow:nil];
 
-        check(snapshot(library.window, dir, @"library-list"), @"snapshot: library, list view");
+        check(snapshot(library.window, dir, @"library-list"), "snapshot: library, list view");
 
         /* A real list, so the rows have no "in <list>" line. */
         GPtrArray *lists = task_db_lists(app->db, FALSE);
         if (lists->len > 0) {
             task_sel_t first = { task_sel_list, ((const TaskList *)g_ptr_array_index(lists, 0))->id };
+            /* select: is the sidebar's report of a change; coming from
+             * here instead, the sidebar is reloaded to show it. */
             [library select:first];
-            check(snapshot(library.window, dir, @"library-one-list"), @"snapshot: library, one list");
+            [library refresh_sidebar];
+            check(snapshot(library.window, dir, @"library-one-list"), "snapshot: library, one list");
             [library select:task_sel_default()];
+            [library refresh_sidebar];
         }
         task_ptr_array_free_lists(lists);
 
         BOOL was_kanban = library.kanban_on;
         [library perform_command:TasksCommandTogglePane param:nil];
-        check(library.kanban_on != was_kanban, @"command: Kanban View toggles the pane");
-        check(snapshot(library.window, dir, @"library-kanban"), @"snapshot: library, Kanban view");
+        check(library.kanban_on != was_kanban, "command: Kanban View toggles the pane");
+        check(snapshot(library.window, dir, @"library-kanban"), "snapshot: library, Kanban view");
         [library perform_command:TasksCommandTogglePane param:nil];
 
         library.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-        check(snapshot(library.window, dir, @"library-list-dark"), @"snapshot: library, dark");
+        check(snapshot(library.window, dir, @"library-list-dark"), "snapshot: library, dark");
         library.window.appearance = nil;
 
         NSArray<NSNumber *> *ids = first_task_ids(app, 1);
         if (ids.count > 0) {
             tasks_editor_open(app, ids[0].longLongValue);
-            spin(0.1);
+            check_spin(0.1);
             for (NSWindow *window in NSApp.windows) {
                 if (window != library.window && window.visible) {
-                    check(snapshot(window, dir, @"editor"), @"snapshot: editor");
+                    check(snapshot(window, dir, @"editor"), "snapshot: editor");
                 }
             }
             tasks_editor_close_all();
         }
 
         tasks_settings_window_open(app);
-        spin(0.1);
+        check_spin(0.1);
         for (NSWindow *window in NSApp.windows) {
             if (window != library.window && window.visible) {
-                check(snapshot(window, dir, @"settings"), @"snapshot: Settings");
+                check(snapshot(window, dir, @"settings"), "snapshot: Settings");
                 [window close];
             }
         }
 
         [library close];
     }
-    spin(0.2);
+    check_spin(0.2);
+}
+
+/*
+ * check_utilities — the shared helpers every package builds on: the icon
+ * loader, the image-view factory and the custom sheet.
+ *
+ * Inputs:
+ *   app — the application context
+ */
+static void
+check_utilities(TaskApp *app)
+{
+    NSImage *icon = tasks_icon(@"add", 24.0);
+    NSBitmapImageRep *rep = (NSBitmapImageRep *)icon.representations.firstObject;
+    check(icon != nil && NSEqualSizes(icon.size, NSMakeSize(24, 24)),
+          "utilities: a bundled icon comes back at its drawing size");
+    check(icon.representations.count == 1 && rep.pixelsWide == 48,
+          "utilities: ... holding one small bitmap, not the 512 px source");
+    check(tasks_icon(@"add", 24.0) == icon, "utilities: icons are cached");
+    check(tasks_icon(@"no-such-icon", 24.0) == nil, "utilities: a missing icon is nil");
+
+    NSImageView *view = tasks_image_view(icon, 16.0);
+    check(NSEqualSizes(view.frame.size, NSMakeSize(16, 16)) && view.image == icon,
+          "utilities: an image view is framed at its final size");
+
+    check([tasks_string(NULL) isEqualToString:@""] &&
+          [tasks_string("caf\xe9") isEqualToString:@"caf\u00e9"],
+          "utilities: core text is never a nil string, even when not UTF-8");
+
+    /* The sheet: shown on a window, ended as its accept button would end
+     * it, its completion called once, and the panel released. */
+    __weak NSWindow *weak_sheet = nil;
+    __block int      accepted   = -1;
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        [library showWindow:nil];
+
+        NSTextField *field = [NSTextField textFieldWithString:@"New list"];
+        [field.widthAnchor constraintEqualToConstant:240].active = YES;
+        tasks_ui_sheet(library.window, field, @"Create", ^(BOOL ok) { accepted = ok; });
+        check_spin(0.3);
+        weak_sheet = library.window.attachedSheet;
+        check(weak_sheet != nil, "utilities: the sheet attaches to its window");
+        [library.window endSheet:library.window.attachedSheet returnCode:NSModalResponseOK];
+        check_spin(0.3);
+        check(accepted == 1, "utilities: the sheet's completion reports the accept button");
+        [library close];
+    }
+    check_spin(0.2);
+    check(weak_sheet == nil, "utilities: the sheet is released when it ends");
 }
 
 /*
@@ -338,7 +367,7 @@ use_windows(TaskApp *app, TasksLibraryWindow *library, int cycles)
         @autoreleasepool {
             for (NSNumber *task_id in ids) tasks_editor_open(app, task_id.longLongValue);
             tasks_settings_window_open(app);
-            spin(0.02);
+            check_spin(0.02);
 
             [library perform_command:TasksCommandTogglePane param:nil];
             [library perform_command:TasksCommandToggleCompleted param:nil];
@@ -346,13 +375,13 @@ use_windows(TaskApp *app, TasksLibraryWindow *library, int cycles)
             [library perform_command:TasksCommandToggleCompleted param:nil];
             task_app_notify_changed(app);
             task_app_status(app, "cycle %d", i);
-            spin(0.02);
+            check_spin(0.02);
 
             for (NSWindow *window in [NSApp.windows copy]) {
                 if (window != library.window && window.visible) [window close];
             }
         }
-        spin(0.05);
+        check_spin(0.05);
     }
 }
 
@@ -412,33 +441,33 @@ check_memory_and_ownership(TaskApp *app)
         printf("     footprint:   %.1f -> %.1f MB\n",
                footprint_mid / 1048576.0, footprint_bytes() / 1048576.0);
         check(heap_growth < CYCLES * HEAP_BUDGET_PER_CYCLE,
-              @"memory: heap growth with use is within the budget");
-        check(icon_sized_regions() == 0, @"memory: no full-size icon bitmaps (4 MB regions)");
+              "memory: heap growth with use is within the budget");
+        check(icon_sized_regions() == 0, "memory: no full-size icon bitmaps (4 MB regions)");
 
         /* Closing the library window must take open editors with it. */
         for (NSNumber *task_id in first_task_ids(app, 3)) {
             tasks_editor_open(app, task_id.longLongValue);
         }
         tasks_settings_window_open(app);
-        spin(0.05);
+        check_spin(0.05);
         secondary = other_windows(library.window);
         [library close];
         for (NSWindow *window in [NSApp.windows copy]) {
             if (window.visible) [window close];     /* Settings */
         }
     }
-    spin(0.2);
+    check_spin(0.2);
 
     /* allObjects holds only the windows still alive (a weak pointer array
      * keeps its count when an entry goes nil). */
     check(secondary.count == 4 && secondary.allObjects.count == 0,
-          @"ownership: the editor and Settings windows are released when closed");
-    check(weak_library == nil, @"ownership: the library window controller is released");
-    check(weak_window == nil, @"ownership: its window is released");
-    check(weak_content == nil, @"ownership: its panes are released");
-    check(visible_windows() == 0, @"ownership: no window is left open");
+          "ownership: the editor and Settings windows are released when closed");
+    check(weak_library == nil, "ownership: the library window controller is released");
+    check(weak_window == nil, "ownership: its window is released");
+    check(weak_content == nil, "ownership: its panes are released");
+    check(visible_windows() == 0, "ownership: no window is left open");
     check(app->changed_l == NULL && app->tasks_l == NULL && app->status_l == NULL,
-          @"ownership: no event listener is left subscribed");
+          "ownership: no event listener is left subscribed");
 }
 
 /*
@@ -491,17 +520,17 @@ main(int argc, const char *argv[])
         }
 
         snapshot_windows(app, dir);
+        check_utilities(app);
         check_memory_and_ownership(app);
 
         if (argc > 2) {
             printf("     holding for %s s as pid %d\n", argv[2], getpid());
             fflush(stdout);
-            spin(atof(argv[2]));
+            check_spin(atof(argv[2]));
         }
 
         task_app_free(app);
         task_config_close();
-        if (failures > 0) printf("%d check(s) failed\n", failures);
-        return failures > 0 ? 1 : 0;
+        return check_result();
     }
 }

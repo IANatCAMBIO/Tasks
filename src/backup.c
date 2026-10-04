@@ -111,8 +111,9 @@ task_backup_ready(gchar **reason)
                                "(Settings \xe2\x86\x92 Database)");
         return FALSE;
     }
-    /* No "no folder chosen" case any more: task_backup_dir always answers,
-     * and creates the fallback.  What is left is a CHOSEN folder that has
+    /* No "no folder chosen" case any more: task_backup_dir answers with
+     * the fallback and creates it (it is NULL only when there is no data
+     * directory at all).  What is left is a CHOSEN folder that has
      * since gone away or turned read-only — a removed external disk, most
      * likely — which is worth saying plainly rather than silently
      * redirecting somewhere the user is not looking.                       */
@@ -388,7 +389,7 @@ task_backup_start(TaskApp *app, const gchar *db_path, TaskBackupDoneFn done,
     BackupJob *job = g_new0(BackupJob, 1);
     job->app       = app;
     job->db_path   = g_strdup(db_path);
-    job->dir       = task_backup_dir();   /* resolved, never NULL */
+    job->dir       = task_backup_dir();   /* not NULL: task_backup_ready passed */
     job->keep      = backup_keep();
     job->done      = done;
     job->user_data = user_data;

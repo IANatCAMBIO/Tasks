@@ -29,11 +29,14 @@ CC       = clang
 VERSION := $(strip $(shell cat VERSION))
 
 # ── Sandbox data ─────────────────────────────────────────────────────────
-# `make run`, `make seed` and `make test` ALWAYS point the app at these
-# directories through TASKS_DATA_DIR (src/task_paths.h), so no development
-# run ever uses the per-user data directory.  dev/ is gitignored.
-DEV_DATA  = $(CURDIR)/dev/data
-TEST_DATA = $(CURDIR)/dev/test-data
+# `make run`, `make seed`, `make test` and `make ui-check` ALWAYS point the
+# app at these directories through TASKS_DATA_DIR (src/task_paths.h), so no
+# development run ever uses the per-user data directory.  dev/ is
+# gitignored.
+# `override`: these feed `rm -rf` below, so a value given on the command
+# line or in the environment must not be able to replace them.
+override DEV_DATA  = $(CURDIR)/dev/data
+override TEST_DATA = $(CURDIR)/dev/test-data
 
 # ── Dependencies ─────────────────────────────────────────────────────────
 # GLib (core utilities, kept for this phase) and SQLite, both from MacPorts
@@ -178,8 +181,9 @@ seed: build/seed
 
 # ── Tests ────────────────────────────────────────────────────────────────
 # tests/*_test.c, each linked against the core objects only — no AppKit —
-# and run against a scratch data directory.  CoreFoundation is linked for
-# the run loop the main-loop tests spin.
+# and run with TASKS_DATA_DIR set to a scratch directory that is emptied
+# first; every file a test creates is inside it.  CoreFoundation is linked
+# for the run loop the main-loop tests spin.
 TEST_SRCS = $(wildcard tests/*_test.c)
 TEST_BINS = $(patsubst tests/%.c,build/%,$(TEST_SRCS))
 
@@ -205,10 +209,10 @@ UI_CHECK_APP  = build/ui_check.app/Contents
 UI_CHECK_BIN  = $(UI_CHECK_APP)/MacOS/ui_check
 UI_CHECK_OBJS = $(filter-out build/main.o,$(OBJS))
 
-$(UI_CHECK_BIN): tools/ui_check.m $(UI_CHECK_OBJS) $(ICONS) Makefile | build
+$(UI_CHECK_BIN): tools/ui_check.m tests/check.h $(UI_CHECK_OBJS) $(ICONS) Makefile | build
 	@rm -rf build/ui_check.app && mkdir -p $(UI_CHECK_APP)/MacOS $(UI_CHECK_APP)/Resources
 	@cp $(ICONS) $(UI_CHECK_APP)/Resources/
-	$(CC) $(OBJCFLAGS) -c -o build/ui_check.o $<
+	$(CC) $(OBJCFLAGS) -I tests -c -o build/ui_check.o $<
 	$(CC) -o $@ build/ui_check.o $(UI_CHECK_OBJS) $(LDFLAGS)
 
 ui-check: $(UI_CHECK_BIN)

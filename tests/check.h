@@ -4,8 +4,9 @@
  * run.  Plain C; each test is a main() that returns check_result().
  *
  * Every test runs with TASKS_DATA_DIR pointing into dev/ (the Makefile
- * sets it), and check_scratch_dir refuses to run without it, so a test
- * binary started by hand cannot write into the per-user data directory.
+ * sets it).  check_scratch_dir refuses to run without it, and refuses a
+ * value inside the GTK app's live data directory, so a test binary started
+ * by hand cannot write into the per-user data directory or the live one.
  */
 
 #ifndef TESTS_CHECK_H
@@ -15,6 +16,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+
+#include "task_paths.h"
 
 static int check_failures;
 
@@ -48,7 +51,8 @@ check_result(void)
 /*
  * check_scratch_dir — make a fresh, empty directory inside the sandbox
  * ($TASKS_DATA_DIR) for one test to work in.  Exits with status 2 when the
- * sandbox variable is not set or the directory cannot be made.
+ * sandbox variable is not set, names the live data directory, or the
+ * directory cannot be made.
  *
  * Inputs:
  *   buf  — receives the directory's absolute path
@@ -57,10 +61,11 @@ check_result(void)
 static inline void
 check_scratch_dir(char *buf, size_t size)
 {
-    const char *base = getenv("TASKS_DATA_DIR");
+    const char *base = getenv(TASK_DATA_DIR_ENV);
 
-    if (base == NULL || base[0] == '\0') {
-        fprintf(stderr, "TASKS_DATA_DIR is not set; run the tests with `make test`\n");
+    if (base == NULL || base[0] == '\0' || task_path_is_live_data(base)) {
+        fprintf(stderr, "%s is not set to a sandbox; run the tests with `make test`\n",
+                TASK_DATA_DIR_ENV);
         exit(2);
     }
     snprintf(buf, size, "%s/scratch-XXXXXX", base);
