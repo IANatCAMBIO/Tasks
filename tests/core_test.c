@@ -1,18 +1,19 @@
 /*
- * test_main.c — logic test suite for Tasks.
+ * core_test.c — the logic tests carried from the GTK build: search-query
+ * parsing, recurrence arithmetic, and the database schema.
  *
- * Exercises search-query parsing, recurrence arithmetic, and the database
- * schema without any GTK display.  Link against build/{app,db,search,recur}.o
- * via the Makefile's `make test` target.
+ * Links against the core objects only (no AppKit).  Still on GLib's g_test
+ * harness this phase; the tests written for the fork (the other
+ * test programs beside this one) use tests/check.h instead.
  *
  * Run:  make test
  */
 #include <glib.h>
 #include <glib/gstdio.h>
-#include "app.h"
 #include "db.h"
 #include "search.h"
 #include "recur.h"
+#include "task_dates.h"
 
 /* ---------------------------------------------------------------------------
  * Helpers

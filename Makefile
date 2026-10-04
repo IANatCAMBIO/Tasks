@@ -1,257 +1,250 @@
-# =============================================================================
-# Tasks — Makefile
+# Tasks AppKit — Makefile.  See BUILD.md for the full reference.
 #
-# Builds the Tasks application (a GTK4 + SQLite task-list app written
-# in plain C — the companion app to Notes).  Requires GTK 4.10+ and
-# SQLite3, discovered via pkg-config.
-#
-# On macOS with MacPorts:
-#     sudo port install pkgconf gtk4 +quartz
-#
-# Targets:
-#     make          — build the `tasks` binary
-#     make clean    — remove build artifacts (including dist/)
-#     make run      — build and launch the app
-#     make install  — install to $(PREFIX)/share/tasks, symlink from $(PREFIX)/bin
-#     make test     — build and run the logic test suite
-#     make app      — macOS .app bundle → dist/Tasks.app
-#                     (needs the macOS sips/iconutil tools; the bundle
-#                     still depends on the MacPorts GTK libraries)
-# =============================================================================
+#   make          build the app bundle
+#   make run      launch it against the sandbox data in dev/data
+#   make seed     (re)create the sandbox test database through the core API
+#   make test     build and run the core tests (no AppKit, no display)
+#   make ui-check build the windows in-process: snapshots, ownership, memory
+#   make install  copy the bundle to ~/Applications
+#   make clean    remove build/ and the bundle
 
-# Semantic version — read from VERSION file (the single source of truth).
-# Baked into the binary as TASK_VERSION (shown in the About dialog) and into
-# the .app bundle's Info.plist.  To release: edit VERSION, then `make`.
-# Stated explicitly rather than left to "the first rule in the file":
-# a rule defined above `all:` silently becomes the default goal and
-# `make` stops building the binary.
+# ── Identity ─────────────────────────────────────────────────────────────
+# The ONE place the app's names are defined.  They reach the code as the
+# TASKS_* macros below and reach Info.plist through plutil; nothing else
+# spells them.
+APP_NAME      = Tasks AppKit
+APP           = TasksAppKit
+BUNDLE_ID     = com.cambio.tasks-appkit
+# Folder under ~/Library/Application Support holding the database and ini.
+DATA_DIR_NAME = TasksAppKit
+
+BUNDLE   = $(APP).app
+CONTENTS = $(BUNDLE)/Contents
+MACOS    = $(CONTENTS)/MacOS
+RSRC     = $(CONTENTS)/Resources
+
+CC       = clang
+
+# The version shown in the About panel; edit VERSION to change it.
+VERSION := $(strip $(shell cat VERSION))
+
+# ── Sandbox data ─────────────────────────────────────────────────────────
+# `make run`, `make seed` and `make test` ALWAYS point the app at these
+# directories through TASKS_DATA_DIR (src/task_paths.h), so no development
+# run ever uses the per-user data directory.  dev/ is gitignored.
+DEV_DATA  = $(CURDIR)/dev/data
+TEST_DATA = $(CURDIR)/dev/test-data
+
+# ── Dependencies ─────────────────────────────────────────────────────────
+# GLib (core utilities, kept for this phase) and SQLite, both from MacPorts
+# via pkg-config.  MacPorts installs pkg-config in /opt/local/bin, which is
+# not on every shell's PATH.
+PKGCONF    := $(shell command -v pkg-config 2>/dev/null || echo /opt/local/bin/pkg-config)
+PKGS        = glib-2.0 sqlite3
+PKG_CFLAGS := $(shell $(PKGCONF) --cflags $(PKGS))
+PKG_LIBS   := $(shell $(PKGCONF) --libs $(PKGS))
+
+# ── Code signing ─────────────────────────────────────────────────────────
+# macOS ties privacy grants to the app's signature: for an ad-hoc ("-")
+# signature that is the exact build, so every rebuild loses the grant; for
+# a certificate it is the bundle ID plus certificate, which rebuilds keep.
+# Defaults to the first "Apple Development" identity in the keychain, else
+# ad hoc.  Override with
+#   make CODESIGN_IDENTITY="…"   (list: security find-identity -v -p codesigning)
+#
+# Only goals that build the bundle look the identity up: clean, test, seed
+# and ui-check sign nothing, so they skip the keychain query.
+SIGNING_GOALS := $(if $(MAKECMDGOALS),$(filter-out clean test seed ui-check,$(MAKECMDGOALS)),all)
+ifneq ($(SIGNING_GOALS),)
+ifeq ($(origin CODESIGN_IDENTITY),undefined)
+CODESIGN_IDENTITY := $(or $(shell security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -n 1),-)
+endif
+
+# build/codesign.id records the signing identity.  When the identity
+# changes it is rewritten (while the Makefile is read) and the bundle is
+# backdated, which forces a re-sign; an unchanged identity triggers nothing.
+$(shell mkdir -p build && (echo '$(CODESIGN_IDENTITY)' | cmp -s - build/codesign.id \
+    || { echo '$(CODESIGN_IDENTITY)' > build/codesign.id; \
+         [ -d $(BUNDLE) ] && touch -t 200001010000 $(BUNDLE); true; }))
+endif
+
+# ── Flags ────────────────────────────────────────────────────────────────
+# DEPLOY_TARGET is the macOS version the CODE is written for: every source
+# file is compiled against it, so an API newer than it is a build error.
+# LINK_TARGET is the version the BINARY is linked for.  While the MacPorts
+# GLib and SQLite are linked (phase one) that has to be the build machine's
+# own macOS, because MacPorts builds its libraries for the system it runs
+# on and the linker rejects (with a warning per library) a program that
+# claims to run on anything older than its libraries.  Once GLib is gone
+# the two become the same number.
+DEPLOY_TARGET = 14.0
+LINK_TARGET  := $(shell sw_vers -productVersion | cut -d. -f1).0
+
+# -Werror=unguarded-availability: calling an API newer than the deployment
+# target without an @available check is a build error.  (Clang cannot check
+# messages to __kindof receivers such as NSApp.)
+# -MMD -MP: emit build/*.d header-dependency files, so editing a header
+# rebuilds every object that includes it.
+DEFS     = -DTASKS_APP_NAME='"$(APP_NAME)"' \
+           -DTASKS_DATA_DIR_NAME='"$(DATA_DIR_NAME)"'
+COMMON   = -O2 -Wall -Wextra -Werror=unguarded-availability \
+           -mmacosx-version-min=$(DEPLOY_TARGET) -I src -MMD -MP $(DEFS) $(PKG_CFLAGS)
+# The core is plain C11 and builds with every -Wextra warning on.
+CFLAGS   = -std=c11 $(COMMON)
+# Objective-C: ARC.  -Wno-unused-parameter because the parameters left
+# unused are ones AppKit's callback signatures require (senders,
+# notifications, delegate arguments), which would otherwise each need a
+# (void) cast.
+OBJCFLAGS = -fobjc-arc $(COMMON) -Wno-unused-parameter
+LDLIBS   = -mmacosx-version-min=$(LINK_TARGET) $(PKG_LIBS)
+LDFLAGS  = -framework Cocoa -framework UniformTypeIdentifiers $(LDLIBS)
+
+# Every src/*.c is the toolkit-free core; every src/*.m is the AppKit
+# layer.  A .c and a .m must not share a base name (both would build to
+# the same object).
+CORE_SRCS = $(wildcard src/*.c)
+UI_SRCS   = $(wildcard src/*.m)
+CORE_OBJS = $(patsubst src/%.c,build/%.o,$(CORE_SRCS))
+UI_OBJS   = $(patsubst src/%.m,build/%.o,$(UI_SRCS))
+OBJS      = $(CORE_OBJS) $(UI_OBJS)
+
+.PHONY: all run seed install clean test ui-check
 .DEFAULT_GOAL := all
 
-VERSION  := $(strip $(shell cat VERSION))
+all: $(BUNDLE)
 
-# The compiler to use.  clang is the system compiler on macOS.
-CC       := cc
+# ── Bundle ───────────────────────────────────────────────────────────────
+# Info.plist gets the app's identity from the variables above, the version
+# from VERSION, the minimum system version from LINK_TARGET, and the time
+# the bundle was assembled as TasksBuildDate (UTC), shown in the About
+# panel.
+# Only the icons the app loads by name are bundled; icons/ holds others.
+ICON_NAMES = add remove left-and-right hidden visible manual automatic \
+             menu board document
+ICONS      = $(patsubst %,icons/%.png,$(ICON_NAMES))
+PLIST      = $(CONTENTS)/Info.plist
 
-# pkg-config binary.  MacPorts installs into /opt/local/bin, which may not
-# be on PATH in every shell, so fall back to the absolute path if needed.
-PKGCONF  := $(shell command -v pkg-config 2>/dev/null || echo /opt/local/bin/pkg-config)
+$(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(ICONS)
+	@rm -rf $(RSRC) && mkdir -p $(RSRC)  # fresh, so removed icons do not linger
+	@cp resources/Info.plist $(PLIST)
+	@plutil -replace CFBundleName -string "$(APP_NAME)" $(PLIST)
+	@plutil -replace CFBundleDisplayName -string "$(APP_NAME)" $(PLIST)
+	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" $(PLIST)
+	@plutil -replace CFBundleExecutable -string "$(APP)" $(PLIST)
+	@plutil -replace CFBundleShortVersionString -string "$(VERSION)" $(PLIST)
+	@plutil -replace CFBundleVersion -string "$(VERSION)" $(PLIST)
+	@plutil -replace LSMinimumSystemVersion -string "$(LINK_TARGET)" $(PLIST)
+	@plutil -replace TasksBuildDate -string "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" $(PLIST)
+	@cp $(ICONS) $(RSRC)/
+	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(BUNDLE)
+	@touch $(BUNDLE)  # codesign rewrites the binary; keep the bundle newer than it
 
-# Every pkg-config module the build needs, resolved in a single query.
-# No network library: nothing in the app talks to one (checkable with
-# `otool -L tasks` / `ldd tasks`).  No gtk-mac-integration either: the
-# native macOS menu bar is GTK's own (gtk_application_set_menubar).
-#
-# NO deprecated GTK4 API is used, and no deprecation warning is
-# suppressed: -Wdeprecated-declarations is part of -Wall and the build
-# must stay clean under it (GTK4_MIGRATION.md).
-PKGS     := gtk4 sqlite3
+$(MACOS)/$(APP): $(OBJS)
+	@mkdir -p $(MACOS)
+	$(CC) -o $@ $^ $(LDFLAGS)
 
-# Compiler flags: C11, broad warnings, debug symbols, plus the include
-# paths for the modules above.
-CFLAGS   := -std=c11 -Wall -Wextra -g -Isrc \
-            -DTASK_VERSION='"$(VERSION)"' \
-            $(shell $(PKGCONF) --cflags $(PKGS))
-
-# Linker flags: those same libraries, plus libm.
-LDFLAGS  := $(shell $(PKGCONF) --libs $(PKGS)) -lm
-
-# All C source files that make up the application.
-SRCS     := src/main.c \
-            src/app.c \
-            src/task_ops.c \
-            src/task_worker.c \
-            src/task_view.c \
-            src/list_rows.c \
-            src/task_rows.c \
-            src/search.c \
-            src/core_views.c \
-            src/db.c \
-            src/backup.c \
-            src/recur.c \
-            src/library_window.c \
-            src/sidebar.c \
-            src/task_list.c \
-            src/kanban.c \
-            src/editor_window.c \
-            src/settings_window.c
-
-# Object files derived from the source list (build/ mirrors src/).
-OBJS     := $(SRCS:src/%.c=build/%.o)
-
-# The final executable name.
-BIN      := tasks
-
-# Default target: build the application binary (and keep the clangd
-# compilation database fresh — it only regenerates on Makefile changes).
-all: $(BIN) compile_commands.json
-
-# Link all object files into the final binary.
-$(BIN): $(OBJS)
-	$(CC) -o $@ $(OBJS) $(LDFLAGS)
-
-# Compile each .c file into a .o in build/.  Every object depends on all
-# headers for simplicity (the project is small enough that full rebuilds
-# on header change are cheap), and on the Makefile so a VERSION bump
-# recompiles the baked-in TASK_VERSION.
-build/%.o: src/%.c $(wildcard src/*.h) Makefile VERSION
-	@mkdir -p $(dir $@)
+# Objects also depend on the Makefile, so a flag or identity change
+# rebuilds everything.
+build/%.o: src/%.c Makefile | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# --- clangd / IDE support ----------------------------------------------------
-# compile_commands.json gives clangd the same include paths as the real
-# build (without it the IDE reports "gtk/gtk.h not found").  Regenerated
-# whenever the Makefile changes; machine-specific, so it stays gitignored.
-# JSONFLAGS escapes the double quotes in CFLAGS (e.g. -DTASK_VERSION='"…"')
-# for embedding in a JSON string: make turns each " into \\\", the shell's
-# double-quoting collapses that to \", which is what JSON needs.
-JSONFLAGS := $(subst ",\\\",$(CFLAGS))
+build/%.o: src/%.m Makefile | build
+	$(CC) $(OBJCFLAGS) -c -o $@ $<
 
-compile_commands.json: Makefile VERSION
-	@{ echo '['; \
-	first=1; \
-	for f in $(SRCS); do \
-	  [ $$first -eq 1 ] || echo ','; first=0; \
-	  printf '  {"directory": "%s", "file": "%s", "command": "%s -c %s"}' \
-	    "$(CURDIR)" "$$f" "$(CC) $(JSONFLAGS)" "$$f"; \
-	done; \
-	echo; echo ']'; } > $@
-	@echo "wrote $@"
+-include $(OBJS:.o=.d)
 
-# Build and launch the application.
-run: $(BIN)
-	./$(BIN)
+build:
+	@mkdir -p build
 
-# --- Development sandbox -----------------------------------------------------
-# `make run-dev` runs the freshly built binary against a throwaway data
-# directory under dev/, never the real ~/.local/share/tasks.  It needs no
-# code: task_db_default_dir() goes through g_get_user_data_dir(), which
-# honours XDG_DATA_HOME on every platform, so the database, the ini and the
-# backups all land in $(DEV_DATA)/tasks.
-#
-# A ZERO-BYTE tasks.db is seeded so the launch skips the first-run dialog
-# and exercises the fresh-schema path (CLAUDE.md gotcha 21).  Delete it to
-# test the first-run dialog itself; delete dev/ to start over.
-DEV_DIR  := dev
-DEV_DATA := $(DEV_DIR)/data
+# ── Sandbox run ──────────────────────────────────────────────────────────
+# The binary is run directly (not through `open`) so that TASKS_DATA_DIR
+# reaches it and its log output stays in this terminal.  The sandbox is
+# seeded first if it has no database yet.
+run: all
+	@[ -f "$(DEV_DATA)/tasks.db" ] || $(MAKE) seed
+	TASKS_DATA_DIR="$(DEV_DATA)" $(MACOS)/$(APP)
 
-$(DEV_DATA)/tasks/tasks.db:
-	mkdir -p $(dir $@)
-	: > $@
+# The seed tool writes a realistic test database through the core API.
+# `make seed` always starts from an empty sandbox, so the result is the
+# same every time.
+build/seed: tools/seed.c $(CORE_OBJS) Makefile | build
+	$(CC) $(CFLAGS) -c -o build/seed.o $<
+	$(CC) -o $@ build/seed.o $(CORE_OBJS) $(LDLIBS)
 
-run-dev: $(BIN) $(DEV_DATA)/tasks/tasks.db
-	XDG_DATA_HOME=$(CURDIR)/$(DEV_DATA) ./$(BIN)
+seed: build/seed
+	@rm -rf "$(DEV_DATA)" && mkdir -p "$(DEV_DATA)"
+	TASKS_DATA_DIR="$(DEV_DATA)" build/seed
 
-# --- Install ---------------------------------------------------------------
-# Installs the binary, icons/ and tasks.ini.defaults under
-# $(PREFIX)/share/tasks/, then creates a symlink from $(PREFIX)/bin/tasks.
-# The symlink is load-bearing: the app resolves icons/ and tasks.ini.defaults
-# relative to its own path, and symlink resolution (g_canonicalize_filename
-# calls realpath on POSIX) hands it the real binary directory, not the
-# symlink directory.  Default prefix: ~/.local (user install, no sudo).
-#
-# Usage:
-#     make install                   # → ~/.local/bin/tasks
-#     make install PREFIX=/usr/local # → /usr/local/bin/tasks
+# ── Tests ────────────────────────────────────────────────────────────────
+# tests/*_test.c, each linked against the core objects only — no AppKit —
+# and run against a scratch data directory.  CoreFoundation is linked for
+# the run loop the main-loop tests spin.
+TEST_SRCS = $(wildcard tests/*_test.c)
+TEST_BINS = $(patsubst tests/%.c,build/%,$(TEST_SRCS))
 
-PREFIX   ?= $(HOME)/.local
-BINDIR   := $(PREFIX)/bin
-SHAREDIR := $(PREFIX)/share/tasks
+build/%_test: tests/%_test.c tests/check.h tests/fixture.h $(CORE_OBJS) Makefile | build
+	$(CC) $(CFLAGS) -I tests -c -o $@.o $<
+	$(CC) -o $@ $@.o $(CORE_OBJS) $(LDLIBS) -framework CoreFoundation
 
-install: $(BIN)
-	@install -d "$(BINDIR)" "$(SHAREDIR)"
-	install -m 755 $(BIN) "$(SHAREDIR)/$(BIN)"
-	cp -R icons "$(SHAREDIR)/icons"
-	install -m 644 tasks.ini.defaults "$(SHAREDIR)/tasks.ini.defaults"
-	@ln -sf "$(SHAREDIR)/$(BIN)" "$(BINDIR)/$(BIN)"
-	@echo "installed to $(SHAREDIR)"
-	@echo "symlinked $(BINDIR)/$(BIN) → $(SHAREDIR)/$(BIN)"
-
-# --- Test suite -------------------------------------------------------------
-# Builds build/test_tasks against the same object files as the application
-# (minus main.c, which defines main()) and runs it.  No display required:
-# all tests are pure logic — search parsing, recurrence arithmetic, and the
-# database schema.
-
-TEST_BIN  := build/test_tasks
-TEST_OBJS := build/app.o build/db.o build/search.o build/recur.o \
-             build/backup.o build/task_worker.o
-
-$(TEST_BIN): tests/test_main.c $(TEST_OBJS)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -o $@ tests/test_main.c $(TEST_OBJS) $(LDFLAGS)
-
-test: $(TEST_BIN)
-	./$(TEST_BIN)
-
-# Remove all build artifacts.
-clean:
-	rm -rf build $(BIN) $(DIST)
-
-# =============================================================================
-# Optional packaging targets — everything lands in dist/.
-# =============================================================================
-
-DIST     := dist
-
-# --- macOS .app bundle -------------------------------------------------------
-# A minimal bundle around the binary: icons/ and the defaults ini sit next
-# to the executable inside Contents/MacOS (the app resolves both relative
-# to argv[0]).  document.png becomes the bundle icon via sips + iconutil.
-# The binary still links against the MacPorts GTK dylibs (absolute install
-# names), so the bundle runs on this machine but is NOT self-contained.
-# The live tasks.ini is NEVER copied (it is per-machine state).
-
-# The bundle name carries no version: the path stays stable across
-# releases, so a Dock/Launchpad entry or an alias pointing at it keeps
-# working after a VERSION bump.  The version still ships INSIDE, in
-# CFBundleShortVersionString/CFBundleVersion below and in the binary's
-# baked-in TASK_VERSION (the About dialog).
-APP_DIR  := $(DIST)/Tasks.app
-ICONSET  := $(DIST)/document.iconset
-
-app: $(BIN)
-	@command -v iconutil >/dev/null || \
-	  { echo "error: iconutil/sips not found — 'make app' is macOS-only"; \
-	    exit 1; }
-	rm -rf "$(APP_DIR)" "$(ICONSET)"
-	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" \
-	         "$(ICONSET)"
-	# The executable is named "Tasks": for NIB-less apps (GTK builds
-	# the menubar programmatically) macOS titles the app menu with the
-	# PROCESS name, not CFBundleName — the binary's filename is the
-	# only lever.  argv[0]-relative lookups (icons,
-	# ini) resolve by directory, so the rename is harmless.
-	cp $(BIN) "$(APP_DIR)/Contents/MacOS/Tasks"
-	cp -R icons "$(APP_DIR)/Contents/MacOS/icons"
-	cp tasks.ini.defaults "$(APP_DIR)/Contents/MacOS/"
-	find "$(APP_DIR)" -name .DS_Store -delete
-	for sz in 16 32 128 256 512; do \
-	  sips -z $$sz $$sz icons/document.png \
-	       --out "$(ICONSET)/icon_$${sz}x$${sz}.png" >/dev/null; \
-	  dbl=$$((sz * 2)); \
-	  sips -z $$dbl $$dbl icons/document.png \
-	       --out "$(ICONSET)/icon_$${sz}x$${sz}@2x.png" >/dev/null; \
+test: $(TEST_BINS)
+	@rm -rf "$(TEST_DATA)" && mkdir -p "$(TEST_DATA)"
+	@for t in $(TEST_BINS); do \
+	    echo "== $$t"; TASKS_DATA_DIR="$(TEST_DATA)" ./$$t || exit 1; \
 	done
-	iconutil -c icns -o "$(APP_DIR)/Contents/Resources/document.icns" \
-	         "$(ICONSET)"
-	rm -rf "$(ICONSET)"
-	printf '%s\n' \
-	  '<?xml version="1.0" encoding="UTF-8"?>' \
-	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-	  '<plist version="1.0">' \
-	  '<dict>' \
-	  '  <key>CFBundleName</key><string>Tasks</string>' \
-	  '  <key>CFBundleDisplayName</key><string>Tasks</string>' \
-	  '  <key>CFBundleIdentifier</key><string>org.example.tasks</string>' \
-	  '  <key>CFBundleExecutable</key><string>Tasks</string>' \
-	  '  <key>CFBundleIconFile</key><string>document</string>' \
-	  '  <key>CFBundlePackageType</key><string>APPL</string>' \
-	  '  <key>CFBundleShortVersionString</key><string>$(VERSION)</string>' \
-	  '  <key>CFBundleVersion</key><string>$(VERSION)</string>' \
-	  '  <key>NSHighResolutionCapable</key><true/>' \
-	  '</dict>' \
-	  '</plist>' \
-	  > "$(APP_DIR)/Contents/Info.plist"
-	@echo "built $(APP_DIR)"
+	@echo "all tests passed"
 
-.PHONY: all run run-dev install test clean app
+# ── UI check ─────────────────────────────────────────────────────────────
+# tools/ui_check.m linked against every app object but main.o: it builds
+# the real windows against the sandbox, writes PNG snapshots of them to
+# dev/snapshots, and checks window ownership and memory from the inside
+# (needs no Screen Recording, Accessibility or Developer Tools permission).
+# It runs from a throwaway bundle under build/ so that the icons are found
+# the way the app finds them.  Not part of the app.
+UI_CHECK_APP  = build/ui_check.app/Contents
+UI_CHECK_BIN  = $(UI_CHECK_APP)/MacOS/ui_check
+UI_CHECK_OBJS = $(filter-out build/main.o,$(OBJS))
+
+$(UI_CHECK_BIN): tools/ui_check.m $(UI_CHECK_OBJS) $(ICONS) Makefile | build
+	@rm -rf build/ui_check.app && mkdir -p $(UI_CHECK_APP)/MacOS $(UI_CHECK_APP)/Resources
+	@cp $(ICONS) $(UI_CHECK_APP)/Resources/
+	$(CC) $(OBJCFLAGS) -c -o build/ui_check.o $<
+	$(CC) -o $@ build/ui_check.o $(UI_CHECK_OBJS) $(LDFLAGS)
+
+ui-check: $(UI_CHECK_BIN)
+	@[ -f "$(DEV_DATA)/tasks.db" ] || $(MAKE) seed
+	TASKS_DATA_DIR="$(DEV_DATA)" $(UI_CHECK_BIN) "$(CURDIR)/dev/snapshots"
+
+# ── Install ──────────────────────────────────────────────────────────────
+# Per-user install: no sudo needed.  The old bundle is removed first
+# because `cp -R` into an existing bundle directory would nest the new one
+# inside it.  A running installed copy is asked to quit (SIGTERM, which the
+# app handles as a normal quit: pending edits are saved and the database is
+# closed) and reopened afterwards.  Install stops if it has not exited
+# after 5 s.  The installed app uses the per-user data directory, never
+# the sandbox.
+INSTALL_DIR   = $(HOME)/Applications
+INSTALLED_BIN = $(INSTALL_DIR)/$(BUNDLE)/Contents/MacOS/$(APP)
+
+install: all
+	@mkdir -p "$(INSTALL_DIR)"
+	@running=0; \
+	if pgrep -qxf "$(INSTALLED_BIN)"; then \
+	    running=1; \
+	    pkill -TERM -xf "$(INSTALLED_BIN)"; \
+	    for i in 1 2 3 4 5 6 7 8 9 10; do \
+	        pgrep -qxf "$(INSTALLED_BIN)" || break; sleep 0.5; \
+	    done; \
+	    if pgrep -qxf "$(INSTALLED_BIN)"; then \
+	        echo "$(APP_NAME) did not quit; quit it and run make install again" >&2; \
+	        exit 1; \
+	    fi; \
+	    echo "Quit the running $(APP_NAME)"; \
+	fi; \
+	rm -rf "$(INSTALL_DIR)/$(BUNDLE)" && \
+	cp -R $(BUNDLE) "$(INSTALL_DIR)/$(BUNDLE)" && \
+	echo "Installed to $(INSTALL_DIR)/$(BUNDLE)" && \
+	if [ $$running = 1 ]; then open "$(INSTALL_DIR)/$(BUNDLE)" && echo "Reopened $(APP_NAME)"; fi
+
+clean:
+	@rm -rf build $(BUNDLE)
