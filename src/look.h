@@ -24,8 +24,14 @@
 
 /* ── Library window ─────────────────────────────────────────────────── */
 
-static const CGFloat tasks_look_window_min_w     = 520.0;  /* full mode          */
+static const CGFloat tasks_look_window_min_w     = 520.0;  /* content, full mode  */
 static const CGFloat tasks_look_window_min_h     = 320.0;
+static const CGFloat tasks_look_pane_min_w       = 320.0;  /* the task pane; so
+                                                             * also the content's
+                                                             * least width in
+                                                             * Compact mode, which
+                                                             * shows nothing else */
+static const CGFloat tasks_look_compact_min_h    = 240.0;  /* content, Compact    */
 static const CGFloat tasks_look_toolbar_icon     = 16.0;   /* symbol point size:
                                                              * toolbar and floating
                                                              * buttons            */
@@ -40,6 +46,9 @@ static const CGFloat tasks_look_float_margin     = 20.0;   /* Compact mode's
                                                              * floating controls,
                                                              * from right/bottom  */
 static const CGFloat tasks_look_float_radius     = 8.0;    /* their plate's corner */
+static const CGFloat tasks_look_float_button     = 32.0;   /* each button's edge  */
+static const CGFloat tasks_look_float_pad        = 2.0;    /* plate edge to button,
+                                                             * and between buttons */
 
 /* ── Sidebar ────────────────────────────────────────────────────────── */
 
