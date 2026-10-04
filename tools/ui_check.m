@@ -59,6 +59,7 @@
 
 #include "core_views.h"
 #include "task_config.h"
+#include "task_order.h"
 #include "task_paths.h"
 
 #include <libproc.h>
@@ -471,6 +472,309 @@ check_memory_and_ownership(TaskApp *app)
 }
 
 /*
+ * check_sidebar — drive the sidebar through what a user does with it,
+ * without a pointer: the selection rules, folding, the list and group
+ * sheets (ended as their buttons would end them), the context menu, a
+ * list dragged through the outline's own drop methods, and the width fit.
+ *
+ * It creates a group and a list in the sandbox and removes both again.
+ * One lasting effect: the first drop switches the sandbox database from
+ * alphabetical list order to saved order, as it does for a user
+ * (`make seed` starts over).
+ *
+ * Inputs:
+ *   app — the application context
+ *   dir — the snapshot folder (the New List sheet is rendered into it)
+ */
+static void
+check_sidebar(TaskApp *app, NSString *dir)
+{
+    __weak NSOutlineView *weak_outline = nil;
+
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        NSWindow           *window  = library.window;
+        [library showWindow:nil];
+        check_spin(0.2);
+
+        /* Every view of one class under a root, parents before children. */
+        NSArray<NSView *> *(^views_of)(NSView *, Class) = ^(NSView *root, Class class) {
+            NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:root];
+            NSMutableArray<NSView *> *found = [NSMutableArray array];
+            for (NSUInteger i = 0; i < queue.count; i++) {
+                if ([queue[i] isKindOfClass:class]) [found addObject:queue[i]];
+                [queue addObjectsFromArray:queue[i].subviews];
+            }
+            return found;
+        };
+        NSOutlineView *outline = (NSOutlineView *)views_of(window.contentView, NSOutlineView.class).firstObject;
+        id<NSOutlineViewDataSource> source = outline.dataSource;
+        weak_outline = outline;
+        check(outline != nil, "sidebar: the pane is an outline");
+
+        /* What a row says. */
+        NSString *(^label_of)(NSInteger) = ^(NSInteger row) {
+            NSTableCellView *cell = [outline viewAtColumn:0 row:row makeIfNecessary:YES];
+            return cell.textField.stringValue;
+        };
+        /* The row whose label ends with a name, or -1. */
+        NSInteger (^row_of)(NSString *) = ^(NSString *name) {
+            for (NSInteger row = 0; row < outline.numberOfRows; row++) {
+                if ([label_of(row) hasSuffix:name]) return row;
+            }
+            return (NSInteger)-1;
+        };
+        /* The id of the list with a name, or 0. */
+        int64_t (^list_named)(NSString *) = ^(NSString *name) {
+            GPtrArray *lists = task_db_lists(app->db, FALSE);
+            int64_t    found = 0;
+            for (guint i = 0; i < lists->len; i++) {
+                const TaskList *list = g_ptr_array_index(lists, i);
+                if ([tasks_string(list->name) isEqualToString:name]) found = list->id;
+            }
+            task_ptr_array_free_lists(lists);
+            return found;
+        };
+        /* The id of the group with a name, or 0. */
+        int64_t (^group_named)(NSString *) = ^(NSString *name) {
+            GPtrArray *groups = task_db_groups(app->db);
+            int64_t    found  = 0;
+            for (guint i = 0; i < groups->len; i++) {
+                const TaskGroup *group = g_ptr_array_index(groups, i);
+                if ([tasks_string(group->name) isEqualToString:name]) found = group->id;
+            }
+            task_ptr_array_free_groups(groups);
+            return found;
+        };
+        /* The group a list is filed under. */
+        int64_t (^group_of)(int64_t) = ^(int64_t list_id) {
+            TaskList *list  = task_db_list_get(app->db, list_id);
+            int64_t   group = list != NULL ? list->group_id : -1;
+            task_list_free(list);
+            return group;
+        };
+        /* The rows from one name to the next, as "A|B|C": the order shown. */
+        NSString *(^rows_from)(NSString *, NSInteger) = ^(NSString *name, NSInteger count) {
+            NSMutableArray<NSString *> *labels = [NSMutableArray array];
+            NSInteger first = row_of(name);
+            for (NSInteger row = first; row >= 0 && row < first + count && row < outline.numberOfRows; row++) {
+                [labels addObject:[label_of(row) componentsSeparatedByString:@"  "].lastObject];
+            }
+            return [labels componentsJoinedByString:@"|"];
+        };
+        /* Put a sheet's editable fields to `values` and end it as its
+         * accept button would; NO when no sheet with that many fields is up. */
+        BOOL (^accept_sheet)(NSArray<NSString *> *) = ^(NSArray<NSString *> *values) {
+            check_spin(0.3);
+            NSWindow *sheet = window.attachedSheet;
+            NSMutableArray<NSTextField *> *fields = [NSMutableArray array];
+            for (NSView *view in views_of(sheet.contentView, NSTextField.class)) {
+                if (((NSTextField *)view).editable) [fields addObject:(NSTextField *)view];
+            }
+            if (sheet == nil || fields.count != values.count) return NO;
+            for (NSUInteger i = 0; i < values.count; i++) fields[i].stringValue = values[i];
+            [window endSheet:sheet returnCode:NSModalResponseOK];
+            check_spin(0.3);
+            return YES;
+        };
+        /* Drag a list and drop it on a proposed place; NO when refused. */
+        BOOL (^drop)(NSString *, NSString *, NSInteger) = ^(NSString *list, NSString *onto, NSInteger index) {
+            id target = onto != nil ? [outline itemAtRow:row_of(onto)] : nil;
+            [source outlineView:outline draggingSession:(id _Nonnull)nil willBeginAtPoint:NSZeroPoint
+                       forItems:@[[outline itemAtRow:row_of(list)]]];
+            BOOL allowed = [source outlineView:outline validateDrop:(id _Nonnull)nil proposedItem:target
+                            proposedChildIndex:index] == NSDragOperationMove &&
+                           [source outlineView:outline acceptDrop:(id _Nonnull)nil item:target childIndex:index];
+            [source outlineView:outline draggingSession:(id _Nonnull)nil endedAtPoint:NSZeroPoint
+                      operation:NSDragOperationMove];
+            check_spin(0.2);
+            return allowed;
+        };
+        /* Fill the context menu for a row as a right-click on it would.  The
+         * click never reaches the screen: the outline is told of it as
+         * AppKit would tell it, and then that the menu closed, or it would
+         * hold on to its clicked row for good. */
+        NSMenu *menu = outline.menu;
+        void (^right_click)(NSInteger) = ^(NSInteger row) {
+            NSRect   rect  = [outline rectOfRow:row];
+            NSPoint  point = [outline convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil];
+            NSEvent *click = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown
+                                                location:point
+                                           modifierFlags:0
+                                               timestamp:0
+                                            windowNumber:window.windowNumber
+                                                 context:nil
+                                             eventNumber:0
+                                              clickCount:1
+                                                pressure:1.0];
+            [outline menuForEvent:click];
+            [menu.delegate menuNeedsUpdate:menu];
+            [outline didCloseMenu:menu withEvent:click];
+        };
+
+        /* Selection: one row, never the header; it follows the window. */
+        NSInteger header_row = row_of(@"Lists");
+        check(outline.numberOfSelectedRows == 1 && outline.selectedRow != header_row,
+              "sidebar: one row is selected, and it is not the header");
+        check(![outline.delegate outlineView:outline shouldSelectItem:[outline itemAtRow:header_row]],
+              "sidebar: the header cannot be selected");
+        check(![library state_of_command:TasksCommandEditList].enabled,
+              "sidebar: Edit List is disabled while a view is selected");
+
+        int64_t admin = list_named(@"Admin");
+        [library select:(task_sel_t){ task_sel_list, admin }];
+        [library refresh_sidebar];
+        check(outline.selectedRow == row_of(@"Admin"), "sidebar: the window's selection is the selected row");
+        check([library state_of_command:TasksCommandEditList].enabled &&
+              [library state_of_command:TasksCommandRemoveFromGroup].enabled,
+              "sidebar: a grouped list enables Edit List and Remove from Group");
+
+        /* Folding a group moves the selection out of it, to the group;
+         * a fold survives a rebuild unless the selection is inside. */
+        [outline collapseItem:[outline itemAtRow:row_of(@"Work")]];
+        check(library.selection.kind == task_sel_group && outline.selectedRow == row_of(@"Work"),
+              "sidebar: folding the selected list's group selects the group");
+        check([[library state_of_command:TasksCommandDeleteList].title isEqualToString:@"Remove Group"],
+              "sidebar: Delete List offers to remove a selected group");
+        [library refresh_sidebar];
+        check(![outline isItemExpanded:[outline itemAtRow:row_of(@"Work")]] && row_of(@"Admin") < 0,
+              "sidebar: a folded group stays folded across a rebuild");
+        [library select:(task_sel_t){ task_sel_list, admin }];
+        [library refresh_sidebar];
+        check(outline.selectedRow == row_of(@"Admin") && outline.selectedRow >= 0,
+              "sidebar: a rebuild opens the group that holds the selection");
+
+        /* Folding the header leaves only the views. */
+        [outline collapseItem:[outline itemAtRow:header_row]];
+        check(library.selection.kind == task_sel_view && outline.numberOfSelectedRows == 1,
+              "sidebar: folding the header moves the selection to a view");
+        [library refresh_sidebar];
+        check(row_of(@"Work") < 0, "sidebar: the folded header stays folded across a rebuild");
+        [outline expandItem:[outline itemAtRow:row_of(@"Lists")]];
+
+        /* The menu over the empty space below the rows (no row clicked). */
+        [menu.delegate menuNeedsUpdate:menu];
+        check(menu.numberOfItems == 2 && menu.itemArray[0].tag == TasksCommandNewList &&
+              menu.itemArray[1].tag == TasksCommandNewGroup,
+              "sidebar: the empty-space menu offers New List and New Group");
+
+        /* The sheets: New Group, Rename Group, New List (with the emoji
+         * slot), Edit List. */
+        [library perform_command:TasksCommandNewGroup param:nil];
+        check(accept_sheet(@[@"  Check Group "]) && group_named(@"Check Group") != 0,
+              "sidebar: New Group creates the group, its name trimmed");
+        [library perform_command:TasksCommandRenameGroup param:@(group_named(@"Check Group"))];
+        check(accept_sheet(@[@"Check Renamed"]) && group_named(@"Check Renamed") != 0 &&
+              group_named(@"Check Group") == 0, "sidebar: Rename Group renames it");
+        int64_t check_group = group_named(@"Check Renamed");
+
+        [library perform_command:TasksCommandNewList param:nil];
+        check_spin(0.3);
+        NSTextField *emoji = (NSTextField *)views_of(window.attachedSheet.contentView,
+                                                     NSClassFromString(@"TasksEmojiField")).firstObject;
+        check([window.attachedSheet.firstResponder isKindOfClass:NSTextView.class] &&
+              emoji.currentEditor == nil, "sidebar: the list sheet opens with the name being edited");
+        [window.attachedSheet makeFirstResponder:emoji];
+        [(NSTextView *)emoji.currentEditor insertText:@"ab\U0001F3AF" replacementRange:NSMakeRange(0, 0)];
+        check_spin(0.1);
+        check([emoji.stringValue isEqualToString:@"\U0001F3AF"] && emoji.currentEditor == nil,
+              "sidebar: the emoji slot keeps one character and ends its edit");
+        check(snapshot(window.attachedSheet, dir, @"sidebar-list-sheet"), "snapshot: the New List sheet");
+        check(accept_sheet(@[@"\U0001F3AF", @"Check List"]) && list_named(@"Check List") != 0,
+              "sidebar: New List creates the list");
+        int64_t check_list = list_named(@"Check List");
+        check(library.selection.kind == task_sel_list && library.selection.id == check_list &&
+              [label_of(outline.selectedRow) isEqualToString:@"\U0001F3AF  Check List"],
+              "sidebar: the new list is selected and shows its emoji");
+
+        CGFloat width_before = NSWidth(outline.enclosingScrollView.frame);
+        [library perform_command:TasksCommandEditList param:nil];
+        check(accept_sheet(@[@"", @"Check List With A Much Longer Name"]) &&
+              list_named(@"Check List With A Much Longer Name") == check_list,
+              "sidebar: Edit List renames the list and clears its emoji");
+        NSTextField *widest = ((NSTableCellView *)[outline viewAtColumn:0 row:outline.selectedRow
+                                                        makeIfNecessary:YES]).textField;
+        check(NSWidth(outline.enclosingScrollView.frame) > width_before &&
+              widest.fittingSize.width <= NSWidth(widest.frame),
+              "sidebar: the pane widens to fit a longer label");
+        [library perform_command:TasksCommandEditList param:nil];
+        check(accept_sheet(@[@"", @"Check List"]) &&
+              NSWidth(outline.enclosingScrollView.frame) == width_before,
+              "sidebar: ... and narrows again when the label shortens");
+
+        /* Dragging the list: refused on a view and where it already is;
+         * ON a group files it at the group's end; between two rows of
+         * another group moves it there; ON a list lands in front of it. */
+        check(!drop(@"Check List", @"All Tasks", NSOutlineViewDropOnItemIndex),
+              "sidebar: a list cannot be dropped on a view");
+        check(!drop(@"Check List", @"Check List", NSOutlineViewDropOnItemIndex),
+              "sidebar: a list dropped on itself goes nowhere");
+        check(drop(@"Check List", @"Work", NSOutlineViewDropOnItemIndex) &&
+              group_of(check_list) == group_named(@"Work") &&
+              [rows_from(@"Work", 5) isEqualToString:@"Work|Admin|Customers|Deployments|Check List"],
+              "sidebar: dropped on a group, the list joins it at the end");
+        check(drop(@"Check List", @"Home", 1) && group_of(check_list) == group_named(@"Home") &&
+              [rows_from(@"Home", 4) isEqualToString:@"Home|Errands|Check List|House"],
+              "sidebar: dropped between two lists of another group, it lands there");
+        check(drop(@"Check List", @"Reading", NSOutlineViewDropOnItemIndex) && group_of(check_list) == 0 &&
+              [rows_from(@"Empty List", 4) isEqualToString:@"Empty List|Check List|Reading|Someday"],
+              "sidebar: dropped on an ungrouped list, it lands in front of it, ungrouped");
+        check(library.selection.id == check_list && outline.selectedRow == row_of(@"Check List"),
+              "sidebar: the selection stays on the list through its moves");
+
+        /* Move to Group, the context menus of a list and of a group, Remove
+         * from Group. */
+        [library perform_command:TasksCommandMoveToGroup param:@(check_group)];
+        check(group_of(check_list) == check_group, "sidebar: Move to Group files the selected list");
+        right_click(outline.selectedRow);
+        check(menu.numberOfItems == 8 && menu.itemArray[6].submenu.numberOfItems == 2 &&
+              menu.itemArray[7].tag == TasksCommandRemoveFromGroup,
+              "sidebar: a grouped list's menu adds Edit, Delete, Move to Group (other groups) and "
+              "Remove from Group");
+        [library perform_command:TasksCommandRemoveFromGroup param:nil];
+        check(group_of(check_list) == 0, "sidebar: Remove from Group ungroups it");
+        right_click(row_of(@"Work"));
+        check(library.selection.kind == task_sel_group && outline.selectedRow == row_of(@"Work"),
+              "sidebar: a right-click selects the row it is on");
+        check(menu.numberOfItems == 5 && menu.itemArray[3].tag == TasksCommandRenameGroup &&
+              menu.itemArray[4].tag == TasksCommandDeleteGroup &&
+              [menu.itemArray[4].representedObject longLongValue] == group_named(@"Work"),
+              "sidebar: a group's menu adds Rename Group and Remove Group for that group");
+
+        /* Removing the group and deleting the list, each after its
+         * confirmation; the list's saved orders go with it. */
+        [library perform_command:TasksCommandDeleteGroup param:@(check_group)];
+        check_spin(0.3);
+        [window endSheet:window.attachedSheet returnCode:NSAlertFirstButtonReturn];
+        check_spin(0.3);
+        check(group_named(@"Check Renamed") == 0, "sidebar: Remove Group removes the group");
+
+        task_sel_t list_sel = { task_sel_list, check_list };
+        [library select:list_sel];
+        [library refresh_sidebar];
+        NSString  *order_key = [NSString stringWithFormat:@"%s_list_%lld", TASK_CFG_FAMILY_MANUAL,
+                                (long long)check_list];
+        task_order_save(TASK_CFG_FAMILY_MANUAL, list_sel, (int64_t[]){ 1, 2 }, 2);
+        [library perform_command:TasksCommandDeleteList param:nil];
+        check_spin(0.3);
+        [window endSheet:window.attachedSheet returnCode:NSAlertFirstButtonReturn];
+        check_spin(0.3);
+        gchar *saved_order = task_config_get(order_key.UTF8String);
+        check(list_named(@"Check List") == 0 && saved_order == NULL,
+              "sidebar: Delete List deletes the list and drops its saved orders");
+        g_free(saved_order);
+        check(library.selection.kind == task_sel_list && library.selection.id != check_list &&
+              outline.numberOfSelectedRows == 1 && [label_of(outline.selectedRow) hasSuffix:@"Errands"],
+              "sidebar: the selection falls back to the first list");
+        task_db_list_purge(app->db, check_list);
+
+        [library close];
+    }
+    check_spin(0.2);
+    check(weak_outline == nil, "sidebar: the outline is released with its window");
+}
+
+/*
  * main — run the checks.
  *
  * Inputs:
@@ -521,6 +825,7 @@ main(int argc, const char *argv[])
 
         snapshot_windows(app, dir);
         check_utilities(app);
+        check_sidebar(app, dir);
         check_memory_and_ownership(app);
 
         if (argc > 2) {

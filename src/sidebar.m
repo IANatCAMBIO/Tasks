@@ -1497,10 +1497,15 @@ outlineView:(NSOutlineView *)outline
     int64_t       group_id = container.sel.kind == task_sel_group ? container.sel.id : 0;
 
     if (group_id != self.dragged.group_id) task_db_list_set_group(db, list_id, group_id);
-    if (task_sidebar_move_list(ids, count, list_id, [self lists_before:container child:child])) {
-        /* The cast: GLib spells the same 64-bit integer as a different C type. */
-        task_db_lists_reorder(db, (const gint64 *)ids, (gsize)count);
-    }
+
+    /* The order is saved even when the move left it as it was (the last
+     * list of a group dropped at the head of the ungrouped ones): until an
+     * order has been saved the database lists alphabetically, which would
+     * put a list that changed group somewhere other than where it was
+     * dropped.  The cast: GLib spells the same 64-bit integer as a
+     * different C type. */
+    task_sidebar_move_list(ids, count, list_id, [self lists_before:container child:child]);
+    task_db_lists_reorder(db, (const gint64 *)ids, (gsize)count);
 
     __weak TasksLibraryWindow *weak_library = library;
     dispatch_async(dispatch_get_main_queue(), ^{
