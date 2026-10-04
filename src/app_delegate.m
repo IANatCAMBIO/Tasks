@@ -4,13 +4,17 @@
 #import "settings_window.h"
 #import "ui_util.h"
 
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+
 #include "backup.h"
 #include "core_views.h"
+#include "db.h"
 #include "recur.h"
 #include "task_config.h"
 #include "task_paths.h"
 #include "task_worker.h"
 
+#include <glib.h>
 #include <signal.h>
 
 /* The About panel's credits: the app's motto (carried from the GTK build),
@@ -44,21 +48,24 @@ static const CGFloat app_icon_size = 128.0;
 /* ── Launch ──────────────────────────────────────────────────────────── */
 
 /*
- * start_core — bring the non-UI core up: the config (which settles where
- * the data lives), the registries, and the database.  Nothing here touches
- * a window, and the order is the GTK build's: config first because
- * everything reads it, registries before any timer or thread exists.
+ * start_config — bring the config and the non-database registries up.
+ * Called at launch before the database is opened.  The database path is
+ * resolved here and returned so the caller can check whether it exists
+ * before deciding to show the Welcome screen.
  *
- * The database is opened where the config says, or created there when it
- * does not exist yet.
+ * Inputs:
+ *   out_path — receives the resolved database path (caller must g_free);
+ *              NULL on failure.
  *
  * Output:
- *   nil on success (self.app is set, its database open); otherwise a
- *   message saying what failed, with self.app left NULL.
+ *   nil on success (self.app is set, config is open); otherwise a message
+ *   saying what failed.
  */
 - (NSString *)
-start_core
+start_config:(gchar **)out_path
 {
+    *out_path = NULL;
+
     if (!task_config_init()) {
         char *dir = task_data_dir();
         NSString *message = [NSString stringWithFormat:
@@ -71,24 +78,98 @@ start_core
     task_core_views_init();
     task_recur_init(app);
     task_backup_init(app);
+    self.app = app;
 
-    gchar  *db_dir = task_config_get(TASK_CFG_DB_DIR);
-    gchar  *path   = task_db_resolve_path(db_dir);
-    GError *err    = NULL;
-
-    app->db = path != NULL ? task_db_open(path, &err) : NULL;
-    NSString *message = nil;
-    if (app->db == NULL) {
-        message = [NSString stringWithFormat:@"%@",
-            tasks_string(err != NULL ? err->message : "The database path cannot be determined.")];
-        g_clear_error(&err);
-        task_app_free(app);
-    } else {
-        self.app = app;
-    }
-    g_free(path);
+    gchar *db_dir = task_config_get(TASK_CFG_DB_DIR);
+    *out_path     = task_db_resolve_path(db_dir);
     g_free(db_dir);
-    return message;
+    return nil;
+}
+
+/*
+ * open_db_at: — open (or create) the database at `path` and arm the
+ * background workers.  The library window must exist before this is called
+ * so that status messages have somewhere to land.
+ *
+ * Inputs:
+ *   path — filesystem path to the .db file (UTF-8)
+ *
+ * Output:
+ *   nil on success; otherwise a message saying what failed.
+ */
+- (NSString *)
+open_db_at:(const gchar *)path
+{
+    GError *err   = NULL;
+    self.app->db  = task_db_open(path, &err);
+    if (self.app->db == NULL) {
+        NSString *message = [NSString stringWithFormat:@"%@",
+            tasks_string(err != NULL ? err->message : "The database cannot be opened.")];
+        g_clear_error(&err);
+        return message;
+    }
+    task_worker_arm_all(self.app, self.app->db->path);
+    [self.library report_database_health];
+    return nil;
+}
+
+/*
+ * welcome_pick_path — first-run welcome: ask the user whether to open an
+ * existing database or create a new one in the data directory.  Returns
+ * a newly-allocated path the caller must g_free, or NULL if the user
+ * chose "Create New" (the caller then uses the default path it already
+ * knows) or cancelled.  `chose_existing` is set to YES when the user picked
+ * a file, NO when they chose to create a new one.
+ *
+ * Inputs:
+ *   default_path — the path that "Create New" will use (shown in the sheet)
+ *   chose_existing — set to YES when a file was picked, NO for create-new
+ *
+ * Output:
+ *   a g_malloc'd path the caller must g_free, or NULL for create-new.
+ */
+- (gchar *)
+welcome_pick_path:(const gchar *)default_path chose_existing:(BOOL *)chose_existing
+{
+    *chose_existing = NO;
+
+    NSAlert *alert    = [[NSAlert alloc] init];
+    gchar   *basename = g_path_get_basename(default_path);
+    NSString *db_name = tasks_string(basename);
+    g_free(basename);
+    alert.messageText = @"Welcome to Tasks AppKit";
+    alert.informativeText = [NSString stringWithFormat:
+        @"No database was found.  You can open an existing Tasks database "
+        @"(such as one from the GTK app) or create a new one named \"%@\".",
+        db_name];
+    [alert addButtonWithTitle:@"Open Existing Database…"];
+    [alert addButtonWithTitle:@"Create New Database"];
+
+    NSModalResponse response = [alert runModal];
+    if (response != NSAlertFirstButtonReturn) {
+        /* "Create New Database" — caller uses the default path. */
+        return NULL;
+    }
+
+    /* "Open Existing Database…": run a synchronous open panel. */
+    __block gchar *picked = NULL;
+
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.message              = @"Choose a Tasks database to open.";
+    panel.allowedContentTypes  = @[
+        [UTType typeWithFilenameExtension:@"db"]
+    ];
+    panel.canChooseFiles       = YES;
+    panel.canChooseDirectories = NO;
+    panel.allowsMultipleSelection = NO;
+
+    NSModalResponse pr = [panel runModal];
+    if (pr == NSModalResponseOK && panel.URL) {
+        NSString *path = panel.URL.path;
+        picked = g_strdup(path.fileSystemRepresentation);
+        *chose_existing = YES;
+    }
+    return picked;
 }
 
 /*
@@ -115,6 +196,9 @@ watch_sigterm
  * database.  The workers are armed AFTER the window exists so that a
  * status message posted while arming has somewhere to land.
  *
+ * On first run (no database found), a Welcome alert lets the user choose
+ * between opening an existing database and creating a new one.
+ *
  * If the core cannot start, the reason is shown and the app quits.  By then
  * the data directory may have been created; no existing data has been
  * changed.
@@ -130,10 +214,41 @@ applicationDidFinishLaunching:(NSNotification *)note
     [self build_menu_bar];
     [self watch_sigterm];
 
-    NSString *failure = [self start_core];
-    if (failure) {
+    gchar    *default_path = NULL;
+    NSString *config_err   = [self start_config:&default_path];
+    if (config_err) {
+        g_free(default_path);
         [NSApp activate];
-        tasks_ui_notice(nil, @"Could not open the database", failure, ^{
+        tasks_ui_notice(nil, @"Could not start", config_err, ^{
+            [NSApp terminate:nil];
+        });
+        return;
+    }
+
+    /* First-run detection: if the database file does not exist yet (and no
+     * custom path is configured), show the Welcome screen before opening. */
+    BOOL first_run = (default_path != NULL &&
+                      !g_file_test(default_path, G_FILE_TEST_EXISTS));
+    gchar *open_path = default_path;   /* borrowed; freed below */
+
+    if (first_run) {
+        [NSApp activate];
+        BOOL chose_existing = NO;
+        gchar *picked = [self welcome_pick_path:default_path chose_existing:&chose_existing];
+        if (chose_existing && picked != NULL) {
+            open_path = picked;        /* user's choice; free picked below  */
+        }
+        /* If picked is NULL the user chose "Create New"; open_path stays
+         * as default_path and task_db_open will create the file. */
+    }
+
+    NSString *db_err = [self open_db_at:open_path];
+    if (open_path != default_path) g_free(open_path);
+    g_free(default_path);
+
+    if (db_err) {
+        [NSApp activate];
+        tasks_ui_notice(nil, @"Could not open the database", db_err, ^{
             [NSApp terminate:nil];
         });
         return;
@@ -147,8 +262,7 @@ applicationDidFinishLaunching:(NSNotification *)note
     [self.library showWindow:nil];
     [NSApp activate];
 
-    task_worker_arm_all(self.app, self.app->db->path);
-    [self.library report_database_health];
+    /* open_db_at: already armed the workers and reported database health. */
 
     gint n_tasks = 0, n_lists = 0;
     task_db_totals(self.app->db, &n_tasks, &n_lists);

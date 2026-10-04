@@ -635,12 +635,18 @@ screenshots the running app where that permission exists.
   the command table; `task_order_*` (tests only so far).  The no-unused-code
   rule applies again at integration: whatever still has no caller then is
   deleted.
-- **Open question — databases outside the fence.**  The fence protects the
-  live directory by location.  A stronger rule (stamp every database the
-  fork creates and refuse to open one without the stamp) would also stop a
-  GTK database kept elsewhere being opened by mistake, but would forbid
-  opening a COPY of real data, which is how the fork is meant to be tried.
-  Not implemented; the owner decides before Open Database File… is built.
+- **Open Database — accepts any compatible database (owner decision).**  The
+  fence protects the live directory by location; no format stamp is added.
+  The owner intends to open their existing GTK database with this AppKit
+  version, so the only check is `task_switch_check` (readable, not the live
+  directory, not already open).  A database that passes that check is opened
+  without further validation.
+- **First-run Welcome screen (owner decision).**  When no database is found
+  at launch, a modal Welcome alert offers two choices: "Open Existing
+  Database…" (runs a synchronous NSOpenPanel) or "Create New Database"
+  (task_db_open creates the file at the default path).  This prevents users
+  with an existing GTK database from being silently given a second, empty
+  one.
 - Not swept: comments inside the carried core files (`db.c`, `recur.c`,
   `backup.c`, …) still mention sync, plugins and GTK-era names in places.
 - The unused sync-era `task_db_*` functions listed in map §2.2 are still in
