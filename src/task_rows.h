@@ -1,91 +1,221 @@
-/* ===========================================================================
- * task_rows.h — the task-row renderer, as a reusable widget.
+/*
+ * task_rows — what a task row SAYS, as a toolkit-neutral description.
  *
- * A "task row" in this app is not a line of text.  It is a tall markup
- * cell carrying the title, a glyph stack, an "in <list>" line, a notes
- * preview and up to four subtasks, drawn over alternating stripes, with
- * a ✓ column that writes back through the app's status rule.  Getting it
- * right involves several traps that are recorded in comments here and
- * nowhere else — the UTF-8 boundary the 120-char preview cap must land
- * on, the escaping every database string needs before it reaches Pango,
- * the blank-line gate that keeps a one-space note from silently making a
- * row taller.
+ * A "task row" in this app is not a line of text.  It is a tall cell
+ * carrying the title, a glyph stack, an "in <list>" line, a notes preview,
+ * an attachment count and up to four subtasks.  Both panes that show tasks
+ * — the task list and the Kanban cards — show exactly this content.
  *
- * All of that used to live inside library_window.c.  The renderer lives
- * here so that every pane showing tasks — the task list, the Kanban
- * cards, and whatever views come later — gets exactly the same row
- * rather than a reimplementation that drifts.
+ * This module decides the CONTENT and the EMPHASIS of each line (which
+ * text, bold, struck through, dimmed and by how much) and nothing about
+ * fonts, sizes or colours.  One renderer, row_text.h, turns a description
+ * into an attributed string for both panes; neither pane formats row text
+ * itself, which is what keeps the list and the board from drifting apart.
  *
- * PERFORMANCE.  The expensive lookups — attachment counts, subtasks,
- * list names — are gathered ONCE per refresh into a TaskRowCtx and
- * shared across every row, because the alternative is a query per row.
- * Build the context, fill as many stores as you like from it, clear it.
- * Nothing here belongs in a cell data function: those run per DRAW.
- * =========================================================================== */
+ * The traps recorded here and nowhere else: the UTF-8 boundary the
+ * 120-byte notes preview must land on, the validation every database
+ * string needs before it reaches a text system, and the blank-line gate
+ * that keeps a one-space note from silently making a row taller.
+ *
+ * PERFORMANCE.  The expensive lookups — attachment counts, subtasks, list
+ * names — are gathered ONCE per refresh into a TaskRowCtx and shared by
+ * every row, because the alternative is a query per row.
+ *
+ * The description types are plain C (malloc/free, no GLib).  TaskRowCtx
+ * and the task arrays coming from db.h still use GLib this phase.
+ */
 
 #ifndef TASK_ROWS_H
 #define TASK_ROWS_H
 
-#include "app.h"
-#include "list_rows.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
-/* The alternating row tint (the app's pale blue), painted by CSS on the
- * task pane's even rows (task_list.c's stylesheet).                       */
-#define ROW_TINT "#e8f2fb"
+#include "task_app.h"
+#include "task_dates.h"
 
-/* ---------------------------------------------------------------------------
+/* What a line of a row is; the renderer may use it, the flags carry the
+ * emphasis. */
+typedef enum {
+    task_row_line_title = 0,        /* glyph stack + title; always first  */
+    task_row_line_list,             /* "in <list>" (virtual views only)   */
+    task_row_line_notes,            /* first non-blank notes line, capped */
+    task_row_line_attachments,      /* "📎 N attachments"                 */
+    task_row_line_subtask,          /* "☐ title" / "☑ title", at most 4   */
+    task_row_line_more              /* "… +N more subtasks"               */
+} task_row_line_kind_t;
+
+/*
+ * task_row_line_t — one line of a row.
+ *
+ *   prefix    — glyphs drawn before the text ("🚨  ⭐️  ", "☑ "): never
+ *               bold, struck or dimmed.  "" when there are none.
+ *   text      — the line's text, valid UTF-8, never NULL.
+ *   bold      — title only, per the bold_task_titles setting.
+ *   italic    — the "in <list>" line.
+ *   strike    — a Done task's title, a Done subtask's title.
+ *   small     — every line but the title.
+ *   alpha_pct — opacity of `text`, 100 = full.  Dimming is ALWAYS opacity,
+ *               never a fixed grey, so it survives a selected row's colour.
+ */
+typedef struct {
+    task_row_line_kind_t kind;
+    char *prefix;
+    char *text;
+    bool  bold;
+    bool  italic;
+    bool  strike;
+    bool  small;
+    int   alpha_pct;
+} task_row_line_t;
+
+/* The alpha values in use, so the renderer and the tests name them once. */
+#define TASK_ROW_ALPHA_FULL      100
+#define TASK_ROW_ALPHA_LIST       60    /* the "in <list>" line           */
+#define TASK_ROW_ALPHA_DETAIL     65    /* notes, attachments, "+N more"  */
+#define TASK_ROW_ALPHA_SUB_DONE   55    /* a completed subtask's title    */
+
+/* At most this many subtask lines; the rest become one "+N more" line. */
+#define TASK_ROW_MAX_SUBTASKS 4
+
+/* The notes preview is cut at this many BYTES, backed up to a character
+ * boundary. */
+#define TASK_ROW_NOTES_BYTES 120
+
+/*
+ * task_row_t — one task as a pane shows it.  The columns sort on the raw
+ * fields and show the formatted ones.
+ *
+ *   id             — task id (never 0)
+ *   status         — the tri-state; "done" is status == TASK_STATUS_DONE
+ *   title          — plain title ("Untitled Task" when empty): the Task
+ *                    column's sort key and what status messages quote
+ *   lines          — the tall cell, `line_count` lines, title first
+ *   due, due_time  — as stored (local midnight; minutes past it)
+ *   due_instant    — task_due_instant(due, due_time): the Due sort key
+ *   due_text       — task_due_format_at, "" for none
+ *   due_urgency    — the Due cell's tint, as of when the row was built
+ *   completed_at   — the Completed column's sort key (0 = never)
+ *   completed_text — formatted, "" for none
+ *   status_text    — "New" / "In Progress" / "Done" (static, not owned)
+ */
+typedef struct {
+    int64_t             id;
+    TaskStatus          status;
+    char               *title;
+    task_row_line_t    *lines;
+    size_t              line_count;
+    int64_t             due;
+    int                 due_time;
+    int64_t             due_instant;
+    char               *due_text;
+    task_due_urgency_t  due_urgency;
+    int64_t             completed_at;
+    char               *completed_text;
+    const char         *status_text;
+} task_row_t;
+
+/* The rows of one refresh, in the order the tasks were given. */
+typedef struct {
+    task_row_t **rows;
+    size_t       count;
+} task_row_list_t;
+
+/*
  * TaskRowCtx — the shared lookups behind one refresh.
  *
- * Fields are private; the struct is exposed only so a caller can put one
- * on the stack.  Build with _init, use for as many stores as needed,
- * release with _clear.
- *
- * `virtual_view` decides whether rows carry their "in <list>" line: TRUE
- * for a view gathering tasks from several lists, where that line is the
- * only thing saying where a task actually lives.
- * ------------------------------------------------------------------------- */
+ * Fields are private to task_rows.c and to search filtering (which reads
+ * subs_by_parent through task_row_ctx_subtasks); the struct is exposed only
+ * so a caller can put one on the stack.  Build with task_row_ctx_init, use
+ * for as many rows as needed, release with task_row_ctx_clear.
+ */
 typedef struct {
-    GHashTable *att_counts;          /* task id → attachment count          */
-    GPtrArray  *all_subs;            /* owns the subtask rows below         */
-    GHashTable *subs_by_parent;      /* parent id → GPtrArray of borrowed   */
-    GHashTable *list_names;          /* list id → name, NULL for list views */
-    gboolean    bold;                /* the bold_task_titles setting        */
-    gboolean    show_done;           /* the show_completed toggle           */
+    GHashTable *att_counts;         /* task id -> attachment count        */
+    GPtrArray  *all_subs;           /* owns the subtask rows below        */
+    GHashTable *subs_by_parent;     /* parent id -> GPtrArray, borrowed   */
+    GHashTable *list_names;         /* list id -> name; NULL in list views */
+    gboolean    bold;               /* the bold_task_titles setting       */
+    gboolean    show_done;          /* the show_completed setting         */
 } TaskRowCtx;
 
+/*
+ * task_row_ctx_init — gather the lookups for one refresh.
+ *
+ * Inputs:
+ *   app          — the application context (database must be open)
+ *   ctx          — the context to fill (typically on the caller's stack)
+ *   virtual_view — TRUE when rows should carry their "in <list>" line: a
+ *                  view gathering tasks from several lists
+ */
 void task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx, gboolean virtual_view);
+
+/*
+ * task_row_ctx_clear — release what task_row_ctx_init gathered.
+ *
+ * Inputs:
+ *   ctx — an initialised context
+ */
 void task_row_ctx_clear(TaskRowCtx *ctx);
 
-/* ---------------------------------------------------------------------------
- * task_rows_append() — append `tasks` to `store` (a GListStore of TaskRow)
- * through `ctx`, honoring the completed-visibility setting, as ONE splice.
- * Returns how many rows were actually appended, which is NOT tasks->len
- * when completed tasks are hidden.
- * ------------------------------------------------------------------------- */
-guint task_rows_append(GListStore *store, GPtrArray *tasks,
-                       const TaskRowCtx *ctx);
-
-/* ---------------------------------------------------------------------------
- * task_rows_desc_markup() — just the markup cell, for a caller building
- * its own row (the Kanban cards do this).  New string (g_free).
- * ------------------------------------------------------------------------- */
-gchar *task_rows_desc_markup(const Task *t, const gchar *list_name,
-                             gint att_count, GPtrArray *subs,
-                             const TaskRowCtx *ctx);
-
-/* ---------------------------------------------------------------------------
- * task_rows_toggle_done() — what a click on the ✓ column means.
+/*
+ * task_row_ctx_subtasks — a top-level task's visible subtasks, as the
+ * context grouped them.  What the search filter matches subtask titles
+ * against, so it need not query per task.
  *
- * Writes the row's new status through the app's rule (ticking means Done;
- * unticking means In Progress, because a task that was ticked has plainly
- * been worked on and New would lose that), then fires the task-pane
- * refresh.  There is no fade-out any more: a completed row that the
- * visibility setting hides goes with the refresh.
+ * Inputs:
+ *   ctx — an initialised context
+ *   t   — the task
  *
- * Every pane with a checkbox uses THIS.  Separate copies of the same
- * twenty lines are how two of them eventually disagree about what a tick
- * means.
- * ------------------------------------------------------------------------- */
-void task_rows_toggle_done(TaskApp *app, TaskRow *row);
+ * Output:
+ *   borrowed GPtrArray of borrowed Task*, or NULL when the task has none
+ *   or is itself a subtask.
+ */
+GPtrArray *task_row_ctx_subtasks(const TaskRowCtx *ctx, const Task *t);
+
+/*
+ * task_row_describe — build the description of ONE task.  Used for every
+ * row of a refresh and to rebuild a single row in place (after its
+ * checkbox is toggled, say).  Does not apply the show_completed filter.
+ *
+ * Inputs:
+ *   t   — the task, not NULL
+ *   ctx — an initialised context
+ *
+ * Output:
+ *   new row (task_row_free); never NULL (out of memory aborts, as it does
+ *   throughout the core).
+ */
+task_row_t *task_row_describe(const Task *t, const TaskRowCtx *ctx);
+
+/*
+ * task_row_free — free a row and everything it owns.
+ *
+ * Inputs:
+ *   row — the row, or NULL (ignored)
+ */
+void task_row_free(task_row_t *row);
+
+/*
+ * task_rows_build — describe every task of a refresh, honouring the
+ * show_completed setting (Done tasks are left out when it is off).  The
+ * count of the result is therefore what the status bar reports as shown.
+ *
+ * Inputs:
+ *   tasks — GPtrArray of Task* (borrowed), in display order
+ *   ctx   — an initialised context
+ *
+ * Output:
+ *   new list (task_row_list_free); never NULL, possibly empty.
+ */
+task_row_list_t *task_rows_build(GPtrArray *tasks, const TaskRowCtx *ctx);
+
+/*
+ * task_row_list_free — free a list and its rows.
+ *
+ * Inputs:
+ *   list — the list, or NULL (ignored)
+ */
+void task_row_list_free(task_row_list_t *list);
 
 #endif /* TASK_ROWS_H */
