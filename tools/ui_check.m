@@ -79,9 +79,11 @@
 #define CYCLES 20
 
 /* Heap growth allowed per cycle across the second run (see "ABOUT THE HEAP
- * BUDGET" above).  A cycle is 4 windows and about 6 pane refreshes; the
- * skeleton measures about 8 KB. */
-#define HEAP_BUDGET_PER_CYCLE (16 * 1024)
+ * BUDGET" above).  A cycle is 4 windows and about 6 pane refreshes.  The
+ * skeleton measured about 8 KB; a cycle against real task rows, kanban
+ * cards and attributed-string caches measures about 20 KB.  Budget is set
+ * at 24 KB: above the measured baseline, below a genuine leak. */
+#define HEAP_BUDGET_PER_CYCLE (24 * 1024)
 
 /* The size of the region a full-size (1024 x 1024 px, 4 bytes per pixel)
  * icon bitmap occupies, with and without its guard page. */

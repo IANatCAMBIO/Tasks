@@ -51,6 +51,9 @@ static const CGFloat sidebar_initial_w = 200.0;
 @property (nonatomic, assign) BOOL compact_animating;
 /* Bumped by every status message, so only the latest one's timer fades it. */
 @property (nonatomic, assign) NSUInteger status_message_id;
+/* Timer that fires after tasks_look_status_hold to begin the fade; at most
+ * one at a time (invalidated when the next message arrives). */
+@property (nonatomic, strong) NSTimer *status_timer;
 /* Subscriptions to the app's three events; 0 once dropped. */
 @property (nonatomic, assign) guint listen_changed;
 @property (nonatomic, assign) guint listen_tasks;
@@ -822,23 +825,28 @@ set_status_alpha:(CGFloat)alpha over:(NSTimeInterval)duration then:(void (^)(voi
 - (void)
 show_status_message:(NSString *)message
 {
-    NSUInteger message_id = ++self.status_message_id;
+    /* Cancel the outstanding hold timer, releasing its captured state. */
+    [self.status_timer invalidate];
+    self.status_timer = nil;
 
+    self.status_message_id++;
     self.status_right.stringValue = message;
     [self set_status_alpha:1.0 over:0.0 then:nil];
 
+    NSUInteger message_id = self.status_message_id;
     __weak TasksLibraryWindow *ws = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(tasks_look_status_hold * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
+    self.status_timer = [NSTimer scheduledTimerWithTimeInterval:tasks_look_status_hold
+                                                        repeats:NO
+                                                          block:^(NSTimer *t) {
         TasksLibraryWindow *s = ws;
-        if (!s || s.status_message_id != message_id) return;   /* gone, or superseded */
+        if (!s || s.status_message_id != message_id) return;
+        s.status_timer = nil;
         [s set_status_alpha:0.0 over:tasks_look_status_fade then:^{
             TasksLibraryWindow *faded = ws;
-            /* A message that arrived during the fade owns the label now. */
             if (!faded || faded.status_message_id != message_id) return;
             faded.status_right.stringValue = @"";
         }];
-    });
+    }];
 }
 
 /* ── Task context menu ───────────────────────────────────────────────── */
@@ -1692,6 +1700,8 @@ shut_down
     task_app_unlisten(self.app, self.listen_status);
     self.listen_changed = self.listen_tasks = self.listen_status = 0;
     self.status_message_id++;       /* a pending status fade finds nothing to do */
+    [self.status_timer invalidate];
+    self.status_timer = nil;
 
     [self.task_list cancel_drag];
     [self.kanban cancel_drag];
