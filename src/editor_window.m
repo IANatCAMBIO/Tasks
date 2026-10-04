@@ -2371,12 +2371,10 @@ shut_down
         [self.window endSheet:self.window.attachedSheet returnCode:NSModalResponseCancel];
     }
     /* The tables must not ask for rows once the row lists are freed. */
-    if (!getenv("E1")) {
     self.subtask_table.dataSource    = nil;
     self.subtask_table.delegate      = nil;
     self.attachment_table.dataSource = nil;
     self.attachment_table.delegate   = nil;
-    }
 }
 
 /*

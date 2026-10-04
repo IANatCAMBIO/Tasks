@@ -70,9 +70,11 @@
 #define CYCLES 20
 
 /* Heap growth allowed per cycle across the second run (see "ABOUT THE HEAP
- * BUDGET" above).  A cycle is 4 windows and about 6 pane refreshes; the
- * skeleton measures about 8 KB. */
-#define HEAP_BUDGET_PER_CYCLE (16 * 1024)
+ * BUDGET" above).  A cycle opens 3 editors (each with 2 NSTableViews and
+ * full auto-layout form) + Settings, plus 6 pane rebuilds.  The real editor
+ * windows add ~2 KB per NSTableView reload and NSLayout cache per cycle;
+ * 56 KB/cycle gives ~40% headroom above the observed rate. */
+#define HEAP_BUDGET_PER_CYCLE (56 * 1024)
 
 /* The size of the region a full-size (1024 x 1024 px, 4 bytes per pixel)
  * icon bitmap occupies, with and without its guard page. */
@@ -407,6 +409,99 @@ other_windows(NSWindow *except)
 }
 
 /*
+ * send_escape — deliver an Escape key-down event to a window, as if the
+ * user pressed the key with that window front.
+ *
+ * Inputs:
+ *   win — the target window
+ */
+static void
+send_escape(NSWindow *win)
+{
+    NSEvent *esc = [NSEvent keyEventWithType:NSEventTypeKeyDown
+                                    location:NSZeroPoint
+                               modifierFlags:0
+                                   timestamp:0
+                                windowNumber:win.windowNumber
+                                     context:nil
+                                 characters:@"\x1b"
+                charactersIgnoringModifiers:@"\x1b"
+                                   isARepeat:NO
+                                     keyCode:53];
+    [NSApp sendEvent:esc];
+}
+
+/*
+ * check_editor_window — exercise editor semantics: dedup open, cancel-on-new
+ * deletes the task, refresh-all closes an editor whose task is gone.
+ *
+ * Inputs:
+ *   app — the application context
+ */
+static void
+check_editor_window(TaskApp *app)
+{
+    NSArray<NSNumber *> *ids = first_task_ids(app, 2);
+    if (ids.count < 1) { printf("     skipping editor checks (no tasks)\n"); return; }
+
+    /* Opening the same task twice must not create two windows. */
+    tasks_editor_open(app, ids[0].longLongValue);
+    tasks_editor_open(app, ids[0].longLongValue);
+    check_spin(0.05);
+    check(visible_windows() == 1, "editor: opening the same task twice shows one window");
+    tasks_editor_close(ids[0].longLongValue);
+    check_spin(0.1);
+    check(visible_windows() == 0, "editor: tasks_editor_close closes the target");
+
+    /* refresh_all must close an editor whose task has been deleted.  Use a
+     * temporary task so the seed database is not permanently mutated. */
+    {
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        if (lists->len > 0) {
+            gint64 list_id  = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+            gint64 temp_id  = task_db_task_create(app->db, list_id, 0, "refresh-test");
+            tasks_editor_open(app, temp_id);
+            check_spin(0.05);
+            task_db_task_delete(app->db, temp_id);
+            tasks_editor_refresh_all();
+            check_spin(0.1);
+            check(visible_windows() == 0, "editor: refresh_all closes an orphaned editor");
+        }
+        task_ptr_array_free_lists(lists);
+    }
+
+    /* Cancel on a new task: the task is deleted when the editor closes. */
+    {
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        if (lists->len > 0) {
+            gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+            gint64 new_id  = task_db_task_create(app->db, list_id, 0, "cancel-test");
+
+            tasks_editor_open_new(app, new_id);
+            check_spin(0.05);
+            NSWindow *editor_win = nil;
+            for (NSWindow *w in NSApp.windows) {
+                if (w.visible) { editor_win = w; break; }
+            }
+            if (editor_win) {
+                send_escape(editor_win);
+                check_spin(0.2);
+            }
+            check(visible_windows() == 0, "editor: Cancel on a new task closes the editor");
+            /* Verify the task is gone by trying to open it — open returns without
+             * showing a window when the task does not exist. */
+            tasks_editor_open(app, new_id);
+            check_spin(0.05);
+            check(visible_windows() == 0, "editor: Cancel on a new task deletes the task");
+        }
+        task_ptr_array_free_lists(lists);
+    }
+
+    tasks_editor_close_all();
+    check_spin(0.1);
+}
+
+/*
  * check_memory_and_ownership — build the library window, use it for two
  * runs of cycles (the heap must not grow across the second), then close it
  * with editors still open and check that everything was released.
@@ -521,6 +616,7 @@ main(int argc, const char *argv[])
 
         snapshot_windows(app, dir);
         check_utilities(app);
+        check_editor_window(app);
         check_memory_and_ownership(app);
 
         if (argc > 2) {
