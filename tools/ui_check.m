@@ -1708,6 +1708,76 @@ check_kanban(TaskApp *app, NSString *dir)
 }
 
 /*
+ * check_editor_window — exercise editor semantics: dedup open, cancel-on-new
+ * deletes the task, refresh-all closes an editor whose task is gone.
+ *
+ * Inputs:
+ *   app — the application context
+ */
+static void
+check_editor_window(TaskApp *app)
+{
+    NSArray<NSNumber *> *ids = first_task_ids(app, 2);
+    if (ids.count < 1) { printf("     skipping editor checks (no tasks)\n"); return; }
+
+    /* Opening the same task twice must not create two windows. */
+    tasks_editor_open(app, ids[0].longLongValue);
+    tasks_editor_open(app, ids[0].longLongValue);
+    check_spin(0.05);
+    check(visible_windows() == 1, "editor: opening the same task twice shows one window");
+    tasks_editor_close(ids[0].longLongValue);
+    check_spin(0.1);
+    check(visible_windows() == 0, "editor: tasks_editor_close closes the target");
+
+    /* refresh_all must close an editor whose task has been deleted.  Use a
+     * temporary task so the seed database is not permanently mutated. */
+    {
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        if (lists->len > 0) {
+            gint64 list_id  = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+            gint64 temp_id  = task_db_task_create(app->db, list_id, 0, "refresh-test");
+            tasks_editor_open(app, temp_id);
+            check_spin(0.05);
+            task_db_task_delete(app->db, temp_id);
+            tasks_editor_refresh_all();
+            check_spin(0.1);
+            check(visible_windows() == 0, "editor: refresh_all closes an orphaned editor");
+        }
+        task_ptr_array_free_lists(lists);
+    }
+
+    /* Cancel on a new task: the task is deleted when the editor closes. */
+    {
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        if (lists->len > 0) {
+            gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+            gint64 new_id  = task_db_task_create(app->db, list_id, 0, "cancel-test");
+
+            tasks_editor_open_new(app, new_id);
+            check_spin(0.05);
+            NSWindow *editor_win = nil;
+            for (NSWindow *w in NSApp.windows) {
+                if (w.visible) { editor_win = w; break; }
+            }
+            if (editor_win) {
+                send_escape(editor_win);
+                check_spin(0.2);
+            }
+            check(visible_windows() == 0, "editor: Cancel on a new task closes the editor");
+            /* Verify the task is gone by trying to open it — open returns without
+             * showing a window when the task does not exist. */
+            tasks_editor_open(app, new_id);
+            check_spin(0.05);
+            check(visible_windows() == 0, "editor: Cancel on a new task deletes the task");
+        }
+        task_ptr_array_free_lists(lists);
+    }
+
+    tasks_editor_close_all();
+    check_spin(0.1);
+}
+
+/*
  * main — run the checks.
  *
  * Inputs:
@@ -1769,6 +1839,7 @@ main(int argc, const char *argv[])
         check_sidebar(app, dir);
         check_task_list(app, dir);
         check_kanban(app, dir);
+        check_editor_window(app);
         check_memory_and_ownership(app);
 
         if (argc > 2) {
