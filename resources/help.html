@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<!-- The page Help > Tasks AppKit Help opens (src/app_delegate.m, show_help).
+     It covers the main window only: its shortcuts are the command table's
+     (src/commands.m) and its search rules are src/search.h's.  When either
+     changes, change this page in the same commit. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<title>Tasks AppKit Help</title>
+<style>
+  body  { font: 14px/1.5 -apple-system, sans-serif; max-width: 42em;
+          margin: 2em auto; padding: 0 1.5em; }
+  h1    { font-size: 1.6em; }
+  h2    { font-size: 1.15em; margin-top: 1.8em; }
+  table { border-collapse: collapse; }
+  td    { padding: 0.15em 1.2em 0.15em 0; vertical-align: top; }
+  code  { font: 0.95em ui-monospace, monospace; }
+</style>
+</head>
+<body>
+
+<h1>Tasks AppKit Help</h1>
+
+<h2>The window</h2>
+<p>The sidebar on the left lists the views (Favorites, All Tasks, Due
+Today), then your lists and groups of lists.  The pane on the right shows
+the tasks of whatever is selected there, as a list or as a Kanban board.
+The bar along the bottom says how many tasks are showing and, for a few
+seconds, what the last action did.</p>
+<p>A new task goes into the selected list, so select a list first: a view
+or a group has no one list to put it in.</p>
+
+<h2>Searching</h2>
+<p>The search field narrows the selected view; it does not search the whole
+database.  It looks in each task's title, its notes and the titles of its
+subtasks, ignoring case.</p>
+<table>
+<tr><td><code>bank letter</code></td><td>tasks containing both words</td></tr>
+<tr><td><code>"bank letter"</code></td><td>tasks containing that phrase</td></tr>
+<tr><td><code>bank -letter</code></td><td>tasks containing “bank” but not “letter”</td></tr>
+</table>
+<p>Press Escape in the field to clear the search.  While a search is active
+tasks cannot be dragged into a manual order, because the hidden tasks
+would lose their places.</p>
+
+<h2>Compact Controls</h2>
+<p>View &gt; Compact Controls shrinks the window to a small size it
+remembers, hides the sidebar and the toolbar, and floats the New Task and
+Delete Task buttons at the bottom-right of the tasks.  It also clears any
+search, since the search field is hidden.  View &gt; Full Controls puts
+the window back as it was, with the sidebar showing.</p>
+
+<h2>Opening another database</h2>
+<p>File &gt; Open Database File… switches to another database file.  The
+file is checked before anything changes; a file that is damaged or is not a
+database is refused.  A database named <code>tasks.db</code> can then be
+made the default, opened at every launch; one with any other name stays
+open for the session only.</p>
+
+<h2>Keyboard shortcuts</h2>
+<table>
+<tr><td>⌘N</td><td>New Task</td></tr>
+<tr><td>⇧⌘N</td><td>New List…</td></tr>
+<tr><td>⌘I</td><td>Info… — open the selected task</td></tr>
+<tr><td>⌘⌫</td><td>Delete the selected tasks</td></tr>
+<tr><td>⌘F</td><td>Find — search the selected view</td></tr>
+<tr><td>⌘O</td><td>Open Database File…</td></tr>
+<tr><td>⌃⌘S</td><td>Hide or show the sidebar</td></tr>
+<tr><td>⇧⌘K</td><td>Kanban View or List View</td></tr>
+<tr><td>⌃⌘F</td><td>Enter or leave full screen</td></tr>
+<tr><td>⌘,</td><td>Settings…</td></tr>
+<tr><td>⌘W</td><td>Close the window; closing the main window quits</td></tr>
+</table>
+
+<h2>Where the data is kept</h2>
+<p>The database (<code>tasks.db</code>), the settings
+(<code>tasks.ini</code>) and the backups are in
+<code>~/Library/Application Support/TasksAppKit/</code>, unless a
+different default database was chosen with Open Database File….</p>
+
+</body>
+</html>

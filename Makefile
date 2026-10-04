@@ -124,10 +124,12 @@ all: $(BUNDLE)
 # panel.
 # The app's own icon is the one picture bundled (CFBundleIconFile names
 # it): the command icons are SF Symbols, which come with the system.
+# HELP_PAGE is what Help > Tasks AppKit Help opens.
 APP_ICON   = icons/document.png
+HELP_PAGE  = resources/help.html
 PLIST      = $(CONTENTS)/Info.plist
 
-$(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(APP_ICON)
+$(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(APP_ICON) $(HELP_PAGE)
 	@rm -rf $(RSRC) && mkdir -p $(RSRC)  # fresh, so removed resources do not linger
 	@cp resources/Info.plist $(PLIST)
 	@plutil -replace CFBundleName -string "$(APP_NAME)" $(PLIST)
@@ -138,7 +140,7 @@ $(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(APP_ICON)
 	@plutil -replace CFBundleVersion -string "$(VERSION)" $(PLIST)
 	@plutil -replace LSMinimumSystemVersion -string "$(LINK_TARGET)" $(PLIST)
 	@plutil -replace TasksBuildDate -string "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" $(PLIST)
-	@cp $(APP_ICON) $(RSRC)/
+	@cp $(APP_ICON) $(HELP_PAGE) $(RSRC)/
 	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(BUNDLE)
 	@touch $(BUNDLE)  # codesign rewrites the binary; keep the bundle newer than it
 

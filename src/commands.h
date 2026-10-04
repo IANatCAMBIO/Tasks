@@ -11,16 +11,18 @@
  *     in a menu item's representedObject as an NSNumber).
  *   - The main menu's items target the app delegate, so they work
  *     whichever window is key; it forwards to the library window.  Toolbar
- *     and context-menu items target the library window directly.
+ *     items, the floating buttons, context-menu items and the items of the
+ *     main menu's "Move to" submenus (rebuilt each time one opens) target
+ *     the library window directly.
  *   - TasksLibraryWindow perform_command:param: dispatches by the table's
  *     `owner`: its own commands, or the sidebar's, or the task list's.
  *
  * HOW A COMMAND LOOKS
  *   - TasksLibraryWindow state_of_command: is the single answer to "is it
- *     enabled, and what does it say right now".  validateMenuItem: and
- *     validateToolbarItem: both ask it and apply the answer with
- *     tasks_command_apply, so a menu item and its toolbar twin cannot
- *     disagree.
+ *     enabled, and what does it say right now".  validateMenuItem:,
+ *     validateToolbarItem: and the floating buttons' update all ask it and
+ *     apply the answer with tasks_command_apply, so a menu item and its
+ *     button twins cannot disagree.
  *   - A toggling command's title, icon and tooltip name what a click WILL
  *     DO ("Hide Completed" while they are shown), never the state in
  *     force.  There are no check marks except on the column-visibility
@@ -28,6 +30,9 @@
  *   - A menu item that carries a PARAMETER keeps the title it was built
  *     with ("Mark All Incomplete", a destination list's name): validation
  *     changes only whether it is enabled.
+ *   - Rename Group... and Remove Group act on a group.  A context-menu item
+ *     names it in its parameter; the main menu's items carry none and mean
+ *     the group selected in the sidebar.
  *
  * The Edit menu's Undo/Redo/Cut/Copy/Paste/Select All are NOT commands:
  * they use the standard selectors so that text fields get them.
@@ -37,13 +42,14 @@ typedef NS_ENUM(NSInteger, TasksCommand) {
     /* Application (the app delegate) */
     TasksCommandAbout = 1,
     TasksCommandSettings,
+    TasksCommandHelp,               /* open the bundled help page             */
 
     /* Library window (the shell) */
     TasksCommandNewTask,
     TasksCommandDeleteTask,         /* the selected task(s), after a confirm  */
     TasksCommandTaskInfo,           /* open the editor; one task selected     */
     TasksCommandClearCompleted,     /* the selected list's Done tasks         */
-    TasksCommandOpenDatabase,
+    TasksCommandOpenDatabase,       /* pick a database file and switch to it  */
     TasksCommandFind,               /* put the cursor in the search field     */
     TasksCommandToggleCompleted,    /* Hide / Show Completed                  */
     TasksCommandToggleSort,         /* Manual / Automatic Sorting             */
@@ -62,8 +68,9 @@ typedef NS_ENUM(NSInteger, TasksCommand) {
     TasksCommandDeleteList,         /* the selected list, after a confirm     */
     TasksCommandMoveToGroup,        /* param: destination group id            */
     TasksCommandRemoveFromGroup,    /* the selected list                      */
-    TasksCommandRenameGroup,        /* param: group id                        */
-    TasksCommandDeleteGroup,        /* param: group id, after a confirm       */
+    TasksCommandRenameGroup,        /* param: group id (none: the selected)   */
+    TasksCommandDeleteGroup,        /* param: group id (none: the selected),
+                                     * after a confirm                        */
 
     /* Task list: column visibility (check-marked items) */
     TasksCommandColumnDone,
@@ -182,11 +189,48 @@ NSMenuItem *tasks_command_menu_item(TasksCommand command, NSNumber *param, id ta
 NSToolbarItem *tasks_command_toolbar_item(TasksCommand command, id target);
 
 /*
+ * tasks_command_flag_item — a menu item for ONE DIRECTION of a flag command
+ * (TasksCommandMarkDone, TasksCommandSetPinned, TasksCommandSetPriority),
+ * titled for that direction: "Mark Incomplete", "Add All to Favorites".
+ * The direction rides in the item as the command's BOOL parameter.  The
+ * context menu and the main menu both make their flag items here, so the
+ * wording exists once.
+ *
+ * Inputs:
+ *   command — one of the three flag commands
+ *   on      — the direction: YES sets the flag, NO clears it
+ *   several — NO for the wording that fits one task ("Mark Complete"), YES
+ *             for the wording used when several are selected and their
+ *             states may differ ("Mark All Complete")
+ *   target  — who receives run_command:
+ *
+ * Output:
+ *   new NSMenuItem.
+ */
+NSMenuItem *tasks_command_flag_item(TasksCommand command, BOOL on, BOOL several, id target);
+
+/*
+ * tasks_command_button — an icon-only, borderless button for a command, for
+ * controls that sit over a pane (Compact mode's floating pair): its icon
+ * and tooltip from the table, action run_command:, the command in `tag`.
+ * Nothing validates such a button automatically: its owner applies
+ * state_of_command: to it with tasks_command_apply.
+ *
+ * Inputs:
+ *   command — a command whose table row has an icon
+ *   target  — who receives run_command: (the library window)
+ *
+ * Output:
+ *   new NSButton, tasks_look_float_button points square.
+ */
+NSButton *tasks_command_button(TasksCommand command, id target);
+
+/*
  * tasks_command_apply — make a control show a command's current state.
  *
  * Inputs:
  *   state — the state to show
- *   item  — an NSMenuItem (title, enabled, check mark) or an NSToolbarItem
- *           (icon, tooltip, enabled)
+ *   item  — an NSMenuItem (title, enabled, check mark), or an NSToolbarItem
+ *           or NSButton (icon, tooltip, enabled)
  */
 void tasks_command_apply(TasksCommandState *state, id item);

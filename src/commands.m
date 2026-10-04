@@ -12,6 +12,8 @@ static const tasks_command_spec_t command_specs[] = {
       @"About " @TASKS_APP_NAME,   @"",  0, nil, nil },
     { TasksCommandSettings,        TasksCommandOwnerApp,      @"tasks.settings",
       @"Settings…",                @",", 0, nil, nil },
+    { TasksCommandHelp,            TasksCommandOwnerApp,      @"tasks.help",
+      @TASKS_APP_NAME @" Help",    @"?", 0, nil, nil },
 
     { TasksCommandNewTask,         TasksCommandOwnerShell,    @"tasks.new-task",
       @"New Task",                 @"n", 0, @"plus", @"Create a task in the selected list" },
@@ -73,6 +75,25 @@ static const tasks_command_spec_t command_specs[] = {
       @"Completion Date",          @"",  0, nil, nil },
 };
 #define COMMAND_COUNT (sizeof(command_specs) / sizeof(command_specs[0]))
+
+/* The other three titles of a flag command.  Its first — setting the flag
+ * on one task — is the command table's title. */
+typedef struct {
+    TasksCommand                 command;
+    NSString * __unsafe_unretained off;         /* clear it on one task      */
+    NSString * __unsafe_unretained on_all;      /* set it on several         */
+    NSString * __unsafe_unretained off_all;     /* clear it on several       */
+} flag_titles_t;
+
+static const flag_titles_t flag_titles[] = {
+    { TasksCommandMarkDone,    @"Mark Incomplete",
+      @"Mark All Complete",    @"Mark All Incomplete" },
+    { TasksCommandSetPinned,   @"Remove from Favorites",
+      @"Add All to Favorites", @"Remove All from Favorites" },
+    { TasksCommandSetPriority, @"Clear High Priority",
+      @"Set All High Priority", @"Clear All High Priority" },
+};
+#define FLAG_COUNT (sizeof(flag_titles) / sizeof(flag_titles[0]))
 
 @implementation TasksCommandState
 @end
@@ -142,6 +163,53 @@ tasks_command_menu_item(TasksCommand command, NSNumber *param, id target)
 }
 
 /*
+ * tasks_command_flag_item — a menu item for one direction of a flag.
+ * Inputs/output are documented in commands.h.
+ */
+NSMenuItem *
+tasks_command_flag_item(TasksCommand command, BOOL on, BOOL several, id target)
+{
+    NSMenuItem *item = tasks_command_menu_item(command, @(on), target);
+
+    for (size_t i = 0; i < FLAG_COUNT; i++) {
+        const flag_titles_t *titles = &flag_titles[i];
+        if (titles->command != command) continue;
+        if (several) {
+            item.title = on ? titles->on_all : titles->off_all;
+        } else if (!on) {
+            item.title = titles->off;
+        }
+    }
+    return item;
+}
+
+/*
+ * tasks_command_button — a borderless icon button for a command.
+ * Inputs/output are documented in commands.h.
+ */
+NSButton *
+tasks_command_button(TasksCommand command, id target)
+{
+    const tasks_command_spec_t *spec = tasks_command_spec(command);
+    NSButton *button = [[NSButton alloc]
+        initWithFrame:NSMakeRect(0, 0, tasks_look_float_button, tasks_look_float_button)];
+
+    button.bordered      = NO;
+    button.imagePosition = NSImageOnly;
+    button.tag           = command;
+    button.target        = target;
+    button.action        = @selector(run_command:);
+    /* A click must not take the keyboard away from the task pane. */
+    button.refusesFirstResponder = YES;
+    button.accessibilityLabel    = spec->title;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button.widthAnchor constraintEqualToConstant:tasks_look_float_button].active  = YES;
+    [button.heightAnchor constraintEqualToConstant:tasks_look_float_button].active = YES;
+    tasks_command_apply(tasks_command_default_state(command), button);
+    return button;
+}
+
+/*
  * tasks_command_toolbar_item — a toolbar button for a command.
  * Inputs/output are documented in commands.h.
  */
@@ -172,10 +240,11 @@ tasks_command_apply(TasksCommandState *state, id item)
         menu_item.title   = state.title;
         menu_item.enabled = state.enabled;
         menu_item.state   = state.checked ? NSControlStateValueOn : NSControlStateValueOff;
-    } else if ([item isKindOfClass:NSToolbarItem.class]) {
-        NSToolbarItem *tool_item = item;
-        tool_item.image   = state.icon ? tasks_icon(state.icon, tasks_look_toolbar_icon) : nil;
-        tool_item.toolTip = state.tooltip;
-        tool_item.enabled = state.enabled;
+        return;
     }
+
+    /* A toolbar item or a button: the two answer the same three setters. */
+    [item setImage:state.icon ? tasks_icon(state.icon, tasks_look_toolbar_icon) : nil];
+    [item setToolTip:state.tooltip];
+    [item setEnabled:state.enabled];
 }

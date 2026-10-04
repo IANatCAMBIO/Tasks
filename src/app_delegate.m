@@ -13,9 +13,15 @@
 
 #include <signal.h>
 
-/* Links in the About panel's credits. */
+/* The About panel's credits: the app's motto (carried from the GTK build),
+ * then two links. */
+static NSString * const about_motto       = @"Gettin' shit done since 2026!";
 static NSString * const about_site_url    = @"https://camb.io";
 static NSString * const about_license_url = @"https://opensource.org/license/bsd-3-clause";
+
+/* The help page in Contents/Resources (resources/help.html). */
+static NSString * const help_page_name = @"help";
+static NSString * const help_page_type = @"html";
 
 /* The Info.plist key the Makefile stamps with the build time (UTC, ISO 8601). */
 static NSString * const build_date_key = @"TasksBuildDate";
@@ -23,7 +29,7 @@ static NSString * const build_date_key = @"TasksBuildDate";
 /* The size of the app icon in the Dock tile and the About panel. */
 static const CGFloat app_icon_size = 128.0;
 
-@interface TasksAppDelegate () <NSMenuItemValidation>
+@interface TasksAppDelegate () <NSMenuItemValidation, NSMenuDelegate>
 /* The application context: the open database and the event bus.  Owned;
  * NULL before start_core succeeds and after tear_down. */
 @property (nonatomic, assign) TaskApp *app;
@@ -86,29 +92,6 @@ start_core
 }
 
 /*
- * check_database — verify the database that was just opened and say so.
- * The check runs on EVERY launch and has no setting: two PRAGMAs are
- * cheap, and they are the only thing that catches a file gone bad before
- * more is written into it.
- */
-- (void)
-check_database
-{
-    if (task_db_health_check(self.app->db)) {
-        task_app_status(self.app, "DB at %s loaded, integrity check passed",
-                        self.app->db->path);
-        return;
-    }
-    const TaskDbHealth *health = task_db_health(self.app->db);
-    NSString *lead = health->ran ? @"The database integrity check found issues:"
-                                 : @"The database integrity check did not complete:";
-    tasks_ui_notice(self.library.window, @"Database Integrity Check",
-                    [NSString stringWithFormat:@"%@\n\n%@", lead,
-                        tasks_string(health->detail != NULL ? health->detail : "?")],
-                    nil);
-}
-
-/*
  * watch_sigterm — turn SIGTERM (make install, logout, `kill`) into a normal
  * quit, so pending edits are saved and the database is closed.  A dispatch
  * source delivers the signal on the main queue; the default action is
@@ -165,7 +148,7 @@ applicationDidFinishLaunching:(NSNotification *)note
     [NSApp activate];
 
     task_worker_arm_all(self.app, self.app->db->path);
-    [self check_database];
+    [self.library report_database_health];
 
     gint n_tasks = 0, n_lists = 0;
     task_db_totals(self.app->db, &n_tasks, &n_lists);
@@ -256,6 +239,9 @@ run_command:(id)sender
     case TasksCommandSettings:
         tasks_settings_window_open(self.app);
         break;
+    case TasksCommandHelp:
+        [self show_help];
+        break;
     default:
         [self.library run_command:sender];
         break;
@@ -285,8 +271,8 @@ validateMenuItem:(NSMenuItem *)item
 }
 
 /*
- * about_credits — the About panel's credits: "camb.io · BSD License",
- * centred in the small system font, each a link.
+ * about_credits — the About panel's credits, centred in the small system
+ * font: the motto, then "camb.io · BSD License", each a link.
  *
  * Output:
  *   attributed string for NSAboutPanelOptionCredits.
@@ -306,9 +292,10 @@ about_credits(void)
         @[@"BSD License", about_license_url],
     ];
 
-    NSMutableAttributedString *credits = [[NSMutableAttributedString alloc] init];
+    NSMutableAttributedString *credits = [[NSMutableAttributedString alloc]
+        initWithString:[about_motto stringByAppendingString:@"\n\n"] attributes:plain];
     for (NSArray<NSString *> *link in links) {
-        if (credits.length > 0) {
+        if (link != links.firstObject) {
             [credits appendAttributedString:
                 [[NSAttributedString alloc] initWithString:@"  ·  " attributes:plain]];
         }
@@ -346,6 +333,19 @@ show_about
                                                timeStyle:NSDateFormatterShortStyle]];
     }
     [NSApp orderFrontStandardAboutPanelWithOptions:options];
+}
+
+/*
+ * show_help — Help > Tasks AppKit Help: open the bundled help page in the
+ * user's browser.  (A Help Book would need an indexed help bundle; one
+ * page does not earn that.)
+ */
+- (void)
+show_help
+{
+    NSURL *page = [NSBundle.mainBundle URLForResource:help_page_name withExtension:help_page_type];
+
+    if (page) [NSWorkspace.sharedWorkspace openURL:page];
 }
 
 /* ── Menu bar ────────────────────────────────────────────────────────── */
@@ -394,8 +394,75 @@ add_menu(NSMenu *bar, NSString *title)
 }
 
 /*
+ * destinations_item: — a "Move to" item for the main menu: its submenu is
+ * left empty here and filled each time it opens (menuNeedsUpdate:), so it
+ * always lists the lists or groups there are now.  The submenu carries the
+ * command's identifier, which is how menuNeedsUpdate: knows what to fill
+ * it with.
+ *
+ * Inputs:
+ *   command — TasksCommandMoveToList or TasksCommandMoveToGroup
+ *
+ * Output:
+ *   new NSMenuItem holding the submenu.
+ */
+- (NSMenuItem *)
+destinations_item:(TasksCommand)command
+{
+    const tasks_command_spec_t *spec = tasks_command_spec(command);
+    NSMenuItem *holder = [[NSMenuItem alloc] initWithTitle:spec->title
+                                                    action:NULL
+                                             keyEquivalent:@""];
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:spec->title];
+
+    menu.identifier = spec->ident;
+    menu.delegate   = self;
+    holder.submenu  = menu;
+    return holder;
+}
+
+/*
+ * menuNeedsUpdate: — a "Move to" submenu is about to open: have the library
+ * window fill it with the current destinations.
+ *
+ * Inputs:
+ *   menu — a submenu made by destinations_item:
+ */
+- (void)
+menuNeedsUpdate:(NSMenu *)menu
+{
+    const tasks_command_spec_t *spec = tasks_command_with_ident(menu.identifier);
+
+    if (spec) [self.library fill_menu:menu with_destinations_of:spec->command];
+}
+
+/*
+ * menuHasKeyEquivalent:forEvent:target:action: — AppKit asks whether a
+ * "Move to" submenu claims a key press.  Its items have no shortcuts, and
+ * saying so here stops AppKit filling the submenu (a database query) on
+ * every key press just to look.
+ *
+ * Inputs:
+ *   menu   — a submenu made by destinations_item: (unused)
+ *   event  — the key press (unused)
+ *   target — would receive the claiming item's target (unused)
+ *   action — would receive the claiming item's action (unused)
+ *
+ * Output: NO.
+ */
+- (BOOL)
+menuHasKeyEquivalent:(NSMenu *)menu
+            forEvent:(NSEvent *)event
+              target:(id *)target
+              action:(SEL *)action
+{
+    return NO;
+}
+
+/*
  * build_menu_bar — the whole menu bar, in code: the standard App, File,
- * Edit, View, Window and Help menus.
+ * Edit, View, Window and Help menus.  Every command in the command table
+ * is in one of them.
  *
  * Command items come from the command table and target the delegate, so
  * they work whichever window is key.  The Edit menu's items use AppKit's
@@ -428,7 +495,8 @@ build_menu_bar
     [app_menu addItem:NSMenuItem.separatorItem];
     [app_menu addItem:standard_item(@"Quit " @TASKS_APP_NAME, @selector(terminate:), @"q", 0)];
 
-    /* ── File menu ── */
+    /* ── File menu ── what is created, then the selected task, the selected
+     * list, the selected group, and the file all of it is kept in. */
     NSMenu *file_menu = add_menu(bar, @"File");
     [file_menu addItem:command(TasksCommandNewTask)];
     [file_menu addItem:command(TasksCommandNewList)];
@@ -438,11 +506,21 @@ build_menu_bar
     [file_menu addItem:command(TasksCommandDeleteTask)];
     [file_menu addItem:command(TasksCommandClearCompleted)];
     [file_menu addItem:NSMenuItem.separatorItem];
+    [file_menu addItem:command(TasksCommandEditList)];
+    [file_menu addItem:[self destinations_item:TasksCommandMoveToGroup]];
+    [file_menu addItem:command(TasksCommandRemoveFromGroup)];
+    [file_menu addItem:command(TasksCommandDeleteList)];
+    [file_menu addItem:NSMenuItem.separatorItem];
+    [file_menu addItem:command(TasksCommandRenameGroup)];
+    [file_menu addItem:command(TasksCommandDeleteGroup)];
+    [file_menu addItem:NSMenuItem.separatorItem];
     [file_menu addItem:command(TasksCommandOpenDatabase)];
     [file_menu addItem:NSMenuItem.separatorItem];
     [file_menu addItem:standard_item(@"Close Window", @selector(performClose:), @"w", 0)];
 
-    /* ── Edit menu ── */
+    /* ── Edit menu ── the standard items, then what changes the selected
+     * tasks.  Both directions of each flag are offered: the selection may
+     * hold tasks in either state. */
     NSMenu *edit_menu = add_menu(bar, @"Edit");
     [edit_menu addItem:standard_item(@"Undo", @selector(undo:), @"z", 0)];
     [edit_menu addItem:standard_item(@"Redo", @selector(redo:), @"z", NSEventModifierFlagShift)];
@@ -454,11 +532,25 @@ build_menu_bar
     [edit_menu addItem:standard_item(@"Select All", @selector(selectAll:), @"a", 0)];
     [edit_menu addItem:NSMenuItem.separatorItem];
     [edit_menu addItem:command(TasksCommandFind)];
+    [edit_menu addItem:NSMenuItem.separatorItem];
+    for (NSNumber *flag in @[@(TasksCommandMarkDone), @(TasksCommandSetPinned),
+                             @(TasksCommandSetPriority)]) {
+        [edit_menu addItem:tasks_command_flag_item(flag.integerValue, YES, NO, self)];
+        [edit_menu addItem:tasks_command_flag_item(flag.integerValue, NO, NO, self)];
+    }
+    [edit_menu addItem:[self destinations_item:TasksCommandMoveToList]];
 
-    /* ── View menu ── */
+    /* ── View menu ── what the task pane shows, then how the window looks. */
     NSMenu *view_menu = add_menu(bar, @"View");
     [view_menu addItem:command(TasksCommandToggleCompleted)];
     [view_menu addItem:command(TasksCommandToggleSort)];
+    NSMenuItem *columns = [[NSMenuItem alloc] initWithTitle:@"Columns" action:NULL keyEquivalent:@""];
+    columns.submenu     = [[NSMenu alloc] initWithTitle:@"Columns"];
+    [columns.submenu addItem:command(TasksCommandColumnDone)];
+    [columns.submenu addItem:command(TasksCommandColumnStatus)];
+    [columns.submenu addItem:command(TasksCommandColumnDue)];
+    [columns.submenu addItem:command(TasksCommandColumnCompleted)];
+    [view_menu addItem:columns];
     [view_menu addItem:NSMenuItem.separatorItem];
     [view_menu addItem:command(TasksCommandToggleSidebar)];
     [view_menu addItem:command(TasksCommandToggleCompact)];
@@ -467,16 +559,19 @@ build_menu_bar
     [view_menu addItem:standard_item(@"Enter Full Screen", @selector(toggleFullScreen:), @"f",
                                      NSEventModifierFlagControl)];
 
-    /* ── Window menu ── */
+    /* ── Window menu ── AppKit lists the open windows (the library window,
+     * the task editors, Settings) below these and keeps the list current. */
     NSMenu *window_menu = add_menu(bar, @"Window");
     [window_menu addItem:standard_item(@"Minimize", @selector(performMiniaturize:), @"m", 0)];
     [window_menu addItem:standard_item(@"Zoom", @selector(performZoom:), @"", 0)];
     [window_menu addItem:NSMenuItem.separatorItem];
     [window_menu addItem:standard_item(@"Bring All to Front", @selector(arrangeInFront:), @"", 0)];
-    NSApp.windowsMenu = window_menu;   /* AppKit lists the open windows here */
+    NSApp.windowsMenu = window_menu;
 
-    /* ── Help menu ── AppKit adds the menu-search field. */
-    NSApp.helpMenu = add_menu(bar, @"Help");
+    /* ── Help menu ── AppKit adds the menu-search field above the item. */
+    NSMenu *help_menu = add_menu(bar, @"Help");
+    [help_menu addItem:command(TasksCommandHelp)];
+    NSApp.helpMenu = help_menu;
 
     NSApp.mainMenu = bar;
 }
