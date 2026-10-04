@@ -7,7 +7,7 @@
 static NSString * const app_icon_name = @"document";
 static const CGFloat alert_icon_size  = 64.0;
 
-/* Icons are rendered at this many pixels per point: sharp on a Retina
+/* The app icon is rendered at this many pixels per point: sharp on a Retina
  * display, and still small on a 1x one. */
 static const CGFloat icon_scale = 2.0;
 
@@ -29,8 +29,54 @@ tasks_string(const char *text)
 /* ── Images ─────────────────────────────────────────────────────────── */
 
 /*
- * scaled_icon — a copy of a bundled image holding ONE bitmap of
- * size x size points at icon_scale, so the full-size source can be let go.
+ * cached_icon — the image kept under a name and size, made on first use.
+ * Icons are asked for on every toolbar validation, so each is built once.
+ * Bounded by construction: a dozen names, a handful of sizes.
+ *
+ * Inputs:
+ *   name — the icon's name (a symbol name, or the app icon's file name)
+ *   size — its size in points
+ *   make — builds the image when it is not cached yet; may return nil,
+ *          which is not cached
+ *
+ * Output:
+ *   the shared image, or nil when `make` could not build it.
+ */
+static NSImage *
+cached_icon(NSString *name, CGFloat size, NSImage *(^make)(void))
+{
+    static NSMutableDictionary<NSString *, NSImage *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [NSMutableDictionary dictionary]; });
+
+    NSString *key  = [NSString stringWithFormat:@"%@@%g", name, size];
+    NSImage  *icon = cache[key];
+    if (!icon) {
+        icon = make();
+        if (icon) cache[key] = icon;
+    }
+    return icon;
+}
+
+/*
+ * tasks_icon — an SF Symbol as a template image, cached.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSImage *
+tasks_icon(NSString *name, CGFloat size)
+{
+    return cached_icon(name, size, ^NSImage *{
+        NSImageSymbolConfiguration *config =
+            [NSImageSymbolConfiguration configurationWithPointSize:size
+                                                            weight:NSFontWeightRegular];
+        return [[NSImage imageWithSystemSymbolName:name accessibilityDescription:nil]
+                   imageWithSymbolConfiguration:config];
+    });
+}
+
+/*
+ * scaled_bitmap — a copy of an image holding ONE bitmap of size x size
+ * points at icon_scale, so the full-size source can be let go.
  *
  * Inputs:
  *   source — the image as loaded from the bundle
@@ -40,7 +86,7 @@ tasks_string(const char *text)
  *   new NSImage, or nil if the bitmap cannot be created.
  */
 static NSImage *
-scaled_icon(NSImage *source, CGFloat size)
+scaled_bitmap(NSImage *source, CGFloat size)
 {
     NSInteger pixels = (NSInteger)ceil(size * icon_scale);
     NSBitmapImageRep *rep =
@@ -73,40 +119,19 @@ scaled_icon(NSImage *source, CGFloat size)
 }
 
 /*
- * tasks_icon — a bundled icon, scaled once and cached.
- * Inputs/output are documented in ui_util.h.
- */
-NSImage *
-tasks_icon(NSString *name, CGFloat size)
-{
-    /* Bounded by construction: ten icons, a handful of sizes. */
-    static NSMutableDictionary<NSString *, NSImage *> *cache;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ cache = [NSMutableDictionary dictionary]; });
-
-    NSString *key  = [NSString stringWithFormat:@"%@@%g", name, size];
-    NSImage  *icon = cache[key];
-    if (icon) return icon;
-
-    /* Loaded from its file rather than with imageNamed:, which would keep
-     * the full-size image in AppKit's named-image cache for good. */
-    NSString *path   = [NSBundle.mainBundle pathForResource:name ofType:@"png"];
-    NSImage  *source = path ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
-    if (!source) return nil;
-
-    icon = scaled_icon(source, size);
-    if (icon) cache[key] = icon;
-    return icon;
-}
-
-/*
- * tasks_app_icon — the app's own icon.
+ * tasks_app_icon — the app's own icon, scaled once and cached.
  * Inputs/output are documented in ui_util.h.
  */
 NSImage *
 tasks_app_icon(CGFloat size)
 {
-    return tasks_icon(app_icon_name, size);
+    return cached_icon(app_icon_name, size, ^NSImage *{
+        /* Loaded from its file rather than with imageNamed:, which would
+         * keep the full-size image in AppKit's named-image cache for good. */
+        NSString *path   = [NSBundle.mainBundle pathForResource:app_icon_name ofType:@"png"];
+        NSImage  *source = path ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
+        return source ? scaled_bitmap(source, size) : nil;
+    });
 }
 
 /*

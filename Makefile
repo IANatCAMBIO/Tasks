@@ -122,14 +122,13 @@ all: $(BUNDLE)
 # from VERSION, the minimum system version from LINK_TARGET, and the time
 # the bundle was assembled as TasksBuildDate (UTC), shown in the About
 # panel.
-# Only the icons the app loads by name are bundled; icons/ holds others.
-ICON_NAMES = add remove left-and-right hidden visible manual automatic \
-             menu board document
-ICONS      = $(patsubst %,icons/%.png,$(ICON_NAMES))
+# The app's own icon is the one picture bundled (CFBundleIconFile names
+# it): the command icons are SF Symbols, which come with the system.
+APP_ICON   = icons/document.png
 PLIST      = $(CONTENTS)/Info.plist
 
-$(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(ICONS)
-	@rm -rf $(RSRC) && mkdir -p $(RSRC)  # fresh, so removed icons do not linger
+$(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(APP_ICON)
+	@rm -rf $(RSRC) && mkdir -p $(RSRC)  # fresh, so removed resources do not linger
 	@cp resources/Info.plist $(PLIST)
 	@plutil -replace CFBundleName -string "$(APP_NAME)" $(PLIST)
 	@plutil -replace CFBundleDisplayName -string "$(APP_NAME)" $(PLIST)
@@ -139,7 +138,7 @@ $(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(ICONS)
 	@plutil -replace CFBundleVersion -string "$(VERSION)" $(PLIST)
 	@plutil -replace LSMinimumSystemVersion -string "$(LINK_TARGET)" $(PLIST)
 	@plutil -replace TasksBuildDate -string "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" $(PLIST)
-	@cp $(ICONS) $(RSRC)/
+	@cp $(APP_ICON) $(RSRC)/
 	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(BUNDLE)
 	@touch $(BUNDLE)  # codesign rewrites the binary; keep the bundle newer than it
 
@@ -203,15 +202,15 @@ test: $(TEST_BINS)
 # the real windows against the sandbox, writes PNG snapshots of them to
 # dev/snapshots, and checks window ownership and memory from the inside
 # (needs no Screen Recording, Accessibility or Developer Tools permission).
-# It runs from a throwaway bundle under build/ so that the icons are found
-# the way the app finds them.  Not part of the app.
+# It runs from a throwaway bundle under build/ so that the app icon is
+# found the way the app finds it.  Not part of the app.
 UI_CHECK_APP  = build/ui_check.app/Contents
 UI_CHECK_BIN  = $(UI_CHECK_APP)/MacOS/ui_check
 UI_CHECK_OBJS = $(filter-out build/main.o,$(OBJS))
 
-$(UI_CHECK_BIN): tools/ui_check.m tests/check.h $(UI_CHECK_OBJS) $(ICONS) Makefile | build
+$(UI_CHECK_BIN): tools/ui_check.m tests/check.h $(UI_CHECK_OBJS) $(APP_ICON) Makefile | build
 	@rm -rf build/ui_check.app && mkdir -p $(UI_CHECK_APP)/MacOS $(UI_CHECK_APP)/Resources
-	@cp $(ICONS) $(UI_CHECK_APP)/Resources/
+	@cp $(APP_ICON) $(UI_CHECK_APP)/Resources/
 	$(CC) $(OBJCFLAGS) -I tests -c -o build/ui_check.o $<
 	$(CC) -o $@ build/ui_check.o $(UI_CHECK_OBJS) $(LDFLAGS)
 

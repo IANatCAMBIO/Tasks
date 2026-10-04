@@ -2,8 +2,8 @@
 
 /*
  * ui_util — small AppKit helpers shared by every window, so each exists
- * exactly once: the bundled icons, correctly framed image views, and the
- * four kinds of dialog (notice, confirm, path picker, custom sheet).
+ * exactly once: the icons, correctly framed image views, and the four
+ * kinds of dialog (notice, confirm, path picker, custom sheet).
  *
  * Every dialog takes a completion block, called once on the main thread.
  * Given a parent window the dialog is a sheet and the call returns at once
@@ -37,39 +37,45 @@ NSString *tasks_string(const char *text);
 /* ── Images ─────────────────────────────────────────────────────────── */
 
 /*
- * tasks_icon — one of the app's bundled PNG icons (Contents/Resources),
- * scaled down ONCE to the size it will be drawn at.
+ * tasks_icon — a command's icon: an SF Symbol, as a TEMPLATE image.
  *
- * The bundled icons are 512 x 512 pixels.  Handing such an image to a view
- * makes AppKit decode and cache the full bitmap (1 MB each, and a layer-
- * backed view keeps a second copy) to draw a 24 pt button.  The image
- * returned here holds only a bitmap of `size` points at 2x, a few
- * kilobytes, so it is safe to give to any view, button, toolbar item or
- * menu item.  Cached per name and size.
+ * A template image is a shape, not a picture: the control showing it draws
+ * the shape in its own text colour, so the icon follows light and dark,
+ * the disabled look and a pressed button with no code here.  (The GTK
+ * build's PNG artwork was dark ink on transparent and all but vanished on
+ * a dark toolbar.)  Use it for toolbar items, buttons and menu items.
+ * Cached per name and size.
  *
  * Inputs:
- *   name — icon base name without extension: "add", "remove",
- *          "left-and-right", "hidden", "visible", "manual", "automatic",
- *          "menu", "board", "document"
- *   size — edge length in points the icon will be drawn at
+ *   name — SF Symbol name: "plus", "trash", "sidebar.left", "eye", ...
+ *   size — the symbol's point size, as a font's: the symbol is drawn about
+ *          as tall as text set at that size
  *
  * Output:
- *   shared NSImage of size x size points (do not modify it), or nil when
- *   the bundle has no such icon.
+ *   shared NSImage (do not modify it), or nil when the system has no
+ *   symbol of that name.
  */
 NSImage *tasks_icon(NSString *name, CGFloat size);
 
 /*
- * tasks_app_icon — the app's own icon (the bundled "document" artwork), for
- * the Dock tile, alerts and the About panel.  macOS 26 puts a bundle icon
- * that is not its rounded-square shape on a grey backdrop; handing those
- * places the image explicitly shows just the icon.
+ * tasks_app_icon — the app's own icon (the bundled "document" artwork, the
+ * one PNG the app ships), for the Dock tile, alerts and the About panel.
+ * macOS 26 puts a bundle icon that is not its rounded-square shape on a
+ * grey backdrop; handing those places the image explicitly shows just the
+ * icon.
+ *
+ * The artwork is 512 x 512 pixels.  Handing such an image to a view makes
+ * AppKit decode and cache the full bitmap (1 MB, and a layer-backed view
+ * keeps a second copy) to draw a 64 pt picture.  The image returned here
+ * holds only a bitmap of `size` points at 2x, scaled ONCE, so it is safe
+ * to give to any view.  Cached per size.
  *
  * Inputs:
  *   size — edge length in points
  *
  * Output:
- *   shared NSImage, or nil when the bundle has no such icon.
+ *   shared NSImage of size x size points (do not modify it), or nil when
+ *   the bundle has no such icon.
  */
 NSImage *tasks_app_icon(CGFloat size);
 
@@ -87,8 +93,8 @@ NSImage *tasks_app_icon(CGFloat size);
  * size inside a stack or grid view.
  *
  * Inputs:
- *   image — the image to show (a tasks_icon, a file icon from NSWorkspace,
- *           ...); may be nil
+ *   image — the image to show (tasks_app_icon, a file icon from
+ *           NSWorkspace, ...); may be nil
  *   size  — edge length in points
  *
  * Output:

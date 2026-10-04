@@ -62,7 +62,7 @@ TasksAppKit.app/
 └── Contents/
     ├── Info.plist      resources/Info.plist + identity, version, build date
     ├── MacOS/TasksAppKit
-    └── Resources/      the ten icons the app loads by name
+    └── Resources/      document.png, the app's icon
 build/                  objects, dependency files, test binaries, seed, ui_check.app
 dev/                    sandbox data, test scratch folders, snapshots
 ```
@@ -161,7 +161,8 @@ tools/
   ui_check.m           in-process window snapshots and ownership/memory checks
   winshot.sh, winlist.swift   screenshot a window of the running app
 resources/Info.plist
-icons/                 PNG artwork (ten are bundled; the rest are unused spares)
+icons/                 PNG artwork: document.png is the app's icon and the one file
+                       bundled; the rest are spares.  Command icons are SF Symbols
 porting/               the porting documents and the GTK reference sources
 ```
 

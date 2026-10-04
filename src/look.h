@@ -26,7 +26,8 @@
 
 static const CGFloat tasks_look_window_min_w     = 520.0;  /* full mode          */
 static const CGFloat tasks_look_window_min_h     = 320.0;
-static const CGFloat tasks_look_toolbar_icon     = 24.0;   /* toolbar and floating
+static const CGFloat tasks_look_toolbar_icon     = 16.0;   /* symbol point size:
+                                                             * toolbar and floating
                                                              * buttons            */
 static const CGFloat tasks_look_search_w         = 220.0;  /* toolbar search field */
 static const CGFloat tasks_look_status_h         = 20.0;   /* status bar; a 1 pt

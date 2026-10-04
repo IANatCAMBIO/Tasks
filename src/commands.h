@@ -90,8 +90,8 @@ typedef NS_ENUM(NSInteger, TasksCommandOwner) {
  *   title   — menu title; for a toggling command, its default face
  *   key     — key equivalent, "" for none (Command is always added)
  *   mods    — modifiers in addition to Command
- *   icon    — bundled icon name (ui_util.h) for toolbar/floating buttons;
- *             nil when the command is never a button
+ *   icon    — SF Symbol name (tasks_icon, ui_util.h) for toolbar/floating
+ *             buttons; nil when the command is never a button
  *   tooltip — hover text for buttons; nil when never a button
  */
 typedef struct {
@@ -114,7 +114,7 @@ typedef struct {
 @property (nonatomic, assign) BOOL enabled;
 @property (nonatomic, assign) BOOL checked;         /* menu check mark        */
 @property (nonatomic, copy) NSString *title;
-@property (nonatomic, copy) NSString *icon;         /* bundled icon name, or nil */
+@property (nonatomic, copy) NSString *icon;         /* SF Symbol name, or nil */
 @property (nonatomic, copy) NSString *tooltip;      /* or nil                 */
 @end
 

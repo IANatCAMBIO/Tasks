@@ -291,14 +291,18 @@ snapshot_windows(TaskApp *app, NSString *dir)
 static void
 check_utilities(TaskApp *app)
 {
-    NSImage *icon = tasks_icon(@"add", 24.0);
+    NSImage *symbol = tasks_icon(@"plus", 16.0);
+    check(symbol != nil && symbol.template,
+          "utilities: a command icon is a template image (it follows light and dark)");
+    check(tasks_icon(@"plus", 16.0) == symbol, "utilities: icons are cached");
+    check(tasks_icon(@"no-such-symbol", 16.0) == nil, "utilities: a missing icon is nil");
+
+    NSImage *icon = tasks_app_icon(64.0);
     NSBitmapImageRep *rep = (NSBitmapImageRep *)icon.representations.firstObject;
-    check(icon != nil && NSEqualSizes(icon.size, NSMakeSize(24, 24)),
-          "utilities: a bundled icon comes back at its drawing size");
-    check(icon.representations.count == 1 && rep.pixelsWide == 48,
+    check(icon != nil && NSEqualSizes(icon.size, NSMakeSize(64, 64)),
+          "utilities: the app icon comes back at its drawing size");
+    check(icon.representations.count == 1 && rep.pixelsWide == 128,
           "utilities: ... holding one small bitmap, not the 512 px source");
-    check(tasks_icon(@"add", 24.0) == icon, "utilities: icons are cached");
-    check(tasks_icon(@"no-such-icon", 24.0) == nil, "utilities: a missing icon is nil");
 
     NSImageView *view = tasks_image_view(icon, 16.0);
     check(NSEqualSizes(view.frame.size, NSMakeSize(16, 16)) && view.image == icon,

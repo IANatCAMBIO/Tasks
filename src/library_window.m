@@ -1086,14 +1086,14 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
     case TasksCommandToggleCompleted:
         if (!task_config_get_bool(TASK_CFG_SHOW_COMPLETED)) {
             state.title   = @"Show Completed";
-            state.icon    = @"visible";
+            state.icon    = @"eye";
             state.tooltip = @"Show completed tasks";
         }
         break;
     case TasksCommandToggleSort:
         if (self.manual_sort) {
             state.title   = @"Automatic Sorting";
-            state.icon    = @"automatic";
+            state.icon    = @"arrow.up.arrow.down";
             state.tooltip = @"Switch to automatic sorting";
         }
         /* Two reasons the sort control can be unavailable, and each gets
@@ -1118,7 +1118,7 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
     case TasksCommandTogglePane:
         if (self.kanban_on) {
             state.title   = @"List View";
-            state.icon    = @"menu";
+            state.icon    = @"list.bullet";
             state.tooltip = @"Show the tasks as a list";
         }
         break;
