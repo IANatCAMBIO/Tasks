@@ -2,13 +2,15 @@
 #import "editor_window.h"
 #import "kanban.h"
 #import "look.h"
-#import "sidebar.h"
+#import "favorites_bar.h"
 #import "task_list.h"
 #import "ui_util.h"
 
 #include "task_config.h"
 #include "task_ops.h"
+#include "task_sidebar.h"
 #include "task_switch.h"
+#include "task_view.h"
 
 /*
  * The shell: the window's own furniture (toolbar, search field, status
@@ -29,14 +31,9 @@ static NSString * const search_tooltip       =
     @"Search the selected view's task titles, notes and subtasks.\n"
     @"\"quoted words\" matches the phrase; -word leaves out tasks containing it.";
 
-/* Initial sidebar width, until the sidebar fits itself to its content. */
-static const CGFloat sidebar_initial_w = 200.0;
-
 @interface TasksLibraryWindow () <NSWindowDelegate, NSToolbarDelegate,
                                   NSToolbarItemValidation, NSSearchFieldDelegate>
-@property (nonatomic, strong) NSSplitViewController *split_vc;   /* sidebar | task pane */
-@property (nonatomic, strong) NSSplitViewItem *sidebar_item;
-@property (nonatomic, strong) TasksSidebar *sidebar;
+@property (nonatomic, strong) TasksFavoritesBar *favorites_bar;
 @property (nonatomic, strong) TasksTaskList *task_list;
 @property (nonatomic, strong) TasksKanban *kanban;
 @property (nonatomic, strong) NSTextField *status_left;    /* "<view> - N tasks"        */
@@ -66,6 +63,7 @@ static const CGFloat sidebar_initial_w = 200.0;
 /* Declared here because the C listeners below call it before its
  * definition; documented where it is defined. */
 - (void)show_status_message:(NSString *)message;
+- (void)update_window_title;
 @end
 
 /* ── App-event listeners (C callbacks; user_data is the window) ─────── */
@@ -237,6 +235,7 @@ init_with_app:(TaskApp *)app
 
     [self apply_pane_mode];
     [self refresh_sidebar];
+    [self update_window_title];
     [self refresh_tasks];
     /* The keyboard starts in the task pane, not in the search field. */
     window.initialFirstResponder = (NSView *)[self visible_pane];
@@ -361,20 +360,19 @@ build_float_bar:(NSView *)pane
 }
 
 /*
- * build_layout — the window's content: a split view (sidebar | task pane)
- * over a separator and the status bar.  The task pane holds BOTH
- * presentations, the list and the board, of which apply_pane_mode shows
- * one; neither is ever reparented.  Whether the sidebar starts collapsed
- * is apply_compact_layout_at:animated:'s decision, not made here.
+ * build_layout — the window's content: a favorites bar over the full-width
+ * task pane, then a separator and the status bar.  The task pane holds BOTH
+ * presentations, the list and the board, of which apply_pane_mode shows one.
+ * NSStackView collapses the bar when hidden, so the pane fills the window.
  */
 - (void)
 build_layout
 {
     NSView *content = self.window.contentView;
 
-    self.sidebar   = [[TasksSidebar alloc] init_with_library:self];
-    self.task_list = [[TasksTaskList alloc] init_with_library:self];
-    self.kanban    = [[TasksKanban alloc] init_with_library:self];
+    self.favorites_bar = [[TasksFavoritesBar alloc] init_with_library:self];
+    self.task_list     = [[TasksTaskList alloc] init_with_library:self];
+    self.kanban        = [[TasksKanban alloc] init_with_library:self];
 
     NSView *pane = [[NSView alloc] initWithFrame:NSZeroRect];
     [pane addSubview:self.task_list];
@@ -383,44 +381,28 @@ build_layout
     pin_edges(self.kanban);
     [self build_float_bar:pane];
 
-    /* Bare view controllers wrap the existing views; a split view
-     * controller gives collapse, minimum thickness and animation. */
-    NSViewController *sidebar_vc = [[NSViewController alloc] init];
-    sidebar_vc.view = self.sidebar;
-    NSViewController *pane_vc = [[NSViewController alloc] init];
-    pane_vc.view = pane;
+    [self.favorites_bar.heightAnchor
+        constraintEqualToConstant:tasks_look_favorites_h].active = YES;
 
-    self.sidebar_item = [NSSplitViewItem splitViewItemWithViewController:sidebar_vc];
-    self.sidebar_item.canCollapse      = YES;
-    self.sidebar_item.minimumThickness = tasks_look_sidebar_min_w;
-    /* Window resizes go to the task pane, not the sidebar. */
-    self.sidebar_item.holdingPriority  = NSLayoutPriorityDefaultLow + 1;
+    NSStackView *stack = [NSStackView stackViewWithViews:@[self.favorites_bar, pane]];
+    stack.orientation  = NSUserInterfaceLayoutOrientationVertical;
+    stack.spacing      = 0;
+    stack.distribution = NSStackViewDistributionFill;
 
-    /* A sidebar dragged wide stops here rather than squeezing the pane away. */
-    NSSplitViewItem *pane_item = [NSSplitViewItem splitViewItemWithViewController:pane_vc];
-    pane_item.minimumThickness = tasks_look_pane_min_w;
-
-    self.split_vc = [[NSSplitViewController alloc] init];
-    self.split_vc.splitView.vertical     = YES;
-    self.split_vc.splitView.dividerStyle = NSSplitViewDividerStyleThin;
-    [self.split_vc addSplitViewItem:self.sidebar_item];
-    [self.split_vc addSplitViewItem:pane_item];
-
-    NSView *split = self.split_vc.view;
-    NSBox  *rule  = [[NSBox alloc] initWithFrame:NSZeroRect];
+    NSBox *rule   = [[NSBox alloc] initWithFrame:NSZeroRect];
     rule.boxType  = NSBoxSeparator;
     self.status_left  = status_label(NSTextAlignmentLeft);
     self.status_right = status_label(NSTextAlignmentRight);
 
-    for (NSView *view in @[split, rule, self.status_left, self.status_right]) {
-        view.translatesAutoresizingMaskIntoConstraints = NO;
-        [content addSubview:view];
+    for (NSView *v in @[stack, rule, self.status_left, self.status_right]) {
+        v.translatesAutoresizingMaskIntoConstraints = NO;
+        [content addSubview:v];
     }
     [NSLayoutConstraint activateConstraints:@[
-        [split.topAnchor constraintEqualToAnchor:content.topAnchor],
-        [split.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [split.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [split.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
+        [stack.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [stack.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
 
         [rule.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [rule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
@@ -438,12 +420,7 @@ build_layout
         [self.status_right.leadingAnchor
             constraintGreaterThanOrEqualToAnchor:self.status_left.trailingAnchor
                                         constant:tasks_look_status_inset],
-        [self.sidebar.widthAnchor constraintGreaterThanOrEqualToConstant:tasks_look_sidebar_min_w],
     ]];
-
-    gint saved_w = task_config_get_int(TASK_CFG_SIDEBAR_WIDTH);
-    [self.split_vc.splitView setPosition:saved_w > 0 ? saved_w : sidebar_initial_w
-                        ofDividerAtIndex:0];
 }
 
 /* ── Toolbar ─────────────────────────────────────────────────────────── */
@@ -464,9 +441,7 @@ build_toolbar
 }
 
 /*
- * toolbar_idents — the toolbar's items, left to right.  The task verbs
- * lead; the space separates what ACTS on a task from what changes how the
- * pane is SHOWN.
+ * toolbar_idents — the toolbar's items, left to right.
  *
  * Output:
  *   item identifiers.
@@ -475,10 +450,11 @@ static NSArray<NSToolbarItemIdentifier> *
 toolbar_idents(void)
 {
     return @[
+        tasks_command_spec(TasksCommandToggleSidebar)->ident,
+        NSToolbarSpaceItemIdentifier,
         tasks_command_spec(TasksCommandNewTask)->ident,
         tasks_command_spec(TasksCommandDeleteTask)->ident,
         NSToolbarSpaceItemIdentifier,
-        tasks_command_spec(TasksCommandToggleSidebar)->ident,
         tasks_command_spec(TasksCommandToggleCompleted)->ident,
         tasks_command_spec(TasksCommandToggleSort)->ident,
         tasks_command_spec(TasksCommandTogglePane)->ident,
@@ -548,6 +524,7 @@ willBeInsertedIntoToolbar:(BOOL)flag
          * wider, which can push toolbar items into the overflow menu. */
         field.focusRingType     = NSFocusRingTypeNone;
         item.preferredWidthForSearchField = tasks_look_search_w;
+        [field.widthAnchor constraintLessThanOrEqualToConstant:tasks_look_search_w].active = YES;
         self.search_field = field;
         return item;
     }
@@ -738,7 +715,34 @@ apply_pane_mode
 /* ── Refresh ─────────────────────────────────────────────────────────── */
 
 /*
- * select: — the sidebar selection changed.
+ * update_window_title — set the window title from the current selection:
+ * "Tasks AppKit — Name" for a list, group or view; the plain app name
+ * otherwise.
+ */
+- (void)
+update_window_title
+{
+    NSString   *suffix = nil;
+    task_sel_t  sel    = _selection;
+
+    if (sel.kind == task_sel_list) {
+        TaskList *list = task_db_list_get(self.app->db, sel.id);
+        if (list) { suffix = tasks_string(list->name); task_list_free(list); }
+    } else if (sel.kind == task_sel_group) {
+        TaskGroup *group = task_db_group_get(self.app->db, sel.id);
+        if (group) { suffix = tasks_string(group->name); task_group_free(group); }
+    } else if (sel.kind == task_sel_view) {
+        const TaskView *view = task_view_nth((guint)sel.id);
+        if (view) suffix = tasks_string(view->label);
+    }
+
+    self.window.title = suffix
+        ? [@TASKS_APP_NAME stringByAppendingFormat:@" \xe2\x80\x94 %@", suffix]
+        : @TASKS_APP_NAME;
+}
+
+/*
+ * select: — the favorites bar selection changed.
  * Inputs are documented in library_window.h.
  */
 - (void)
@@ -748,6 +752,7 @@ select:(task_sel_t)selection
         _selection = selection;
         [self.task_list view_changed];
         [self.kanban view_changed];
+        [self update_window_title];
     }
     [self refresh_tasks];
 }
@@ -770,14 +775,14 @@ refresh_tasks
 }
 
 /*
- * refresh_sidebar — rebuild the sidebar from the database.
+ * refresh_sidebar — rebuild the favorites bar from the database.
  */
 - (void)
 refresh_sidebar
 {
     if (self.is_shut_down) return;
 
-    [self.sidebar reload];
+    [self.favorites_bar reload];
     self.had_pinned = task_db_has_pinned(self.app->db);
 }
 
@@ -1195,14 +1200,17 @@ move_to_list:(int64_t)list_id
 }
 
 /*
- * toggle_sidebar — slide the sidebar in or out and remember the choice.
+ * toggle_sidebar — slide the favorites bar in or out and remember the choice.
  */
 - (void)
 toggle_sidebar
 {
-    BOOL show = self.sidebar_item.collapsed;
+    BOOL show = self.favorites_bar.hidden;
 
-    self.sidebar_item.animator.collapsed = !show;
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+        ctx.duration = 0.15;
+        self.favorites_bar.animator.hidden = !show;
+    }];
     task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, show);
 }
 
@@ -1249,7 +1257,7 @@ apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
     frame = [self.window constrainFrameRect:frame toScreen:self.window.screen];
 
     if (!animated) {
-        self.sidebar_item.collapsed = collapse;
+        self.favorites_bar.hidden = collapse;
         [self.window setFrame:frame display:NO];
         return;
     }
@@ -1257,7 +1265,7 @@ apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
     self.compact_animating = YES;
     __weak TasksLibraryWindow *ws = self;
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        self.sidebar_item.animator.collapsed = collapse;
+        self.favorites_bar.animator.hidden = collapse;
         [self.window.animator setFrame:frame display:YES];
     } completionHandler:^{
         ws.compact_animating = NO;
@@ -1511,7 +1519,7 @@ perform_command:(TasksCommand)command param:(NSNumber *)param
         [self perform_shell_command:command param:param];
         break;
     case TasksCommandOwnerSidebar:
-        [self.sidebar perform_command:command param:param];
+        [self.favorites_bar perform_command:command param:param];
         break;
     case TasksCommandOwnerTaskList:
         [self.task_list perform_command:command param:param];
@@ -1586,7 +1594,7 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
         }
         break;
     case TasksCommandToggleSidebar:
-        if (self.sidebar_item.collapsed) {
+        if (self.favorites_bar.hidden) {
             state.title   = @"Show Sidebar";
             state.tooltip = @"Show the lists pane";
         }
@@ -1631,7 +1639,7 @@ state_of_command:(TasksCommand)command
         [self update_shell_state:state for_command:command];
         break;
     case TasksCommandOwnerSidebar:
-        [self.sidebar update_state:state for_command:command];
+        [self.favorites_bar update_state:state for_command:command];
         break;
     case TasksCommandOwnerTaskList:
         [self.task_list update_state:state for_command:command];
@@ -1667,9 +1675,6 @@ windowWillClose:(NSNotification *)note
 - (void)
 save_geometry
 {
-    if (!self.sidebar_item.collapsed) {
-        task_config_set_int(TASK_CFG_SIDEBAR_WIDTH, (gint)NSWidth(self.sidebar.frame));
-    }
     if (self.window.styleMask & NSWindowStyleMaskFullScreen) return;
 
     NSRect frame   = self.window.frame;
@@ -1707,7 +1712,7 @@ shut_down
     [self.kanban cancel_drag];
     tasks_editor_close_all();
 
-    [self.sidebar shut_down];
+    [self.favorites_bar shut_down];
     [self.task_list shut_down];
     [self.kanban shut_down];
 

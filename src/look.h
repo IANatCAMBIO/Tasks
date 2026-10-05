@@ -50,12 +50,16 @@ static const CGFloat tasks_look_float_button     = 32.0;   /* each button's edge
 static const CGFloat tasks_look_float_pad        = 2.0;    /* plate edge to button,
                                                              * and between buttons */
 
+/* ── Favorites bar ──────────────────────────────────────────────────── */
+
+static const CGFloat tasks_look_favorites_h      = 28.0;   /* bar height           */
+
 /* ── Sidebar ────────────────────────────────────────────────────────── */
 
 static const CGFloat tasks_look_sidebar_min_w    = 160.0;
 static const CGFloat tasks_look_sidebar_max_frac = 0.5;    /* of the window width
                                                              * when fitting       */
-static const CGFloat tasks_look_sidebar_top_pad  = 3.0;
+static const CGFloat tasks_look_sidebar_top_pad  = 0.0;
 static const CGFloat tasks_look_sidebar_font     = 13.0;   /* views, the Lists
                                                              * header and groups
                                                              * are bold           */
@@ -69,6 +73,8 @@ static const CGFloat tasks_look_row_line_gap     = 1.0;    /* between lines     
 static const CGFloat tasks_look_row_pad_v        = 8.0;    /* above and below the
                                                              * text in a list row */
 static const CGFloat tasks_look_row_pad_h        = 4.0;
+static const CGFloat tasks_look_header_inset     = 4.0;    /* extra leading inset
+                                                             * in column headers   */
 static const CGFloat tasks_look_handle_col_w     = 26.0;   /* manual-sort handle  */
 static const CGFloat tasks_look_check_col_w      = 28.0;   /* the done checkbox   */
 static const CGFloat tasks_look_drag_rule        = 2.0;    /* row drop marker     */
