@@ -2,7 +2,7 @@
 #import "editor_window.h"
 #import "kanban.h"
 #import "look.h"
-#import "favorites_bar.h"
+#import "lists_bar.h"
 #import "task_list.h"
 #import "ui_util.h"
 
@@ -33,7 +33,7 @@ static NSString * const search_tooltip       =
 
 @interface TasksLibraryWindow () <NSWindowDelegate, NSToolbarDelegate,
                                   NSToolbarItemValidation, NSSearchFieldDelegate>
-@property (nonatomic, strong) TasksFavoritesBar *favorites_bar;
+@property (nonatomic, strong) TasksListsBar *lists_bar;
 @property (nonatomic, strong) TasksTaskList *task_list;
 @property (nonatomic, strong) TasksKanban *kanban;
 @property (nonatomic, strong) NSTextField *status_left;    /* "<view> - N tasks"        */
@@ -360,7 +360,7 @@ build_float_bar:(NSView *)pane
 }
 
 /*
- * build_layout — the window's content: a favorites bar over the full-width
+ * build_layout — the window's content: a lists bar over the full-width
  * task pane, then a separator and the status bar.  The task pane holds BOTH
  * presentations, the list and the board, of which apply_pane_mode shows one.
  * NSStackView collapses the bar when hidden, so the pane fills the window.
@@ -370,7 +370,7 @@ build_layout
 {
     NSView *content = self.window.contentView;
 
-    self.favorites_bar = [[TasksFavoritesBar alloc] init_with_library:self];
+    self.lists_bar = [[TasksListsBar alloc] init_with_library:self];
     self.task_list     = [[TasksTaskList alloc] init_with_library:self];
     self.kanban        = [[TasksKanban alloc] init_with_library:self];
 
@@ -381,17 +381,17 @@ build_layout
     pin_edges(self.kanban);
     [self build_float_bar:pane];
 
-    [self.favorites_bar.heightAnchor
-        constraintEqualToConstant:tasks_look_favorites_h].active = YES;
+    [self.lists_bar.heightAnchor
+        constraintEqualToConstant:tasks_look_lists_bar_h].active = YES;
 
-    NSStackView *stack = [NSStackView stackViewWithViews:@[self.favorites_bar, pane]];
+    NSStackView *stack = [NSStackView stackViewWithViews:@[self.lists_bar, pane]];
     stack.orientation  = NSUserInterfaceLayoutOrientationVertical;
     stack.spacing      = 0;
     stack.distribution = NSStackViewDistributionFill;
 
     NSBox *rule   = [[NSBox alloc] initWithFrame:NSZeroRect];
     rule.boxType  = NSBoxSeparator;
-    self.status_left  = status_label(NSTextAlignmentLeft);
+    self.status_left  = status_label(NSTextAlignmentCenter);
     self.status_right = status_label(NSTextAlignmentRight);
 
     for (NSView *v in @[stack, rule, self.status_left, self.status_right]) {
@@ -410,16 +410,18 @@ build_layout
         [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor
                                           constant:-tasks_look_status_h],
 
-        [self.status_left.leadingAnchor constraintEqualToAnchor:content.leadingAnchor
-                                                       constant:tasks_look_status_inset],
+        [self.status_left.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
+        [self.status_left.leadingAnchor
+            constraintGreaterThanOrEqualToAnchor:content.leadingAnchor
+                                        constant:tasks_look_status_inset],
+        [self.status_left.trailingAnchor
+            constraintLessThanOrEqualToAnchor:self.status_right.leadingAnchor
+                                     constant:-tasks_look_status_inset],
         [self.status_left.centerYAnchor constraintEqualToAnchor:content.bottomAnchor
                                                        constant:-tasks_look_status_h / 2.0],
         [self.status_right.trailingAnchor constraintEqualToAnchor:content.trailingAnchor
                                                          constant:-tasks_look_status_inset],
         [self.status_right.centerYAnchor constraintEqualToAnchor:self.status_left.centerYAnchor],
-        [self.status_right.leadingAnchor
-            constraintGreaterThanOrEqualToAnchor:self.status_left.trailingAnchor
-                                        constant:tasks_look_status_inset],
     ]];
 }
 
@@ -450,8 +452,6 @@ static NSArray<NSToolbarItemIdentifier> *
 toolbar_idents(void)
 {
     return @[
-        tasks_command_spec(TasksCommandToggleSidebar)->ident,
-        NSToolbarSpaceItemIdentifier,
         tasks_command_spec(TasksCommandNewTask)->ident,
         tasks_command_spec(TasksCommandDeleteTask)->ident,
         NSToolbarSpaceItemIdentifier,
@@ -742,7 +742,7 @@ update_window_title
 }
 
 /*
- * select: — the favorites bar selection changed.
+ * select: — the lists bar selection changed.
  * Inputs are documented in library_window.h.
  */
 - (void)
@@ -753,6 +753,7 @@ select:(task_sel_t)selection
         [self.task_list view_changed];
         [self.kanban view_changed];
         [self update_window_title];
+        [self.lists_bar update_selection];
     }
     [self refresh_tasks];
 }
@@ -775,14 +776,14 @@ refresh_tasks
 }
 
 /*
- * refresh_sidebar — rebuild the favorites bar from the database.
+ * refresh_sidebar — rebuild the lists bar from the database.
  */
 - (void)
 refresh_sidebar
 {
     if (self.is_shut_down) return;
 
-    [self.favorites_bar reload];
+    [self.lists_bar reload];
     self.had_pinned = task_db_has_pinned(self.app->db);
 }
 
@@ -1200,16 +1201,16 @@ move_to_list:(int64_t)list_id
 }
 
 /*
- * toggle_sidebar — slide the favorites bar in or out and remember the choice.
+ * toggle_sidebar — slide the lists bar in or out and remember the choice.
  */
 - (void)
 toggle_sidebar
 {
-    BOOL show = self.favorites_bar.hidden;
+    BOOL show = self.lists_bar.hidden;
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
         ctx.duration = 0.15;
-        self.favorites_bar.animator.hidden = !show;
+        self.lists_bar.animator.hidden = !show;
     }];
     task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, show);
 }
@@ -1257,7 +1258,7 @@ apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
     frame = [self.window constrainFrameRect:frame toScreen:self.window.screen];
 
     if (!animated) {
-        self.favorites_bar.hidden = collapse;
+        self.lists_bar.hidden = collapse;
         [self.window setFrame:frame display:NO];
         return;
     }
@@ -1265,7 +1266,7 @@ apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
     self.compact_animating = YES;
     __weak TasksLibraryWindow *ws = self;
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        self.favorites_bar.animator.hidden = collapse;
+        self.lists_bar.animator.hidden = collapse;
         [self.window.animator setFrame:frame display:YES];
     } completionHandler:^{
         ws.compact_animating = NO;
@@ -1519,7 +1520,7 @@ perform_command:(TasksCommand)command param:(NSNumber *)param
         [self perform_shell_command:command param:param];
         break;
     case TasksCommandOwnerSidebar:
-        [self.favorites_bar perform_command:command param:param];
+        [self.lists_bar perform_command:command param:param];
         break;
     case TasksCommandOwnerTaskList:
         [self.task_list perform_command:command param:param];
@@ -1594,9 +1595,9 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
         }
         break;
     case TasksCommandToggleSidebar:
-        if (self.favorites_bar.hidden) {
-            state.title   = @"Show Sidebar";
-            state.tooltip = @"Show the lists pane";
+        if (self.lists_bar.hidden) {
+            state.title   = @"Show Lists Bar";
+            state.tooltip = @"Show the lists bar";
         }
         break;
     case TasksCommandTogglePane:
@@ -1639,7 +1640,7 @@ state_of_command:(TasksCommand)command
         [self update_shell_state:state for_command:command];
         break;
     case TasksCommandOwnerSidebar:
-        [self.favorites_bar update_state:state for_command:command];
+        [self.lists_bar update_state:state for_command:command];
         break;
     case TasksCommandOwnerTaskList:
         [self.task_list update_state:state for_command:command];
@@ -1712,7 +1713,7 @@ shut_down
     [self.kanban cancel_drag];
     tasks_editor_close_all();
 
-    [self.favorites_bar shut_down];
+    [self.lists_bar shut_down];
     [self.task_list shut_down];
     [self.kanban shut_down];
 

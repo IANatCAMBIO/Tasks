@@ -5,15 +5,14 @@
 @class TasksLibraryWindow;
 
 /*
- * TasksFavoritesBar — a 28 pt horizontal scrolling strip of buttons for
- * selecting a task list or virtual view.  Replaces the sidebar in the
- * favorites-bar experiment branch.
+ * TasksListsBar — a 28 pt horizontal scrolling strip of buttons for
+ * selecting a task list or virtual view.
  *
  * Virtual views appear first, then standalone lists (not in any group),
  * then group buttons that open a dropdown of the group's member lists.
  * Clicking any item calls [library select:].
  */
-@interface TasksFavoritesBar : NSView
+@interface TasksListsBar : NSView
 
 /*
  * init_with_library: — build the bar.
@@ -35,7 +34,14 @@
 - (void)reload;
 
 /*
- * perform_command:param: — carry out one of the sidebar's commands.
+ * update_selection — reflect the window's current selection without
+ * rebuilding the buttons.  Call this after a selection change that does
+ * not alter the button list.
+ */
+- (void)update_selection;
+
+/*
+ * perform_command:param: — carry out one of the bar's commands.
  *
  * Inputs:
  *   command — the command
@@ -45,7 +51,7 @@
 
 /*
  * update_state:for_command: — adjust the default state of one of the
- * sidebar's commands.
+ * bar's commands.
  *
  * Inputs:
  *   state   — the state to adjust in place

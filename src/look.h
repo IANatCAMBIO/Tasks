@@ -50,9 +50,9 @@ static const CGFloat tasks_look_float_button     = 32.0;   /* each button's edge
 static const CGFloat tasks_look_float_pad        = 2.0;    /* plate edge to button,
                                                              * and between buttons */
 
-/* ── Favorites bar ──────────────────────────────────────────────────── */
+/* ── Lists bar ──────────────────────────────────────────────────────── */
 
-static const CGFloat tasks_look_favorites_h      = 28.0;   /* bar height           */
+static const CGFloat tasks_look_lists_bar_h      = 28.0;   /* bar height           */
 
 /* ── Sidebar ────────────────────────────────────────────────────────── */
 
@@ -67,7 +67,7 @@ static const CGFloat tasks_look_sidebar_drag_rule = 2.0;   /* drop-position rule
 
 /* ── Task rows (the list and the cards share row_text.h) ────────────── */
 
-static const CGFloat tasks_look_row_font         = 13.0;   /* the title line      */
+static const CGFloat tasks_look_row_font         = 12.0;   /* the title line      */
 static const CGFloat tasks_look_row_small_font   = 11.0;   /* every other line    */
 static const CGFloat tasks_look_row_line_gap     = 1.0;    /* between lines       */
 static const CGFloat tasks_look_row_pad_v        = 8.0;    /* above and below the

@@ -132,6 +132,61 @@ canDragRowsWithIndexes:(NSIndexSet *)indexes atPoint:(NSPoint)point
     return [self columnAtPoint:point] == col_handle;
 }
 
+/*
+ * resetCursorRects — open hand over each handle cell; default arrow elsewhere.
+ */
+- (void)
+resetCursorRects
+{
+    [super resetCursorRects];
+    NSTableColumn *col = self.tableColumns[col_handle];
+    if (col.hidden) return;
+    NSInteger n = self.numberOfRows;
+    for (NSInteger row = 0; row < n; row++) {
+        NSRect rect = [self frameOfCellAtColumn:col_handle row:row];
+        if (NSIsEmptyRect(rect)) continue;
+        [self addCursorRect:rect cursor:NSCursor.openHandCursor];
+    }
+}
+
+/*
+ * mouseDown: — switches to the closed hand while a drag from the handle is
+ * in progress; the open-hand cursor rect resumes when the drag ends.
+ *
+ * Inputs:
+ *   event — the mouse-down event
+ */
+- (void)
+mouseDown:(NSEvent *)event
+{
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    BOOL on_handle = [self columnAtPoint:point] == col_handle
+                     && !self.tableColumns[col_handle].hidden;
+    if (on_handle) [NSCursor.closedHandCursor push];
+    [super mouseDown:event];
+    if (on_handle) [NSCursor pop];
+}
+
+@end
+
+/*
+ * TasksHeaderCell — column header cell with a wider leading inset so the
+ * title aligns with the row content below it.
+ */
+@interface TasksHeaderCell : NSTableHeaderCell
+@end
+
+@implementation TasksHeaderCell
+
+- (void)drawInteriorWithFrame:(NSRect)frame inView:(NSView *)view
+{
+    /* Shift the leading edge inward; right edge stays fixed so the sort
+     * indicator position is unchanged. */
+    frame.origin.x   += tasks_look_header_inset;
+    frame.size.width -= tasks_look_header_inset;
+    [super drawInteriorWithFrame:frame inView:view];
+}
+
 @end
 
 /*
@@ -573,9 +628,11 @@ build_table
             column.resizingMask = NSTableColumnNoResizing;
             column.headerCell.alignment = NSTextAlignmentCenter;
         } else if (i == col_task) {
+            column.headerCell   = [[TasksHeaderCell alloc] initTextCell:column.title];
             column.minWidth     = task_col_min_w;
             column.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
         } else {
+            column.headerCell   = [[TasksHeaderCell alloc] initTextCell:column.title];
             column.minWidth     = data_col_min_w;
             column.resizingMask = NSTableColumnUserResizingMask;
         }
@@ -865,6 +922,7 @@ apply_settings
         if (column.hidden != hidden) {
             column.hidden    = hidden;
             self.fit_pending = YES;
+            [self.window invalidateCursorRectsForView:self.table];
         }
         column.sortDescriptorPrototype = manual || spec->sort == NO_SORT
             ? nil
@@ -939,6 +997,11 @@ fitted_width:(int)index
 fit_columns_if_pending
 {
     if (!self.fit_pending || _rows == NULL) return;
+    if (self.scroll.contentSize.width <= 0.0) {
+        __weak TasksTaskList *ws = self;
+        dispatch_async(dispatch_get_main_queue(), ^{ [ws fit_columns_if_pending]; });
+        return;
+    }
     self.fit_pending = NO;
 
     CGFloat others = 0.0;
@@ -1397,6 +1460,62 @@ menuNeedsUpdate:(NSMenu *)menu
 /* ── Manual-sort drag ────────────────────────────────────────────────── */
 
 /*
+ * tableView:draggingSession:willBeginAtPoint:forRowIndexes: — replace
+ * NSTableView's default row-snapshot drag image with a small generic pill
+ * at 10% of the table width and 65% opacity.
+ *
+ * Inputs:
+ *   table   — the table
+ *   session — the new drag session whose items are replaced
+ *   point   — starting point in screen coordinates (unused)
+ *   indexes — dragged row indices (unused; image is generic)
+ */
+- (void)
+tableView:(NSTableView *)table
+draggingSession:(NSDraggingSession *)session
+willBeginAtPoint:(NSPoint)point
+forRowIndexes:(NSIndexSet *)indexes
+{
+    NSInteger first = (NSInteger)indexes.firstIndex;
+    if (first == NSNotFound) return;
+
+    NSTableRowView *row_view = [table rowViewAtRow:first makeIfNecessary:NO];
+    if (row_view == nil) return;
+
+    NSRect bounds = row_view.bounds;
+    NSBitmapImageRep *rep = [row_view bitmapImageRepForCachingDisplayInRect:bounds];
+    if (rep == nil) return;
+    [row_view cacheDisplayInRect:bounds toBitmapImageRep:rep];
+
+    NSImage *ghost = [NSImage imageWithSize:bounds.size
+                                    flipped:NO
+                             drawingHandler:^BOOL(NSRect r) {
+        [rep drawInRect:r fromRect:NSZeroRect
+              operation:NSCompositingOperationSourceOver
+               fraction:tasks_look_card_ghost_alpha
+         respectFlipped:YES hints:nil];
+        [NSColor.separatorColor set];
+        NSFrameRect(r);
+        return YES;
+    }];
+
+    [session enumerateDraggingItemsWithOptions:0
+                                       forView:table
+                                       classes:@[NSPasteboardItem.class]
+                                 searchOptions:@{}
+                                    usingBlock:^(NSDraggingItem *item, NSInteger idx, BOOL *stop) {
+        item.imageComponentsProvider = ^NSArray<NSDraggingImageComponent *> *{
+            NSDraggingImageComponent *comp = [NSDraggingImageComponent
+                draggingImageComponentWithKey:NSDraggingImageComponentIconKey];
+            comp.contents = ghost;
+            comp.frame    = NSMakeRect(0, 0, bounds.size.width, bounds.size.height);
+            return @[comp];
+        };
+        *stop = YES;
+    }];
+}
+
+/*
  * tableView:pasteboardWriterForRow: — what a dragged row puts on the
  * pasteboard: its task id.  Rows are draggable only while a manual order
  * may be saved (manual sorting on, no search).
@@ -1419,15 +1538,16 @@ tableView:(NSTableView *)table pasteboardWriterForRow:(NSInteger)row
 }
 
 /*
- * tableView:validateDrop:proposedRow:proposedDropOperation: — where
- * dragged rows may land: between two rows of this table, while a manual
- * order may be saved.  A drop ON a row is retargeted to the gap above it.
+ * tableView:validateDrop:proposedRow:proposedDropOperation: — where dragged
+ * rows may land.  Ignores NSTableView's proposed position and recomputes it
+ * from the cursor: top 50% of a row → insert above, bottom 50% → insert
+ * below.
  *
  * Inputs:
  *   table     — the table
- *   info      — the drag
- *   row       — the proposed row
- *   operation — on the row, or above it
+ *   info      — the drag; draggingLocation is in window coordinates
+ *   row       — NSTableView's proposal (ignored)
+ *   operation — NSTableView's proposal (ignored)
  *
  * Output:
  *   move, or none to refuse the drop.
@@ -1441,7 +1561,19 @@ proposedDropOperation:(NSTableViewDropOperation)operation
     if (info.draggingSource != table || ![self.library manual_sort_live]) {
         return NSDragOperationNone;
     }
-    if (operation == NSTableViewDropOn) [table setDropRow:row dropOperation:NSTableViewDropAbove];
+
+    NSPoint   pt      = [table convertPoint:info.draggingLocation fromView:nil];
+    NSInteger hit     = [table rowAtPoint:pt];
+    NSInteger target;
+
+    if (hit < 0) {
+        target = [self row_count];
+    } else {
+        NSRect row_rect = [table rectOfRow:hit];
+        target = (pt.y < NSMidY(row_rect)) ? hit : hit + 1;
+    }
+
+    [table setDropRow:target dropOperation:NSTableViewDropAbove];
     return NSDragOperationMove;
 }
 
