@@ -30,10 +30,10 @@ static const tasks_command_spec_t command_specs[] = {
     { TasksCommandToggleCompleted, TasksCommandOwnerShell,    @"tasks.toggle-completed",
       @"Hide Completed",           @"",  0, @"eye.slash", @"Hide completed tasks" },
     { TasksCommandToggleSort,      TasksCommandOwnerShell,    @"tasks.toggle-sort",
-      @"Manual Sorting",           @"",  0, @"line.3.horizontal", @"Switch to manual drag sorting" },
+      @"Manual Sorting",           @"",  0, @"hand.raised",        @"Switch to manual drag sorting" },
     { TasksCommandToggleSidebar,   TasksCommandOwnerShell,    @"tasks.toggle-sidebar",
-      @"Hide Sidebar",             @"s", NSEventModifierFlagControl,
-      @"sidebar.left",             @"Hide the lists pane" },
+      @"Hide Lists Bar",           @"s", NSEventModifierFlagControl,
+      @"sidebar.left",             @"Hide the lists bar" },
     { TasksCommandToggleCompact,   TasksCommandOwnerShell,    @"tasks.toggle-compact",
       @"Compact Controls",         @"",  0, nil, nil },
     { TasksCommandTogglePane,      TasksCommandOwnerShell,    @"tasks.toggle-pane",
@@ -244,7 +244,13 @@ tasks_command_apply(TasksCommandState *state, id item)
     }
 
     /* A toolbar item or a button: the two answer the same three setters. */
-    [item setImage:state.icon ? tasks_icon(state.icon, tasks_look_toolbar_icon) : nil];
+    NSImage *icon = nil;
+    if (state.icon) {
+        icon = [item isKindOfClass:NSToolbarItem.class]
+            ? [NSImage imageWithSystemSymbolName:state.icon accessibilityDescription:nil]
+            : tasks_icon(state.icon, tasks_look_toolbar_icon);
+    }
+    [item setImage:icon];
     [item setToolTip:state.tooltip];
     [item setEnabled:state.enabled];
 }

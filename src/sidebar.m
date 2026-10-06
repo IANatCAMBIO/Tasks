@@ -22,7 +22,7 @@ static NSString * const emoji_tooltip     = @"Optional emoji — click to pick";
 /* Row metrics.  The height suits the 13 pt row font with an emoji in it;
  * the padding either side of a row's text is the Files table cell's. */
 static const CGFloat row_h    = 24.0;
-static const CGFloat cell_pad = 2.0;
+static const CGFloat cell_pad = 0.0;
 
 /* The sheets' fields. */
 static const CGFloat emoji_field_w = 40.0;
@@ -140,7 +140,8 @@ mouseDown:(NSEvent *)event
 {
     [super mouseDown:event];
     [self.currentEditor selectAll:nil];
-    [NSApp orderFrontCharacterPalette:self];
+    /* The system emoji picker opens with Ctrl+Cmd+Space; no programmatic
+     * open here because the Character Viewer panel has no close API. */
 }
 
 /*
