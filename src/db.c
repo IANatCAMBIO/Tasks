@@ -7,6 +7,7 @@
 #include <glib/gstdio.h>             /* g_unlink, g_stat                    */
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ---------------------------------------------------------------------------
  * exec() — run one or more statements with no results; failures are
@@ -633,7 +634,10 @@ task_db_open(const gchar *path, GError **err)
             /* The due date's time of day (v12).  Its DEFAULT is the whole
              * migration for existing rows: every due date that nobody has
              * timed by hand means 08:00, here and in the ALTER below.   */
-            "  due_time       INTEGER NOT NULL DEFAULT %d)",
+            "  due_time            INTEGER NOT NULL DEFAULT %d,"
+            /* Day planner schedule (v14) — LOCAL-ONLY, never synced.    */
+            "  scheduled_start    INTEGER NOT NULL DEFAULT 0,"
+            "  scheduled_duration INTEGER NOT NULL DEFAULT 60)",
             TASK_RECUR_TIME_DEFAULT, TASK_RECUR_LEAD_DEFAULT,
             TASK_DUE_TIME_DEFAULT);
         exec(db, tasks_sql);
@@ -976,6 +980,23 @@ task_db_open(const gchar *path, GError **err)
     if (uv < 13 && uv > 0) {
         if (exec(db, "UPDATE tasks SET due_time = 1020 WHERE due_time = 480"))
             g_message("Migrated %s to schema v13: due_time default 08:00→17:00",
+                      path);
+    }
+
+    /* -----------------------------------------------------------------
+     * v14 — scheduled_start and scheduled_duration, day planner.
+     * Local-only (never synced); ADD COLUMN, guarded on the column.
+     * ----------------------------------------------------------------- */
+    if (!table_has_column(db, "tasks", "scheduled_start")) {
+        if (exec(db, "ALTER TABLE tasks ADD COLUMN scheduled_start INTEGER "
+                     "NOT NULL DEFAULT 0"))
+            g_message("Migrated %s to schema v14: added tasks.scheduled_start",
+                      path);
+    }
+    if (!table_has_column(db, "tasks", "scheduled_duration")) {
+        if (exec(db, "ALTER TABLE tasks ADD COLUMN scheduled_duration INTEGER "
+                     "NOT NULL DEFAULT 60"))
+            g_message("Migrated %s to schema v14: added tasks.scheduled_duration",
                       path);
     }
 
@@ -1345,7 +1366,8 @@ task_db_list_emoji_if_empty(TaskDatabase *db, gint64 list_id,
                   "status, pinned, position, updated_at, deleted, "\
                   "completed_at, priority, "\
                   "recur_interval, recur_unit, recur_time, recur_lead, "\
-                  "recur_next, recur_start, due_time"
+                  "recur_next, recur_start, due_time, "\
+                  "scheduled_start, scheduled_duration"
 
 static Task *
 read_task(sqlite3_stmt *st)
@@ -1387,6 +1409,9 @@ read_task(sqlite3_stmt *st)
         t->due_time = (m >= 0 && m <= 23 * 60 + 59) ? m
                                                     : TASK_DUE_TIME_DEFAULT;
     }
+    t->scheduled_start    = sqlite3_column_int64(st, 20);
+    t->scheduled_duration = sqlite3_column_int(st, 21);
+    if (t->scheduled_duration <= 0) t->scheduled_duration = 60;
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
     return t;
@@ -1748,6 +1773,56 @@ task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority)
         priority ? 1 : 0, (long long)id);
     exec(db, sql);
     g_free(sql);
+}
+
+/*
+ * task_db_task_set_scheduled() — write the day-planner schedule fields.
+ * Local-only: no updated_at bump (see set_pinned).
+ *
+ * Inputs:
+ *   db           — the connection
+ *   id           — the task id
+ *   start_unix   — unix seconds of the session start; 0 = clear
+ *   duration_min — session length in minutes (clamped to 1+ if <= 0)
+ */
+void
+task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
+                            gint64 start_unix, gint duration_min)
+{
+    gchar *sql = g_strdup_printf(
+        "UPDATE tasks SET scheduled_start = %lld, scheduled_duration = %d "
+        "WHERE id = %lld",
+        (long long)start_unix, duration_min > 0 ? duration_min : 60,
+        (long long)id);
+    exec(db, sql);
+    g_free(sql);
+}
+
+/*
+ * task_db_tasks_scheduled_today() — tasks scheduled within today's local day.
+ *
+ * Inputs:
+ *   db — the connection
+ *
+ * Output:
+ *   new GPtrArray of Task* ordered by scheduled_start; never NULL.
+ *   Free with task_ptr_array_free_tasks + g_ptr_array_free.
+ */
+GPtrArray *
+task_db_tasks_scheduled_today(TaskDatabase *db)
+{
+    time_t    now   = time(NULL);
+    struct tm local = *localtime(&now);
+    local.tm_hour = local.tm_min = local.tm_sec = 0;
+    gint64 lo = (gint64)mktime(&local);
+    gint64 hi = lo + 86400;
+
+    return task_query(db,
+        "SELECT " TASK_COLS " FROM tasks "
+        "WHERE deleted = 0 AND scheduled_start >= ? "
+        "AND scheduled_start < ? "
+        "ORDER BY scheduled_start",
+        2, lo, hi);
 }
 
 /* ---------------------------------------------------------------------------

@@ -56,6 +56,7 @@ typedef NS_ENUM(NSInteger, TasksCommand) {
     TasksCommandToggleSidebar,      /* Hide / Show Sidebar                    */
     TasksCommandToggleCompact,      /* Compact / Full Controls                */
     TasksCommandTogglePane,         /* Kanban / List View                     */
+    TasksCommandToggleDayPlanner,   /* Hide / Show Day Planner                */
     TasksCommandMarkDone,           /* param: BOOL — complete or reopen       */
     TasksCommandSetPinned,          /* param: BOOL — favourite or not         */
     TasksCommandSetPriority,        /* param: BOOL — high priority or not     */

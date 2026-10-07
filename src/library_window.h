@@ -5,6 +5,8 @@
 #include "task_pane.h"
 #include "task_rows.h"
 
+@class TasksDayPlanner;
+
 /*
  * library_window — the main window, and the contract between it and the
  * three panes it hosts (the sidebar, the task list, the Kanban board).
@@ -130,6 +132,9 @@
 /* The kanban_view setting: YES while the board is the visible pane.
  * Single writer: TasksCommandTogglePane. */
 @property (nonatomic, readonly) BOOL kanban_on;
+
+/* The day planner panel; nil until build_layout. */
+@property (nonatomic, readonly) TasksDayPlanner *day_planner;
 
 /*
  * manual_sort_live — whether rows may be dragged into a hand-made order

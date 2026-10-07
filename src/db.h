@@ -49,7 +49,7 @@
 /* The schema version this build writes.  Kept here rather than spelled as
  * a literal in task_db_open so the pre-migration backup and the version
  * stamp cannot drift apart.                                               */
-#define TASK_DB_SCHEMA_VERSION 13
+#define TASK_DB_SCHEMA_VERSION 14
 
 /* ---------------------------------------------------------------------------
  * TaskDatabase — one open connection.  A connection must not cross threads:
@@ -258,6 +258,10 @@ typedef struct {
                                       * back to the due date and then to
                                       * today, which is what every task
                                       * predating v11 does               */
+
+    /* Day planner schedule — LOCAL-ONLY (never synced).                     */
+    gint64    scheduled_start;       /* unix seconds; 0 = not scheduled       */
+    gint      scheduled_duration;    /* working session length in minutes; 60  */
 } Task;
 
 /* One file attachment on a task.                                           */
@@ -528,6 +532,18 @@ GPtrArray *task_db_tasks_recurring(TaskDatabase *db);
 void task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
                               gint due_time, gint64 next);
 void task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next);
+
+/* Set or clear a task's day-planner schedule.  Both fields are
+ * LOCAL-ONLY and do NOT stamp updated_at.  Pass start_unix = 0 to
+ * remove the schedule.                                                    */
+void task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
+                                gint64 start_unix, gint duration_min);
+
+/* Tasks scheduled today (scheduled_start within today's local midnight
+ * to the next local midnight), ordered by scheduled_start.  Returns
+ * Task* elements; free with task_ptr_array_free_tasks after use.
+ * Never NULL.                                                             */
+GPtrArray *task_db_tasks_scheduled_today(TaskDatabase *db);
 
 /* Tombstone the task and its subtasks, in one transaction.                */
 void task_db_task_delete(TaskDatabase *db, gint64 id);

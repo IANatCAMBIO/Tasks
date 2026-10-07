@@ -59,6 +59,8 @@
 #define TASK_CFG_COMPACT_H           "compact_h"             /* int, 500 */
 #define TASK_CFG_COMPACT_PRE_W       "compact_pre_w"         /* int, 980: size to restore on leaving it */
 #define TASK_CFG_COMPACT_PRE_H       "compact_pre_h"         /* int, 640 */
+#define TASK_CFG_DAY_PLANNER_VISIBLE "day_planner_visible"   /* bool, 1 */
+#define TASK_CFG_DAY_PLANNER_W       "day_planner_w"         /* int, 220 */
 
 /* Task-list column visibility (the header menu) */
 #define TASK_CFG_COL_DONE            "col_done_visible"      /* bool, 1 */

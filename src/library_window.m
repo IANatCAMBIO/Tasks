@@ -1,4 +1,5 @@
 #import "library_window.h"
+#import "day_planner.h"
 #import "editor_window.h"
 #import "kanban.h"
 #import "look.h"
@@ -32,10 +33,13 @@ static NSString * const search_tooltip       =
     @"\"quoted words\" matches the phrase; -word leaves out tasks containing it.";
 
 @interface TasksLibraryWindow () <NSWindowDelegate, NSToolbarDelegate,
-                                  NSToolbarItemValidation, NSSearchFieldDelegate>
+                                  NSToolbarItemValidation, NSSearchFieldDelegate,
+                                  NSSplitViewDelegate>
 @property (nonatomic, strong) TasksListsBar *lists_bar;
 @property (nonatomic, strong) TasksTaskList *task_list;
 @property (nonatomic, strong) TasksKanban *kanban;
+@property (nonatomic, strong) TasksDayPlanner *day_planner;
+@property (nonatomic, strong) NSSplitView *main_split;
 @property (nonatomic, strong) NSTextField *status_left;    /* "<view> - N tasks"        */
 @property (nonatomic, strong) NSTextField *status_right;   /* the latest event message  */
 @property (nonatomic, weak) NSSearchField *search_field;   /* owned by its toolbar item */
@@ -237,6 +241,16 @@ init_with_app:(TaskApp *)app
     [self refresh_sidebar];
     [self update_window_title];
     [self refresh_tasks];
+
+    BOOL dp_visible = task_config_get_bool(TASK_CFG_DAY_PLANNER_VISIBLE);
+    self.day_planner.hidden = !dp_visible;
+    if (dp_visible) {
+        [self.day_planner reload];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.day_planner scroll_to_now];
+        });
+    }
+
     /* The keyboard starts in the task pane, not in the search field. */
     window.initialFirstResponder = (NSView *)[self visible_pane];
     return self;
@@ -381,10 +395,22 @@ build_layout
     pin_edges(self.kanban);
     [self build_float_bar:pane];
 
+    self.day_planner = [[TasksDayPlanner alloc] init_with_library:self];
+
+    NSSplitView *split = [[NSSplitView alloc] initWithFrame:NSZeroRect];
+    split.vertical     = YES;
+    split.dividerStyle = NSSplitViewDividerStyleThin;
+    split.delegate     = self;
+    [split addSubview:pane];
+    [split addSubview:self.day_planner];
+    self.main_split = split;
+
     [self.lists_bar.heightAnchor
         constraintEqualToConstant:tasks_look_lists_bar_h].active = YES;
+    [self.day_planner.widthAnchor
+        constraintGreaterThanOrEqualToConstant:tasks_look_day_planner_min_w].active = YES;
 
-    NSStackView *stack = [NSStackView stackViewWithViews:@[self.lists_bar, pane]];
+    NSStackView *stack = [NSStackView stackViewWithViews:@[self.lists_bar, split]];
     stack.orientation  = NSUserInterfaceLayoutOrientationVertical;
     stack.spacing      = 0;
     stack.distribution = NSStackViewDistributionFill;
@@ -788,13 +814,15 @@ refresh_sidebar
 }
 
 /*
- * full_refresh — the sidebar, the task pane and every open editor.
+ * full_refresh — the sidebar, the task pane, the day planner and every
+ * open editor.
  */
 - (void)
 full_refresh
 {
     [self refresh_sidebar];
     [self refresh_tasks];
+    if (!self.day_planner.hidden) [self.day_planner reload];
     tasks_editor_refresh_all();
 }
 
@@ -853,6 +881,48 @@ show_status_message:(NSString *)message
             faded.status_right.stringValue = @"";
         }];
     }];
+}
+
+/* ── Split view delegate ─────────────────────────────────────────────── */
+
+/*
+ * splitView:constrainMinCoordinate:ofSubviewAt: — the left (task pane)
+ * minimum width.
+ *
+ * Inputs:
+ *   split — the main split view
+ *   coord — AppKit's proposed minimum (unused)
+ *   idx   — divider index (0)
+ *
+ * Output:
+ *   the minimum X coordinate of the divider.
+ */
+- (CGFloat)
+splitView:(NSSplitView *)split
+constrainMinCoordinate:(CGFloat)coord
+ofSubviewAt:(NSInteger)idx
+{
+    return tasks_look_pane_min_w;
+}
+
+/*
+ * splitView:constrainMaxCoordinate:ofSubviewAt: — the day planner minimum
+ * width enforced as a maximum divider position.
+ *
+ * Inputs:
+ *   split — the main split view
+ *   coord — AppKit's proposed maximum (unused)
+ *   idx   — divider index (0)
+ *
+ * Output:
+ *   the maximum X coordinate of the divider.
+ */
+- (CGFloat)
+splitView:(NSSplitView *)split
+constrainMaxCoordinate:(CGFloat)coord
+ofSubviewAt:(NSInteger)idx
+{
+    return NSWidth(split.bounds) - tasks_look_day_planner_min_w - split.dividerThickness;
 }
 
 /* ── Task context menu ───────────────────────────────────────────────── */
@@ -1215,6 +1285,29 @@ toggle_sidebar
     task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, show);
 }
 
+/*
+ * toggle_day_planner — slide the day planner panel in or out and remember
+ * the choice.  Reloads on reveal so the panel is always current.
+ */
+- (void)
+toggle_day_planner
+{
+    BOOL show = self.day_planner.hidden;
+
+    __weak TasksLibraryWindow *ws = self;
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+        ctx.duration = 0.15;
+        self.day_planner.animator.hidden = !show;
+    } completionHandler:^{
+        if (show) {
+            [ws.day_planner reload];
+            [ws.day_planner scroll_to_now];
+        }
+        [ws.main_split adjustSubviews];
+    }];
+    task_config_set_bool(TASK_CFG_DAY_PLANNER_VISIBLE, show);
+}
+
 /* ── Compact mode ────────────────────────────────────────────────────── */
 
 /*
@@ -1480,6 +1573,9 @@ perform_shell_command:(TasksCommand)command param:(NSNumber *)param
     case TasksCommandToggleSidebar:
         [self toggle_sidebar];
         break;
+    case TasksCommandToggleDayPlanner:
+        [self toggle_day_planner];
+        break;
     case TasksCommandToggleCompact:
         [self toggle_compact];
         break;
@@ -1600,6 +1696,12 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
             state.tooltip = @"Show the lists bar";
         }
         break;
+    case TasksCommandToggleDayPlanner:
+        if (self.day_planner.hidden) {
+            state.title   = @"Show Day Planner";
+            state.tooltip = @"Show the day planner";
+        }
+        break;
     case TasksCommandTogglePane:
         if (self.kanban_on) {
             state.title   = @"List View";
@@ -1716,6 +1818,7 @@ shut_down
     [self.lists_bar shut_down];
     [self.task_list shut_down];
     [self.kanban shut_down];
+    [self.day_planner shut_down];
 
     task_search_free((TaskSearch *)_search);
     _search = NULL;
