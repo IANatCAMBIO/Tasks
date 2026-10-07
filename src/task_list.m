@@ -84,6 +84,13 @@ static const CGFloat task_col_min_w = 120.0;    /* the Task column's floor      
 static const CGFloat data_col_min_w = 40.0;     /* Status, Due Date, Completed  */
 static const CGFloat header_fit_pad = 10.0;     /* header title to column edges
                                                  * when fitting a column        */
+/* The sort indicator, measured via sortIndicatorRectForBounds:, starts 17pt
+ * from the right edge of the frame passed to super in drawInteriorWithFrame:.
+ * That frame is already 4pt narrower on the left (tasks_look_header_inset), so
+ * the title needs: col_w >= title_w + 4 (inset) + 17 (indicator) = title_w + 21.
+ * header_fit_pad (10) already covers the no-indicator case; for sortable columns
+ * we add the difference plus a 4pt margin.  4 + 17 - 10 + 4 = 15. */
+static const CGFloat sort_indicator_w = 15.0;  /* extra width for sortable columns */
 static const CGFloat label_inset    = 2.0;      /* an NSTextField draws its text
                                                  * this far inside its frame    */
 static const size_t  fit_row_limit  = 2000;     /* rows measured to fit a column */
@@ -981,37 +988,60 @@ fitted_width:(int)index
     }
 
     CGFloat cell_w   = ceil(widest) + 2.0 * (label_inset + tasks_look_row_pad_h);
-    CGFloat header_w = ceil([column.title sizeWithAttributes:
-                                @{ NSFontAttributeName: column.headerCell.font }].width) +
-                       header_fit_pad;
+    CGFloat title_w  = ceil([column.title sizeWithAttributes:
+                                @{ NSFontAttributeName: column.headerCell.font }].width);
+    /* Use the column spec's sort field rather than sortDescriptorPrototype:
+     * the prototype may not be set yet when the first fit runs at startup. */
+    BOOL can_sort = column_specs[index].sort != NO_SORT
+                    && ![self.library manual_sort_live];
+    CGFloat indicator = can_sort ? sort_indicator_w : 0.0;
+    CGFloat header_w  = title_w + header_fit_pad + indicator;
     return MAX(column.minWidth, MAX(cell_w, header_w));
 }
 
 /*
- * fit_columns_if_pending — when a fit is due and there are rows to fit to:
- * size the Status, Due Date and Completed columns to their content and
- * give the Task column exactly what is left of the visible width, so that
- * no horizontal scroller appears.
+ * fit_columns_if_pending — size the Status, Due Date and Completed columns
+ * to their content and give the Task column exactly what is left.
+ *
+ * Two modes:
+ *   full fit (fit_pending YES) — every data column is reset to its fitted
+ *       width, even if that shrinks it, and the Task column is recalculated.
+ *   widen-only (fit_pending NO) — each data column is widened when new
+ *       content is wider than the current width; the Task column shrinks to
+ *       compensate only when a column widened.
+ *
+ * Widen-only runs on every show_rows: so that a task whose due time is
+ * changed after the initial fit does not stay truncated.
  */
 - (void)
 fit_columns_if_pending
 {
-    if (!self.fit_pending || _rows == NULL) return;
+    if (_rows == NULL) return;
     if (self.scroll.contentSize.width <= 0.0) {
         __weak TasksTaskList *ws = self;
         dispatch_async(dispatch_get_main_queue(), ^{ [ws fit_columns_if_pending]; });
         return;
     }
+
+    BOOL full_fit = self.fit_pending;
     self.fit_pending = NO;
 
-    CGFloat others = 0.0;
+    CGFloat others  = 0.0;
+    BOOL    changed = NO;
     for (int i = 0; i < col_count; i++) {
         NSTableColumn *column = self.table.tableColumns[(NSUInteger)i];
         if (i == col_task || column.hidden) continue;
-        if (i >= col_status) column.width = [self fitted_width:i];
+        if (i >= col_status) {
+            CGFloat w = [self fitted_width:i];
+            if (full_fit || w > column.width) {
+                column.width = w;
+                changed = YES;
+            }
+        }
         others += column.width;
     }
 
+    if (!changed) return;
     NSTableColumn *task = self.table.tableColumns[col_task];
     task.width = MAX(task.minWidth, self.scroll.contentSize.width - others);
 }

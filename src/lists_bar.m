@@ -111,6 +111,7 @@ scrollWheel:(NSEvent *)event
 @property (nonatomic, strong) TasksListsScroll *scroll;
 @property (nonatomic, strong) NSView               *strip;
 @property (nonatomic, assign) BOOL                  is_shut_down;
+@property (nonatomic, assign) CGFloat               content_w;  /* buttons + padding, no scroll floor */
 @end
 
 @implementation TasksListsBar
@@ -146,6 +147,38 @@ init_with_library:(TasksLibraryWindow *)library
         [self.scroll.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
     ]];
     return self;
+}
+
+/* ── Layout ──────────────────────────────────────────────────────────── */
+
+/*
+ * layout — keep the strip frame and scroll position consistent with the
+ * current scroll view width.  The strip is always at least as wide as the
+ * scroll view (so the bar looks full), but never so wide that the scroll
+ * position can reveal blank space past the last button.
+ */
+- (void)
+layout
+{
+    [super layout];
+
+    CGFloat sw      = NSWidth(self.scroll.bounds);
+    CGFloat new_w   = MAX(self.content_w, sw);
+    NSRect  sf      = self.strip.frame;
+
+    if (fabs(sf.size.width - new_w) > 0.5) {
+        sf.size.width    = new_w;
+        self.strip.frame = sf;
+
+        /* Pull the scroll position back if it is now past the new end. */
+        NSPoint  origin = self.scroll.contentView.bounds.origin;
+        CGFloat  max_x  = MAX(0.0, new_w - sw);
+        if (origin.x > max_x) {
+            origin.x = max_x;
+            [self.scroll.contentView scrollToPoint:origin];
+            [self.scroll reflectScrolledClipView:self.scroll.contentView];
+        }
+    }
 }
 
 /* ── Button helpers ──────────────────────────────────────────────────── */
@@ -324,7 +357,8 @@ reload
     }
     task_ptr_array_free_lists(lists);
 
-    CGFloat strip_w  = MAX(x + bar_pad, NSWidth(self.scroll.bounds));
+    self.content_w   = x + bar_pad;
+    CGFloat strip_w  = MAX(self.content_w, NSWidth(self.scroll.bounds));
     self.strip.frame = NSMakeRect(0, 0, strip_w, tasks_look_lists_bar_h);
     [self update_selection_display];
 }

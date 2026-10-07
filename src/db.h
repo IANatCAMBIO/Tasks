@@ -1,7 +1,7 @@
 /* ===========================================================================
  * db.h — SQLite storage for Tasks
  *
- * Schema (PRAGMA user_version = 12 — see TASK_DB_SCHEMA_VERSION).  Every
+ * Schema (PRAGMA user_version = 13 — see TASK_DB_SCHEMA_VERSION).  Every
  * column is declared in task_db_open's CREATE block, so a FRESH file needs
  * no migration at all; an EXISTING one reaches the same shape through the
  * guarded ALTERs at the end of task_db_open.
@@ -49,7 +49,7 @@
 /* The schema version this build writes.  Kept here rather than spelled as
  * a literal in task_db_open so the pre-migration backup and the version
  * stamp cannot drift apart.                                               */
-#define TASK_DB_SCHEMA_VERSION 12
+#define TASK_DB_SCHEMA_VERSION 13
 
 /* ---------------------------------------------------------------------------
  * TaskDatabase — one open connection.  A connection must not cross threads:
@@ -162,7 +162,7 @@ typedef enum {
  * included — so there is no "timed or not" flag to keep honest.  It is a
  * separate macro from TASK_RECUR_TIME_DEFAULT rather than a shared one:
  * the two mean different things and only happen to agree.                  */
-#define TASK_DUE_TIME_DEFAULT (8 * 60)
+#define TASK_DUE_TIME_DEFAULT (17 * 60)
 
 /* How long BEFORE an occurrence a completed task is reset to New, in
  * minutes: ONE WEEK.  It is a CEILING rather than a flat default —

@@ -79,7 +79,26 @@ heading_label(NSString *title)
 {
     NSTextField *label = [NSTextField labelWithString:title];
 
-    label.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
+    label.font = [NSFont boldSystemFontOfSize:tasks_look_row_font];
+    return label;
+}
+
+/*
+ * form_label — a short non-editable label for a form row, at the same font
+ * size as the list and entry fields.
+ *
+ * Inputs:
+ *   title — the label text
+ *
+ * Output:
+ *   new label.
+ */
+static NSTextField *
+form_label(NSString *title)
+{
+    NSTextField *label = [NSTextField labelWithString:title];
+
+    label.font = [NSFont systemFontOfSize:tasks_look_row_small_font];
     return label;
 }
 
@@ -124,6 +143,7 @@ entry_field(NSString *placeholder, CGFloat width, NSString *tip, id<NSTextFieldD
 {
     NSTextField *field = [NSTextField textFieldWithString:@""];
 
+    field.font               = [NSFont systemFontOfSize:tasks_look_row_small_font];
     field.bezelStyle         = NSTextFieldRoundedBezel;
     field.placeholderString  = placeholder;
     field.toolTip            = tip;
@@ -269,9 +289,10 @@ popup_button(NSArray<NSString *> *titles, id target, SEL action)
 {
     NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
 
-    [popup addItemsWithTitles:titles];
+    popup.font   = [NSFont systemFontOfSize:tasks_look_row_small_font];
     popup.target = target;
     popup.action = action;
+    [popup addItemsWithTitles:titles];
     return popup;
 }
 
@@ -488,7 +509,7 @@ becomeFirstResponder
 @property (nonatomic, strong) NSTextField   *title_field;
 @property (nonatomic, strong) NSPopUpButton *status_popup;      /* index is a TaskStatus */
 @property (nonatomic, strong) NSTextField   *due_field;
-@property (nonatomic, strong) NSTextField   *due_time_field;
+@property (nonatomic, strong) NSDatePicker  *due_time_field;
 @property (nonatomic, strong) NSButton      *favorite_check;
 @property (nonatomic, strong) NSButton      *priority_check;
 @property (nonatomic, strong) NSTextField   *completed_label;
@@ -698,9 +719,10 @@ build_layout
 build_fields:(NSStackView *)form
 {
     self.title_field = [NSTextField textFieldWithString:@""];
-    self.title_field.bezelStyle        = NSTextFieldRoundedBezel;
-    self.title_field.placeholderString = @"Task title";
-    self.title_field.delegate          = self;
+    self.title_field.font               = [NSFont systemFontOfSize:tasks_look_row_font];
+    self.title_field.bezelStyle         = NSTextFieldRoundedBezel;
+    self.title_field.placeholderString  = @"Task title";
+    self.title_field.delegate           = self;
     self.title_field.usesSingleLineMode = YES;
     add_row(form, self.title_field);
     if (getenv("E8")) return;
@@ -715,26 +737,40 @@ build_fields:(NSStackView *)form
 
     self.due_field = entry_field(@"YYYY-MM-DD", date_field_w,
         @"The due date, as YYYY-MM-DD or M/D/YY.  Leave it empty for no due date.", self);
-    self.due_time_field = entry_field(@"HH:MM", time_field_w,
-        @"The time of day this task is due (24-hour), 08:00 unless you change it.", self);
-    add_row(form, row_stack(@[
-        [NSTextField labelWithString:@"Status:"], self.status_popup, spacer(),
-        [NSTextField labelWithString:@"Due:"], self.due_field,
+    {
+        NSDatePicker *tp = [[NSDatePicker alloc] initWithFrame:NSZeroRect];
+        tp.datePickerStyle    = NSDatePickerStyleTextFieldAndStepper;
+        tp.datePickerElements = NSDatePickerElementFlagHourMinute;
+        tp.font               = [NSFont systemFontOfSize:tasks_look_row_small_font];
+        tp.toolTip            = @"The time of day this task is due.";
+        tp.target             = self;
+        tp.action             = @selector(due_time_changed:);
+        self.due_time_field   = tp;
+    }
+    NSView *status_row = row_stack(@[
+        form_label(@"Status:"), self.status_popup, spacer(),
+        form_label(@"Due:"), self.due_field,
         calendar_button(self, @selector(pick_due_date:), @"Pick a due date"),
-        [NSTextField labelWithString:@"at"], self.due_time_field,
-    ]));
+        form_label(@"at"), self.due_time_field,
+    ]);
+    add_row(form, status_row);
 
-    /* The flags at the left, when it was completed at the right. */
+    /* The completed label at the left; flags right-aligned under the time picker. */
     self.favorite_check = [NSButton checkboxWithTitle:@"Favorite" target:self
                                                action:@selector(flag_changed:)];
+    self.favorite_check.font = [NSFont systemFontOfSize:tasks_look_row_small_font];
     self.priority_check = [NSButton checkboxWithTitle:@"High Priority" target:self
                                                action:@selector(flag_changed:)];
+    self.priority_check.font = [NSFont systemFontOfSize:tasks_look_row_small_font];
     self.completed_label = [NSTextField labelWithString:@""];
     self.completed_label.font      = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     self.completed_label.textColor = NSColor.secondaryLabelColor;
-    add_row(form, row_stack(@[self.favorite_check, self.priority_check, spacer(),
-                              self.completed_label]));
+    NSView *flags_row = row_stack(@[self.completed_label, spacer(),
+                                    self.favorite_check, self.priority_check]);
+    [form setCustomSpacing:tasks_look_form_spacing * 1.2 afterView:status_row];
+    add_row(form, flags_row);
 
+    [form setCustomSpacing:tasks_look_form_spacing * 2.5 afterView:flags_row];
     add_row(form, heading_label(@"Notes"));
     add_row(form, [self build_notes]);
 
@@ -768,7 +804,7 @@ build_notes
     self.notes_view.richText             = NO;
     self.notes_view.importsGraphics      = NO;
     self.notes_view.allowsUndo           = YES;
-    self.notes_view.font                 = [NSFont systemFontOfSize:NSFont.systemFontSize];
+    self.notes_view.font                 = [NSFont systemFontOfSize:tasks_look_row_small_font];
     self.notes_view.textContainerInset   = NSMakeSize(notes_inset, notes_inset);
     self.notes_view.delegate             = self;
 
@@ -862,6 +898,7 @@ build_recurrence
 {
     self.recur_check = [NSButton checkboxWithTitle:@"Repeat this task" target:self
                                             action:@selector(recur_control_changed:)];
+    self.recur_check.font    = [NSFont systemFontOfSize:tasks_look_row_small_font];
     self.recur_check.toolTip =
         @"Give this task a repeating schedule.  Switching it off leaves the task exactly "
         @"where it is and stops it coming back.";
@@ -878,7 +915,7 @@ build_recurrence
     NSStackView *starting = row_stack(@[
         self.recur_start_field,
         calendar_button(self, @selector(pick_start_date:), @"Pick the start date"),
-        [NSTextField labelWithString:@"at"], self.recur_time_field,
+        form_label(@"at"), self.recur_time_field,
     ]);
 
     /* Row 2: Repeat every <N> <unit>. */
@@ -905,12 +942,12 @@ build_recurrence
         [units subarrayWithRange:NSMakeRange(0, TASK_EDIT_LEAD_N_UNITS)], self,
         @selector(recur_control_changed:));
     NSStackView *lead = row_stack(@[self.lead_field, self.lead_stepper, self.lead_unit_popup,
-                                    [NSTextField labelWithString:@"beforehand"]]);
+                                    form_label(@"beforehand")]);
 
     NSGridView *grid = [NSGridView gridViewWithViews:@[
-        @[[NSTextField labelWithString:@"Starting"], starting],
-        @[[NSTextField labelWithString:@"Repeat every"], every],
-        @[[NSTextField labelWithString:@"Reset to New"], lead],
+        @[form_label(@"Starting"), starting],
+        @[form_label(@"Repeat every"), every],
+        @[form_label(@"Reset to New"), lead],
     ]];
     grid.rowSpacing    = tasks_look_form_spacing;
     grid.columnSpacing = row_gap;
@@ -949,11 +986,13 @@ build_foot
 {
     self.advanced_button = [NSButton buttonWithTitle:advanced_to_show target:self
                                               action:@selector(advanced_action:)];
+    self.advanced_button.font     = [NSFont systemFontOfSize:tasks_look_row_small_font];
     self.advanced_button.bordered = NO;
     self.advanced_button.toolTip  =
         @"Show or hide the Recurrence, Subtasks and Attachments sections";
 
     NSButton *save = [NSButton buttonWithTitle:@"Save" target:self action:@selector(save_action:)];
+    save.font          = [NSFont systemFontOfSize:tasks_look_row_small_font];
     save.keyEquivalent = @"\r";
 
     NSMutableArray<NSView *> *views = [NSMutableArray arrayWithObjects:
@@ -961,6 +1000,7 @@ build_foot
     if (self.is_new) {
         NSButton *cancel = [NSButton buttonWithTitle:@"Cancel" target:self
                                               action:@selector(cancel_action:)];
+        cancel.font          = [NSFont systemFontOfSize:tasks_look_row_small_font];
         cancel.keyEquivalent = @"\e";
         [views addObject:cancel];
     }
@@ -1020,8 +1060,15 @@ show_task:(const Task *)task
     self.favorite_check.state = task->pinned ? NSControlStateValueOn : NSControlStateValueOff;
     self.priority_check.state = task->priority ? NSControlStateValueOn : NSControlStateValueOff;
     [self show_date:task->due in:self.due_field];
-    task_edit_time_format(task->due_time, TASK_DUE_TIME_DEFAULT, clock);
-    show_text(self.due_time_field, @(clock), YES);
+    {
+        int due_min = task->due_time >= 0 && task->due_time <= 23 * 60 + 59
+            ? task->due_time : TASK_DUE_TIME_DEFAULT;
+        NSDateComponents *comps = [[NSDateComponents alloc] init];
+        comps.hour   = due_min / 60;
+        comps.minute = due_min % 60;
+        self.due_time_field.dateValue =
+            [[NSCalendar currentCalendar] dateFromComponents:comps] ?: NSDate.date;
+    }
     [self show_completed:task];
 
     NSString *notes = tasks_string(task->notes);
@@ -1161,9 +1208,14 @@ refresh_title
 - (task_edit_form_t)
 form
 {
+    NSCalendar       *cal  = [NSCalendar currentCalendar];
+    NSDateComponents *tc   = [cal components:NSCalendarUnitHour | NSCalendarUnitMinute
+                                   fromDate:self.due_time_field.dateValue];
+    NSString         *time = [NSString stringWithFormat:@"%02ld:%02ld",
+                              (long)tc.hour, (long)tc.minute];
     return (task_edit_form_t){
         .due_text         = self.due_field.stringValue.UTF8String,
-        .due_time_text    = self.due_time_field.stringValue.UTF8String,
+        .due_time_text    = time.UTF8String,
         .repeat           = self.recur_check.state == NSControlStateValueOn,
         .every            = (int)self.every_stepper.integerValue,
         .unit             = (int)self.unit_popup.indexOfSelectedItem,
@@ -1401,7 +1453,7 @@ refresh_advanced_button
             attributes:@{
                 NSForegroundColorAttributeName: tasks_color(TasksColorLink),
                 NSUnderlineStyleAttributeName:  @(NSUnderlineStyleSingle),
-                NSFontAttributeName:            [NSFont systemFontOfSize:NSFont.systemFontSize],
+                NSFontAttributeName:            [NSFont systemFontOfSize:tasks_look_row_small_font],
             }];
 }
 
@@ -2108,6 +2160,18 @@ pick_date_for:(NSTextField *)field
 }
 
 /*
+ * due_time_changed: — the due time picker changed; queue a save.
+ *
+ * Inputs:
+ *   sender — the picker (unused)
+ */
+- (void)
+due_time_changed:(id)sender
+{
+    [self queue_save];
+}
+
+/*
  * pick_due_date: — the calendar button beside the due date.
  *
  * Inputs:
@@ -2152,7 +2216,7 @@ controlTextDidChange:(NSNotification *)note
     if (field == self.title_field) {
         [self refresh_title];
         [self queue_save];
-    } else if (field == self.due_field || field == self.due_time_field) {
+    } else if (field == self.due_field) {
         [self queue_save];
     } else if (field == self.every_field || field == self.lead_field) {
         [self count_typed:field];

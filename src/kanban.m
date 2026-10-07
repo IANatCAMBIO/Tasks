@@ -528,6 +528,7 @@ mouseDragged:(NSEvent *)event
     if (hypot(at.x - self.press_point.x, at.y - self.press_point.y) < drag_threshold) return;
 
     self.drag_started = YES;
+    [NSCursor.closedHandCursor push];
     [self.kanban begin_drag_from:self event:event];
 }
 
@@ -1565,6 +1566,7 @@ draggingSession:(NSDraggingSession *)session
    endedAtPoint:(NSPoint)point
       operation:(NSDragOperation)operation
 {
+    [NSCursor pop];
     [self cancel_drag];
 }
 

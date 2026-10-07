@@ -965,6 +965,20 @@ task_db_open(const gchar *path, GError **err)
         g_free(sql);
     }
 
+    /* -----------------------------------------------------------------
+     * v13 — default due time changed from 08:00 to 17:00.
+     *
+     * Any row whose due_time is still the old default (8*60 = 480) was
+     * never set by hand and should move to the new default (17*60 = 1020).
+     * The guard on uv keeps this idempotent: once the stamp reaches 13 the
+     * UPDATE never runs again, even on a re-opened database.
+     * ----------------------------------------------------------------- */
+    if (uv < 13 && uv > 0) {
+        if (exec(db, "UPDATE tasks SET due_time = 1020 WHERE due_time = 480"))
+            g_message("Migrated %s to schema v13: due_time default 08:00→17:00",
+                      path);
+    }
+
     {   /* Stamped from the CONSTANT for the same reason.               */
         gchar *stamp = g_strdup_printf("PRAGMA user_version = %d",
                                        TASK_DB_SCHEMA_VERSION);
