@@ -484,6 +484,7 @@ toolbar_idents(void)
         tasks_command_spec(TasksCommandToggleCompleted)->ident,
         tasks_command_spec(TasksCommandToggleSort)->ident,
         tasks_command_spec(TasksCommandTogglePane)->ident,
+        tasks_command_spec(TasksCommandToggleDayPlanner)->ident,
         NSToolbarFlexibleSpaceItemIdentifier,
         search_item_ident,
     ];

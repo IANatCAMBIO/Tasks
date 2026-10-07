@@ -669,6 +669,7 @@ build_menu_bar
     [view_menu addItem:command(TasksCommandToggleSidebar)];
     [view_menu addItem:command(TasksCommandToggleCompact)];
     [view_menu addItem:command(TasksCommandTogglePane)];
+    [view_menu addItem:command(TasksCommandToggleDayPlanner)];
     [view_menu addItem:NSMenuItem.separatorItem];
     [view_menu addItem:standard_item(@"Enter Full Screen", @selector(toggleFullScreen:), @"f",
                                      NSEventModifierFlagControl)];

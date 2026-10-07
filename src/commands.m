@@ -40,7 +40,7 @@ static const tasks_command_spec_t command_specs[] = {
       @"Kanban View",              @"k", NSEventModifierFlagShift,
       @"rectangle.split.3x1",      @"Show the tasks as a Kanban board" },
     { TasksCommandToggleDayPlanner, TasksCommandOwnerShell,  @"tasks.toggle-day-planner",
-      @"Hide Day Planner",          @"d", NSEventModifierFlagControl,
+      @"Hide Day Planner",          @"d", NSEventModifierFlagShift,
       @"calendar.badge.clock",      @"Hide the day planner" },
     { TasksCommandMarkDone,        TasksCommandOwnerShell,    @"tasks.mark-done",
       @"Mark Complete",            @"",  0, nil, nil },
