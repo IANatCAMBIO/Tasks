@@ -75,6 +75,12 @@ static const CGFloat   header_h      = 36.0;
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
 
+- (void)setFrameSize:(NSSize)size
+{
+    [super setFrameSize:size];
+    [self setNeedsDisplay:YES];
+}
+
 /* ── Coordinate helpers ───────────────────────────────────────────────── */
 
 /*
