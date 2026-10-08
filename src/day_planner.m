@@ -675,7 +675,8 @@ build_header
     prev.image         = [NSImage imageWithSystemSymbolName:@"chevron.left"
                                        accessibilityDescription:nil];
     prev.imagePosition = NSImageOnly;
-    prev.bordered      = NO;
+    prev.controlSize   = NSControlSizeSmall;
+    prev.bezelStyle    = NSBezelStyleRounded;
     prev.translatesAutoresizingMaskIntoConstraints = NO;
 
     NSButton *next     = [NSButton buttonWithTitle:@""
@@ -684,7 +685,8 @@ build_header
     next.image         = [NSImage imageWithSystemSymbolName:@"chevron.right"
                                        accessibilityDescription:nil];
     next.imagePosition = NSImageOnly;
-    next.bordered      = NO;
+    next.controlSize   = NSControlSizeSmall;
+    next.bezelStyle    = NSBezelStyleRounded;
     next.translatesAutoresizingMaskIntoConstraints = NO;
 
     NSView *right = [[NSView alloc] initWithFrame:NSZeroRect];
