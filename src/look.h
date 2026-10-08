@@ -113,7 +113,7 @@ static const NSInteger  tasks_look_day_planner_start_h     = 6;      /* display 
 static const NSInteger  tasks_look_day_planner_end_h       = 22;     /* display to 10 PM         */
 static const CGFloat    tasks_look_day_planner_label_w     = 44.0;   /* hour label column        */
 static const CGFloat    tasks_look_day_planner_pad_v       = 8.0;    /* canvas top/bottom pad    */
-static const CGFloat    tasks_look_day_planner_resize_h    = 6.0;    /* resize handle height     */
+static const CGFloat    tasks_look_day_planner_resize_h    = 8.0;    /* edge hit-zone for resize */
 static const CGFloat    tasks_look_day_planner_block_inset = 2.0;    /* block l/r inset          */
 static const CGFloat    tasks_look_day_planner_time_w      = 2.0;    /* current-time line height */
 

@@ -58,16 +58,22 @@ static const CGFloat   header_h      = 36.0;
 @property (nonatomic, weak) TasksDayPlanner *planner;
 /* Resize tracking */
 @property (nonatomic) BOOL    resizing;
+@property (nonatomic) BOOL    resize_top;           /* YES = dragging start, NO = dragging end */
 @property (nonatomic) int64_t resize_id;
 @property (nonatomic) CGFloat resize_start_y;
 @property (nonatomic) int     resize_orig_duration;
+@property (nonatomic) int64_t resize_orig_start_unix; /* top-edge: original start  */
+@property (nonatomic) int64_t resize_orig_end_unix;   /* top-edge: fixed end time  */
 /* Move tracking */
+@property (nonatomic) BOOL    move_pending;   /* mouseDown seen, drag not yet started */
 @property (nonatomic) BOOL    moving;
 @property (nonatomic) int64_t move_id;
 @property (nonatomic) int64_t move_orig_start_unix;
 @property (nonatomic) CGFloat move_start_mouse_y;
 /* Drop highlight Y, NAN when no drag is over */
 @property (nonatomic) CGFloat drop_y;
+/* Selected task ids */
+@property (nonatomic, strong) NSMutableSet<NSNumber *> *selected_ids;
 @end
 
 @implementation TasksDayCanvas
@@ -262,11 +268,15 @@ drawRect:(NSRect)dirty
         }
     }
 
-    /* Task blocks */
-    NSColor *acc_fill   = [NSColor.controlAccentColor colorWithAlphaComponent:0.18];
-    NSColor *acc_border = [NSColor.controlAccentColor colorWithAlphaComponent:0.55];
-    NSColor *done_fill  = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.10];
-    NSColor *done_bord  = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.28];
+    /* Task blocks — two tones: normal and selected (darker) */
+    NSColor *acc_fill_n  = [NSColor.controlAccentColor colorWithAlphaComponent:0.18];
+    NSColor *acc_bord_n  = [NSColor.controlAccentColor colorWithAlphaComponent:0.55];
+    NSColor *done_fill_n = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.10];
+    NSColor *done_bord_n = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.28];
+    NSColor *acc_fill_s  = [NSColor.controlAccentColor colorWithAlphaComponent:0.38];
+    NSColor *acc_bord_s  = [NSColor.controlAccentColor colorWithAlphaComponent:0.82];
+    NSColor *done_fill_s = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.22];
+    NSColor *done_bord_s = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.52];
     NSFont  *title_font = [NSFont systemFontOfSize:tasks_look_row_small_font];
     NSFont  *time_font  = [NSFont systemFontOfSize:tasks_look_row_small_font - 1.0];
     NSDictionary *title_attrs = @{
@@ -285,16 +295,16 @@ drawRect:(NSRect)dirty
         NSBezierPath *path =
             [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(r, 0.5, 0.5)
                                             xRadius:4.0 yRadius:4.0];
+        BOOL sel = [self.selected_ids containsObject:@(item.task_id)];
         if (item.status == TASK_STATUS_DONE) {
-            [done_fill setFill];  [path fill];
-            [done_bord setStroke]; [path stroke];
+            [sel ? done_fill_s : done_fill_n setFill];   [path fill];
+            [sel ? done_bord_s : done_bord_n setStroke]; [path stroke];
         } else {
-            [acc_fill setFill];   [path fill];
-            [acc_border setStroke]; [path stroke];
+            [sel ? acc_fill_s : acc_fill_n setFill];   [path fill];
+            [sel ? acc_bord_s : acc_bord_n setStroke]; [path stroke];
         }
 
         NSRect content = NSInsetRect(r, 4.0, 3.0);
-        content.size.height -= tasks_look_day_planner_resize_h;
 
         /* Title on the first line */
         CGFloat title_h = title_font.ascender - title_font.descender + title_font.leading;
@@ -312,12 +322,6 @@ drawRect:(NSRect)dirty
             [time_str drawInRect:time_rect withAttributes:time_attrs];
         }
 
-        /* Resize grip stripe */
-        NSRect grip = NSMakeRect(r.origin.x,
-                                 NSMaxY(r) - tasks_look_day_planner_resize_h,
-                                 r.size.width, tasks_look_day_planner_resize_h);
-        [[NSColor.separatorColor colorWithAlphaComponent:0.28] setFill];
-        NSRectFillUsingOperation(grip, NSCompositingOperationSourceOver);
     }
 
     /* Drop indicator */
@@ -470,8 +474,10 @@ concludeDragOperation:(id<NSDraggingInfo>)info
 /* ── Mouse events (block move and resize, double-click to edit) ─────── */
 
 /*
- * mouseDown: — begin a resize on the grip stripe, a move on the block body,
- * or open the editor on a double-click.
+ * mouseDown: — select the clicked block, then begin a resize on the grip
+ * stripe or arm a pending move on the block body.  A double-click opens the
+ * editor.  Cmd+click toggles the clicked block into/out of the selection;
+ * a plain click in empty space clears the selection.
  *
  * Inputs:
  *   event — the mouse-down event
@@ -479,11 +485,12 @@ concludeDragOperation:(id<NSDraggingInfo>)info
 - (void)
 mouseDown:(NSEvent *)event
 {
-    NSPoint pt     = [self convertPoint:event.locationInWindow fromView:nil];
-    self.resize_id = 0;
-    self.resizing  = NO;
-    self.move_id   = 0;
-    self.moving    = NO;
+    NSPoint pt        = [self convertPoint:event.locationInWindow fromView:nil];
+    self.resize_id    = 0;
+    self.resizing     = NO;
+    self.move_id      = 0;
+    self.move_pending = NO;
+    self.moving       = NO;
 
     for (TasksDayItem *item in self.planner.items) {
         NSRect r = [self item_rect:item];
@@ -495,22 +502,49 @@ mouseDown:(NSEvent *)event
             return;
         }
 
-        NSRect grip = NSMakeRect(r.origin.x,
-                                 NSMaxY(r) - tasks_look_day_planner_resize_h,
-                                 r.size.width, tasks_look_day_planner_resize_h);
-        if (NSPointInRect(pt, grip)) {
+        /* Update selection */
+        NSNumber *tid = @(item.task_id);
+        if (event.modifierFlags & NSEventModifierFlagCommand) {
+            if ([self.selected_ids containsObject:tid])
+                [self.selected_ids removeObject:tid];
+            else
+                [self.selected_ids addObject:tid];
+        } else {
+            [self.selected_ids removeAllObjects];
+            [self.selected_ids addObject:tid];
+        }
+        [self setNeedsDisplay:YES];
+
+        CGFloat ez      = MIN(tasks_look_day_planner_resize_h, r.size.height * 0.4);
+        NSRect  bot_edge = NSMakeRect(r.origin.x, NSMaxY(r) - ez, r.size.width, ez);
+        NSRect  top_edge = NSMakeRect(r.origin.x, r.origin.y,     r.size.width, ez);
+        if (NSPointInRect(pt, bot_edge)) {
             self.resizing             = YES;
+            self.resize_top           = NO;
             self.resize_id            = item.task_id;
             self.resize_start_y       = pt.y;
             self.resize_orig_duration = item.duration;
+        } else if (NSPointInRect(pt, top_edge)) {
+            self.resizing               = YES;
+            self.resize_top             = YES;
+            self.resize_id              = item.task_id;
+            self.resize_start_y         = pt.y;
+            self.resize_orig_start_unix = item.start_unix;
+            self.resize_orig_end_unix   = item.start_unix + (int64_t)item.duration * 60;
         } else {
-            /* Block body: drag to move */
-            self.moving               = YES;
+            /* Block body: arm a pending move; promote to moving in mouseDragged: */
+            self.move_pending         = YES;
             self.move_id              = item.task_id;
             self.move_orig_start_unix = item.start_unix;
             self.move_start_mouse_y   = pt.y;
         }
         return;
+    }
+
+    /* Clicked empty space: clear selection */
+    if (self.selected_ids.count > 0) {
+        [self.selected_ids removeAllObjects];
+        [self setNeedsDisplay:YES];
     }
 }
 
@@ -530,17 +564,45 @@ mouseDragged:(NSEvent *)event
         CGFloat dy    = pt.y - self.resize_start_y;
         int     delta = (int)round((dy / tasks_look_day_planner_hour_h) * 60.0);
         delta = (delta / (int)snap_minutes) * (int)snap_minutes;
-        int new_dur = self.resize_orig_duration + delta;
-        if (new_dur < (int)snap_minutes) new_dur = (int)snap_minutes;
-        if (new_dur > 8 * 60)           new_dur = 8 * 60;
-        for (TasksDayItem *item in self.planner.items) {
-            if (item.task_id == self.resize_id) {
-                item.duration = new_dur;
-                break;
+
+        if (self.resize_top) {
+            /* Top edge: move start time, keep end time fixed */
+            int64_t   new_start = self.resize_orig_start_unix + (int64_t)delta * 60;
+            int64_t   new_end   = self.resize_orig_end_unix;
+            NSInteger offset    = self.planner ? self.planner.days_offset : 0;
+            int64_t   lo        = midnight_for_offset(offset)
+                                  + (int64_t)tasks_look_day_planner_start_h * 3600;
+            if (new_start < lo)
+                new_start = lo;
+            if (new_start > new_end - (int64_t)snap_minutes * 60)
+                new_start = new_end - (int64_t)snap_minutes * 60;
+            for (TasksDayItem *item in self.planner.items) {
+                if (item.task_id == self.resize_id) {
+                    item.start_unix = new_start;
+                    item.duration   = (int)((new_end - new_start) / 60);
+                    break;
+                }
+            }
+        } else {
+            /* Bottom edge: keep start time fixed, move end time */
+            int new_dur = self.resize_orig_duration + delta;
+            if (new_dur < (int)snap_minutes) new_dur = (int)snap_minutes;
+            if (new_dur > 8 * 60)           new_dur = 8 * 60;
+            for (TasksDayItem *item in self.planner.items) {
+                if (item.task_id == self.resize_id) {
+                    item.duration = new_dur;
+                    break;
+                }
             }
         }
         [self setNeedsDisplay:YES];
         return;
+    }
+
+    /* Promote a pending move to an active one once the drag clears the threshold. */
+    if (self.move_pending && fabs(pt.y - self.move_start_mouse_y) >= 5.0) {
+        self.move_pending = NO;
+        self.moving       = YES;
     }
 
     if (self.moving) {
@@ -605,6 +667,10 @@ mouseUp:(NSEvent *)event
         [self.window invalidateCursorRectsForView:self];
         return;
     }
+
+    /* Click that never became a drag — selection was handled in mouseDown. */
+    self.move_pending = NO;
+    self.move_id      = 0;
 }
 
 /*
@@ -615,15 +681,62 @@ resetCursorRects
 {
     [self addCursorRect:self.bounds cursor:NSCursor.arrowCursor];
     for (TasksDayItem *item in self.planner.items) {
-        NSRect r    = [self item_rect:item];
-        CGFloat body_h = r.size.height - tasks_look_day_planner_resize_h;
-        NSRect body = NSMakeRect(r.origin.x, r.origin.y, r.size.width, body_h);
-        NSRect grip = NSMakeRect(r.origin.x,
-                                 NSMaxY(r) - tasks_look_day_planner_resize_h,
-                                 r.size.width, tasks_look_day_planner_resize_h);
+        NSRect  r    = [self item_rect:item];
+        CGFloat ez   = MIN(tasks_look_day_planner_resize_h, r.size.height * 0.4);
+        NSRect  top  = NSMakeRect(r.origin.x, r.origin.y,           r.size.width, ez);
+        NSRect  bot  = NSMakeRect(r.origin.x, NSMaxY(r) - ez,       r.size.width, ez);
+        CGFloat bh   = r.size.height - 2.0 * ez;
+        NSRect  body = NSMakeRect(r.origin.x, r.origin.y + ez,      r.size.width, MAX(bh, 0.0));
+        [self addCursorRect:top  cursor:NSCursor.resizeUpDownCursor];
         [self addCursorRect:body cursor:NSCursor.openHandCursor];
-        [self addCursorRect:grip cursor:NSCursor.resizeUpDownCursor];
+        [self addCursorRect:bot  cursor:NSCursor.resizeUpDownCursor];
     }
+}
+
+/*
+ * menuForEvent: — build the right-click context menu.
+ *
+ * If the click landed on an unselected block, that block is selected (others
+ * deselected) before the menu is shown.  Returns nil for clicks on empty space.
+ *
+ * Inputs:
+ *   event — the right-click event
+ *
+ * Output:
+ *   context menu, or nil.
+ */
+- (NSMenu *)
+menuForEvent:(NSEvent *)event
+{
+    NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
+
+    TasksDayItem *clicked = nil;
+    for (TasksDayItem *item in self.planner.items) {
+        if (NSPointInRect(pt, [self item_rect:item])) {
+            clicked = item;
+            break;
+        }
+    }
+    if (!clicked) return nil;
+
+    NSNumber *cid = @(clicked.task_id);
+    if (![self.selected_ids containsObject:cid]) {
+        [self.selected_ids removeAllObjects];
+        [self.selected_ids addObject:cid];
+        [self setNeedsDisplay:YES];
+    }
+
+    NSUInteger n    = self.selected_ids.count;
+    NSString  *lbl  = n > 1
+        ? [NSString stringWithFormat:@"Remove %lu Items from Schedule", (unsigned long)n]
+        : @"Remove from Schedule";
+
+    NSMenu     *menu = [[NSMenu alloc] initWithTitle:@""];
+    NSMenuItem *it   = [menu addItemWithTitle:lbl
+                                       action:@selector(remove_selected_from_schedule:)
+                                keyEquivalent:@""];
+    it.target = self.planner;
+    return menu;
 }
 
 @end
@@ -652,8 +765,9 @@ init_with_library:(TasksLibraryWindow *)library
 
     _canvas         = [[TasksDayCanvas alloc]
                            initWithFrame:NSMakeRect(0, 0, tasks_look_day_planner_w, canvas_h)];
-    _canvas.planner = self;
-    _canvas.drop_y             = NAN;
+    _canvas.planner      = self;
+    _canvas.drop_y       = NAN;
+    _canvas.selected_ids = [NSMutableSet set];
     [_canvas registerForDraggedTypes:@[list_drag_type, kanban_drag_type]];
 
     _scroll                       = [[NSScrollView alloc] initWithFrame:NSZeroRect];
@@ -959,6 +1073,8 @@ reload
     }
     task_ptr_array_free_tasks(tasks);
 
+    [self.canvas.selected_ids removeAllObjects];
+
     /* Keep the canvas width in sync with the scroll view's content width */
     CGFloat cw = NSWidth(self.scroll.contentView.bounds);
     if (cw < tasks_look_day_planner_min_w) cw = tasks_look_day_planner_min_w;
@@ -989,6 +1105,24 @@ scroll_to_now
         scroll_y = MAX(0.0, [self.canvas y_for_unix:eight_am] - tasks_look_day_planner_hour_h);
     }
     [self.canvas scrollPoint:NSMakePoint(0.0, scroll_y)];
+}
+
+/*
+ * remove_selected_from_schedule: — clear the schedule fields for every
+ * selected block and reload the view.
+ *
+ * Inputs:
+ *   sender — unused (called from the context menu)
+ */
+- (void)
+remove_selected_from_schedule:(id)sender
+{
+    NSSet<NSNumber *> *ids = [self.canvas.selected_ids copy];
+    for (NSNumber *tid in ids)
+        task_db_task_set_scheduled(self.library.app->db, tid.longLongValue, 0, 0);
+    [self.canvas.selected_ids removeAllObjects];
+    [self reload];
+    [self.library refresh_tasks];
 }
 
 /*
