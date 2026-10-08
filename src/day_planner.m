@@ -256,7 +256,7 @@ drawRect:(NSRect)dirty
             else if (h == 12) text = @"12 PM";
             else               text = [NSString stringWithFormat:@"%ld PM", (long)(h - 12)];
             NSSize  sz   = [text sizeWithAttributes:label_attrs];
-            NSRect  lrec = NSMakeRect(2.0, y + 2.0, label_w - 4.0, sz.height);
+            NSRect  lrec = NSMakeRect(2.0, y - sz.height - 2.0, label_w - 4.0, sz.height);
             if (NSIntersectsRect(lrec, dirty))
                 [text drawInRect:lrec withAttributes:label_attrs];
         }
@@ -650,10 +650,9 @@ init_with_library:(TasksLibraryWindow *)library
     CGFloat   canvas_h = tasks_look_day_planner_pad_v * 2.0 +
                          n_hours * tasks_look_day_planner_hour_h;
 
-    _canvas                    = [[TasksDayCanvas alloc]
-                                      initWithFrame:NSMakeRect(0, 0, tasks_look_day_planner_w, canvas_h)];
-    _canvas.autoresizingMask   = NSViewWidthSizable;
-    _canvas.planner            = self;
+    _canvas         = [[TasksDayCanvas alloc]
+                           initWithFrame:NSMakeRect(0, 0, tasks_look_day_planner_w, canvas_h)];
+    _canvas.planner = self;
     _canvas.drop_y             = NAN;
     [_canvas registerForDraggedTypes:@[list_drag_type, kanban_drag_type]];
 
@@ -682,6 +681,24 @@ init_with_library:(TasksLibraryWindow *)library
     }];
 
     return self;
+}
+
+/*
+ * layout — keep the canvas width in sync with the scroll view's content area.
+ * Called after Auto Layout settles the scroll view frame, which is the
+ * correct moment to read contentView.bounds.
+ */
+- (void)
+layout
+{
+    [super layout];
+    CGFloat cw = NSWidth(self.scroll.contentView.bounds);
+    if (cw < tasks_look_day_planner_min_w) cw = tasks_look_day_planner_min_w;
+    NSRect cf = self.canvas.frame;
+    if (cf.size.width != cw) {
+        cf.size.width = cw;
+        self.canvas.frame = cf;
+    }
 }
 
 /*
