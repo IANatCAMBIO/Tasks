@@ -648,10 +648,11 @@ init_with_library:(TasksLibraryWindow *)library
     CGFloat   canvas_h = tasks_look_day_planner_pad_v * 2.0 +
                          n_hours * tasks_look_day_planner_hour_h;
 
-    _canvas         = [[TasksDayCanvas alloc]
-                           initWithFrame:NSMakeRect(0, 0, tasks_look_day_planner_w, canvas_h)];
-    _canvas.planner = self;
-    _canvas.drop_y  = NAN;
+    _canvas                    = [[TasksDayCanvas alloc]
+                                      initWithFrame:NSMakeRect(0, 0, tasks_look_day_planner_w, canvas_h)];
+    _canvas.autoresizingMask   = NSViewWidthSizable;
+    _canvas.planner            = self;
+    _canvas.drop_y             = NAN;
     [_canvas registerForDraggedTypes:@[list_drag_type, kanban_drag_type]];
 
     _scroll                       = [[NSScrollView alloc] initWithFrame:NSZeroRect];
