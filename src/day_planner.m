@@ -48,7 +48,7 @@ static const CGFloat   header_h      = 36.0;
 @property (nonatomic, strong) NSMutableArray<TasksDayItem *> *items;
 @property (nonatomic)         BOOL                           is_shut_down;
 @property (nonatomic)         NSInteger                      days_offset; /* 0 = today */
-@property (nonatomic, weak)   NSTextField                   *date_label;
+@property (nonatomic, weak)   NSDatePicker                  *date_picker;
 @property (nonatomic, weak)   NSButton                      *today_button;
 @end
 
@@ -553,7 +553,7 @@ resetCursorRects
                                  NSMaxY(r) - tasks_look_day_planner_resize_h,
                                  r.size.width, tasks_look_day_planner_resize_h);
         [self addCursorRect:body cursor:NSCursor.openHandCursor];
-        [self addCursorRect:grip cursor:NSCursor.resizeDownCursor];
+        [self addCursorRect:grip cursor:NSCursor.resizeUpDownCursor];
     }
 }
 
@@ -616,7 +616,8 @@ init_with_library:(TasksLibraryWindow *)library
 
 /*
  * build_header — add the date navigation bar and the scroll view, wired with
- * Auto Layout.  Called once from init.
+ * Auto Layout.  Layout: [‹]  [Today]  [date-picker]  [›]
+ * Called once from init.
  */
 - (void)
 build_header
@@ -642,39 +643,42 @@ build_header
     next.bordered      = NO;
     next.translatesAutoresizingMaskIntoConstraints = NO;
 
-    NSTextField *label      = [NSTextField labelWithString:@""];
-    label.font              = [NSFont systemFontOfSize:12.0 weight:NSFontWeightMedium];
-    label.alignment         = NSTextAlignmentCenter;
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    _date_label = label;
-
-    NSButton *today      = [NSButton buttonWithTitle:@"Today"
-                                              target:self
-                                              action:@selector(go_today:)];
-    today.font           = [NSFont systemFontOfSize:10.0];
-    today.bordered       = NO;
-    today.contentTintColor = NSColor.controlAccentColor;
+    NSButton *today         = [NSButton buttonWithTitle:@"Today"
+                                                 target:self
+                                                 action:@selector(go_today:)];
+    today.controlSize       = NSControlSizeSmall;
+    today.bezelStyle        = NSBezelStyleRounded;
     today.translatesAutoresizingMaskIntoConstraints = NO;
     _today_button = today;
 
+    NSDatePicker *picker       = [[NSDatePicker alloc] initWithFrame:NSZeroRect];
+    picker.datePickerStyle     = NSDatePickerStyleTextField;
+    picker.datePickerElements  = NSDatePickerElementFlagYearMonthDay;
+    picker.controlSize         = NSControlSizeSmall;
+    picker.dateValue           = [NSDate date];
+    picker.target              = self;
+    picker.action              = @selector(date_picker_changed:);
+    picker.translatesAutoresizingMaskIntoConstraints = NO;
+    _date_picker = picker;
+
     [header addSubview:prev];
-    [header addSubview:label];
-    [header addSubview:next];
     [header addSubview:today];
+    [header addSubview:picker];
+    [header addSubview:next];
 
     [NSLayoutConstraint activateConstraints:@[
-        [prev.leadingAnchor  constraintEqualToAnchor:header.leadingAnchor  constant:6.0],
-        [prev.centerYAnchor  constraintEqualToAnchor:header.centerYAnchor],
+        [prev.leadingAnchor   constraintEqualToAnchor:header.leadingAnchor constant:4.0],
+        [prev.centerYAnchor   constraintEqualToAnchor:header.centerYAnchor],
 
-        [label.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
-        [label.centerYAnchor constraintEqualToAnchor:header.centerYAnchor],
-        [label.leadingAnchor constraintGreaterThanOrEqualToAnchor:prev.trailingAnchor constant:4.0],
-
-        [next.trailingAnchor constraintEqualToAnchor:today.leadingAnchor constant:-2.0],
-        [next.centerYAnchor  constraintEqualToAnchor:header.centerYAnchor],
-
-        [today.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-6.0],
+        [today.leadingAnchor  constraintEqualToAnchor:prev.trailingAnchor  constant:2.0],
         [today.centerYAnchor  constraintEqualToAnchor:header.centerYAnchor],
+
+        [picker.leadingAnchor constraintEqualToAnchor:today.trailingAnchor constant:4.0],
+        [picker.centerYAnchor constraintEqualToAnchor:header.centerYAnchor],
+
+        [next.leadingAnchor   constraintEqualToAnchor:picker.trailingAnchor constant:2.0],
+        [next.centerYAnchor   constraintEqualToAnchor:header.centerYAnchor],
+        [next.trailingAnchor  constraintLessThanOrEqualToAnchor:header.trailingAnchor constant:-4.0],
     ]];
 
     /* 1 pt separator below the header */
@@ -704,32 +708,40 @@ build_header
         [_scroll.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
     ]];
 
-    [self update_date_label];
+    [self update_header_controls];
 }
 
 /*
- * update_date_label — refresh the header date text and the Today button
- * visibility to match the current days_offset.
+ * update_header_controls — sync the date picker value and Today button state
+ * to the current days_offset.
  */
 - (void)
-update_date_label
+update_header_controls
 {
-    NSString *text;
-    if (_days_offset == 0) {
-        text = @"Today";
-    } else if (_days_offset == 1) {
-        text = @"Tomorrow";
-    } else if (_days_offset == -1) {
-        text = @"Yesterday";
-    } else {
-        time_t    t     = (time_t)midnight_for_offset(_days_offset);
-        struct tm local = *localtime(&t);
-        char buf[64];
-        strftime(buf, sizeof(buf), "%a, %b %-d", &local);
-        text = @(buf);
-    }
-    _date_label.stringValue = text;
-    _today_button.hidden    = (_days_offset == 0);
+    time_t  t   = (time_t)midnight_for_offset(_days_offset);
+    _date_picker.dateValue  = [NSDate dateWithTimeIntervalSince1970:t];
+    _today_button.enabled   = (_days_offset != 0);
+}
+
+/*
+ * date_picker_changed: — the user typed or scrolled to a new date in the
+ * picker; compute the offset from today and reload.
+ *
+ * Inputs:
+ *   picker — the NSDatePicker that fired
+ */
+- (void)
+date_picker_changed:(NSDatePicker *)picker
+{
+    NSCalendar       *cal   = NSCalendar.currentCalendar;
+    NSDate           *today = [cal startOfDayForDate:[NSDate date]];
+    NSDate           *chosen = [cal startOfDayForDate:picker.dateValue];
+    NSDateComponents *diff   = [cal components:NSCalendarUnitDay
+                                      fromDate:today toDate:chosen options:0];
+    _days_offset = (NSInteger)diff.day;
+    [self update_header_controls];
+    [self reload];
+    [self scroll_to_now];
 }
 
 /*
@@ -742,7 +754,7 @@ update_date_label
 go_prev_day:(id)sender
 {
     _days_offset--;
-    [self update_date_label];
+    [self update_header_controls];
     [self reload];
     [self scroll_to_now];
 }
@@ -757,7 +769,7 @@ go_prev_day:(id)sender
 go_next_day:(id)sender
 {
     _days_offset++;
-    [self update_date_label];
+    [self update_header_controls];
     [self reload];
     [self scroll_to_now];
 }
@@ -772,7 +784,7 @@ go_next_day:(id)sender
 go_today:(id)sender
 {
     _days_offset = 0;
-    [self update_date_label];
+    [self update_header_controls];
     [self reload];
     [self scroll_to_now];
 }
