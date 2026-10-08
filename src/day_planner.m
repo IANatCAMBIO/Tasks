@@ -1,4 +1,5 @@
 #import "day_planner.h"
+#import "editor_window.h"
 #import "look.h"
 #import "ui_util.h"
 
@@ -13,8 +14,11 @@
 static NSString * const kanban_drag_type = @"com.cambio.tasks-appkit.kanban-card";
 static NSString * const list_drag_type   = @"tasks.task-row";
 
-/* Snap granularity for time placement and resize. */
-static const NSInteger snap_minutes = 15;
+/* Snap granularity for time placement, resize and move. */
+static const NSInteger snap_minutes  = 15;
+
+/* Height of the date-navigation header above the scroll area. */
+static const CGFloat   header_h      = 36.0;
 
 /* ── TasksDayItem ──────────────────────────────────────────────────────── */
 
@@ -33,15 +37,35 @@ static const NSInteger snap_minutes = 15;
 
 @class TasksDayCanvas;
 
+/* ── TasksDayPlanner private interface (visible to the canvas below) ─── */
+
+@interface TasksDayPlanner ()
+@property (nonatomic, weak)   TasksLibraryWindow            *library;
+@property (nonatomic, strong) NSScrollView                  *scroll;
+@property (nonatomic, strong) TasksDayCanvas                *canvas;
+@property (nonatomic, strong) NSTimer                       *clock_timer;
+@property (nonatomic, strong) NSTimer                       *progress_timer;
+@property (nonatomic, strong) NSMutableArray<TasksDayItem *> *items;
+@property (nonatomic)         BOOL                           is_shut_down;
+@property (nonatomic)         NSInteger                      days_offset; /* 0 = today */
+@property (nonatomic, weak)   NSTextField                   *date_label;
+@property (nonatomic, weak)   NSButton                      *today_button;
+@end
+
 /* ── TasksDayCanvas ────────────────────────────────────────────────────── */
 
 @interface TasksDayCanvas : NSView <NSDraggingDestination>
 @property (nonatomic, weak) TasksDayPlanner *planner;
 /* Resize tracking */
-@property (nonatomic) BOOL resizing;
+@property (nonatomic) BOOL    resizing;
 @property (nonatomic) int64_t resize_id;
 @property (nonatomic) CGFloat resize_start_y;
-@property (nonatomic) int resize_orig_duration;
+@property (nonatomic) int     resize_orig_duration;
+/* Move tracking */
+@property (nonatomic) BOOL    moving;
+@property (nonatomic) int64_t move_id;
+@property (nonatomic) int64_t move_orig_start_unix;
+@property (nonatomic) CGFloat move_start_mouse_y;
 /* Drop highlight Y, NAN when no drag is over */
 @property (nonatomic) CGFloat drop_y;
 @end
@@ -54,22 +78,26 @@ static const NSInteger snap_minutes = 15;
 /* ── Coordinate helpers ───────────────────────────────────────────────── */
 
 /*
- * today_midnight — unix seconds of today's local midnight.
+ * midnight_for_offset — unix seconds of local midnight for today + offset days.
+ *
+ * Inputs:
+ *   offset — days relative to today; 0 = today, 1 = tomorrow, -1 = yesterday
  *
  * Output:
- *   unix seconds.
+ *   unix seconds of that day's local midnight.
  */
 static int64_t
-today_midnight(void)
+midnight_for_offset(NSInteger offset)
 {
     time_t    now   = time(NULL);
     struct tm local = *localtime(&now);
     local.tm_hour = local.tm_min = local.tm_sec = 0;
+    local.tm_mday += (int)offset;
     return (int64_t)mktime(&local);
 }
 
 /*
- * y_for_unix: — canvas Y for a unix timestamp.
+ * y_for_unix: — canvas Y for a unix timestamp on the displayed day.
  *
  * Inputs:
  *   t — unix seconds
@@ -80,33 +108,35 @@ today_midnight(void)
 - (CGFloat)
 y_for_unix:(int64_t)t
 {
-    double hours = (double)(t - today_midnight()) / 3600.0;
+    NSInteger offset   = self.planner ? self.planner.days_offset : 0;
+    double    hours    = (double)(t - midnight_for_offset(offset)) / 3600.0;
     return tasks_look_day_planner_pad_v +
            (hours - (double)tasks_look_day_planner_start_h) * tasks_look_day_planner_hour_h;
 }
 
 /*
  * unix_for_y: — unix timestamp for a canvas Y coordinate, snapped to
- * snap_minutes and clamped to the visible hour range.
+ * snap_minutes and clamped to the visible hour range of the displayed day.
  *
  * Inputs:
  *   y — Y in flipped canvas coordinates
  *
  * Output:
- *   unix seconds within today.
+ *   unix seconds within the displayed day.
  */
 - (int64_t)
 unix_for_y:(CGFloat)y
 {
-    double hours = (y - tasks_look_day_planner_pad_v) / tasks_look_day_planner_hour_h
-                   + (double)tasks_look_day_planner_start_h;
+    NSInteger offset   = self.planner ? self.planner.days_offset : 0;
+    double    hours    = (y - tasks_look_day_planner_pad_v) / tasks_look_day_planner_hour_h
+                         + (double)tasks_look_day_planner_start_h;
     int total_min = (int)round(hours * 60.0);
     total_min = (total_min / (int)snap_minutes) * (int)snap_minutes;
     int lo_min = (int)tasks_look_day_planner_start_h * 60;
     int hi_min = (int)tasks_look_day_planner_end_h   * 60 - (int)snap_minutes;
     if (total_min < lo_min) total_min = lo_min;
     if (total_min > hi_min) total_min = hi_min;
-    return today_midnight() + (int64_t)total_min * 60;
+    return midnight_for_offset(offset) + (int64_t)total_min * 60;
 }
 
 /*
@@ -231,18 +261,20 @@ drawRect:(NSRect)dirty
         NSRectFill(mark);
     }
 
-    /* Current-time line */
-    CGFloat now_y = [self y_for_unix:(int64_t)time(NULL)];
-    if (now_y >= pad && now_y <= NSMaxY(self.bounds) - pad) {
-        NSRect tl = NSMakeRect(label_w - 5.0,
-                               now_y - tasks_look_day_planner_time_w / 2.0,
-                               NSWidth(self.bounds) - label_w + 5.0,
-                               tasks_look_day_planner_time_w);
-        [[NSColor systemRedColor] setFill];
-        NSRectFill(tl);
-        /* Small circle at the left edge */
-        NSRect dot = NSMakeRect(label_w - 7.0, now_y - 4.0, 8.0, 8.0);
-        [[NSBezierPath bezierPathWithOvalInRect:dot] fill];
+    /* Current-time line: only shown when viewing today */
+    if (!self.planner || self.planner.days_offset == 0) {
+        CGFloat now_y = [self y_for_unix:(int64_t)time(NULL)];
+        if (now_y >= pad && now_y <= NSMaxY(self.bounds) - pad) {
+            NSRect tl = NSMakeRect(label_w - 5.0,
+                                   now_y - tasks_look_day_planner_time_w / 2.0,
+                                   NSWidth(self.bounds) - label_w + 5.0,
+                                   tasks_look_day_planner_time_w);
+            [[NSColor systemRedColor] setFill];
+            NSRectFill(tl);
+            /* Small circle at the left edge */
+            NSRect dot = NSMakeRect(label_w - 7.0, now_y - 4.0, 8.0, 8.0);
+            [[NSBezierPath bezierPathWithOvalInRect:dot] fill];
+        }
     }
 }
 
@@ -368,10 +400,11 @@ concludeDragOperation:(id<NSDraggingInfo>)info
     [self setNeedsDisplay:YES];
 }
 
-/* ── Mouse events (block resize) ──────────────────────────────────────── */
+/* ── Mouse events (block move and resize, double-click to edit) ─────── */
 
 /*
- * mouseDown: — begin a resize if the click landed on a block's grip stripe.
+ * mouseDown: — begin a resize on the grip stripe, a move on the block body,
+ * or open the editor on a double-click.
  *
  * Inputs:
  *   event — the mouse-down event
@@ -382,25 +415,41 @@ mouseDown:(NSEvent *)event
     NSPoint pt     = [self convertPoint:event.locationInWindow fromView:nil];
     self.resize_id = 0;
     self.resizing  = NO;
+    self.move_id   = 0;
+    self.moving    = NO;
 
     for (TasksDayItem *item in self.planner.items) {
         NSRect r = [self item_rect:item];
         if (!NSPointInRect(pt, r)) continue;
+
+        /* Double-click: open the editor */
+        if (event.clickCount == 2) {
+            tasks_editor_open(self.planner.library.app, item.task_id);
+            return;
+        }
+
         NSRect grip = NSMakeRect(r.origin.x,
                                  NSMaxY(r) - tasks_look_day_planner_resize_h,
                                  r.size.width, tasks_look_day_planner_resize_h);
         if (NSPointInRect(pt, grip)) {
-            self.resizing            = YES;
-            self.resize_id           = item.task_id;
-            self.resize_start_y      = pt.y;
+            self.resizing             = YES;
+            self.resize_id            = item.task_id;
+            self.resize_start_y       = pt.y;
             self.resize_orig_duration = item.duration;
-            return;
+        } else {
+            /* Block body: drag to move */
+            self.moving               = YES;
+            self.move_id              = item.task_id;
+            self.move_orig_start_unix = item.start_unix;
+            self.move_start_mouse_y   = pt.y;
         }
+        return;
     }
 }
 
 /*
- * mouseDragged: — update a block's duration while the resize drag is live.
+ * mouseDragged: — update a block's duration (resize) or start time (move)
+ * while the drag is live.
  *
  * Inputs:
  *   event — the mouse-dragged event
@@ -408,26 +457,49 @@ mouseDown:(NSEvent *)event
 - (void)
 mouseDragged:(NSEvent *)event
 {
-    if (!self.resizing) return;
-    NSPoint pt      = [self convertPoint:event.locationInWindow fromView:nil];
-    CGFloat dy      = pt.y - self.resize_start_y;
-    int     delta   = (int)round((dy / tasks_look_day_planner_hour_h) * 60.0);
-    delta = (delta / (int)snap_minutes) * (int)snap_minutes;
-    int new_dur = self.resize_orig_duration + delta;
-    if (new_dur < (int)snap_minutes) new_dur = (int)snap_minutes;
-    if (new_dur > 8 * 60)           new_dur = 8 * 60;
+    NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
 
-    for (TasksDayItem *item in self.planner.items) {
-        if (item.task_id == self.resize_id) {
-            item.duration = new_dur;
+    if (self.resizing) {
+        CGFloat dy    = pt.y - self.resize_start_y;
+        int     delta = (int)round((dy / tasks_look_day_planner_hour_h) * 60.0);
+        delta = (delta / (int)snap_minutes) * (int)snap_minutes;
+        int new_dur = self.resize_orig_duration + delta;
+        if (new_dur < (int)snap_minutes) new_dur = (int)snap_minutes;
+        if (new_dur > 8 * 60)           new_dur = 8 * 60;
+        for (TasksDayItem *item in self.planner.items) {
+            if (item.task_id == self.resize_id) {
+                item.duration = new_dur;
+                break;
+            }
+        }
+        [self setNeedsDisplay:YES];
+        return;
+    }
+
+    if (self.moving) {
+        CGFloat dy        = pt.y - self.move_start_mouse_y;
+        int     delta_min = (int)round((dy / tasks_look_day_planner_hour_h) * 60.0);
+        delta_min = (delta_min / (int)snap_minutes) * (int)snap_minutes;
+        for (TasksDayItem *item in self.planner.items) {
+            if (item.task_id != self.move_id) continue;
+            int64_t   new_start = self.move_orig_start_unix + (int64_t)delta_min * 60;
+            NSInteger offset    = self.planner ? self.planner.days_offset : 0;
+            int64_t   mid       = midnight_for_offset(offset);
+            int64_t   lo        = mid + (int64_t)tasks_look_day_planner_start_h * 3600;
+            int64_t   hi        = mid + (int64_t)tasks_look_day_planner_end_h   * 3600
+                                  - (int64_t)item.duration * 60;
+            if (new_start < lo) new_start = lo;
+            if (new_start > hi) new_start = hi;
+            item.start_unix = new_start;
             break;
         }
+        [self setNeedsDisplay:YES];
+        return;
     }
-    [self setNeedsDisplay:YES];
 }
 
 /*
- * mouseUp: — commit the new duration to the database.
+ * mouseUp: — commit the new duration (resize) or start time (move) to the DB.
  *
  * Inputs:
  *   event — the mouse-up event (unused)
@@ -435,23 +507,39 @@ mouseDragged:(NSEvent *)event
 - (void)
 mouseUp:(NSEvent *)event
 {
-    if (!self.resizing) return;
-    self.resizing = NO;
-
-    for (TasksDayItem *item in self.planner.items) {
-        if (item.task_id == self.resize_id) {
-            task_db_task_set_scheduled(self.planner.library.app->db,
-                                       item.task_id,
-                                       item.start_unix,
-                                       item.duration);
-            break;
+    if (self.resizing) {
+        self.resizing = NO;
+        for (TasksDayItem *item in self.planner.items) {
+            if (item.task_id == self.resize_id) {
+                task_db_task_set_scheduled(self.planner.library.app->db,
+                                           item.task_id,
+                                           item.start_unix,
+                                           item.duration);
+                break;
+            }
         }
+        self.resize_id = 0;
+        return;
     }
-    self.resize_id = 0;
+
+    if (self.moving) {
+        self.moving = NO;
+        for (TasksDayItem *item in self.planner.items) {
+            if (item.task_id == self.move_id) {
+                task_db_task_set_scheduled(self.planner.library.app->db,
+                                           item.task_id,
+                                           item.start_unix,
+                                           item.duration);
+                break;
+            }
+        }
+        self.move_id = 0;
+        return;
+    }
 }
 
 /*
- * resetCursorRects — show the resize cursor over each block's grip stripe.
+ * resetCursorRects — open-hand cursor on block bodies; resize cursor on grips.
  */
 - (void)
 resetCursorRects
@@ -459,9 +547,12 @@ resetCursorRects
     [self addCursorRect:self.bounds cursor:NSCursor.arrowCursor];
     for (TasksDayItem *item in self.planner.items) {
         NSRect r    = [self item_rect:item];
+        CGFloat body_h = r.size.height - tasks_look_day_planner_resize_h;
+        NSRect body = NSMakeRect(r.origin.x, r.origin.y, r.size.width, body_h);
         NSRect grip = NSMakeRect(r.origin.x,
                                  NSMaxY(r) - tasks_look_day_planner_resize_h,
                                  r.size.width, tasks_look_day_planner_resize_h);
+        [self addCursorRect:body cursor:NSCursor.openHandCursor];
         [self addCursorRect:grip cursor:NSCursor.resizeDownCursor];
     }
 }
@@ -469,16 +560,6 @@ resetCursorRects
 @end
 
 /* ── TasksDayPlanner ──────────────────────────────────────────────────── */
-
-@interface TasksDayPlanner ()
-@property (nonatomic, weak)   TasksLibraryWindow          *library;
-@property (nonatomic, strong) NSScrollView                *scroll;
-@property (nonatomic, strong) TasksDayCanvas              *canvas;
-@property (nonatomic, strong) NSTimer                     *clock_timer;
-@property (nonatomic, strong) NSTimer                     *progress_timer;
-@property (nonatomic, strong) NSMutableArray<TasksDayItem *> *items;
-@property (nonatomic)         BOOL                         is_shut_down;
-@end
 
 @implementation TasksDayPlanner
 
@@ -492,8 +573,9 @@ init_with_library:(TasksLibraryWindow *)library
     self = [super initWithFrame:NSZeroRect];
     if (!self) return nil;
 
-    _library = library;
-    _items   = [NSMutableArray array];
+    _library     = library;
+    _items       = [NSMutableArray array];
+    _days_offset = 0;
 
     NSInteger n_hours  = tasks_look_day_planner_end_h - tasks_look_day_planner_start_h;
     CGFloat   canvas_h = tasks_look_day_planner_pad_v * 2.0 +
@@ -505,21 +587,15 @@ init_with_library:(TasksLibraryWindow *)library
     _canvas.drop_y  = NAN;
     [_canvas registerForDraggedTypes:@[list_drag_type, kanban_drag_type]];
 
-    _scroll                      = [[NSScrollView alloc] initWithFrame:NSZeroRect];
-    _scroll.documentView         = _canvas;
-    _scroll.hasVerticalScroller  = YES;
+    _scroll                       = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    _scroll.documentView          = _canvas;
+    _scroll.hasVerticalScroller   = YES;
     _scroll.hasHorizontalScroller = NO;
-    _scroll.autohidesScrollers   = YES;
-    _scroll.drawsBackground      = NO;
+    _scroll.autohidesScrollers    = YES;
+    _scroll.drawsBackground       = NO;
     _scroll.translatesAutoresizingMaskIntoConstraints = NO;
 
-    [self addSubview:_scroll];
-    [NSLayoutConstraint activateConstraints:@[
-        [_scroll.topAnchor    constraintEqualToAnchor:self.topAnchor],
-        [_scroll.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-        [_scroll.leadingAnchor  constraintEqualToAnchor:self.leadingAnchor],
-        [_scroll.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-    ]];
+    [self build_header];
 
     __weak TasksDayPlanner *ws = self;
 
@@ -539,7 +615,170 @@ init_with_library:(TasksLibraryWindow *)library
 }
 
 /*
- * reload — re-query today's scheduled tasks and redraw.
+ * build_header — add the date navigation bar and the scroll view, wired with
+ * Auto Layout.  Called once from init.
+ */
+- (void)
+build_header
+{
+    NSView *header = [[NSView alloc] initWithFrame:NSZeroRect];
+    header.translatesAutoresizingMaskIntoConstraints = NO;
+
+    NSButton *prev     = [NSButton buttonWithTitle:@""
+                                            target:self
+                                            action:@selector(go_prev_day:)];
+    prev.image         = [NSImage imageWithSystemSymbolName:@"chevron.left"
+                                       accessibilityDescription:nil];
+    prev.imagePosition = NSImageOnly;
+    prev.bordered      = NO;
+    prev.translatesAutoresizingMaskIntoConstraints = NO;
+
+    NSButton *next     = [NSButton buttonWithTitle:@""
+                                            target:self
+                                            action:@selector(go_next_day:)];
+    next.image         = [NSImage imageWithSystemSymbolName:@"chevron.right"
+                                       accessibilityDescription:nil];
+    next.imagePosition = NSImageOnly;
+    next.bordered      = NO;
+    next.translatesAutoresizingMaskIntoConstraints = NO;
+
+    NSTextField *label      = [NSTextField labelWithString:@""];
+    label.font              = [NSFont systemFontOfSize:12.0 weight:NSFontWeightMedium];
+    label.alignment         = NSTextAlignmentCenter;
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    _date_label = label;
+
+    NSButton *today      = [NSButton buttonWithTitle:@"Today"
+                                              target:self
+                                              action:@selector(go_today:)];
+    today.font           = [NSFont systemFontOfSize:10.0];
+    today.bordered       = NO;
+    today.contentTintColor = NSColor.controlAccentColor;
+    today.translatesAutoresizingMaskIntoConstraints = NO;
+    _today_button = today;
+
+    [header addSubview:prev];
+    [header addSubview:label];
+    [header addSubview:next];
+    [header addSubview:today];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [prev.leadingAnchor  constraintEqualToAnchor:header.leadingAnchor  constant:6.0],
+        [prev.centerYAnchor  constraintEqualToAnchor:header.centerYAnchor],
+
+        [label.centerXAnchor constraintEqualToAnchor:header.centerXAnchor],
+        [label.centerYAnchor constraintEqualToAnchor:header.centerYAnchor],
+        [label.leadingAnchor constraintGreaterThanOrEqualToAnchor:prev.trailingAnchor constant:4.0],
+
+        [next.trailingAnchor constraintEqualToAnchor:today.leadingAnchor constant:-2.0],
+        [next.centerYAnchor  constraintEqualToAnchor:header.centerYAnchor],
+
+        [today.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-6.0],
+        [today.centerYAnchor  constraintEqualToAnchor:header.centerYAnchor],
+    ]];
+
+    /* 1 pt separator below the header */
+    NSView *sep = [[NSView alloc] initWithFrame:NSZeroRect];
+    sep.wantsLayer = YES;
+    sep.layer.backgroundColor = NSColor.separatorColor.CGColor;
+    sep.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [self addSubview:header];
+    [self addSubview:sep];
+    [self addSubview:_scroll];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [header.topAnchor      constraintEqualToAnchor:self.topAnchor],
+        [header.leadingAnchor  constraintEqualToAnchor:self.leadingAnchor],
+        [header.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [header.heightAnchor   constraintEqualToConstant:header_h],
+
+        [sep.topAnchor         constraintEqualToAnchor:header.bottomAnchor],
+        [sep.leadingAnchor     constraintEqualToAnchor:self.leadingAnchor],
+        [sep.trailingAnchor    constraintEqualToAnchor:self.trailingAnchor],
+        [sep.heightAnchor      constraintEqualToConstant:1.0],
+
+        [_scroll.topAnchor     constraintEqualToAnchor:sep.bottomAnchor],
+        [_scroll.bottomAnchor  constraintEqualToAnchor:self.bottomAnchor],
+        [_scroll.leadingAnchor  constraintEqualToAnchor:self.leadingAnchor],
+        [_scroll.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+    ]];
+
+    [self update_date_label];
+}
+
+/*
+ * update_date_label — refresh the header date text and the Today button
+ * visibility to match the current days_offset.
+ */
+- (void)
+update_date_label
+{
+    NSString *text;
+    if (_days_offset == 0) {
+        text = @"Today";
+    } else if (_days_offset == 1) {
+        text = @"Tomorrow";
+    } else if (_days_offset == -1) {
+        text = @"Yesterday";
+    } else {
+        time_t    t     = (time_t)midnight_for_offset(_days_offset);
+        struct tm local = *localtime(&t);
+        char buf[64];
+        strftime(buf, sizeof(buf), "%a, %b %-d", &local);
+        text = @(buf);
+    }
+    _date_label.stringValue = text;
+    _today_button.hidden    = (_days_offset == 0);
+}
+
+/*
+ * go_prev_day: — navigate one day back and reload.
+ *
+ * Inputs:
+ *   sender — the previous-day button (unused)
+ */
+- (void)
+go_prev_day:(id)sender
+{
+    _days_offset--;
+    [self update_date_label];
+    [self reload];
+    [self scroll_to_now];
+}
+
+/*
+ * go_next_day: — navigate one day forward and reload.
+ *
+ * Inputs:
+ *   sender — the next-day button (unused)
+ */
+- (void)
+go_next_day:(id)sender
+{
+    _days_offset++;
+    [self update_date_label];
+    [self reload];
+    [self scroll_to_now];
+}
+
+/*
+ * go_today: — jump back to today and reload.
+ *
+ * Inputs:
+ *   sender — the Today button (unused)
+ */
+- (void)
+go_today:(id)sender
+{
+    _days_offset = 0;
+    [self update_date_label];
+    [self reload];
+    [self scroll_to_now];
+}
+
+/*
+ * reload — re-query the displayed day's scheduled tasks and redraw.
  * Documented in day_planner.h.
  */
 - (void)
@@ -547,7 +786,8 @@ reload
 {
     if (self.is_shut_down) return;
 
-    GPtrArray *tasks = task_db_tasks_scheduled_today(self.library.app->db);
+    int64_t   mid   = midnight_for_offset(_days_offset);
+    GPtrArray *tasks = task_db_tasks_scheduled_for_day(self.library.app->db, mid);
 
     [self.items removeAllObjects];
     for (guint i = 0; i < tasks->len; i++) {
@@ -576,25 +816,33 @@ reload
 }
 
 /*
- * scroll_to_now — scroll so the current time is visible with one hour of lead.
+ * scroll_to_now — scroll so the current time (today) or 8 AM (other days) is
+ * visible with one hour of lead.
  * Documented in day_planner.h.
  */
 - (void)
 scroll_to_now
 {
-    CGFloat now_y = [self.canvas y_for_unix:(int64_t)time(NULL)];
-    CGFloat lead  = tasks_look_day_planner_hour_h;
-    NSPoint pt    = NSMakePoint(0.0, MAX(0.0, now_y - lead));
-    [self.canvas scrollPoint:pt];
+    CGFloat scroll_y;
+    if (_days_offset == 0) {
+        CGFloat now_y = [self.canvas y_for_unix:(int64_t)time(NULL)];
+        scroll_y = MAX(0.0, now_y - tasks_look_day_planner_hour_h);
+    } else {
+        int64_t eight_am = midnight_for_offset(_days_offset) + 8 * 3600;
+        scroll_y = MAX(0.0, [self.canvas y_for_unix:eight_am] - tasks_look_day_planner_hour_h);
+    }
+    [self.canvas scrollPoint:NSMakePoint(0.0, scroll_y)];
 }
 
 /*
  * check_and_progress — promote any New task whose scheduled start has passed.
+ * Only runs when the displayed day is today.
  */
 - (void)
 check_and_progress
 {
     if (self.is_shut_down) return;
+    if (_days_offset != 0) return;
 
     int64_t  now     = (int64_t)time(NULL);
     TaskApp *app     = self.library.app;

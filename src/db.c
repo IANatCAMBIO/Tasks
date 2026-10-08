@@ -1799,22 +1799,20 @@ task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
 }
 
 /*
- * task_db_tasks_scheduled_today() — tasks scheduled within today's local day.
+ * task_db_tasks_scheduled_for_day() — tasks scheduled within a given local day.
  *
  * Inputs:
- *   db — the connection
+ *   db          — the connection
+ *   day_midnight — unix seconds of the local midnight that starts the day
  *
  * Output:
  *   new GPtrArray of Task* ordered by scheduled_start; never NULL.
  *   Free with task_ptr_array_free_tasks + g_ptr_array_free.
  */
 GPtrArray *
-task_db_tasks_scheduled_today(TaskDatabase *db)
+task_db_tasks_scheduled_for_day(TaskDatabase *db, gint64 day_midnight)
 {
-    time_t    now   = time(NULL);
-    struct tm local = *localtime(&now);
-    local.tm_hour = local.tm_min = local.tm_sec = 0;
-    gint64 lo = (gint64)mktime(&local);
+    gint64 lo = day_midnight;
     gint64 hi = lo + 86400;
 
     return task_query(db,

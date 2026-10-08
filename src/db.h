@@ -539,11 +539,11 @@ void task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next);
 void task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
                                 gint64 start_unix, gint duration_min);
 
-/* Tasks scheduled today (scheduled_start within today's local midnight
- * to the next local midnight), ordered by scheduled_start.  Returns
+/* Tasks scheduled within the 24-hour window starting at day_midnight
+ * (unix seconds of a local midnight), ordered by scheduled_start.  Returns
  * Task* elements; free with task_ptr_array_free_tasks after use.
  * Never NULL.                                                             */
-GPtrArray *task_db_tasks_scheduled_today(TaskDatabase *db);
+GPtrArray *task_db_tasks_scheduled_for_day(TaskDatabase *db, gint64 day_midnight);
 
 /* Tombstone the task and its subtasks, in one transaction.                */
 void task_db_task_delete(TaskDatabase *db, gint64 id);
