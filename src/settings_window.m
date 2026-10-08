@@ -1,6 +1,7 @@
 #import "settings_window.h"
 #import "look.h"
 #import "ui_util.h"
+#import "task_notify.h"
 
 #include "backup.h"
 #include "task_config.h"
@@ -358,6 +359,10 @@ isFlipped
 @property (nonatomic, strong) NSTextField *backup_status; /* the last Back Up Now's outcome;
                                                            * hidden until there is one    */
 
+/* Notifications. */
+@property (nonatomic, strong) NSButton *notif_tasks_btn;   /* radio: Tasks popup  */
+@property (nonatomic, strong) NSButton *notif_native_btn;  /* radio: macOS Notif. */
+
 @property (nonatomic, assign) BOOL is_shut_down;
 
 /* Declared here because the C callbacks below call them before their
@@ -663,7 +668,70 @@ backup_rows
 }
 
 /*
- * build_form — lay the three sections out in one vertical stack, in the
+ * notification_rows — the Notifications section: a heading and two radio
+ * buttons for the delivery mode.
+ *
+ * Output:
+ *   the section's rows, heading first.
+ */
+- (NSArray<NSView *> *)
+notification_rows
+{
+    gchar *mode_val = task_config_get(TASK_CFG_NOTIF_MODE);
+    BOOL native = (mode_val != NULL &&
+                   strcmp(mode_val, TASK_NOTIF_MODE_NATIVE) == 0);
+    g_free(mode_val);
+
+    self.notif_tasks_btn  = [NSButton radioButtonWithTitle:@"Tasks notification (popup window)"
+                                                    target:self
+                                                    action:@selector(notif_mode_changed:)];
+    self.notif_native_btn = [NSButton radioButtonWithTitle:@"macOS Notification Center"
+                                                    target:self
+                                                    action:@selector(notif_mode_changed:)];
+
+    self.notif_tasks_btn.tag  = 0;
+    self.notif_native_btn.tag = 1;
+
+    self.notif_tasks_btn.state  = native ? NSControlStateValueOff : NSControlStateValueOn;
+    self.notif_native_btn.state = native ? NSControlStateValueOn  : NSControlStateValueOff;
+
+    NSTextField *note = [NSTextField wrappingLabelWithString:
+        @"Tasks notifications appear in the lower-right corner. "
+        @"macOS Notification Center alerts require permission from macOS."];
+    note.font      = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+    note.textColor = NSColor.secondaryLabelColor;
+    note.preferredMaxLayoutWidth = form_content_w();
+
+    return @[section_label(@"Notifications"),
+             self.notif_tasks_btn, self.notif_native_btn, note];
+}
+
+/*
+ * notif_mode_changed: — a notification-mode radio button was clicked:
+ * write the new mode.  When native mode is selected, request
+ * UNUserNotificationCenter authorization if not yet granted.
+ *
+ * Inputs:
+ *   sender — the radio button; tag 0 = tasks, tag 1 = native
+ */
+- (void)
+notif_mode_changed:(NSButton *)sender
+{
+    BOOL native = sender.tag == 1;
+
+    /* Keep the pair in sync — only the clicked button fires the action. */
+    self.notif_tasks_btn.state  = native ? NSControlStateValueOff : NSControlStateValueOn;
+    self.notif_native_btn.state = native ? NSControlStateValueOn  : NSControlStateValueOff;
+
+    task_config_set(TASK_CFG_NOTIF_MODE,
+                    native ? TASK_NOTIF_MODE_NATIVE : TASK_NOTIF_MODE_TASKS);
+
+    if (native)
+        task_notify_request_native_auth();
+}
+
+/*
+ * build_form — lay the four sections out in one vertical stack, in the
  * style of Files' Preferences, inside a scroll view that only comes into
  * play when the form is taller than tasks_look_settings_max_h.
  */
@@ -671,7 +739,8 @@ backup_rows
 build_form
 {
     NSArray<NSArray<NSView *> *> *sections =
-        @[[self appearance_rows], [self database_rows], [self backup_rows]];
+        @[[self appearance_rows], [self notification_rows],
+          [self database_rows], [self backup_rows]];
     NSMutableArray<NSView *> *rows = [NSMutableArray array];
     for (NSArray<NSView *> *section in sections) [rows addObjectsFromArray:section];
 

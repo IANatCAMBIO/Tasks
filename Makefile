@@ -101,7 +101,7 @@ CFLAGS   = -std=c11 $(COMMON)
 # (void) cast.
 OBJCFLAGS = -fobjc-arc $(COMMON) -Wno-unused-parameter
 LDLIBS   = -mmacosx-version-min=$(LINK_TARGET) $(PKG_LIBS)
-LDFLAGS  = -framework Cocoa -framework UniformTypeIdentifiers $(LDLIBS)
+LDFLAGS  = -framework Cocoa -framework UniformTypeIdentifiers -framework UserNotifications $(LDLIBS)
 
 # Every src/*.c is the toolkit-free core; every src/*.m is the AppKit
 # layer.  A .c and a .m must not share a base name (both would build to

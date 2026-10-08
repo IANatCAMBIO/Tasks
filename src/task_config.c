@@ -35,6 +35,8 @@ static const struct {
     { TASK_CFG_COL_STATUS,          "0"   },
     { TASK_CFG_COL_DUE,             "1"   },
     { TASK_CFG_COL_COMPLETED,       "1"   },
+    { TASK_CFG_NOTIF_MODE,          "tasks" },
+    { TASK_CFG_NOTIF_CHECK_MIN,     "1"   },
 };
 
 static GKeyFile *config_kf;         /* the in-memory config, or NULL      */

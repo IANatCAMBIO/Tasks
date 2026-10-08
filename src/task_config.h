@@ -68,6 +68,10 @@
 #define TASK_CFG_COL_DUE             "col_due_visible"       /* bool, 1 */
 #define TASK_CFG_COL_COMPLETED       "col_completed_visible" /* bool, 1 */
 
+/* Notifications (see task_notify.h for the full description) */
+#define TASK_CFG_NOTIF_MODE          "notifications_mode"      /* "tasks" or "native"; default "tasks" */
+#define TASK_CFG_NOTIF_CHECK_MIN     "notifications_check_min" /* int minutes, 1; internal, not in Settings */
+
 /* Task-list header sort (written by the list; spelling in task_sort.h) */
 #define TASK_CFG_LIST_SORT           "task_list_sort"        /* column names, e.g. "due,-title"; none = unsorted */
 

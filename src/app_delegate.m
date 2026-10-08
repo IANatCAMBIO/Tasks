@@ -2,6 +2,7 @@
 #import "commands.h"
 #import "library_window.h"
 #import "settings_window.h"
+#import "task_notify.h"
 #import "ui_util.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -78,6 +79,7 @@ start_config:(gchar **)out_path
     task_core_views_init();
     task_recur_init(app);
     task_backup_init(app);
+    task_notify_init(app);
     self.app = app;
 
     gchar *db_dir = task_config_get(TASK_CFG_DB_DIR);
