@@ -160,6 +160,46 @@ item_rect:(TasksDayItem *)item
     return NSMakeRect(x, y, w, h);
 }
 
+/* ── Drawing helpers ──────────────────────────────────────────────────── */
+
+/*
+ * format_block_time — build the "H:MM–H:MM (Xhr Ymin)" subtitle string.
+ *
+ * Inputs:
+ *   start_unix   — block start as unix seconds
+ *   duration_min — block length in minutes
+ *
+ * Output:
+ *   autoreleased NSString.
+ */
+static NSString *
+format_block_time(int64_t start_unix, int duration_min)
+{
+    time_t    ts   = (time_t)start_unix;
+    time_t    te   = (time_t)(start_unix + (int64_t)duration_min * 60);
+    struct tm s    = *localtime(&ts);
+    struct tm e    = *localtime(&te);
+
+    int sh = s.tm_hour % 12; if (sh == 0) sh = 12;
+    int eh = e.tm_hour % 12; if (eh == 0) eh = 12;
+
+    NSString *start_str = s.tm_min == 0
+        ? [NSString stringWithFormat:@"%d", sh]
+        : [NSString stringWithFormat:@"%d:%02d", sh, s.tm_min];
+    NSString *end_str   = e.tm_min == 0
+        ? [NSString stringWithFormat:@"%d", eh]
+        : [NSString stringWithFormat:@"%d:%02d", eh, e.tm_min];
+
+    int hrs  = duration_min / 60;
+    int mins = duration_min % 60;
+    NSString *dur;
+    if      (mins == 0) dur = [NSString stringWithFormat:@"%dhr",        hrs];
+    else if (hrs  == 0) dur = [NSString stringWithFormat:@"%dmin",       mins];
+    else                dur = [NSString stringWithFormat:@"%dhr %dmin",  hrs, mins];
+
+    return [NSString stringWithFormat:@"%@–%@ (%@)", start_str, end_str, dur];
+}
+
 /* ── Drawing ──────────────────────────────────────────────────────────── */
 
 /*
@@ -221,9 +261,15 @@ drawRect:(NSRect)dirty
     NSColor *acc_border = [NSColor.controlAccentColor colorWithAlphaComponent:0.55];
     NSColor *done_fill  = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.10];
     NSColor *done_bord  = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.28];
-    NSDictionary *text_attrs = @{
-        NSFontAttributeName:            [NSFont systemFontOfSize:tasks_look_row_small_font],
+    NSFont  *title_font = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    NSFont  *time_font  = [NSFont systemFontOfSize:tasks_look_row_small_font - 1.0];
+    NSDictionary *title_attrs = @{
+        NSFontAttributeName:            title_font,
         NSForegroundColorAttributeName: NSColor.labelColor,
+    };
+    NSDictionary *time_attrs = @{
+        NSFontAttributeName:            time_font,
+        NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
     };
 
     for (TasksDayItem *item in self.planner.items) {
@@ -241,9 +287,24 @@ drawRect:(NSRect)dirty
             [acc_border setStroke]; [path stroke];
         }
 
-        NSRect text_rect = NSInsetRect(r, 4.0, 3.0);
-        text_rect.size.height -= tasks_look_day_planner_resize_h;
-        [item.title drawInRect:text_rect withAttributes:text_attrs];
+        NSRect content = NSInsetRect(r, 4.0, 3.0);
+        content.size.height -= tasks_look_day_planner_resize_h;
+
+        /* Title on the first line */
+        CGFloat title_h = title_font.ascender - title_font.descender + title_font.leading;
+        NSRect title_rect = NSMakeRect(content.origin.x, content.origin.y,
+                                       content.size.width, title_h);
+        [item.title drawInRect:title_rect withAttributes:title_attrs];
+
+        /* Time / duration on the second line, if there is room */
+        CGFloat time_h = time_font.ascender - time_font.descender + time_font.leading;
+        NSRect time_rect = NSMakeRect(content.origin.x,
+                                      NSMaxY(title_rect) + 1.0,
+                                      content.size.width, time_h);
+        if (NSMaxY(time_rect) <= NSMaxY(content)) {
+            NSString *time_str = format_block_time(item.start_unix, item.duration);
+            [time_str drawInRect:time_rect withAttributes:time_attrs];
+        }
 
         /* Resize grip stripe */
         NSRect grip = NSMakeRect(r.origin.x,
