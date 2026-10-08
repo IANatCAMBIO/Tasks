@@ -376,10 +376,12 @@ build_float_bar:(NSView *)pane
 }
 
 /*
- * build_layout — the window's content: a lists bar over the full-width
- * task pane, then a separator and the status bar.  The task pane holds BOTH
- * presentations, the list and the board, of which apply_pane_mode shows one.
- * NSStackView collapses the bar when hidden, so the pane fills the window.
+ * build_layout — the window's content: a split view running from the
+ * toolbar to the status bar's separator, its left half a lists bar over the
+ * task pane and its right half the day planner, which therefore stands the
+ * full height.  The task pane holds BOTH presentations, the list and the
+ * board, of which apply_pane_mode shows one.  NSStackView collapses the bar
+ * when hidden, so the pane fills the left half.
  */
 - (void)
 build_layout
@@ -397,18 +399,30 @@ build_layout
     pin_edges(self.kanban);
     [self build_float_bar:pane];
 
+    [self.lists_bar.heightAnchor
+        constraintEqualToConstant:tasks_look_lists_bar_h].active = YES;
+
+    /* The split's left half: the lists bar over the task pane.  A plain
+     * container owns the stack so the split view manages a frame-based
+     * subview, as it does the day planner. */
+    NSStackView *left_stack = [NSStackView stackViewWithViews:@[self.lists_bar, pane]];
+    left_stack.orientation  = NSUserInterfaceLayoutOrientationVertical;
+    left_stack.spacing      = 0;
+    left_stack.distribution = NSStackViewDistributionFill;
+
+    NSView *left = [[NSView alloc] initWithFrame:NSZeroRect];
+    [left addSubview:left_stack];
+    pin_edges(left_stack);
+
     self.day_planner = [[TasksDayPlanner alloc] init_with_library:self];
 
     NSSplitView *split = [[NSSplitView alloc] initWithFrame:NSZeroRect];
     split.vertical     = YES;
     split.dividerStyle = NSSplitViewDividerStyleThin;
     split.delegate     = self;
-    [split addSubview:pane];
+    [split addSubview:left];
     [split addSubview:self.day_planner];
     self.main_split = split;
-
-    [self.lists_bar.heightAnchor
-        constraintEqualToConstant:tasks_look_lists_bar_h].active = YES;
 
     /* Minimum width for the day planner.  Stored so it can be deactivated
      * during open/close animations (a live constraint fights NSSplitView's
@@ -417,26 +431,20 @@ build_layout
         constraintGreaterThanOrEqualToConstant:tasks_look_day_planner_min_w];
     self.dp_min_width.active = YES;
 
-
-    NSStackView *stack = [NSStackView stackViewWithViews:@[self.lists_bar, split]];
-    stack.orientation  = NSUserInterfaceLayoutOrientationVertical;
-    stack.spacing      = 0;
-    stack.distribution = NSStackViewDistributionFill;
-
     NSBox *rule   = [[NSBox alloc] initWithFrame:NSZeroRect];
     rule.boxType  = NSBoxSeparator;
     self.status_left  = status_label(NSTextAlignmentCenter);
     self.status_right = status_label(NSTextAlignmentRight);
 
-    for (NSView *v in @[stack, rule, self.status_left, self.status_right]) {
+    for (NSView *v in @[split, rule, self.status_left, self.status_right]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:v];
     }
     [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:content.topAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [stack.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [stack.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
+        [split.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [split.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [split.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [split.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
 
         [rule.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [rule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
@@ -490,7 +498,6 @@ toolbar_idents(void)
         tasks_command_spec(TasksCommandDeleteTask)->ident,
         NSToolbarSpaceItemIdentifier,
         tasks_command_spec(TasksCommandToggleCompleted)->ident,
-        tasks_command_spec(TasksCommandToggleSort)->ident,
         tasks_command_spec(TasksCommandTogglePane)->ident,
         tasks_command_spec(TasksCommandToggleDayPlanner)->ident,
         NSToolbarFlexibleSpaceItemIdentifier,
@@ -704,7 +711,7 @@ doCommandBySelector:(SEL)selector
 - (BOOL)
 manual_sort_live
 {
-    return self.manual_sort && self.search == NULL;
+    return self.search == NULL;
 }
 
 /*
@@ -1660,9 +1667,6 @@ perform_shell_command:(TasksCommand)command param:(NSNumber *)param
         [self refresh_tasks];
         break;
     case TasksCommandToggleSort:
-        _manual_sort = !_manual_sort;
-        task_config_set_bool(TASK_CFG_MANUAL_SORT, _manual_sort);
-        [self refresh_tasks];
         break;
     case TasksCommandToggleSidebar:
         [self toggle_sidebar];
@@ -1766,23 +1770,7 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
         }
         break;
     case TasksCommandToggleSort:
-        if (self.manual_sort) {
-            state.title   = @"Automatic Sorting";
-            state.icon    = @"arrow.up.arrow.down";
-            state.tooltip = @"Switch to automatic sorting";
-        }
-        /* Two reasons the sort control can be unavailable, and each gets
-         * its own tooltip: one control greyed for two unrelated causes is
-         * only honest if it says which is in force. */
-        state.enabled = !self.kanban_on && self.search == NULL;
-        if (self.kanban_on) {
-            state.tooltip = @"The Kanban board is always drag-sorted — "
-                            @"turn Kanban View off to change list sorting";
-        } else if (self.search != NULL) {
-            state.tooltip = @"A search hides rows, and saving an order from a filtered list "
-                            @"would lose the hidden tasks' places — clear the search box "
-                            @"to drag-sort again";
-        }
+        state.enabled = NO;
         break;
     case TasksCommandToggleSidebar:
         if (self.lists_bar.hidden) {

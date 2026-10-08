@@ -6,9 +6,11 @@
  * (done checkbox, the row text, status, due date, completion date).
  *
  * The list OWNS: its columns and their visibility menu, header sorting,
- * the manual-sort drag and its saved order (TASK_CFG_FAMILY_MANUAL), the
+ * row dragging and its saved order (TASK_CFG_FAMILY_MANUAL), the
  * checkbox's in-place update, double-click to open the editor, and its
- * selection.  The row text comes from row_text.h and nowhere else.
+ * selection.  Header sort and drag coexist: a drag clears the active sort
+ * so the dragged position sticks; a header click re-sorts from the saved
+ * order.  The row text comes from row_text.h and nowhere else.
  *
  * Behavioural reference: porting/gtk_reference/task_list.c.
  */

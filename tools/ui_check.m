@@ -1415,21 +1415,19 @@ check_task_list(TaskApp *app, NSString *dir)
         check(snapshot(window, dir, @"task-list-sorted"), "snapshot: task list, sorted, Status shown");
         [library perform_command:TasksCommandColumnStatus param:nil];
 
-        /* Manual sorting: the handle shows and the header sort is dropped. */
+        /* Manual sorting: the header sort is dropped. */
         [library perform_command:TasksCommandToggleSort param:nil];
         [list show_rows:generate()];
         settle(0);
-        check(library.manual_sort && ![table tableColumnWithIdentifier:@"handle"].hidden &&
+        check(library.manual_sort &&
               table.sortDescriptors.count == 0 && task_config_get(TASK_CFG_LIST_SORT) == NULL,
-              "list: manual sorting shows the handle and drops the header sort");
+              "list: manual sorting drops the header sort");
         window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
         check(snapshot(window, dir, @"task-list-manual-dark"), "snapshot: task list, manual, dark");
         window.appearance = nil;
         /* Back to automatic: the window refreshes with the sandbox's tasks. */
         [library perform_command:TasksCommandToggleSort param:nil];
         settle(0);
-        check([table tableColumnWithIdentifier:@"handle"].hidden,
-              "list: automatic sorting hides the handle");
 
         /* Tick the first task's checkbox while sorted by Done, so that the
          * row has to move as well as change. */

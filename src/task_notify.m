@@ -83,14 +83,16 @@ mark_sent(gchar *key)
  * fire_notification — deliver one notification for the given task.
  *
  * Inputs:
- *   title    — the task title (borrowed)
+ *   app      — the application context, which the reminder window keeps
+ *              to open the task's editor
+ *   task     — the task (borrowed): its title and id
  *   subtitle — the context line, e.g. "Due today" (borrowed)
  *   ident    — a unique string for native dedup (borrowed)
  */
 static void
-fire_notification(const gchar *title, const gchar *subtitle, const gchar *ident)
+fire_notification(TaskApp *app, const Task *task, const gchar *subtitle, const gchar *ident)
 {
-    NSString *ns_title = tasks_string(title);
+    NSString *ns_title = tasks_string(task->title);
     NSString *ns_sub   = tasks_string(subtitle);
 
     gchar *mode = task_config_get(TASK_CFG_NOTIF_MODE);
@@ -116,7 +118,7 @@ fire_notification(const gchar *title, const gchar *subtitle, const gchar *ident)
             addNotificationRequest:req
              withCompletionHandler:nil];
     } else {
-        tasks_notify_add(ns_title, ns_sub);
+        tasks_notify_add(app, task->id, ns_title, ns_sub);
     }
 }
 
@@ -173,7 +175,7 @@ notify_run(TaskApp *app, const gchar *db_path)
             if (!already_sent(key)) {
                 const gchar *subtitle =
                     (t->due >= today_lo) ? "Due today" : "Overdue";
-                fire_notification(t->title, subtitle, key);
+                fire_notification(app, t, subtitle, key);
                 mark_sent(key);
             } else {
                 g_free(key);
@@ -195,7 +197,7 @@ notify_run(TaskApp *app, const gchar *db_path)
             gchar *key = g_strdup_printf("due:%" G_GINT64_FORMAT ":%s",
                                          t->id, today_iso);
             if (!already_sent(key)) {
-                fire_notification(t->title, "Due today", key);
+                fire_notification(app, t, "Due today", key);
                 mark_sent(key);
             } else {
                 g_free(key);
@@ -225,7 +227,7 @@ notify_run(TaskApp *app, const gchar *db_path)
             gchar *subtitle = g_strdup_printf("Starts in %d minutes at %s",
                                               notify_sched_lead, time_str);
             g_free(time_str);
-            fire_notification(t->title, subtitle, key);
+            fire_notification(app, t, subtitle, key);
             g_free(subtitle);
             mark_sent(key);
         } else {

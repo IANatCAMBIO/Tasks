@@ -32,11 +32,17 @@
  * keeps selected row NUMBERS, which point at other tasks afterwards).
  * The checkbox is the exception: it updates its row in place, moving it
  * only if the sort says so, so that selection, scroll and hover survive.
+ *
+ * DRAG AND HEADER SORT COEXIST.  A row is dragged from anywhere in it but
+ * the checkbox (when no search is active) and column headers always sort.
+ * Dragging a row saves its new position as the manual order AND clears the
+ * active header sort, so the position sticks.  Clicking a header re-sorts
+ * from the saved manual order.  Each action cancels the other's residue.
  */
 
 /* The columns, in table order.  Reordering is off and a hidden column
  * stays in the table, so these are also indexes into table.tableColumns. */
-enum { col_handle = 0, col_done, col_task, col_status, col_due, col_completed, col_count };
+enum { col_done = 0, col_task, col_status, col_due, col_completed, col_count };
 
 #define NO_SORT    (-1)                 /* column_spec_t.sort: not sortable    */
 #define NO_COMMAND ((TasksCommand)0)    /* column_spec_t.command: not toggled  */
@@ -60,7 +66,6 @@ typedef struct {
 } column_spec_t;
 
 static const column_spec_t column_specs[col_count] = {
-    [col_handle]    = { @"handle",    @"",          NO_SORT,             NULL, NO_COMMAND },
     [col_done]      = { @"done",      @"✓",         task_sort_done,
                         TASK_CFG_COL_DONE,      TasksCommandColumnDone },
     [col_task]      = { @"task",      @"Task",      task_sort_title,     NULL, NO_COMMAND },
@@ -75,9 +80,6 @@ static const column_spec_t column_specs[col_count] = {
 /* What a manual-sort drag carries: one pasteboard item per dragged row,
  * holding its task id.  Private to the app, so nothing else accepts it. */
 static NSString * const row_drag_type = @"tasks.task-row";
-
-/* The manual-sort handle's glyph (braille dots: a grip). */
-static NSString * const handle_glyph = @"⠿";
 
 /* List-only metrics.  (Everything shared with another pane is in look.h.) */
 static const CGFloat task_col_min_w = 120.0;    /* the Task column's floor      */
@@ -113,8 +115,8 @@ static const size_t  fit_row_limit  = 2000;     /* rows measured to fit a column
 
 /*
  * TasksListTable — the list's table view.  A subclass for one reason: a
- * row drag may begin only on the manual-sort handle, and AppKit asks the
- * table itself, not its delegate, where a drag may begin.
+ * row drag may not begin on the checkbox, and AppKit asks the table
+ * itself, not its delegate, where a drag may begin.
  */
 @interface TasksListTable : NSTableView
 @end
@@ -123,55 +125,20 @@ static const size_t  fit_row_limit  = 2000;     /* rows measured to fit a column
 
 /*
  * canDragRowsWithIndexes:atPoint: — AppKit asks whether a mouse-down may
- * start dragging rows.  Only on the handle: anywhere else a drag would
- * reorder tasks when the user meant to select them.
+ * start dragging rows.  Anywhere in the row but the checkbox, whose click
+ * is a toggle, not a grab.
  *
  * Inputs:
  *   indexes — the rows that would be dragged (unused)
  *   point   — the mouse-down point, in the table
  *
  * Output:
- *   YES when the point is in the handle column.
+ *   YES when the point is outside the done column.
  */
 - (BOOL)
 canDragRowsWithIndexes:(NSIndexSet *)indexes atPoint:(NSPoint)point
 {
-    return [self columnAtPoint:point] == col_handle;
-}
-
-/*
- * resetCursorRects — open hand over each handle cell; default arrow elsewhere.
- */
-- (void)
-resetCursorRects
-{
-    [super resetCursorRects];
-    NSTableColumn *col = self.tableColumns[col_handle];
-    if (col.hidden) return;
-    NSInteger n = self.numberOfRows;
-    for (NSInteger row = 0; row < n; row++) {
-        NSRect rect = [self frameOfCellAtColumn:col_handle row:row];
-        if (NSIsEmptyRect(rect)) continue;
-        [self addCursorRect:rect cursor:NSCursor.openHandCursor];
-    }
-}
-
-/*
- * mouseDown: — switches to the closed hand while a drag from the handle is
- * in progress; the open-hand cursor rect resumes when the drag ends.
- *
- * Inputs:
- *   event — the mouse-down event
- */
-- (void)
-mouseDown:(NSEvent *)event
-{
-    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
-    BOOL on_handle = [self columnAtPoint:point] == col_handle
-                     && !self.tableColumns[col_handle].hidden;
-    if (on_handle) [NSCursor.closedHandCursor push];
-    [super mouseDown:event];
-    if (on_handle) [NSCursor pop];
+    return [self columnAtPoint:point] != col_done;
 }
 
 @end
@@ -445,23 +412,6 @@ make_label_cell(TasksTaskList *list)
 }
 
 /*
- * make_handle_cell — the manual-sort handle: a grip to drag the row by.
- *
- * Output:
- *   new cell.
- */
-static NSTableCellView *
-make_handle_cell(void)
-{
-    NSTableCellView *cell  = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
-    NSTextField     *label = top_label(cell, handle_glyph);
-
-    label.textColor = NSColor.secondaryLabelColor;
-    [label.centerXAnchor constraintEqualToAnchor:cell.centerXAnchor].active = YES;
-    return cell;
-}
-
-/*
  * make_check_cell — the done checkbox.  The button is the cell's only
  * subview, which is how fill_cell:column:row: finds it.
  *
@@ -564,6 +514,10 @@ spec_for_command(TasksCommand command)
                                      * 0 = never measured                   */
     task_sort_key_t  _keys[TASK_SORT_MAX_KEYS];     /* the header sort      */
     size_t           _n_keys;       /* 0 = unsorted                         */
+    BOOL             _clearing_sort_from_drag;      /* suppress arrange in
+                                                     * sortDescriptorsDidChange:
+                                                     * when a drag clears the
+                                                     * sort descriptor        */
 }
 
 /* ── Construction ────────────────────────────────────────────────────── */
@@ -627,11 +581,10 @@ build_table
         NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:column_specs[i].ident];
 
         column.title = column_specs[i].title;
-        if (i == col_handle || i == col_done) {
-            CGFloat width = i == col_handle ? tasks_look_handle_col_w : tasks_look_check_col_w;
-            column.width        = width;
-            column.minWidth     = width;
-            column.maxWidth     = width;
+        if (i == col_done) {
+            column.width        = tasks_look_check_col_w;
+            column.minWidth     = tasks_look_check_col_w;
+            column.maxWidth     = tasks_look_check_col_w;
             column.resizingMask = NSTableColumnNoResizing;
             column.headerCell.alignment = NSTextAlignmentCenter;
         } else if (i == col_task) {
@@ -734,9 +687,9 @@ row_at:(NSInteger)row
 
 /*
  * rebuild_order — work the display order out again from the rows: the
- * order the window gave them, rearranged by the saved manual order when
- * manual sorting is on, then sorted by the header sort.  Reading the saved
- * order is always allowed, search or no search (task_order.h).
+ * saved manual order (if any), then the header sort applied on top.
+ * Reading the saved order is always allowed, search or no search
+ * (task_order.h).
  */
 - (void)
 rebuild_order
@@ -748,13 +701,12 @@ rebuild_order
     TasksLibraryWindow *library = self.library;
     int n = (int)_rows->count;
 
-    if (library.manual_sort) {
-        int64_t *ids = malloc((size_t)(n > 0 ? n : 1) * sizeof *ids);
-        if (ids == NULL) abort();
-        for (int i = 0; i < n; i++) ids[i] = _rows->rows[i]->id;
-        _order = task_order_load(TASK_CFG_FAMILY_MANUAL, library.selection, ids, n);
-        free(ids);
-    }
+    int64_t *ids = malloc((size_t)(n > 0 ? n : 1) * sizeof *ids);
+    if (ids == NULL) abort();
+    for (int i = 0; i < n; i++) ids[i] = _rows->rows[i]->id;
+    _order = task_order_load(TASK_CFG_FAMILY_MANUAL, library.selection, ids, n);
+    free(ids);
+
     if (_order == NULL) {
         _order = malloc((size_t)(n > 0 ? n : 1) * sizeof *_order);
         if (_order == NULL) abort();
@@ -906,39 +858,29 @@ shut_down
 /* ── Settings the list draws by ──────────────────────────────────────── */
 
 /*
- * apply_settings — make the columns match the settings and the sort mode:
- * which are visible, whether the handle shows, whether headers sort.
- *
- * While rows may be dragged into a manual order (manual_sort_live) the
- * headers do not sort and any header sort is dropped, as in the GTK build;
- * a search suspends dragging, so during one the handle goes and the
- * headers sort the results again.
+ * apply_settings — make the columns match the settings: which are visible.
+ * Column headers always sort; whether rows may be dragged is decided per
+ * drag (pasteboardWriterForRow:), not by any column.
  */
 - (void)
 apply_settings
 {
-    BOOL manual = [self.library manual_sort_live];
-
     for (int i = 0; i < col_count; i++) {
         const column_spec_t *spec   = &column_specs[i];
         NSTableColumn       *column = self.table.tableColumns[(NSUInteger)i];
-        BOOL hidden = i == col_handle
-            ? !manual
-            : spec->visible_key != NULL && !task_config_get_bool(spec->visible_key);
+        BOOL hidden = spec->visible_key != NULL && !task_config_get_bool(spec->visible_key);
 
         if (column.hidden != hidden) {
             column.hidden    = hidden;
             self.fit_pending = YES;
-            [self.window invalidateCursorRectsForView:self.table];
         }
-        column.sortDescriptorPrototype = manual || spec->sort == NO_SORT
+        column.sortDescriptorPrototype = spec->sort == NO_SORT
             ? nil
             : [NSSortDescriptor
                   sortDescriptorWithKey:tasks_string(
                                             task_sort_column_name((task_sort_column_t)spec->sort))
                               ascending:YES];
     }
-    if (manual && self.table.sortDescriptors.count > 0) self.table.sortDescriptors = @[];
 }
 
 /*
@@ -1175,9 +1117,7 @@ viewForTableColumn:(NSTableColumn *)column
     NSTableCellView *cell = [table makeViewWithIdentifier:column.identifier owner:nil];
 
     if (!cell) {
-        if (index == col_handle) {
-            cell = make_handle_cell();
-        } else if (index == col_done) {
+        if (index == col_done) {
             cell = make_check_cell(self);
         } else if (index == col_task) {
             TasksRowTextCell *text_cell = [[TasksRowTextCell alloc] initWithFrame:NSZeroRect];
@@ -1293,7 +1233,7 @@ tableView:(NSTableView *)table sortDescriptorsDidChange:(NSArray<NSSortDescripto
 
     _n_keys = task_sort_keys_parse(text.UTF8String, _keys);
     task_config_set(TASK_CFG_LIST_SORT, _n_keys > 0 ? text.UTF8String : NULL);
-    [self arrange_selecting:[self selected_id_set]];
+    if (!_clearing_sort_from_drag) [self arrange_selecting:[self selected_id_set]];
 }
 
 /* ── The done checkbox ───────────────────────────────────────────────── */
@@ -1547,8 +1487,8 @@ forRowIndexes:(NSIndexSet *)indexes
 
 /*
  * tableView:pasteboardWriterForRow: — what a dragged row puts on the
- * pasteboard: its task id.  Rows are draggable only while a manual order
- * may be saved (manual sorting on, no search).
+ * pasteboard: its task id.  Rows are draggable when no search is active
+ * (a filtered order cannot be saved safely; task_order.h).
  *
  * Inputs:
  *   table — the table (unused)
@@ -1653,6 +1593,14 @@ dropOperation:(NSTableViewDropOperation)operation
         task_sort_move(_order, n, from, n_from, (int)row);
         for (int i = 0; i < n; i++) ids[i] = [self row_at:i]->id;
         task_order_save(TASK_CFG_FAMILY_MANUAL, library.selection, ids, n);
+        /* Clear the header sort so the drag position sticks.  Update sort
+         * state directly and suppress the arrange that sortDescriptorsDidChange:
+         * would trigger, so we arrange exactly once with the correct selection. */
+        _n_keys = 0;
+        task_config_set(TASK_CFG_LIST_SORT, NULL);
+        _clearing_sort_from_drag = YES;
+        self.table.sortDescriptors = @[];
+        _clearing_sort_from_drag = NO;
         /* The saved order is now what rebuild_order reads back. */
         [self arrange_selecting:selected];
     }

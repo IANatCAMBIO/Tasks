@@ -126,7 +126,7 @@
  * search is active.  Single writer: the search field's action. */
 @property (nonatomic, readonly) const TaskSearch *search;
 
-/* The task_list_manual_sort setting.  Single writer: TasksCommandToggleSort. */
+/* The task_list_manual_sort setting (legacy; no longer gates drag or sort). */
 @property (nonatomic, readonly) BOOL manual_sort;
 
 /* The kanban_view setting: YES while the board is the visible pane.
@@ -138,10 +138,10 @@
 
 /*
  * manual_sort_live — whether rows may be dragged into a hand-made order
- * right now: manual sort is on AND no search is active.  A search suspends
- * hand-sorting because saving an order from a filtered pane would discard
- * every hidden row's place (task_order.h).  The list hides its drag handle
- * and the board skips the order half of a drop when this is NO.
+ * right now: no search is active.  A search suspends hand-sorting because
+ * saving an order from a filtered pane would discard every hidden row's
+ * place (task_order.h).  The list refuses to start a drag and the board
+ * skips the order half of a drop when this is NO.
  *
  * Output:
  *   YES when an order may be saved.

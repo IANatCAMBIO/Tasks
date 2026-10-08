@@ -24,7 +24,10 @@
 
 /* ── Library window ─────────────────────────────────────────────────── */
 
-static const CGFloat tasks_look_window_min_w     = 520.0;  /* content, full mode  */
+static const CGFloat tasks_look_window_min_w     = 640.0;  /* content, full mode:
+                                                             * holds the task pane
+                                                             * and the day planner
+                                                             * at their minimums */
 static const CGFloat tasks_look_window_min_h     = 320.0;
 static const CGFloat tasks_look_pane_min_w       = 320.0;  /* the task pane; so
                                                              * also the content's
@@ -75,7 +78,6 @@ static const CGFloat tasks_look_row_pad_v        = 8.0;    /* above and below th
 static const CGFloat tasks_look_row_pad_h        = 4.0;
 static const CGFloat tasks_look_header_inset     = 4.0;    /* extra leading inset
                                                              * in column headers   */
-static const CGFloat tasks_look_handle_col_w     = 26.0;   /* manual-sort handle  */
 static const CGFloat tasks_look_check_col_w      = 28.0;   /* the done checkbox   */
 static const CGFloat tasks_look_drag_rule        = 2.0;    /* row drop marker     */
 
@@ -106,8 +108,8 @@ static const CGFloat tasks_look_section_gap      = 18.0;   /* between sections  
 
 /* ── Day planner ────────────────────────────────────────────────────── */
 
-static const CGFloat    tasks_look_day_planner_w           = 220.0;  /* default panel width      */
-static const CGFloat    tasks_look_day_planner_min_w       = 150.0;  /* minimum panel width      */
+static const CGFloat    tasks_look_day_planner_w           = 320.0;  /* default panel width      */
+static const CGFloat    tasks_look_day_planner_min_w       = 300.0;  /* minimum panel width      */
 static const CGFloat    tasks_look_day_planner_hour_h      = 60.0;   /* points per hour          */
 static const NSInteger  tasks_look_day_planner_start_h     = 6;      /* display from 6 AM        */
 static const NSInteger  tasks_look_day_planner_end_h       = 22;     /* display to 10 PM         */

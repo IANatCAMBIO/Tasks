@@ -4,65 +4,28 @@
  * One persistent NSPanel accumulates all pending reminders.  The window title
  * reads "1 Reminder" or "N Reminders".  A full-width blue hero area at the top
  * shows the selected item; a scrollable NSTableView lists every pending item.
- * Snooze▼ and Dismiss▼ popup buttons sit at the bottom.
+ * Snooze and Dismiss split combo buttons sit at the bottom: the title fires
+ * the default action and the chevron opens a menu of alternatives.
  *
  * Selecting a row updates the hero.  Dismissing removes the row and closes the
  * window when the list empties.  Snoozing removes the row and re-queues it
- * after the chosen interval via dispatch_after.
+ * after the chosen interval via dispatch_after.  Double-clicking a row opens
+ * the task's editor and leaves the reminder in place.
  */
 
 #import "notify_window.h"
-
-/* ── Split button ────────────────────────────────────────────────────── */
-
-/*
- * TasksSplitButton — a regular push button that also has a drop menu.
- *
- * A quick click fires the button's own action (the default).
- * Holding the mouse down for 350 ms shows drop_menu below the button so
- * the user can choose an alternate action.  A small chevron icon to the
- * right signals that the dropdown exists.
- */
-@interface TasksSplitButton : NSButton
-@property (nonatomic, strong) NSMenu *drop_menu;
-@end
-
-@implementation TasksSplitButton
-
-- (void)
-mouseDown:(NSEvent *)event
-{
-    (void)event;
-    NSDate *timeout = [NSDate dateWithTimeIntervalSinceNow:0.35];
-    NSEvent *up = [self.window nextEventMatchingMask:NSEventMaskLeftMouseUp
-                                          untilDate:timeout
-                                             inMode:NSEventTrackingRunLoopMode
-                                            dequeue:YES];
-    if (up) {
-        /* Quick release — fire default action if still inside the button. */
-        NSPoint loc = [self convertPoint:up.locationInWindow fromView:nil];
-        if (NSPointInRect(loc, self.bounds))
-            [NSApp sendAction:self.action to:self.target from:self];
-    } else {
-        /* Held long enough — show the alternate-action menu. */
-        NSRect bounds = self.bounds;
-        [_drop_menu popUpMenuPositioningItem:nil
-                                 atLocation:NSMakePoint(0, NSMinY(bounds))
-                                     inView:self];
-    }
-}
-
-@end
+#import "editor_window.h"
 
 /* ── Layout constants ────────────────────────────────────────────────── */
 
 static const CGFloat win_w         = 480.0;
 static const CGFloat win_h         = 230.0;
 static const CGFloat win_min_h     = 190.0;
+static const CGFloat screen_margin = 15.0;   /* to the screen's right and bottom edges */
 static const CGFloat hero_h        = 78.0;
 static const CGFloat btn_bar_h     = 44.0;
 static const CGFloat btn_h         = 28.0;
-static const CGFloat btn_w         = 110.0;
+static const CGFloat btn_w         = 92.0;   /* tighter than the combo button's own size */
 static const CGFloat btn_gap       = 8.0;
 static const CGFloat btn_margin    = 12.0;
 static const CGFloat row_h         = 30.0;
@@ -75,18 +38,20 @@ static const CGFloat hero_v_pad    = 10.0;
 /* ── Data model ──────────────────────────────────────────────────────── */
 
 @interface TasksReminderItem : NSObject
-@property (nonatomic, copy) NSString *title;
-@property (nonatomic, copy) NSString *subtitle;
-- (instancetype)initWithTitle:(NSString *)title subtitle:(NSString *)subtitle;
+@property (nonatomic, assign) int64_t   task_id;
+@property (nonatomic, copy)   NSString *title;
+@property (nonatomic, copy)   NSString *subtitle;
+- (instancetype)initWithTaskId:(int64_t)task_id title:(NSString *)title subtitle:(NSString *)subtitle;
 @end
 
 @implementation TasksReminderItem
 
 - (instancetype)
-initWithTitle:(NSString *)title subtitle:(NSString *)subtitle
+initWithTaskId:(int64_t)task_id title:(NSString *)title subtitle:(NSString *)subtitle
 {
     self = [super init];
     if (self) {
+        _task_id  = task_id;
         _title    = [title copy];
         _subtitle = [subtitle copy];
     }
@@ -121,6 +86,7 @@ initWithTitle:(NSString *)title subtitle:(NSString *)subtitle
 @interface TasksReminderWindowController
     : NSWindowController <NSTableViewDataSource, NSTableViewDelegate>
 
+@property (nonatomic, assign) TaskApp *app;   /* borrowed; outlives the window */
 @property (nonatomic, strong) NSMutableArray<TasksReminderItem *> *items;
 @property (nonatomic, strong) NSTableView   *table;
 @property (nonatomic, strong) NSTextField   *hero_title;
@@ -170,18 +136,6 @@ init_window
     panel.title    = @"Reminders";
     panel.minSize  = NSMakeSize(300.0, win_min_h);
     panel.becomesKeyOnlyIfNeeded = NO;
-
-    /* Position bottom-right of main screen; autosave restores on next launch. */
-    [panel setFrameAutosaveName:@"TasksReminderWindow"];
-    if (![panel setFrameUsingName:@"TasksReminderWindow"]) {
-        NSScreen *scr = NSScreen.mainScreen;
-        if (scr) {
-            NSRect vis = scr.visibleFrame;
-            NSPoint origin = NSMakePoint(NSMaxX(vis) - win_w - 16.0,
-                                         NSMinY(vis) + 16.0);
-            [panel setFrameOrigin:origin];
-        }
-    }
 
     NSView *cv = panel.contentView;
 
@@ -257,8 +211,8 @@ init_window
     btn_bar.translatesAutoresizingMaskIntoConstraints = NO;
     [cv addSubview:btn_bar];
 
-    TasksSplitButton *snooze_btn = [self make_snooze_button];
-    TasksSplitButton *dismiss_btn = [self make_dismiss_button];
+    NSComboButton *snooze_btn  = [self make_snooze_button];
+    NSComboButton *dismiss_btn = [self make_dismiss_button];
     snooze_btn.translatesAutoresizingMaskIntoConstraints  = NO;
     dismiss_btn.translatesAutoresizingMaskIntoConstraints = NO;
     [btn_bar addSubview:snooze_btn];
@@ -306,6 +260,8 @@ init_window
     _table.gridStyleMask    = NSTableViewSolidHorizontalGridLineMask;
     _table.gridColor        = [NSColor separatorColor];
     _table.allowsEmptySelection = NO;
+    _table.target           = self;
+    _table.doubleAction     = @selector(open_clicked:);
 
     NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"item"];
     col.resizingMask = NSTableColumnAutoresizingMask;
@@ -335,42 +291,36 @@ init_window
 /* ── Button factories ────────────────────────────────────────────────── */
 
 /*
- * make_split_button — build a TasksSplitButton with a chevron hint image.
+ * make_split_button — a split-style NSComboButton: the title fires action,
+ * the chevron at its right opens menu.
  *
  * Inputs:
  *   title  — button label
- *   action — default action selector fired on a quick click
+ *   action — selector fired by a click on the title, with the button as sender
+ *   menu   — the alternatives shown by the chevron
+ *
+ * Output:
+ *   the button, not yet constrained.
  */
-- (TasksSplitButton *)
-make_split_button:(NSString *)title action:(SEL)action
+- (NSComboButton *)
+make_split_button:(NSString *)title action:(SEL)action menu:(NSMenu *)menu
 {
-    TasksSplitButton *btn = [TasksSplitButton buttonWithTitle:title
-                                                       target:self
-                                                       action:action];
-    btn.bezelStyle = NSBezelStyleRounded;
-
-    NSImage *chevron = [NSImage imageWithSystemSymbolName:@"chevron.down"
-                                    accessibilityDescription:nil];
-    if (chevron) {
-        NSImageSymbolConfiguration *cfg =
-            [NSImageSymbolConfiguration configurationWithPointSize:8.0
-                                                            weight:NSFontWeightRegular];
-        btn.image         = [chevron imageWithSymbolConfiguration:cfg];
-        btn.imagePosition = NSImageRight;
-    }
+    NSComboButton *btn = [NSComboButton comboButtonWithTitle:title
+                                                        menu:menu
+                                                      target:self
+                                                      action:action];
+    btn.style = NSComboButtonStyleSplit;
     return btn;
 }
 
 /*
- * make_snooze_button — split button; default = snooze_default_mins, menu =
- * alternate durations.
+ * make_snooze_button — Snooze: the title snoozes for snooze_default_mins
+ * (carried in the button's tag), the menu offers the other durations (each
+ * carried in its item's tag).  Both routes land in snooze:.
  */
-- (TasksSplitButton *)
+- (NSComboButton *)
 make_snooze_button
 {
-    TasksSplitButton *btn = [self make_split_button:@"Snooze"
-                                             action:@selector(snooze_default)];
-
     NSMenu *menu = [[NSMenu alloc] init];
     static const struct { NSInteger mins; const char *label; } opts[] = {
         {  5, "5 minutes"  },
@@ -382,38 +332,60 @@ make_snooze_button
     for (NSUInteger i = 0; i < sizeof(opts) / sizeof(opts[0]); i++) {
         NSString *label = [NSString stringWithFormat:@"Snooze %s", opts[i].label];
         NSMenuItem *item = [menu addItemWithTitle:label
-                                          action:@selector(snooze_item:)
+                                          action:@selector(snooze:)
                                    keyEquivalent:@""];
         item.target = self;
         item.tag    = opts[i].mins;
     }
-    btn.drop_menu = menu;
+
+    NSComboButton *btn = [self make_split_button:@"Snooze"
+                                          action:@selector(snooze:)
+                                            menu:menu];
+    btn.tag = snooze_default_mins;
     return btn;
 }
 
 /*
- * make_dismiss_button — split button; default = dismiss selected, menu adds
- * Dismiss All.
+ * make_dismiss_button — Dismiss: the title dismisses the selected reminder,
+ * the menu adds Dismiss All.
  */
-- (TasksSplitButton *)
+- (NSComboButton *)
 make_dismiss_button
 {
-    TasksSplitButton *btn = [self make_split_button:@"Dismiss"
-                                             action:@selector(dismiss_selected)];
-
     NSMenu *menu = [[NSMenu alloc] init];
     NSMenuItem *all = [menu addItemWithTitle:@"Dismiss All"
                                       action:@selector(dismiss_all)
                                keyEquivalent:@""];
     all.target = self;
-    btn.drop_menu = menu;
-    return btn;
+
+    return [self make_split_button:@"Dismiss"
+                            action:@selector(dismiss_selected)
+                              menu:menu];
 }
 
 /* ── Item management ─────────────────────────────────────────────────── */
 
 /*
+ * place_lower_right — put the window in the lower-right corner of the
+ * primary display, screen_margin in from the right and bottom edges of the
+ * area the menu bar and the Dock leave free.  The window keeps its size.
+ */
+- (void)
+place_lower_right
+{
+    NSScreen *screen = NSScreen.screens.firstObject;
+    if (screen == nil) return;
+
+    NSRect vis  = screen.visibleFrame;
+    NSSize size = self.window.frame.size;
+    [self.window setFrameOrigin:NSMakePoint(NSMaxX(vis) - size.width  - screen_margin,
+                                            NSMinY(vis) + screen_margin)];
+}
+
+/*
  * addItem: — append a reminder to the list and bring the window forward.
+ * A window coming on screen appears in the lower-right corner; one already
+ * showing stays where it is.
  */
 - (void)
 addItem:(TasksReminderItem *)item
@@ -428,7 +400,24 @@ addItem:(TasksReminderItem *)item
 
     [self update_hero];
     [self update_title];
+    if (!self.window.visible) [self place_lower_right];
     [self.window orderFrontRegardless];
+}
+
+/*
+ * open_clicked: — open the editor for the double-clicked reminder's task.
+ * The reminder stays listed.
+ *
+ * Inputs:
+ *   sender — the table (unused)
+ */
+- (void)
+open_clicked:(id)sender
+{
+    (void)sender;
+    NSInteger row = _table.clickedRow;
+    if (row < 0 || row >= (NSInteger)_items.count || self.app == NULL) return;
+    tasks_editor_open(self.app, _items[(NSUInteger)row].task_id);
 }
 
 /*
@@ -500,49 +489,21 @@ dismiss_all
 }
 
 /*
- * snooze_default — snooze the selected item for the default interval.
+ * snooze: — remove the selected reminder and re-queue it after the sender's
+ * tag in minutes: the Snooze button carries the default, each menu item its
+ * own duration.
+ *
+ * Inputs:
+ *   sender — the NSComboButton or NSMenuItem that fired
  */
 - (void)
-snooze_default
+snooze:(id)sender
 {
     NSInteger row = _table.selectedRow;
     if (row < 0 || row >= (NSInteger)_items.count) return;
 
     TasksReminderItem *item = _items[(NSUInteger)row];
-    [_items removeObjectAtIndex:(NSUInteger)row];
-    [_table reloadData];
-
-    if (_items.count == 0) {
-        [self.window orderOut:nil];
-    } else {
-        NSInteger next = MIN(row, (NSInteger)_items.count - 1);
-        [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)next]
-            byExtendingSelection:NO];
-        [self update_hero];
-        [self update_title];
-    }
-
-    dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW,
-                      (int64_t)(snooze_default_mins * 60 * NSEC_PER_SEC)),
-        dispatch_get_main_queue(),
-        ^{
-            [[TasksReminderWindowController shared] addItem:item];
-        });
-}
-
-/*
- * snooze_item: — remove the selected item and re-queue it after the
- * interval given in the menu item's tag (minutes).
- */
-- (void)
-snooze_item:(NSMenuItem *)sender
-{
-    NSInteger row = _table.selectedRow;
-    if (row < 0 || row >= (NSInteger)_items.count) return;
-
-    TasksReminderItem *item = _items[(NSUInteger)row];
-    NSInteger minutes = sender.tag;
+    NSInteger minutes = [sender tag];
 
     [_items removeObjectAtIndex:(NSUInteger)row];
     [_table reloadData];
@@ -557,7 +518,6 @@ snooze_item:(NSMenuItem *)sender
         [self update_title];
     }
 
-    /* Re-add after the snooze interval. */
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(minutes * 60 * NSEC_PER_SEC)),
         dispatch_get_main_queue(),
@@ -692,9 +652,12 @@ tableViewSelectionDidChange:(NSNotification *)note
  * Inputs are documented in notify_window.h.
  */
 void
-tasks_notify_add(NSString *title, NSString *subtitle)
+tasks_notify_add(TaskApp *app, int64_t task_id, NSString *title, NSString *subtitle)
 {
-    TasksReminderItem *item =
-        [[TasksReminderItem alloc] initWithTitle:title subtitle:subtitle];
-    [[TasksReminderWindowController shared] addItem:item];
+    TasksReminderItem *item = [[TasksReminderItem alloc] initWithTaskId:task_id
+                                                                  title:title
+                                                               subtitle:subtitle];
+    TasksReminderWindowController *controller = [TasksReminderWindowController shared];
+    controller.app = app;
+    [controller addItem:item];
 }

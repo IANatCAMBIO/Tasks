@@ -778,6 +778,15 @@ init_with_library:(TasksLibraryWindow *)library
     _scroll.drawsBackground       = NO;
     _scroll.translatesAutoresizingMaskIntoConstraints = NO;
 
+    /* The clip view is the visible area: the panel minus any scroller that
+     * takes space.  Its frame changes when the panel resizes and when the
+     * scroller appears, so the canvas follows it rather than the panel. */
+    _scroll.contentView.postsFrameChangedNotifications = YES;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(sync_canvas_width)
+                                                 name:NSViewFrameDidChangeNotification
+                                               object:_scroll.contentView];
+
     [self build_header];
 
     __weak TasksDayPlanner *ws = self;
@@ -798,17 +807,17 @@ init_with_library:(TasksLibraryWindow *)library
 }
 
 /*
- * layout — keep the canvas width in sync with the scroll view's content area.
- * Called after Auto Layout settles the scroll view frame, which is the
- * correct moment to read contentView.bounds.
+ * sync_canvas_width — make the canvas exactly as wide as the scroll view's
+ * visible area, so nothing is laid out under a scroller.  Floored at the
+ * hour-label column plus the block insets so item rectangles keep a
+ * non-negative width while the panel is collapsed.
  */
 - (void)
-layout
+sync_canvas_width
 {
-    [super layout];
-    CGFloat cw = NSWidth(self.scroll.contentView.bounds);
-    if (cw < tasks_look_day_planner_min_w) cw = tasks_look_day_planner_min_w;
-    NSRect cf = self.canvas.frame;
+    CGFloat least = tasks_look_day_planner_label_w + tasks_look_day_planner_block_inset * 2.0;
+    CGFloat cw    = MAX(NSWidth(self.scroll.contentView.bounds), least);
+    NSRect  cf    = self.canvas.frame;
     if (cf.size.width != cw) {
         cf.size.width = cw;
         self.canvas.frame = cf;
@@ -1075,15 +1084,6 @@ reload
 
     [self.canvas.selected_ids removeAllObjects];
 
-    /* Keep the canvas width in sync with the scroll view's content width */
-    CGFloat cw = NSWidth(self.scroll.contentView.bounds);
-    if (cw < tasks_look_day_planner_min_w) cw = tasks_look_day_planner_min_w;
-    NSRect cf = self.canvas.frame;
-    if (cf.size.width != cw) {
-        cf.size.width   = cw;
-        self.canvas.frame = cf;
-    }
-
     [self.canvas setNeedsDisplay:YES];
     [self.canvas.window invalidateCursorRectsForView:self.canvas];
 }
@@ -1154,7 +1154,7 @@ check_and_progress
 }
 
 /*
- * shut_down — stop timers.  Idempotent.
+ * shut_down — stop timers and stop watching the scroll view.  Idempotent.
  * Documented in day_planner.h.
  */
 - (void)
@@ -1162,6 +1162,9 @@ shut_down
 {
     if (self.is_shut_down) return;
     self.is_shut_down = YES;
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:NSViewFrameDidChangeNotification
+                                                  object:self.scroll.contentView];
     [self.clock_timer invalidate];
     self.clock_timer = nil;
     [self.progress_timer invalidate];
