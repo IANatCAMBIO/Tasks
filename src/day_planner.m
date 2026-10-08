@@ -298,7 +298,7 @@ draggingEntered:(id<NSDraggingInfo>)info
     if (!ok) return NSDragOperationNone;
 
     NSPoint pt = [self convertPoint:info.draggingLocation fromView:nil];
-    self.drop_y = pt.y;
+    self.drop_y = [self y_for_unix:[self unix_for_y:pt.y]];
     [self setNeedsDisplay:YES];
     return NSDragOperationLink;
 }
@@ -316,7 +316,7 @@ draggingEntered:(id<NSDraggingInfo>)info
 draggingUpdated:(id<NSDraggingInfo>)info
 {
     NSPoint pt = [self convertPoint:info.draggingLocation fromView:nil];
-    self.drop_y = pt.y;
+    self.drop_y = [self y_for_unix:[self unix_for_y:pt.y]];
     [self setNeedsDisplay:YES];
     return NSDragOperationLink;
 }
