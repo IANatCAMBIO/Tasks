@@ -586,6 +586,7 @@ mouseUp:(NSEvent *)event
             }
         }
         self.resize_id = 0;
+        [self.window invalidateCursorRectsForView:self];
         return;
     }
 
@@ -601,6 +602,7 @@ mouseUp:(NSEvent *)event
             }
         }
         self.move_id = 0;
+        [self.window invalidateCursorRectsForView:self];
         return;
     }
 }
