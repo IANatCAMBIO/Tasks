@@ -763,21 +763,11 @@ build_header
 - (void)
 update_header_controls
 {
-    NSString *text;
-    if (_days_offset == 0) {
-        text = @"Today";
-    } else if (_days_offset == 1) {
-        text = @"Tomorrow";
-    } else if (_days_offset == -1) {
-        text = @"Yesterday";
-    } else {
-        time_t    t     = (time_t)midnight_for_offset(_days_offset);
-        struct tm local = *localtime(&t);
-        char buf[64];
-        strftime(buf, sizeof(buf), "%a, %b %-d", &local);
-        text = @(buf);
-    }
-    _date_label.stringValue = text;
+    time_t    t     = (time_t)midnight_for_offset(_days_offset);
+    struct tm local = *localtime(&t);
+    char      buf[64];
+    strftime(buf, sizeof(buf), "%a, %b %-d", &local);
+    _date_label.stringValue = @(buf);
     _today_button.enabled   = (_days_offset != 0);
 }
 
