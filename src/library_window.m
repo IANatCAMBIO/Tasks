@@ -39,8 +39,9 @@ static NSString * const search_tooltip       =
 @property (nonatomic, strong) TasksTaskList *task_list;
 @property (nonatomic, strong) TasksKanban *kanban;
 @property (nonatomic, strong) TasksDayPlanner *day_planner;
-@property (nonatomic, strong) NSSplitView *main_split;
-@property (nonatomic)         BOOL          day_planner_animating;
+@property (nonatomic, strong) NSSplitView         *main_split;
+@property (nonatomic)         BOOL                 day_planner_animating;
+@property (nonatomic, strong) NSLayoutConstraint  *dp_min_width;
 @property (nonatomic, strong) NSTextField *status_left;    /* "<view> - N tasks"        */
 @property (nonatomic, strong) NSTextField *status_right;   /* the latest event message  */
 @property (nonatomic, weak) NSSearchField *search_field;   /* owned by its toolbar item */
@@ -408,8 +409,14 @@ build_layout
 
     [self.lists_bar.heightAnchor
         constraintEqualToConstant:tasks_look_lists_bar_h].active = YES;
-    [self.day_planner.widthAnchor
-        constraintGreaterThanOrEqualToConstant:tasks_look_day_planner_min_w].active = YES;
+
+    /* Minimum width for the day planner.  Stored so it can be deactivated
+     * during open/close animations (a live constraint fights NSSplitView's
+     * own frame management and desynchs the divider tracker). */
+    self.dp_min_width = [self.day_planner.widthAnchor
+        constraintGreaterThanOrEqualToConstant:tasks_look_day_planner_min_w];
+    self.dp_min_width.active = YES;
+
 
     NSStackView *stack = [NSStackView stackViewWithViews:@[self.lists_bar, split]];
     stack.orientation  = NSUserInterfaceLayoutOrientationVertical;
@@ -929,6 +936,45 @@ ofSubviewAt:(NSInteger)idx
     return NSWidth(split.bounds) - tasks_look_day_planner_min_w - split.dividerThickness;
 }
 
+/*
+ * splitView:resizeSubviewsWithOldSize: — keep the day planner at its current
+ * width when the window is resized; the task pane absorbs the delta.
+ *
+ * Inputs:
+ *   split   — the main split view
+ *   old_sz  — the split view's previous size (unused; we use current bounds)
+ */
+- (void)
+splitView:(NSSplitView *)split
+resizeSubviewsWithOldSize:(NSSize)old_sz
+{
+    NSView  *left   = split.subviews[0];
+    NSView  *right  = split.subviews[1];
+    CGFloat  total  = NSWidth(split.bounds);
+    CGFloat  div_t  = split.dividerThickness;
+
+    if (right.hidden) {
+        left.frame = NSMakeRect(0, 0, total, NSHeight(split.bounds));
+        return;
+    }
+
+    CGFloat right_w = NSWidth(right.frame);
+    CGFloat left_w  = total - right_w - div_t;
+
+    /* Clamp so neither side goes below its minimum. */
+    if (left_w < tasks_look_pane_min_w) {
+        left_w  = tasks_look_pane_min_w;
+        right_w = total - left_w - div_t;
+    }
+    if (right_w < tasks_look_day_planner_min_w) {
+        right_w = tasks_look_day_planner_min_w;
+        left_w  = total - right_w - div_t;
+    }
+
+    left.frame  = NSMakeRect(0,              0, left_w,  NSHeight(split.bounds));
+    right.frame = NSMakeRect(left_w + div_t, 0, right_w, NSHeight(split.bounds));
+}
+
 /* ── Task context menu ───────────────────────────────────────────────── */
 
 /*
@@ -1303,12 +1349,18 @@ toggle_day_planner
     CGFloat split_w = NSWidth(self.main_split.bounds);
     CGFloat div_t   = self.main_split.dividerThickness;
 
+    /* Suspend the min-width constraint for the duration of the animation.
+     * NSSplitView and Auto Layout both set subview frames; a live required
+     * constraint desynchs NSSplitView's internal divider tracker, leaving
+     * dragging broken until the next window resize forces a re-sync. */
+    self.dp_min_width.active = NO;
+
     if (show) {
         /* Reveal: unhide at zero width then slide the divider in from the
-         * right.  We clear the delegate temporarily so the programmatic
-         * start-position call is not clamped by the min-width constraint. */
-        self.day_planner.hidden      = NO;
-        self.day_planner_animating   = YES;
+         * right.  Delegate is cleared just for the instant start-position
+         * call so the max-coordinate constraint doesn't clamp it. */
+        self.day_planner.hidden    = NO;
+        self.day_planner_animating = YES;
 
         id saved = self.main_split.delegate;
         self.main_split.delegate = nil;
@@ -1325,13 +1377,14 @@ toggle_day_planner
             ctx.duration = 0.22;
             [[ws.main_split animator] setPosition:target ofDividerAtIndex:0];
         } completionHandler:^{
-            ws.day_planner_animating = NO;
+            ws.day_planner_animating  = NO;
+            ws.dp_min_width.active    = YES;
             [ws.day_planner reload];
             [ws.day_planner scroll_to_now];
         }];
     } else {
-        /* Hide: save the current width, then slide the divider to the right
-         * edge; once there, set hidden and let adjustSubviews clean up. */
+        /* Hide: save the current width, slide the divider to the right
+         * edge, then set hidden (instant at that point, no visible snap). */
         task_config_set_int(TASK_CFG_DAY_PLANNER_W, (gint)NSWidth(self.day_planner.frame));
 
         self.day_planner_animating = YES;
@@ -1340,7 +1393,8 @@ toggle_day_planner
             [[ws.main_split animator] setPosition:split_w - div_t ofDividerAtIndex:0];
         } completionHandler:^{
             ws.day_planner_animating = NO;
-            ws.day_planner.hidden = YES;
+            ws.day_planner.hidden    = YES;
+            ws.dp_min_width.active   = YES;
             [ws.main_split adjustSubviews];
         }];
     }
