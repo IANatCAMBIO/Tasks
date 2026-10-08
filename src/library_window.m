@@ -40,6 +40,7 @@ static NSString * const search_tooltip       =
 @property (nonatomic, strong) TasksKanban *kanban;
 @property (nonatomic, strong) TasksDayPlanner *day_planner;
 @property (nonatomic, strong) NSSplitView *main_split;
+@property (nonatomic)         BOOL          day_planner_animating;
 @property (nonatomic, strong) NSTextField *status_left;    /* "<view> - N tasks"        */
 @property (nonatomic, strong) NSTextField *status_right;   /* the latest event message  */
 @property (nonatomic, weak) NSSearchField *search_field;   /* owned by its toolbar item */
@@ -923,6 +924,8 @@ splitView:(NSSplitView *)split
 constrainMaxCoordinate:(CGFloat)coord
 ofSubviewAt:(NSInteger)idx
 {
+    if (self.day_planner_animating)
+        return NSWidth(split.bounds) - split.dividerThickness;
     return NSWidth(split.bounds) - tasks_look_day_planner_min_w - split.dividerThickness;
 }
 
@@ -1288,24 +1291,60 @@ toggle_sidebar
 
 /*
  * toggle_day_planner — slide the day planner panel in or out and remember
- * the choice.  Reloads on reveal so the panel is always current.
+ * the choice.  Animates by moving the NSSplitView divider so the layout
+ * change and the visual reveal happen in a single pass.
  */
 - (void)
 toggle_day_planner
 {
-    BOOL show = self.day_planner.hidden;
+    BOOL show = self.day_planner.hidden; /* YES → we are about to show it */
 
-    __weak TasksLibraryWindow *ws = self;
-    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
-        ctx.duration = 0.15;
-        self.day_planner.animator.hidden = !show;
-    } completionHandler:^{
-        if (show) {
+    __weak TasksLibraryWindow *ws  = self;
+    CGFloat split_w = NSWidth(self.main_split.bounds);
+    CGFloat div_t   = self.main_split.dividerThickness;
+
+    if (show) {
+        /* Reveal: unhide at zero width then slide the divider in from the
+         * right.  We clear the delegate temporarily so the programmatic
+         * start-position call is not clamped by the min-width constraint. */
+        self.day_planner.hidden      = NO;
+        self.day_planner_animating   = YES;
+
+        id saved = self.main_split.delegate;
+        self.main_split.delegate = nil;
+        [self.main_split setPosition:split_w - div_t ofDividerAtIndex:0];
+        self.main_split.delegate = saved;
+
+        gint saved_w = task_config_get_int(TASK_CFG_DAY_PLANNER_W);
+        CGFloat dp_w = ((CGFloat)saved_w >= tasks_look_day_planner_min_w)
+                       ? (CGFloat)saved_w : tasks_look_day_planner_w;
+        CGFloat target = split_w - dp_w - div_t;
+        if (target < tasks_look_pane_min_w) target = tasks_look_pane_min_w;
+
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+            ctx.duration = 0.22;
+            [[ws.main_split animator] setPosition:target ofDividerAtIndex:0];
+        } completionHandler:^{
+            ws.day_planner_animating = NO;
             [ws.day_planner reload];
             [ws.day_planner scroll_to_now];
-        }
-        [ws.main_split adjustSubviews];
-    }];
+        }];
+    } else {
+        /* Hide: save the current width, then slide the divider to the right
+         * edge; once there, set hidden and let adjustSubviews clean up. */
+        task_config_set_int(TASK_CFG_DAY_PLANNER_W, (gint)NSWidth(self.day_planner.frame));
+
+        self.day_planner_animating = YES;
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+            ctx.duration = 0.22;
+            [[ws.main_split animator] setPosition:split_w - div_t ofDividerAtIndex:0];
+        } completionHandler:^{
+            ws.day_planner_animating = NO;
+            ws.day_planner.hidden = YES;
+            [ws.main_split adjustSubviews];
+        }];
+    }
+
     task_config_set_bool(TASK_CFG_DAY_PLANNER_VISIBLE, show);
 }
 
