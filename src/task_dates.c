@@ -166,6 +166,31 @@ task_clock_format(gint minutes)
 }
 
 /*
+ * task_day_at_minute — the calendar day of a time, at a minute of the day.
+ * Inputs/output are documented in task_dates.h.
+ */
+gint64
+task_day_at_minute(gint64 ts, gint minutes)
+{
+    minutes = CLAMP(minutes, 0, 23 * 60 + 59);
+
+    GDateTime *dt = task_local_dt(ts);
+    if (dt == NULL) return ts;
+
+    GDateTime *out = g_date_time_new(task_local_tz(),
+                                     g_date_time_get_year(dt),
+                                     g_date_time_get_month(dt),
+                                     g_date_time_get_day_of_month(dt),
+                                     minutes / 60, minutes % 60, 0.0);
+    g_date_time_unref(dt);
+    if (out == NULL) return ts;
+
+    gint64 v = g_date_time_to_unix(out);
+    g_date_time_unref(out);
+    return v;
+}
+
+/*
  * task_due_instant — date plus time of day.
  * Inputs/output are documented in task_dates.h.
  */
@@ -176,7 +201,7 @@ task_due_instant(gint64 due, gint due_time)
     if (due_time < 0 || due_time > 23 * 60 + 59) {
         due_time = TASK_DUE_TIME_DEFAULT;
     }
-    return due + (gint64)due_time * 60;
+    return task_day_at_minute(due, due_time);
 }
 
 /*

@@ -52,7 +52,6 @@ typedef NS_ENUM(NSInteger, TasksCommand) {
     TasksCommandOpenDatabase,       /* pick a database file and switch to it  */
     TasksCommandFind,               /* put the cursor in the search field     */
     TasksCommandToggleCompleted,    /* Hide / Show Completed                  */
-    TasksCommandToggleSort,         /* Manual / Automatic Sorting             */
     TasksCommandToggleSidebar,      /* Hide / Show Sidebar                    */
     TasksCommandToggleCompact,      /* Compact / Full Controls                */
     TasksCommandTogglePane,         /* Kanban / List View                     */
@@ -84,7 +83,7 @@ typedef NS_ENUM(NSInteger, TasksCommand) {
 typedef NS_ENUM(NSInteger, TasksCommandOwner) {
     TasksCommandOwnerApp = 0,       /* TasksAppDelegate                       */
     TasksCommandOwnerShell,         /* TasksLibraryWindow                     */
-    TasksCommandOwnerSidebar,       /* TasksSidebar                           */
+    TasksCommandOwnerSidebar,       /* TasksListsBar                          */
     TasksCommandOwnerTaskList       /* TasksTaskList                          */
 };
 

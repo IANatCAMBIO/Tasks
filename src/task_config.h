@@ -46,7 +46,6 @@
 
 /* Library window state */
 #define TASK_CFG_SHOW_COMPLETED      "show_completed"        /* bool, 1 */
-#define TASK_CFG_MANUAL_SORT         "task_list_manual_sort" /* bool, 0 */
 #define TASK_CFG_KANBAN_VIEW         "kanban_view"           /* bool, 0 */
 #define TASK_CFG_COMPACT             "compact_layout"        /* bool, 0 */
 #define TASK_CFG_SIDEBAR_VISIBLE     "sidebar_visible"       /* bool, 1 */
@@ -59,8 +58,10 @@
 #define TASK_CFG_COMPACT_H           "compact_h"             /* int, 500 */
 #define TASK_CFG_COMPACT_PRE_W       "compact_pre_w"         /* int, 980: size to restore on leaving it */
 #define TASK_CFG_COMPACT_PRE_H       "compact_pre_h"         /* int, 640 */
-#define TASK_CFG_DAY_PLANNER_VISIBLE "day_planner_visible"   /* bool, 1 */
-#define TASK_CFG_DAY_PLANNER_W       "day_planner_w"         /* int, 220 */
+#define TASK_CFG_DAY_PLANNER_VISIBLE "day_planner_visible"   /* bool, none = hidden: the
+                                                            * planner is opened on purpose */
+#define TASK_CFG_DAY_PLANNER_W       "day_planner_w"         /* int points; none = look.h's
+                                                            * tasks_look_day_planner_w */
 
 /* Task-list column visibility (the header menu) */
 #define TASK_CFG_COL_DONE            "col_done_visible"      /* bool, 1 */

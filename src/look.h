@@ -24,11 +24,11 @@
 
 /* ── Library window ─────────────────────────────────────────────────── */
 
-static const CGFloat tasks_look_window_min_w     = 640.0;  /* content, full mode:
-                                                             * holds the task pane
-                                                             * and the day planner
-                                                             * at their minimums */
-static const CGFloat tasks_look_window_min_h     = 320.0;
+static const CGFloat tasks_look_window_min_h     = 320.0;  /* content, full mode;
+                                                             * the least width is
+                                                             * the task pane plus
+                                                             * the day planner when
+                                                             * shown (below)      */
 static const CGFloat tasks_look_pane_min_w       = 320.0;  /* the task pane; so
                                                              * also the content's
                                                              * least width in
@@ -56,17 +56,6 @@ static const CGFloat tasks_look_float_pad        = 2.0;    /* plate edge to butt
 /* ── Lists bar ──────────────────────────────────────────────────────── */
 
 static const CGFloat tasks_look_lists_bar_h      = 28.0;   /* bar height           */
-
-/* ── Sidebar ────────────────────────────────────────────────────────── */
-
-static const CGFloat tasks_look_sidebar_min_w    = 160.0;
-static const CGFloat tasks_look_sidebar_max_frac = 0.5;    /* of the window width
-                                                             * when fitting       */
-static const CGFloat tasks_look_sidebar_top_pad  = 0.0;
-static const CGFloat tasks_look_sidebar_font     = 13.0;   /* views, the Lists
-                                                             * header and groups
-                                                             * are bold           */
-static const CGFloat tasks_look_sidebar_drag_rule = 2.0;   /* drop-position rule  */
 
 /* ── Task rows (the list and the cards share row_text.h) ────────────── */
 

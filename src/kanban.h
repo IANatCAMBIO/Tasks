@@ -13,6 +13,12 @@
  *
  * Behavioural reference: porting/gtk_reference/kanban.c.
  */
+/* The pasteboard type of a card drag: one item, its content the dragged
+ * task ids as comma-separated decimal text.  The board's own drop goes by
+ * its drag_ids; the day planner reads the ids when a card is dropped on
+ * it (a scheduling). */
+extern NSPasteboardType const tasks_card_drag_type;
+
 @interface TasksKanban : NSView <TasksTaskPane>
 
 /*

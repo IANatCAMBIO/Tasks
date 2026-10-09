@@ -1,7 +1,7 @@
 /* ===========================================================================
  * db.h — SQLite storage for Tasks
  *
- * Schema (PRAGMA user_version = 13 — see TASK_DB_SCHEMA_VERSION).  Every
+ * Schema (PRAGMA user_version = 14 — see TASK_DB_SCHEMA_VERSION).  Every
  * column is declared in task_db_open's CREATE block, so a FRESH file needs
  * no migration at all; an EXISTING one reaches the same shape through the
  * guarded ALTERs at the end of task_db_open.
@@ -543,7 +543,7 @@ void task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
  * (unix seconds of a local midnight), ordered by scheduled_start.  Returns
  * Task* elements; free with task_ptr_array_free_tasks after use.
  * Never NULL.                                                             */
-GPtrArray *task_db_tasks_scheduled_for_day(TaskDatabase *db, gint64 day_midnight);
+GPtrArray *task_db_tasks_scheduled_for_day(TaskDatabase *db, gint64 lo, gint64 hi);
 
 /* Tombstone the task and its subtasks, in one transaction.                */
 void task_db_task_delete(TaskDatabase *db, gint64 id);
@@ -621,11 +621,6 @@ void task_db_task_apply_done_source(TaskDatabase *db, gint64 id,
  * ------------------------------------------------------------------------- */
 gint64   task_db_scalar(TaskDatabase *db, const gchar *sql);
 
-/* ------------------------------- sync state ------------------------------ */
-
-/* Get/set one sync_state row.  Getter returns a new string or NULL.        */
-gchar *task_db_state_get(TaskDatabase *db, const gchar *key);
-void   task_db_state_set(TaskDatabase *db, const gchar *key, const gchar *value);
 
 
 /* Overwrite a row from remote data WITHOUT the usual now() stamp — the

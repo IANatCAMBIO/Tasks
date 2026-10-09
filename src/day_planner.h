@@ -4,9 +4,10 @@
 /*
  * day_planner — a right-side panel showing the hours of the day.  Tasks
  * dragged onto it are scheduled at that hour; existing blocks can be
- * stretched from their bottom edge to adjust the session length.  A
- * horizontal line tracks the current time.  Tasks whose scheduled time
- * arrives are moved to In Progress if they are not already there or Done.
+ * stretched from either edge to adjust the session, or dragged to move
+ * it.  A horizontal line tracks the current time.  Moving a task to In
+ * Progress when its session begins is the notification worker's job
+ * (task_notify.h), which runs whether or not the panel is on screen.
  */
 @interface TasksDayPlanner : NSView
 
@@ -25,7 +26,8 @@
 
 /*
  * reload — re-read the day's scheduled tasks from the database and
- * redraw.  Called on full_refresh and after any schedule change.
+ * redraw.  Called on every refresh of the task pane and after any
+ * schedule change.
  */
 - (void)reload;
 
@@ -35,7 +37,7 @@
 - (void)scroll_to_now;
 
 /*
- * shut_down — stop timers and release resources.  Idempotent.
+ * shut_down — stop the clock timer and release resources.  Idempotent.
  */
 - (void)shut_down;
 

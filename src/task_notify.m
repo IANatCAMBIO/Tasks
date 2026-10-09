@@ -7,9 +7,11 @@
  *      task that has not been notified yet this calendar day gets a
  *      notification.  Key: "due:<id>:<YYYY-MM-DD>".
  *
- *   2. Scans tasks scheduled today.  Within a 2-minute window starting
+ *   2. Scans tasks scheduled today.  Within a 5-minute window starting
  *      10 minutes before scheduled_start, any task not already notified
- *      gets a reminder.  Key: "sched:<id>:<scheduled_start_unix>".
+ *      gets a reminder.  Key: "sched:<id>:<scheduled_start_unix>".  A
+ *      session whose start has passed moves its New task to In Progress
+ *      and fires the task-pane event, which refreshes the panes.
  *
  * Notifications that already fired are tracked in a module-level GHashTable
  * that starts empty on each launch, so a restart does not replay past ones.
@@ -206,11 +208,21 @@ notify_run(TaskApp *app, const gchar *db_path)
         task_ptr_array_free_tasks(due);
     }
 
-    /* ── Scheduled notifications ─────────────────────────────────────── */
+    /* ── Scheduled sessions: the reminder, then the promotion ─────────── */
     GPtrArray *sched =
-        task_db_tasks_scheduled_for_day(app->db, today_lo);
+        task_db_tasks_scheduled_for_day(app->db, today_lo, today_hi);
+    gint       promoted = 0;
     for (guint i = 0; i < sched->len; i++) {
         const Task *t = sched->pdata[i];
+
+        /* A session that has begun moves its task to In Progress — here,
+         * not in the day planner, so that it happens whether or not the
+         * planner is on screen or showing today. */
+        if (t->scheduled_start <= (gint64)now && t->status == TASK_STATUS_NEW) {
+            task_db_task_set_status(app->db, t->id, TASK_STATUS_IN_PROGRESS);
+            promoted++;
+        }
+
         gint64 alert_at = t->scheduled_start - (gint64)(notify_sched_lead * 60);
         gint64 elapsed  = (gint64)now - alert_at;
 
@@ -235,6 +247,7 @@ notify_run(TaskApp *app, const gchar *db_path)
         }
     }
     task_ptr_array_free_tasks(sched);
+    if (promoted > 0) task_app_notify_tasks(app);
 }
 
 /* ── Worker registration ─────────────────────────────────────────────── */

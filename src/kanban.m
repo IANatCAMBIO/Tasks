@@ -41,7 +41,7 @@
  */
 
 /* The pasteboard type that marks a card drag. */
-static NSString * const card_drag_type = @"com.cambio.tasks-appkit.kanban-card";
+NSPasteboardType const tasks_card_drag_type = @"com.cambio.tasks-appkit.kanban-card";
 
 /* Layout the look.h Kanban section has no entry for.  From the GTK build. */
 static const CGFloat lane_heading_gap  = 4.0;   /* a lane's heading to its box   */
@@ -617,7 +617,7 @@ init_with_kanban:(TasksKanban *)kanban status:(TaskStatus)status
     _cards     = @[];
     _heading   = lane_heading(status, 0);
     _mark_slot = -1;
-    [self registerForDraggedTypes:@[card_drag_type]];
+    [self registerForDraggedTypes:@[tasks_card_drag_type]];
 
     if (status == TASK_STATUS_DONE) {
         _link = [NSButton buttonWithTitle:@"" target:kanban action:@selector(done_link_clicked:)];
@@ -1502,10 +1502,11 @@ begin_drag_from:(TasksKanbanCard *)card event:(NSEvent *)event
 
     if (![moving containsObject:key]) moving = @[key];
 
-    /* The pasteboard only says "a card drag"; the ids are named for anyone
-     * inspecting it, and read by nobody — drag_ids is the truth. */
+    /* Within the board drag_ids is the truth; the ids on the pasteboard,
+     * comma separated, are what the day planner reads when a card is
+     * dropped on it (tasks_card_drag_type, kanban.h). */
     NSPasteboardItem *content = [[NSPasteboardItem alloc] init];
-    [content setString:[moving componentsJoinedByString:@","] forType:card_drag_type];
+    [content setString:[moving componentsJoinedByString:@","] forType:tasks_card_drag_type];
     NSDraggingItem *item = [[NSDraggingItem alloc] initWithPasteboardWriter:content];
     [item setDraggingFrame:card.bounds contents:[card ghost_with_count:moving.count]];
 

@@ -55,40 +55,6 @@ recur_dated(TaskRecurUnit unit)
     return unit >= TASK_RECUR_DAY;
 }
 
-/*
- * recur_at_minute — the same LOCAL DAY as `ts`, at `minutes` past midnight.
- *
- * Inputs:
- *   ts      — a unix time; its local calendar date is what is kept
- *   minutes — minutes past local midnight, clamped to 00:00–23:59
- *
- * Output:
- *   the new unix time, or `ts` unchanged if GDateTime cannot represent it.
- *   Seconds are zeroed — an occurrence is a minute, not an instant.
- */
-static gint64
-recur_at_minute(gint64 ts, gint minutes)
-{
-    if (minutes < 0)
-        minutes = 0;
-    if (minutes > 23 * 60 + 59)
-        minutes = 23 * 60 + 59;
-    GDateTime *dt = task_local_dt(ts);
-    if (dt == NULL)
-        return ts;
-    GDateTime *out = g_date_time_new(task_local_tz(),
-                                     g_date_time_get_year(dt),
-                                     g_date_time_get_month(dt),
-                                     g_date_time_get_day_of_month(dt),
-                                     minutes / 60, minutes % 60, 0.0);
-    g_date_time_unref(dt);
-    if (out == NULL)
-        return ts;
-    gint64 v = g_date_time_to_unix(out);
-    g_date_time_unref(out);
-    return v;
-}
-
 /* task_recur_advance() — see recur.h.                                      */
 gint64
 task_recur_advance(gint64 from, TaskRecurUnit unit, gint interval,
@@ -118,7 +84,7 @@ task_recur_advance(gint64 from, TaskRecurUnit unit, gint interval,
      * makes an occurrence land at 8am even when the STARTING point did
      * not (a task whose due date was set before recurrence was, say).      */
     if (at_minute >= 0)
-        ts = recur_at_minute(ts, at_minute);
+        ts = task_day_at_minute(ts, at_minute);
     return ts;
 }
 
@@ -296,11 +262,11 @@ task_recur_seed(const Task *t, gint64 now_ts)
         if (t->recur_start <= 0 || period <= 0)
             return task_recur_advance(now_ts, t->recur_unit,
                                       t->recur_interval, -1);
-        /* recur_at_minute, the same fold the dated branch below uses: the
+        /* task_day_at_minute, the same fold the dated branch below uses: the
          * anchor is the start DATE at the start TIME for every unit, so
          * "starting at 09:00, every 3 hours" phase-locks to 9, 12, 3
          * rather than to midnight.  One rule, no branch.                 */
-        gint64 occ = recur_at_minute(t->recur_start, t->recur_time);
+        gint64 occ = task_day_at_minute(t->recur_start, t->recur_time);
         if (occ <= now_ts)
             occ += ((now_ts - occ) / period + 1) * period;
         return occ;
@@ -314,7 +280,7 @@ task_recur_seed(const Task *t, gint64 now_ts)
      * NEXT TUESDAY, not the one after.                                     */
     gint64 anchor = t->recur_start > 0 ? t->recur_start
                                        : (t->due > 0 ? t->due : now_ts);
-    gint64 occ    = recur_at_minute(anchor, t->recur_time);
+    gint64 occ    = task_day_at_minute(anchor, t->recur_time);
     for (gint i = 0; occ <= now_ts && i < RECUR_MAX_STEPS; i++)
         occ = recur_step(t, occ);
 
@@ -323,7 +289,7 @@ task_recur_seed(const Task *t, gint64 now_ts)
      * the past.  Re-anchored, this loop cannot run more than once for
      * any unit day-or-longer.                                              */
     if (occ <= now_ts) {
-        occ = recur_at_minute(now_ts, t->recur_time);
+        occ = task_day_at_minute(now_ts, t->recur_time);
         for (gint i = 0; occ <= now_ts && i < RECUR_MAX_STEPS; i++)
             occ = recur_step(t, occ);
     }

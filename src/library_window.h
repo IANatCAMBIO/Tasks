@@ -9,26 +9,28 @@
 
 /*
  * library_window — the main window, and the contract between it and the
- * three panes it hosts (the sidebar, the task list, the Kanban board).
+ * panes it hosts (the lists bar, the task list, the Kanban board, the day
+ * planner).
  *
- *   ┌──────────────────────────────────────────────────────────────┐
- *   │ toolbar: New  Delete │ Sidebar  Completed  Sort  Pane  search │
- *   ├───────────────┬──────────────────────────────────────────────┤
- *   │ sidebar       │ task pane: the task list OR the Kanban board  │
- *   │ (TasksSidebar)│ (TasksTaskList / TasksKanban, one visible)    │
- *   ├───────────────┴──────────────────────────────────────────────┤
+ *   ┌────────────────────────────────────────────────────┬─────────┐
+ *   │ toolbar: New  Delete │ Lists  Completed  Pane  search │         │
+ *   ├────────────────────────────────────────────────────┤  day    │
+ *   │ lists bar (TasksListsBar): views, groups, lists      │ planner │
+ *   ├────────────────────────────────────────────────────┤ (hidden │
+ *   │ task pane: the task list OR the Kanban board         │  by     │
+ *   │ (TasksTaskList / TasksKanban, one visible)           │ default)│
+ *   ├────────────────────────────────────────────────────┴─────────┤
  *   │ <view> - N tasks                         latest event message │
  *   └──────────────────────────────────────────────────────────────┘
  *
  * In COMPACT mode (View > Compact Controls) the window shrinks to a
- * remembered small size, the toolbar and the sidebar are hidden, and New
+ * remembered small size, the toolbar and the lists bar are hidden, and New
  * and Delete float as a two-button plate at the bottom-right of the task
  * pane.  porting/INTERFACES.md §11 is the specification.
  *
- * THE WINDOW OWNS THE SHARED STATE.  Which sidebar row is selected, the
- * search, the manual-sort and Kanban flags all live here, each with ONE
- * writer; panes read them through the properties below and never keep
- * copies.
+ * THE WINDOW OWNS THE SHARED STATE.  Which list or view is selected, the
+ * search and the Kanban flag all live here, each with ONE writer; panes
+ * read them through the properties below and never keep copies.
  *
  * THE WINDOW OWNS THE REFRESH.  A pane never queries the database for the
  * rows it shows: refresh_tasks collects the selection's tasks through the
@@ -126,9 +128,6 @@
  * search is active.  Single writer: the search field's action. */
 @property (nonatomic, readonly) const TaskSearch *search;
 
-/* The task_list_manual_sort setting (legacy; no longer gates drag or sort). */
-@property (nonatomic, readonly) BOOL manual_sort;
-
 /* The kanban_view setting: YES while the board is the visible pane.
  * Single writer: TasksCommandTogglePane. */
 @property (nonatomic, readonly) BOOL kanban_on;
@@ -137,11 +136,12 @@
 @property (nonatomic, readonly) TasksDayPlanner *day_planner;
 
 /*
- * manual_sort_live — whether rows may be dragged into a hand-made order
+ * manual_sort_live — whether rows may be dropped into a hand-made order
  * right now: no search is active.  A search suspends hand-sorting because
  * saving an order from a filtered pane would discard every hidden row's
- * place (task_order.h).  The list refuses to start a drag and the board
- * skips the order half of a drop when this is NO.
+ * place (task_order.h).  The list refuses a drop onto itself and the board
+ * skips the order half of a drop when this is NO; a drag may still start,
+ * since the day planner takes one.
  *
  * Output:
  *   YES when an order may be saved.

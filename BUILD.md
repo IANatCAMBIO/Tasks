@@ -150,7 +150,7 @@ src/
   look.[hm]            sizes, timings, colours
   ui_util.[hm]         icons, image views, dialogs
   row_text.[hm]        the renderer of a task row's text
-  sidebar.[hm]         sidebar            (stub)
+  lists_bar.[hm]       lists bar: views, groups and lists, their sheets
   task_list.[hm]       task list          (stub)
   kanban.[hm]          Kanban board       (stub)
   editor_window.[hm]   task editor        (stub)

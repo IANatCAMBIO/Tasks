@@ -6,8 +6,9 @@
  *   1. Due-today: at 8:00 AM (30-minute window) for every non-done task
  *      whose due date is today.
  *
- *   2. Scheduled: 10 minutes before a task's scheduled_start (2-minute
- *      window around that moment).
+ *   2. Scheduled: 10 minutes before a task's scheduled_start (5-minute
+ *      window from that moment).  The same pass moves a New task whose
+ *      scheduled start has passed to In Progress.
  *
  * The delivery mode is controlled by TASK_CFG_NOTIF_MODE and toggled in
  * the Settings window:
@@ -24,15 +25,8 @@
 
 #include "task_app.h"
 
-/* Config key for the delivery mode.  Value: TASK_NOTIF_MODE_TASKS or
- * TASK_NOTIF_MODE_NATIVE.  Default: TASK_NOTIF_MODE_TASKS.           */
-#define TASK_CFG_NOTIF_MODE      "notifications_mode"
-
-/* Internal: how often the notification worker scans for due tasks, in
- * minutes.  Default 1.  Not shown in the Settings window.            */
-#define TASK_CFG_NOTIF_CHECK_MIN "notifications_check_min"
-
-/* Values for TASK_CFG_NOTIF_MODE. */
+/* Values for TASK_CFG_NOTIF_MODE (the key itself is in task_config.h with
+ * the rest of the registry). */
 #define TASK_NOTIF_MODE_TASKS  "tasks"
 #define TASK_NOTIF_MODE_NATIVE "native"
 

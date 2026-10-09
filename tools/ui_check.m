@@ -61,7 +61,7 @@
 #import "look.h"
 #import "row_text.h"
 #import "settings_window.h"
-#import "sidebar.h"
+#import "lists_bar.h"
 #import "task_list.h"
 #import "ui_util.h"
 
@@ -72,6 +72,7 @@
 #include "task_config.h"
 #include "task_order.h"
 #include "task_paths.h"
+#include "task_view.h"
 
 #include <libproc.h>
 #include <mach/mach.h>
@@ -595,7 +596,7 @@ check_compact(TaskApp *app, NSString *dir)
 
         check(content_is(window, TASK_CFG_WIN_W, TASK_CFG_WIN_H),
               "geometry: the window opens at its saved content size");
-        check(find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor,
+        check(find_view(content, TasksListsBar.class).hiddenOrHasHiddenAncestor,
               "geometry: ... with the sidebar hidden when it was left hidden");
         check(window.toolbar.visible && find_view(content, plate_class).hidden,
               "compact: full mode shows the toolbar and no floating controls");
@@ -613,7 +614,7 @@ check_compact(TaskApp *app, NSString *dir)
 
         check(task_config_get_bool(TASK_CFG_COMPACT) && !window.toolbar.visible,
               "compact: entering hides the toolbar");
-        check(find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor,
+        check(find_view(content, TasksListsBar.class).hiddenOrHasHiddenAncestor,
               "compact: ... and the sidebar");
         check(!find_view(content, plate_class).hiddenOrHasHiddenAncestor,
               "compact: ... and shows the floating controls");
@@ -662,7 +663,7 @@ check_compact(TaskApp *app, NSString *dir)
 
         check(content_is(window, TASK_CFG_COMPACT_W, TASK_CFG_COMPACT_H) &&
               !window.toolbar.visible &&
-              find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor &&
+              find_view(content, TasksListsBar.class).hiddenOrHasHiddenAncestor &&
               !find_view(content, plate_class).hiddenOrHasHiddenAncestor,
               "compact: a launch in Compact opens Compact, at that size");
 
@@ -672,7 +673,7 @@ check_compact(TaskApp *app, NSString *dir)
         check(!task_config_get_bool(TASK_CFG_COMPACT) && window.toolbar.visible &&
               find_view(content, plate_class).hidden,
               "compact: leaving shows the toolbar and hides the floating controls");
-        check(!find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor &&
+        check(!find_view(content, TasksListsBar.class).hiddenOrHasHiddenAncestor &&
               task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE),
               "compact: ... and brings the sidebar back, and records it");
         check(content_is(window, TASK_CFG_COMPACT_PRE_W, TASK_CFG_COMPACT_PRE_H),
@@ -956,24 +957,22 @@ check_memory_and_ownership(TaskApp *app)
 }
 
 /*
- * check_sidebar — drive the sidebar through what a user does with it,
- * without a pointer: the selection rules, folding, the list and group
- * sheets (ended as their buttons would end them), the context menu, a
- * list dragged through the outline's own drop methods, and the width fit.
+ * check_lists_bar — drive the lists bar through what a user does with it,
+ * without a pointer: the selection rules, the list and group sheets (ended
+ * as their buttons would end them), the context menus, Move to Group and
+ * Remove from Group, and the confirmations of Remove Group and Delete
+ * List.
  *
  * It creates a group and a list in the sandbox and removes both again.
- * One lasting effect: the first drop switches the sandbox database from
- * alphabetical list order to saved order, as it does for a user
- * (`make seed` starts over).
  *
  * Inputs:
  *   app — the application context
  *   dir — the snapshot folder (the New List sheet is rendered into it)
  */
 static void
-check_sidebar(TaskApp *app, NSString *dir)
+check_lists_bar(TaskApp *app, NSString *dir)
 {
-    __weak NSOutlineView *weak_outline = nil;
+    __weak TasksListsBar *weak_bar = nil;
 
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
@@ -991,22 +990,33 @@ check_sidebar(TaskApp *app, NSString *dir)
             }
             return found;
         };
-        NSOutlineView *outline = (NSOutlineView *)views_of(window.contentView, NSOutlineView.class).firstObject;
-        id<NSOutlineViewDataSource> source = outline.dataSource;
-        weak_outline = outline;
-        check(outline != nil, "sidebar: the pane is an outline");
+        TasksListsBar *bar = (TasksListsBar *)find_view(window.contentView, TasksListsBar.class);
+        weak_bar = bar;
+        check(bar != nil, "lists bar: the pane is a lists bar");
 
-        /* What a row says. */
-        NSString *(^label_of)(NSInteger) = ^(NSInteger row) {
-            NSTableCellView *cell = [outline viewAtColumn:0 row:row makeIfNecessary:YES];
-            return cell.textField.stringValue;
+        /* The bar's buttons, left to right. */
+        NSArray<NSButton *> *(^buttons)(void) = ^{
+            NSMutableArray<NSButton *> *found = [NSMutableArray array];
+            for (NSView *view in views_of(bar, NSButton.class)) [found addObject:(NSButton *)view];
+            [found sortUsingComparator:^NSComparisonResult(NSButton *a, NSButton *b) {
+                return [@(NSMinX(a.frame)) compare:@(NSMinX(b.frame))];
+            }];
+            return found;
         };
-        /* The row whose label ends with a name, or -1. */
-        NSInteger (^row_of)(NSString *) = ^(NSString *name) {
-            for (NSInteger row = 0; row < outline.numberOfRows; row++) {
-                if ([label_of(row) hasSuffix:name]) return row;
+        /* The button whose title ends with a name, or nil. */
+        NSButton *(^button_of)(NSString *) = ^(NSString *name) {
+            for (NSButton *button in buttons()) {
+                if ([button.title hasSuffix:name]) return button;
             }
-            return (NSInteger)-1;
+            return (NSButton *)nil;
+        };
+        /* The titles of the buttons shown as selected, "A|B". */
+        NSString *(^lit)(void) = ^{
+            NSMutableArray<NSString *> *titles = [NSMutableArray array];
+            for (NSButton *button in buttons()) {
+                if (button.state == NSControlStateValueOn) [titles addObject:button.title];
+            }
+            return [titles componentsJoinedByString:@"|"];
         };
         /* The id of the list with a name, or 0. */
         int64_t (^list_named)(NSString *) = ^(NSString *name) {
@@ -1037,15 +1047,6 @@ check_sidebar(TaskApp *app, NSString *dir)
             task_list_free(list);
             return group;
         };
-        /* The rows from one name to the next, as "A|B|C": the order shown. */
-        NSString *(^rows_from)(NSString *, NSInteger) = ^(NSString *name, NSInteger count) {
-            NSMutableArray<NSString *> *labels = [NSMutableArray array];
-            NSInteger first = row_of(name);
-            for (NSInteger row = first; row >= 0 && row < first + count && row < outline.numberOfRows; row++) {
-                [labels addObject:[label_of(row) componentsSeparatedByString:@"  "].lastObject];
-            }
-            return [labels componentsJoinedByString:@"|"];
-        };
         /* Put a sheet's editable fields to `values` and end it as its
          * accept button would; NO when no sheet with that many fields is up. */
         BOOL (^accept_sheet)(NSArray<NSString *> *) = ^(NSArray<NSString *> *values) {
@@ -1061,27 +1062,15 @@ check_sidebar(TaskApp *app, NSString *dir)
             check_spin(0.3);
             return YES;
         };
-        /* Drag a list and drop it on a proposed place; NO when refused. */
-        BOOL (^drop)(NSString *, NSString *, NSInteger) = ^(NSString *list, NSString *onto, NSInteger index) {
-            id target = onto != nil ? [outline itemAtRow:row_of(onto)] : nil;
-            [source outlineView:outline draggingSession:(id _Nonnull)nil willBeginAtPoint:NSZeroPoint
-                       forItems:@[[outline itemAtRow:row_of(list)]]];
-            BOOL allowed = [source outlineView:outline validateDrop:(id _Nonnull)nil proposedItem:target
-                            proposedChildIndex:index] == NSDragOperationMove &&
-                           [source outlineView:outline acceptDrop:(id _Nonnull)nil item:target childIndex:index];
-            [source outlineView:outline draggingSession:(id _Nonnull)nil endedAtPoint:NSZeroPoint
-                      operation:NSDragOperationMove];
-            check_spin(0.2);
-            return allowed;
-        };
-        /* Fill the context menu for a row as a right-click on it would.  The
-         * click never reaches the screen: the outline is told of it as
-         * AppKit would tell it, and then that the menu closed, or it would
-         * hold on to its clicked row for good. */
-        NSMenu *menu = outline.menu;
-        void (^right_click)(NSInteger) = ^(NSInteger row) {
-            NSRect   rect  = [outline rectOfRow:row];
-            NSPoint  point = [outline convertPoint:NSMakePoint(NSMidX(rect), NSMidY(rect)) toView:nil];
+        /* The context menu a right-click on a button gets, or on the empty
+         * space at the bar's right end for nil.  The click never reaches
+         * the screen: the bar is asked for its menu as AppKit would ask. */
+        NSMenu *(^menu_for)(NSButton *) = ^(NSButton *button) {
+            NSPoint point = button != nil
+                ? [button convertPoint:NSMakePoint(NSMidX(button.bounds), NSMidY(button.bounds))
+                                toView:nil]
+                : [bar convertPoint:NSMakePoint(NSWidth(bar.bounds) - 1.0, NSMidY(bar.bounds))
+                             toView:nil];
             NSEvent *click = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown
                                                 location:point
                                            modifierFlags:0
@@ -1091,65 +1080,43 @@ check_sidebar(TaskApp *app, NSString *dir)
                                              eventNumber:0
                                               clickCount:1
                                                 pressure:1.0];
-            [outline menuForEvent:click];
-            [menu.delegate menuNeedsUpdate:menu];
-            [outline didCloseMenu:menu withEvent:click];
+            return [bar menuForEvent:click];
         };
 
-        /* Selection: one row, never the header; it follows the window. */
-        NSInteger header_row = row_of(@"Lists");
-        check(outline.numberOfSelectedRows == 1 && outline.selectedRow != header_row,
-              "sidebar: one row is selected, and it is not the header");
-        check(![outline.delegate outlineView:outline shouldSelectItem:[outline itemAtRow:header_row]],
-              "sidebar: the header cannot be selected");
+        /* Selection: it is the window's, shown as the lit button; a view
+         * at first. */
+        check(library.selection.kind == task_sel_view &&
+              [lit() isEqualToString:tasks_string(task_view_nth((guint)library.selection.id)->label)],
+              "lists bar: the window's selection is the lit button, a view at first");
         check(![library state_of_command:TasksCommandEditList].enabled,
-              "sidebar: Edit List is disabled while a view is selected");
+              "lists bar: Edit List is disabled while a view is selected");
 
         int64_t admin = list_named(@"Admin");
         [library select:(task_sel_t){ task_sel_list, admin }];
-        [library refresh_sidebar];
-        check(outline.selectedRow == row_of(@"Admin"), "sidebar: the window's selection is the selected row");
+        check([lit() isEqualToString:@"Work"], "lists bar: a grouped list lights its group's button");
         check([library state_of_command:TasksCommandEditList].enabled &&
               [library state_of_command:TasksCommandRemoveFromGroup].enabled,
-              "sidebar: a grouped list enables Edit List and Remove from Group");
-
-        /* Folding a group moves the selection out of it, to the group;
-         * a fold survives a rebuild unless the selection is inside. */
-        [outline collapseItem:[outline itemAtRow:row_of(@"Work")]];
-        check(library.selection.kind == task_sel_group && outline.selectedRow == row_of(@"Work"),
-              "sidebar: folding the selected list's group selects the group");
+              "lists bar: a grouped list enables Edit List and Remove from Group");
+        [library select:(task_sel_t){ task_sel_group, group_named(@"Work") }];
         check([[library state_of_command:TasksCommandDeleteList].title isEqualToString:@"Remove Group"],
-              "sidebar: Delete List offers to remove a selected group");
-        [library refresh_sidebar];
-        check(![outline isItemExpanded:[outline itemAtRow:row_of(@"Work")]] && row_of(@"Admin") < 0,
-              "sidebar: a folded group stays folded across a rebuild");
-        [library select:(task_sel_t){ task_sel_list, admin }];
-        [library refresh_sidebar];
-        check(outline.selectedRow == row_of(@"Admin") && outline.selectedRow >= 0,
-              "sidebar: a rebuild opens the group that holds the selection");
+              "lists bar: Delete List offers to remove a selected group");
 
-        /* Folding the header leaves only the views. */
-        [outline collapseItem:[outline itemAtRow:header_row]];
-        check(library.selection.kind == task_sel_view && outline.numberOfSelectedRows == 1,
-              "sidebar: folding the header moves the selection to a view");
-        [library refresh_sidebar];
-        check(row_of(@"Work") < 0, "sidebar: the folded header stays folded across a rebuild");
-        [outline expandItem:[outline itemAtRow:row_of(@"Lists")]];
-
-        /* The menu over the empty space below the rows (no row clicked). */
-        [menu.delegate menuNeedsUpdate:menu];
+        /* The menu over the empty space (no button clicked). */
+        NSMenu *menu = menu_for(nil);
         check(menu.numberOfItems == 2 && menu.itemArray[0].tag == TasksCommandNewList &&
               menu.itemArray[1].tag == TasksCommandNewGroup,
-              "sidebar: the empty-space menu offers New List and New Group");
+              "lists bar: the empty-space menu offers New List and New Group");
 
         /* The sheets: New Group, Rename Group, New List (with the emoji
          * slot), Edit List. */
         [library perform_command:TasksCommandNewGroup param:nil];
-        check(accept_sheet(@[@"  Check Group "]) && group_named(@"Check Group") != 0,
-              "sidebar: New Group creates the group, its name trimmed");
+        check(accept_sheet(@[@"  Check Group "]) && group_named(@"Check Group") != 0 &&
+              button_of(@"Check Group") != nil,
+              "lists bar: New Group creates the group, its name trimmed, and shows its button");
         [library perform_command:TasksCommandRenameGroup param:@(group_named(@"Check Group"))];
         check(accept_sheet(@[@"Check Renamed"]) && group_named(@"Check Renamed") != 0 &&
-              group_named(@"Check Group") == 0, "sidebar: Rename Group renames it");
+              group_named(@"Check Group") == 0 && button_of(@"Check Renamed") != nil,
+              "lists bar: Rename Group renames it");
         int64_t check_group = group_named(@"Check Renamed");
 
         [library perform_command:TasksCommandNewList param:nil];
@@ -1157,73 +1124,105 @@ check_sidebar(TaskApp *app, NSString *dir)
         NSTextField *emoji = (NSTextField *)views_of(window.attachedSheet.contentView,
                                                      NSClassFromString(@"TasksEmojiField")).firstObject;
         check([window.attachedSheet.firstResponder isKindOfClass:NSTextView.class] &&
-              emoji.currentEditor == nil, "sidebar: the list sheet opens with the name being edited");
+              emoji.currentEditor == nil, "lists bar: the list sheet opens with the name being edited");
         [window.attachedSheet makeFirstResponder:emoji];
         [(NSTextView *)emoji.currentEditor insertText:@"ab\U0001F3AF" replacementRange:NSMakeRange(0, 0)];
         check_spin(0.1);
         check([emoji.stringValue isEqualToString:@"\U0001F3AF"] && emoji.currentEditor == nil,
-              "sidebar: the emoji slot keeps one character and ends its edit");
-        check(snapshot(window.attachedSheet, dir, @"sidebar-list-sheet"), "snapshot: the New List sheet");
+              "lists bar: the emoji slot keeps one character and ends its edit");
+        check(snapshot(window.attachedSheet, dir, @"lists-bar-list-sheet"), "snapshot: the New List sheet");
         check(accept_sheet(@[@"\U0001F3AF", @"Check List"]) && list_named(@"Check List") != 0,
-              "sidebar: New List creates the list");
+              "lists bar: New List creates the list");
         int64_t check_list = list_named(@"Check List");
         check(library.selection.kind == task_sel_list && library.selection.id == check_list &&
-              [label_of(outline.selectedRow) isEqualToString:@"\U0001F3AF  Check List"],
-              "sidebar: the new list is selected and shows its emoji");
+              [lit() isEqualToString:@"\U0001F3AF  Check List"],
+              "lists bar: the new list is selected and its button shows its emoji");
 
-        CGFloat width_before = NSWidth(outline.enclosingScrollView.frame);
         [library perform_command:TasksCommandEditList param:nil];
         check(accept_sheet(@[@"", @"Check List With A Much Longer Name"]) &&
-              list_named(@"Check List With A Much Longer Name") == check_list,
-              "sidebar: Edit List renames the list and clears its emoji");
-        NSTextField *widest = ((NSTableCellView *)[outline viewAtColumn:0 row:outline.selectedRow
-                                                        makeIfNecessary:YES]).textField;
-        check(NSWidth(outline.enclosingScrollView.frame) > width_before &&
-              widest.fittingSize.width <= NSWidth(widest.frame),
-              "sidebar: the pane widens to fit a longer label");
+              list_named(@"Check List With A Much Longer Name") == check_list &&
+              [lit() isEqualToString:@"Check List With A Much Longer Name"],
+              "lists bar: Edit List renames the list and clears its emoji");
         [library perform_command:TasksCommandEditList param:nil];
-        check(accept_sheet(@[@"", @"Check List"]) &&
-              NSWidth(outline.enclosingScrollView.frame) == width_before,
-              "sidebar: ... and narrows again when the label shortens");
+        check(accept_sheet(@[@"", @"Check List"]) && [lit() isEqualToString:@"Check List"],
+              "lists bar: ... and the button follows the name");
 
-        /* Dragging the list: refused on a view and where it already is;
-         * ON a group files it at the group's end; between two rows of
-         * another group moves it there; ON a list lands in front of it. */
-        check(!drop(@"Check List", @"All Tasks", NSOutlineViewDropOnItemIndex),
-              "sidebar: a list cannot be dropped on a view");
-        check(!drop(@"Check List", @"Check List", NSOutlineViewDropOnItemIndex),
-              "sidebar: a list dropped on itself goes nowhere");
-        check(drop(@"Check List", @"Work", NSOutlineViewDropOnItemIndex) &&
-              group_of(check_list) == group_named(@"Work") &&
-              [rows_from(@"Work", 5) isEqualToString:@"Work|Admin|Customers|Deployments|Check List"],
-              "sidebar: dropped on a group, the list joins it at the end");
-        check(drop(@"Check List", @"Home", 1) && group_of(check_list) == group_named(@"Home") &&
-              [rows_from(@"Home", 4) isEqualToString:@"Home|Errands|Check List|House"],
-              "sidebar: dropped between two lists of another group, it lands there");
-        check(drop(@"Check List", @"Reading", NSOutlineViewDropOnItemIndex) && group_of(check_list) == 0 &&
-              [rows_from(@"Empty List", 4) isEqualToString:@"Empty List|Check List|Reading|Someday"],
-              "sidebar: dropped on an ungrouped list, it lands in front of it, ungrouped");
-        check(library.selection.id == check_list && outline.selectedRow == row_of(@"Check List"),
-              "sidebar: the selection stays on the list through its moves");
-
-        /* Move to Group, the context menus of a list and of a group, Remove
-         * from Group. */
+        /* Move to Group, the context menus of a group and of a list,
+         * Remove from Group. */
         [library perform_command:TasksCommandMoveToGroup param:@(check_group)];
-        check(group_of(check_list) == check_group, "sidebar: Move to Group files the selected list");
-        right_click(outline.selectedRow);
-        check(menu.numberOfItems == 8 && menu.itemArray[6].submenu.numberOfItems == 2 &&
-              menu.itemArray[7].tag == TasksCommandRemoveFromGroup,
-              "sidebar: a grouped list's menu adds Edit, Delete, Move to Group (other groups) and "
-              "Remove from Group");
-        [library perform_command:TasksCommandRemoveFromGroup param:nil];
-        check(group_of(check_list) == 0, "sidebar: Remove from Group ungroups it");
-        right_click(row_of(@"Work"));
-        check(library.selection.kind == task_sel_group && outline.selectedRow == row_of(@"Work"),
-              "sidebar: a right-click selects the row it is on");
+        check(group_of(check_list) == check_group && button_of(@"Check List") == nil &&
+              [lit() isEqualToString:@"Check Renamed"],
+              "lists bar: Move to Group files the selected list under its group's button");
+        [library select:task_sel_default()];
+        menu = menu_for(button_of(@"Check Renamed"));
+        check(library.selection.kind == task_sel_group && library.selection.id == check_group,
+              "lists bar: a right-click selects the group it is on");
         check(menu.numberOfItems == 5 && menu.itemArray[3].tag == TasksCommandRenameGroup &&
               menu.itemArray[4].tag == TasksCommandDeleteGroup &&
-              [menu.itemArray[4].representedObject longLongValue] == group_named(@"Work"),
-              "sidebar: a group's menu adds Rename Group and Remove Group for that group");
+              [menu.itemArray[4].representedObject longLongValue] == check_group,
+              "lists bar: a group's menu adds Rename Group and Remove Group for that group");
+        menu = menu_for(button_of(@"Reading"));
+        check(library.selection.kind == task_sel_list && library.selection.id == list_named(@"Reading"),
+              "lists bar: a right-click selects the list it is on");
+        check(menu.numberOfItems == 7 && menu.itemArray[3].tag == TasksCommandEditList &&
+              menu.itemArray[4].tag == TasksCommandDeleteList &&
+              menu.itemArray[6].submenu.numberOfItems == 3,
+              "lists bar: an ungrouped list's menu adds Edit, Delete and Move to Group (every group)");
+        /* A grouped list has no button: its group's menu carries its
+         * commands while it is the selection, and keeps it selected. */
+        [library select:(task_sel_t){ task_sel_list, check_list }];
+        menu = menu_for(button_of(@"Check Renamed"));
+        check(library.selection.kind == task_sel_list && library.selection.id == check_list &&
+              menu.numberOfItems == 12 && !menu.itemArray[6].enabled &&
+              [menu.itemArray[6].title isEqualToString:@"Check List"] &&
+              menu.itemArray[7].tag == TasksCommandEditList &&
+              menu.itemArray[10].submenu.numberOfItems == 2 &&
+              menu.itemArray[11].tag == TasksCommandRemoveFromGroup,
+              "lists bar: a group's menu adds its selected list's commands, under the list's name");
+        [library perform_command:TasksCommandRemoveFromGroup param:nil];
+        check(group_of(check_list) == 0 && button_of(@"Check List") != nil &&
+              [lit() isEqualToString:@"Check List"],
+              "lists bar: Remove from Group ungroups it, and it gets a button of its own");
+
+        /* Dragging the list's button, through the bar's own drop: refused
+         * on itself; onto a group it joins the group at its end; onto the
+         * left half of an ungrouped list it lands in front of it, onto the
+         * right half after it. */
+        NSPoint (^at)(NSButton *, CGFloat) = ^(NSButton *button, CGFloat fraction) {
+            return [bar convertPoint:NSMakePoint(NSMinX(button.bounds) + fraction * NSWidth(button.bounds),
+                                                 NSMidY(button.bounds))
+                            fromView:button];
+        };
+        /* The names of a group's lists (0: the ungrouped ones) in the saved
+         * order, "A|B". */
+        NSString *(^members)(int64_t) = ^(int64_t group_id) {
+            NSMutableArray<NSString *> *names = [NSMutableArray array];
+            GPtrArray *lists = task_db_lists(app->db, FALSE);
+            for (guint i = 0; i < lists->len; i++) {
+                const TaskList *list = g_ptr_array_index(lists, i);
+                if (list->group_id == group_id) [names addObject:tasks_string(list->name)];
+            }
+            task_ptr_array_free_lists(lists);
+            return [names componentsJoinedByString:@"|"];
+        };
+        check(![bar drop_list:check_list at:at(button_of(@"Check List"), 0.5)],
+              "lists bar: a list dropped on itself goes nowhere");
+        check([bar drop_list:check_list at:at(button_of(@"Work"), 0.5)], "lists bar: (dropped on Work)");
+        check_spin(0.2);
+        check(group_of(check_list) == group_named(@"Work") && button_of(@"Check List") == nil &&
+              [members(group_named(@"Work")) hasSuffix:@"|Check List"],
+              "lists bar: dropped on a group, the list joins it at the end");
+        check([bar drop_list:check_list at:at(button_of(@"Reading"), 0.1)], "lists bar: (dropped before Reading)");
+        check_spin(0.2);
+        check(group_of(check_list) == 0 && button_of(@"Check List") != nil &&
+              [members(0) containsString:@"Check List|Reading"],
+              "lists bar: dropped on the left half of an ungrouped list, it lands in front of it, ungrouped");
+        check([bar drop_list:check_list at:at(button_of(@"Reading"), 0.9)], "lists bar: (dropped after Reading)");
+        check_spin(0.2);
+        check([members(0) containsString:@"Reading|Check List"],
+              "lists bar: ... and on the right half, after it");
+        check(library.selection.kind == task_sel_list && library.selection.id == check_list,
+              "lists bar: the selection stays on the list through its moves");
 
         /* Removing the group and deleting the list, each after its
          * confirmation; the list's saved orders go with it. */
@@ -1231,11 +1230,11 @@ check_sidebar(TaskApp *app, NSString *dir)
         check_spin(0.3);
         [window endSheet:window.attachedSheet returnCode:NSAlertFirstButtonReturn];
         check_spin(0.3);
-        check(group_named(@"Check Renamed") == 0, "sidebar: Remove Group removes the group");
+        check(group_named(@"Check Renamed") == 0 && button_of(@"Check Renamed") == nil,
+              "lists bar: Remove Group removes the group and its button");
 
         task_sel_t list_sel = { task_sel_list, check_list };
         [library select:list_sel];
-        [library refresh_sidebar];
         NSString  *order_key = [NSString stringWithFormat:@"%s_list_%lld", TASK_CFG_FAMILY_MANUAL,
                                 (long long)check_list];
         task_order_save(TASK_CFG_FAMILY_MANUAL, list_sel, (int64_t[]){ 1, 2 }, 2);
@@ -1245,17 +1244,30 @@ check_sidebar(TaskApp *app, NSString *dir)
         check_spin(0.3);
         gchar *saved_order = task_config_get(order_key.UTF8String);
         check(list_named(@"Check List") == 0 && saved_order == NULL,
-              "sidebar: Delete List deletes the list and drops its saved orders");
+              "lists bar: Delete List deletes the list and drops its saved orders");
         g_free(saved_order);
-        check(library.selection.kind == task_sel_list && library.selection.id != check_list &&
-              outline.numberOfSelectedRows == 1 && [label_of(outline.selectedRow) hasSuffix:@"Errands"],
-              "sidebar: the selection falls back to the first list");
+
+        /* The first list, as the bar orders them: the first group's first
+         * member, else the first ungrouped list. */
+        int64_t    first_list = 0;
+        GPtrArray *groups     = task_db_groups(app->db);
+        GPtrArray *lists      = task_db_lists(app->db, FALSE);
+        int64_t    first_grp  = groups->len > 0 ? ((TaskGroup *)g_ptr_array_index(groups, 0))->id : 0;
+        for (guint i = 0; i < lists->len && first_list == 0; i++) {
+            const TaskList *list = g_ptr_array_index(lists, i);
+            if (list->group_id == first_grp) first_list = list->id;
+        }
+        task_ptr_array_free_lists(lists);
+        task_ptr_array_free_groups(groups);
+        check(library.selection.kind == task_sel_list && library.selection.id == first_list &&
+              lit().length > 0,
+              "lists bar: the selection falls back to the first list");
         task_db_list_purge(app->db, check_list);
 
         [library close];
     }
     check_spin(0.2);
-    check(weak_outline == nil, "sidebar: the outline is released with its window");
+    check(weak_bar == nil, "lists bar: the bar is released with its window");
 }
 
 /*
@@ -1310,6 +1322,9 @@ check_task_list(TaskApp *app, NSString *dir)
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
         NSWindow *window = library.window;
         [library showWindow:nil];
+        /* The list must be the visible pane: a run that stopped in the
+         * Kanban checks leaves the setting on the board. */
+        if (library.kanban_on) [library perform_command:TasksCommandTogglePane param:nil];
 
         /* The list pane, wherever the window keeps it. */
         TasksTaskList *list = nil;
@@ -1374,7 +1389,7 @@ check_task_list(TaskApp *app, NSString *dir)
 
         NSSize full_size = window.contentView.frame.size;
         began = CFAbsoluteTimeGetCurrent();
-        [window setContentSize:NSMakeSize(tasks_look_window_min_w + 100.0, full_size.height)];
+        [window setContentSize:NSMakeSize(tasks_look_pane_min_w + 100.0, full_size.height)];
         double resize = settle(began);
         check(heights_exact(), "list: rows are re-measured when the pane gets narrower");
         check(columns_fit(), "list: ... and the columns still fit");
@@ -1415,18 +1430,11 @@ check_task_list(TaskApp *app, NSString *dir)
         check(snapshot(window, dir, @"task-list-sorted"), "snapshot: task list, sorted, Status shown");
         [library perform_command:TasksCommandColumnStatus param:nil];
 
-        /* Manual sorting: the header sort is dropped. */
-        [library perform_command:TasksCommandToggleSort param:nil];
-        [list show_rows:generate()];
-        settle(0);
-        check(library.manual_sort &&
-              table.sortDescriptors.count == 0 && task_config_get(TASK_CFG_LIST_SORT) == NULL,
-              "list: manual sorting drops the header sort");
         window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-        check(snapshot(window, dir, @"task-list-manual-dark"), "snapshot: task list, manual, dark");
+        check(snapshot(window, dir, @"task-list-dark"), "snapshot: task list, sorted, dark");
         window.appearance = nil;
-        /* Back to automatic: the window refreshes with the sandbox's tasks. */
-        [library perform_command:TasksCommandToggleSort param:nil];
+        /* The sandbox's tasks again, for the checks that read them back. */
+        [library refresh_tasks];
         settle(0);
 
         /* Tick the first task's checkbox while sorted by Done, so that the
@@ -1944,9 +1952,17 @@ check_settings(TaskApp *app, NSString *dir)
               "settings: a folder away from the database is used, without the warning");
         [button(@"Back Up Now") performClick:nil];
         for (int i = 0; i < 100 && label(@"Backed up to") == nil; i++) check_spin(0.05);
-        NSArray<NSString *> *made = [files contentsOfDirectoryAtPath:backups error:NULL];
-        check(label(@"Backed up to") != nil && made.count == 1 && [made[0] hasPrefix:@"tasks-"],
+        /* The folder also holds the backup's hidden source stamp (backup.c). */
+        NSArray<NSString *> *made = [[files contentsOfDirectoryAtPath:backups error:NULL]
+            filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'tasks-'"]];
+        check(label(@"Backed up to") != nil && made.count == 1,
               "settings: Back Up Now writes one backup there and reports it");
+        [button(@"Back Up Now") performClick:nil];
+        for (int i = 0; i < 100 && label(@"Nothing has changed") == nil; i++) check_spin(0.05);
+        check(label(@"Nothing has changed") != nil &&
+              [[files contentsOfDirectoryAtPath:backups error:NULL]
+                  filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'tasks-'"]].count == 1,
+              "settings: Back Up Now again says nothing has changed, and writes nothing");
         check(snapshot(window, dir, @"settings-backups"), "settings: snapshot, backups on");
 
         /* Put the settings back, then close with a probe still in flight. */
@@ -2022,7 +2038,7 @@ main(int argc, const char *argv[])
         check_status_message(app);
         check_open_database(app);
         check_menu_bar();
-        check_sidebar(app, dir);
+        check_lists_bar(app, dir);
         check_task_list(app, dir);
         check_kanban(app, dir);
         check_editor_window(app);

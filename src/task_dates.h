@@ -89,6 +89,21 @@ gchar *task_due_format(gint64 due);
 gchar *task_clock_format(gint minutes);
 
 /*
+ * task_day_at_minute — the same LOCAL DAY as `ts`, at `minutes` past
+ * midnight.  Computed on the calendar, not by adding seconds: on the day
+ * the clocks change, "9 AM" is not midnight plus nine hours.
+ *
+ * Inputs:
+ *   ts      — a unix time; its local calendar date is what is kept
+ *   minutes — minutes past local midnight, clamped to 00:00–23:59
+ *
+ * Output:
+ *   the unix time, or `ts` unchanged if GDateTime cannot represent it.
+ *   Seconds are zeroed — a time of day is a minute, not an instant.
+ */
+gint64 task_day_at_minute(gint64 ts, gint minutes);
+
+/*
  * task_due_instant — the MOMENT a task is due: its date plus its time of
  * day.  Use it for sorting and for "when is this actually due"; use `due`
  * alone for anything that buckets by calendar day.

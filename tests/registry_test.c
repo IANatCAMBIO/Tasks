@@ -33,7 +33,6 @@ static const struct {
     { TASK_CFG_KANBAN_SHADOW,       kind_bool, "1"   },
     { TASK_CFG_DUE_TODAY_OVERDUE,   kind_bool, "0"   },
     { TASK_CFG_SHOW_COMPLETED,      kind_bool, "1"   },
-    { TASK_CFG_MANUAL_SORT,         kind_bool, "0"   },
     { TASK_CFG_KANBAN_VIEW,         kind_bool, "0"   },
     { TASK_CFG_COMPACT,             kind_bool, "0"   },
     { TASK_CFG_SIDEBAR_VISIBLE,     kind_bool, "1"   },

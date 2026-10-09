@@ -16,6 +16,8 @@
 #import "notify_window.h"
 #import "editor_window.h"
 
+#include "db.h"
+
 /* ── Layout constants ────────────────────────────────────────────────── */
 
 static const CGFloat win_w         = 480.0;
@@ -518,11 +520,18 @@ snooze:(id)sender
         [self update_title];
     }
 
+    /* The reminder comes back only for a task that is still there and still
+     * open: the user may have finished or deleted it meanwhile. */
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(minutes * 60 * NSEC_PER_SEC)),
         dispatch_get_main_queue(),
         ^{
-            [[TasksReminderWindowController shared] addItem:item];
+            TasksReminderWindowController *controller = [TasksReminderWindowController shared];
+            if (controller.app == NULL || controller.app->db == NULL) return;
+            Task *task = task_db_task_get(controller.app->db, item.task_id);
+            BOOL  open = task != NULL && !task->deleted && task->status != TASK_STATUS_DONE;
+            task_free(task);
+            if (open) [controller addItem:item];
         });
 }
 

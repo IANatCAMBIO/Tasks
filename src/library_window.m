@@ -9,7 +9,6 @@
 
 #include "task_config.h"
 #include "task_ops.h"
-#include "task_sidebar.h"
 #include "task_switch.h"
 #include "task_view.h"
 
@@ -104,6 +103,7 @@ on_app_tasks(TaskApp *app, gpointer data)
 
     if ((BOOL)task_db_has_pinned(app->db) != window.had_pinned) [window refresh_sidebar];
     [window refresh_tasks];
+    if (!window.day_planner.hidden) [window.day_planner reload];
 }
 
 /*
@@ -222,7 +222,6 @@ init_with_app:(TaskApp *)app
 
     _app         = app;
     _selection   = task_sel_default();
-    _manual_sort = task_config_get_bool(TASK_CFG_MANUAL_SORT);
     _kanban_on   = task_config_get_bool(TASK_CFG_KANBAN_VIEW);
 
     window.title        = @TASKS_APP_NAME;
@@ -230,6 +229,9 @@ init_with_app:(TaskApp *)app
     window.delegate     = self;
     [self build_layout];
     [self build_toolbar];
+    /* Whether the planner shows decides the window's least width, so it
+     * is settled before the layout is applied. */
+    self.day_planner.hidden = !task_config_get_bool(TASK_CFG_DAY_PLANNER_VISIBLE);
     /* The size first, then the place: placing keeps the window on a
      * screen, which depends on how big it is. */
     [self apply_compact_layout_at:size animated:NO];
@@ -244,9 +246,7 @@ init_with_app:(TaskApp *)app
     [self update_window_title];
     [self refresh_tasks];
 
-    BOOL dp_visible = task_config_get_bool(TASK_CFG_DAY_PLANNER_VISIBLE);
-    self.day_planner.hidden = !dp_visible;
-    if (dp_visible) {
+    if (!self.day_planner.hidden) {
         [self.day_planner reload];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.day_planner scroll_to_now];
@@ -1343,9 +1343,31 @@ toggle_sidebar
 }
 
 /*
+ * content_min_size — the least content size of the mode in force: the task
+ * pane alone in Compact; in full mode the pane plus the day planner when
+ * that is shown.
+ *
+ * Output:
+ *   the size, for the window's contentMinSize.
+ */
+- (NSSize)
+content_min_size
+{
+    if (task_config_get_bool(TASK_CFG_COMPACT)) {
+        return NSMakeSize(tasks_look_pane_min_w, tasks_look_compact_min_h);
+    }
+    CGFloat width = tasks_look_pane_min_w;
+    if (!self.day_planner.hidden) {
+        width += self.main_split.dividerThickness + tasks_look_day_planner_min_w;
+    }
+    return NSMakeSize(width, tasks_look_window_min_h);
+}
+
+/*
  * toggle_day_planner — slide the day planner panel in or out and remember
  * the choice.  Animates by moving the NSSplitView divider so the layout
- * change and the visual reveal happen in a single pass.
+ * change and the visual reveal happen in a single pass.  The window's
+ * least width follows: the planner's minimum counts only while it shows.
  */
 - (void)
 toggle_day_planner
@@ -1366,8 +1388,9 @@ toggle_day_planner
         /* Reveal: unhide at zero width then slide the divider in from the
          * right.  Delegate is cleared just for the instant start-position
          * call so the max-coordinate constraint doesn't clamp it. */
-        self.day_planner.hidden    = NO;
-        self.day_planner_animating = YES;
+        self.day_planner.hidden     = NO;
+        self.day_planner_animating  = YES;
+        self.window.contentMinSize  = [self content_min_size];
 
         id saved = self.main_split.delegate;
         self.main_split.delegate = nil;
@@ -1399,9 +1422,10 @@ toggle_day_planner
             ctx.duration = 0.22;
             [[ws.main_split animator] setPosition:split_w - div_t ofDividerAtIndex:0];
         } completionHandler:^{
-            ws.day_planner_animating = NO;
-            ws.day_planner.hidden    = YES;
-            ws.dp_min_width.active   = YES;
+            ws.day_planner_animating  = NO;
+            ws.day_planner.hidden     = YES;
+            ws.dp_min_width.active    = YES;
+            ws.window.contentMinSize  = [ws content_min_size];
             [ws.main_split adjustSubviews];
         }];
     }
@@ -1434,9 +1458,7 @@ apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
 {
     BOOL   compact  = task_config_get_bool(TASK_CFG_COMPACT);
     BOOL   collapse = compact || !task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE);
-    NSSize least    = compact
-        ? NSMakeSize(tasks_look_pane_min_w, tasks_look_compact_min_h)
-        : NSMakeSize(tasks_look_window_min_w, tasks_look_window_min_h);
+    NSSize least    = [self content_min_size];
     NSRect old      = self.window.frame;
 
     self.window.toolbar.visible = !compact;
@@ -1666,8 +1688,6 @@ perform_shell_command:(TasksCommand)command param:(NSNumber *)param
                              !task_config_get_bool(TASK_CFG_SHOW_COMPLETED));
         [self refresh_tasks];
         break;
-    case TasksCommandToggleSort:
-        break;
     case TasksCommandToggleSidebar:
         [self toggle_sidebar];
         break;
@@ -1769,8 +1789,6 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
             state.tooltip = @"Show completed tasks";
         }
         break;
-    case TasksCommandToggleSort:
-        state.enabled = NO;
         break;
     case TasksCommandToggleSidebar:
         if (self.lists_bar.hidden) {

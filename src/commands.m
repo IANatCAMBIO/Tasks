@@ -29,8 +29,6 @@ static const tasks_command_spec_t command_specs[] = {
       @"Find…",                    @"f", 0, nil, nil },
     { TasksCommandToggleCompleted, TasksCommandOwnerShell,    @"tasks.toggle-completed",
       @"Hide Completed",           @"",  0, @"eye.slash", @"Hide completed tasks" },
-    { TasksCommandToggleSort,      TasksCommandOwnerShell,    @"tasks.toggle-sort",
-      @"Manual Sorting",           @"",  0, @"hand.raised",        @"Switch to manual drag sorting" },
     { TasksCommandToggleSidebar,   TasksCommandOwnerShell,    @"tasks.toggle-sidebar",
       @"Hide Lists Bar",           @"s", NSEventModifierFlagControl,
       @"sidebar.left",             @"Hide the lists bar" },

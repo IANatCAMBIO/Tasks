@@ -21,7 +21,6 @@ static const struct {
     { TASK_CFG_KANBAN_SHADOW,       "1"   },
     { TASK_CFG_DUE_TODAY_OVERDUE,   "0"   },
     { TASK_CFG_SHOW_COMPLETED,      "1"   },
-    { TASK_CFG_MANUAL_SORT,         "0"   },
     { TASK_CFG_KANBAN_VIEW,         "0"   },
     { TASK_CFG_COMPACT,             "0"   },
     { TASK_CFG_SIDEBAR_VISIBLE,     "1"   },

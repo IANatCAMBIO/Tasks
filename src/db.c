@@ -633,7 +633,8 @@ task_db_open(const gchar *path, GError **err)
             "  recur_start    INTEGER NOT NULL DEFAULT 0,"
             /* The due date's time of day (v12).  Its DEFAULT is the whole
              * migration for existing rows: every due date that nobody has
-             * timed by hand means 08:00, here and in the ALTER below.   */
+             * timed by hand means TASK_DUE_TIME_DEFAULT (08:00 at v12,
+             * 17:00 since v13), here and in the ALTER below.            */
             "  due_time            INTEGER NOT NULL DEFAULT %d,"
             /* Day planner schedule (v14) — LOCAL-ONLY, never synced.    */
             "  scheduled_start    INTEGER NOT NULL DEFAULT 0,"
@@ -1000,7 +1001,13 @@ task_db_open(const gchar *path, GError **err)
                       path);
     }
 
-    {   /* Stamped from the CONSTANT for the same reason.               */
+    if (uv != TASK_DB_SCHEMA_VERSION) {
+        /* Stamped from the CONSTANT for the same reason — and only when
+         * the file does not already say so: re-writing an unchanged
+         * user_version still writes page 1, which moves the file's
+         * modification time on every open.  That dirtied the database at
+         * every launch and defeated the backup's "unchanged, skip" check
+         * (backup.c), which compares that time.                        */
         gchar *stamp = g_strdup_printf("PRAGMA user_version = %d",
                                        TASK_DB_SCHEMA_VERSION);
         exec(db, stamp);
@@ -1799,22 +1806,22 @@ task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
 }
 
 /*
- * task_db_tasks_scheduled_for_day() — tasks scheduled within a given local day.
+ * task_db_tasks_scheduled_for_day() — tasks scheduled within a local day.
  *
  * Inputs:
- *   db          — the connection
- *   day_midnight — unix seconds of the local midnight that starts the day
+ *   db — the connection
+ *   lo — unix seconds of the local midnight that starts the day
+ *   hi — unix seconds of the next local midnight (task_day_bounds gives
+ *        both: a day is 23 or 25 hours across a DST change, never
+ *        assumed to be 24)
  *
  * Output:
  *   new GPtrArray of Task* ordered by scheduled_start; never NULL.
  *   Free with task_ptr_array_free_tasks + g_ptr_array_free.
  */
 GPtrArray *
-task_db_tasks_scheduled_for_day(TaskDatabase *db, gint64 day_midnight)
+task_db_tasks_scheduled_for_day(TaskDatabase *db, gint64 lo, gint64 hi)
 {
-    gint64 lo = day_midnight;
-    gint64 hi = lo + 86400;
-
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks "
         "WHERE deleted = 0 AND scheduled_start >= ? "
@@ -2067,43 +2074,8 @@ task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists)
 }
 
 /* ---------------------------------------------------------------------------
- * Sync state + sync-side mutators (no updated_at stamp — see db.h).
+ * Sync-side mutators (no updated_at stamp — see db.h).
  * ------------------------------------------------------------------------- */
-gchar *
-task_db_state_get(TaskDatabase *db, const gchar *key)
-{
-    sqlite3_stmt *st = NULL;
-    gchar *val = NULL;               /* the fetched value                   */
-    if (sqlite3_prepare_v2(db->sq,
-            "SELECT value FROM sync_state WHERE key = ?", -1,
-            &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, key, -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(st) == SQLITE_ROW)
-            val = column_text_dup(st, 0);
-    }
-    sqlite3_finalize(st);
-    return val;
-}
-
-/* task_db_state_set() — upsert one sync_state row (see db.h).              */
-void
-task_db_state_set(TaskDatabase *db, const gchar *key, const gchar *value)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
-            "INSERT INTO sync_state(key, value) VALUES(?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value", -1,
-            &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, key, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 2, value, -1, SQLITE_TRANSIENT);
-        step_done(db, st, "sync state set");
-    } else {
-        step_done(db, NULL, "sync state set");
-    }
-    sqlite3_finalize(st);
-}
-
-
 /* task_db_list_apply_remote() — overwrite name with the remote's, stamping
  * the REMOTE updated time so the row is clean after the sync.              */
 void

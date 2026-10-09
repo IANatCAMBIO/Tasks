@@ -79,7 +79,7 @@ static const column_spec_t column_specs[col_count] = {
 
 /* What a manual-sort drag carries: one pasteboard item per dragged row,
  * holding its task id.  Private to the app, so nothing else accepts it. */
-static NSString * const row_drag_type = @"tasks.task-row";
+NSPasteboardType const tasks_row_drag_type = @"tasks.task-row";
 
 /* List-only metrics.  (Everything shared with another pane is in look.h.) */
 static const CGFloat task_col_min_w = 120.0;    /* the Task column's floor      */
@@ -600,7 +600,7 @@ build_table
     }
 
     /* Rows are dragged within this table only. */
-    [self.table registerForDraggedTypes:@[row_drag_type]];
+    [self.table registerForDraggedTypes:@[tasks_row_drag_type]];
     [self.table setDraggingSourceOperationMask:NSDragOperationMove forLocal:YES];
     [self.table setDraggingSourceOperationMask:NSDragOperationNone forLocal:NO];
 
@@ -782,8 +782,8 @@ measured_heights
 - (void)
 show_rows:(task_row_list_t *)rows
 {
-    /* First, while the table and the rows still agree: this may clear the
-     * header sort, which re-arranges what is on screen. */
+    /* First, while the table and the rows still agree: a column shown or
+     * hidden re-fits the columns against the rows below. */
     [self apply_settings];
 
     NSSet<NSNumber *> *selected = [self selected_id_set];
@@ -934,9 +934,7 @@ fitted_width:(int)index
                                 @{ NSFontAttributeName: column.headerCell.font }].width);
     /* Use the column spec's sort field rather than sortDescriptorPrototype:
      * the prototype may not be set yet when the first fit runs at startup. */
-    BOOL can_sort = column_specs[index].sort != NO_SORT
-                    && ![self.library manual_sort_live];
-    CGFloat indicator = can_sort ? sort_indicator_w : 0.0;
+    CGFloat indicator = column_specs[index].sort != NO_SORT ? sort_indicator_w : 0.0;
     CGFloat header_w  = title_w + header_fit_pad + indicator;
     return MAX(column.minWidth, MAX(cell_w, header_w));
 }
@@ -1487,8 +1485,10 @@ forRowIndexes:(NSIndexSet *)indexes
 
 /*
  * tableView:pasteboardWriterForRow: — what a dragged row puts on the
- * pasteboard: its task id.  Rows are draggable when no search is active
- * (a filtered order cannot be saved safely; task_order.h).
+ * pasteboard: its task id.  Every row drags: the day planner takes a drop
+ * whatever the search says; only a drop back INTO the list is refused
+ * while a search is active (validateDrop, since a filtered order cannot be
+ * saved safely; task_order.h).
  *
  * Inputs:
  *   table — the table (unused)
@@ -1500,10 +1500,10 @@ forRowIndexes:(NSIndexSet *)indexes
 - (id<NSPasteboardWriting>)
 tableView:(NSTableView *)table pasteboardWriterForRow:(NSInteger)row
 {
-    if (![self.library manual_sort_live] || row >= [self row_count]) return nil;
+    if (row >= [self row_count]) return nil;
 
     NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
-    [item setString:@([self row_at:row]->id).stringValue forType:row_drag_type];
+    [item setString:@([self row_at:row]->id).stringValue forType:tasks_row_drag_type];
     return item;
 }
 
@@ -1575,7 +1575,7 @@ dropOperation:(NSTableViewDropOperation)operation
 
     NSMutableSet<NSNumber *> *dragged = [NSMutableSet set];
     for (NSPasteboardItem *item in info.draggingPasteboard.pasteboardItems) {
-        [dragged addObject:@([item stringForType:row_drag_type].longLongValue)];
+        [dragged addObject:@([item stringForType:tasks_row_drag_type].longLongValue)];
     }
 
     int     *from   = malloc((size_t)(n > 0 ? n : 1) * sizeof *from);
@@ -1593,11 +1593,10 @@ dropOperation:(NSTableViewDropOperation)operation
         task_sort_move(_order, n, from, n_from, (int)row);
         for (int i = 0; i < n; i++) ids[i] = [self row_at:i]->id;
         task_order_save(TASK_CFG_FAMILY_MANUAL, library.selection, ids, n);
-        /* Clear the header sort so the drag position sticks.  Update sort
-         * state directly and suppress the arrange that sortDescriptorsDidChange:
-         * would trigger, so we arrange exactly once with the correct selection. */
-        _n_keys = 0;
-        task_config_set(TASK_CFG_LIST_SORT, NULL);
+        /* Clear the header sort so the drag position sticks.  The delegate
+         * (tableView:sortDescriptorsDidChange:) forgets and unsaves the
+         * sort; its arrange is suppressed so the rows are arranged exactly
+         * once, below, with the selection restored. */
         _clearing_sort_from_drag = YES;
         self.table.sortDescriptors = @[];
         _clearing_sort_from_drag = NO;

@@ -1,31 +1,15 @@
 /*
  * backup_test.c — the rotating backup (src/backup.h): where backups go,
- * when the feature says it is ready, what one pass writes and reports, the
- * rotation (which files are pruned, which are never touched, the limits of
- * the keep count), and the timer the settings arm.
+ * when the feature says it is ready, what one pass writes and reports, an
+ * unchanged source left alone, the rotation (which files are pruned, which
+ * are never touched, two copies in one second, the limits of the keep
+ * count), and the timer the settings arm.
  *
  * Every pass here runs on the real background job and is waited for with
- * check_spin.  Old backups are stood in for by empty files with old names:
- * the rotation goes by name alone, so that pins down exactly which files a
- * pass removes without waiting for the clock.
- *
- * TWO THINGS THE CORE DOES TODAY ARE DELIBERATELY NOT ASSERTED, because the
- * tests found them to be wrong and they are not this test's to fix:
- *
- *  1. "A pass whose source has not changed writes nothing" holds only
- *     within the SAME SECOND as the previous pass.  Each pass opens the
- *     database with task_db_open, which re-stamps PRAGMA user_version on
- *     every open and so moves the file's modification time; the pass then
- *     reads that time into its source stamp.  In a later second the stamp
- *     always differs, so an idle app writes a fresh, identical backup at
- *     every interval and the rotation fills with copies of one state.
- *     test_unchanged checks the comparison itself (same second), retrying
- *     across a second boundary.
- *
- *  2. Two passes in one second name the second file "…-1.db", which sorts
- *     BEFORE the first, so with a small keep count the prune removes the
- *     backup just made and keeps the older one.  The rotation tests here
- *     make one real backup each, so they never meet it.
+ * check_spin.  Old backups are stood in for by empty files with old names,
+ * created in the order of their names: the rotation goes by modification
+ * time, then by name, so that pins down exactly which files a pass
+ * removes without waiting for the clock.
  */
 
 #include "fixture.h"
@@ -358,9 +342,8 @@ test_pass(TaskApp *app)
 
 /*
  * test_unchanged — a source already copied to this folder is not copied
- * again: the pass succeeds silently and writes nothing.  Only the same
- * second is tested (see the note at the top of the file); a pass that
- * straddles a second boundary copies again, so it is tried a few times.
+ * again, however long ago: the pass succeeds silently and writes nothing.
+ * A change to the database makes the next pass a real one again.
  *
  * Inputs:
  *   app — the fixture
@@ -369,22 +352,24 @@ static void
 test_unchanged(TaskApp *app)
 {
     char   dir[1200];
-    seen_t seen    = { 0 };
-    int    skipped = 0;
-    int    before  = 0;
 
     use_folder("unchanged", dir, sizeof dir);
     check(run_backup(app).ok && count_backups(dir) == 1, "unchanged: (a first backup is made)");
 
-    for (int attempt = 0; attempt < 5 && !skipped; attempt++) {
-        before  = count_backups(dir);
-        last_status[0] = '\0';
-        seen    = run_backup(app);
-        skipped = seen.calls == 1 && seen.ok && seen.message[0] == '\0';
-    }
-    check(skipped, "unchanged: a pass over an unchanged source succeeds with no message");
-    check(count_backups(dir) == before, "unchanged: ... and writes no file");
+    /* Into the next second, so that a stamp taken by the clock would differ. */
+    check_spin(1.1);
+    last_status[0] = '\0';
+    seen_t seen = run_backup(app);
+    check(seen.calls == 1 && seen.ok && seen.message[0] == '\0',
+          "unchanged: a pass over an unchanged source succeeds with no message");
+    check(count_backups(dir) == 1, "unchanged: ... and writes no file");
     check(last_status[0] == '\0', "unchanged: ... and says nothing in the status bar");
+    check(has_file(dir, ".last-source"), "unchanged: the stamp is kept beside the backups");
+
+    task_db_list_create(app->db, "Changed since", "");
+    seen = run_backup(app);
+    check(seen.ok && seen.message[0] != '\0' && count_backups(dir) == 2,
+          "unchanged: a change to the database is backed up again");
 
     /* The destination is part of what "already copied" means: a new folder
      * gets a backup even though the database has not changed. */
@@ -440,6 +425,22 @@ test_rotation(TaskApp *app)
     seen = run_backup(app);
     check(seen.ok && strstr(seen.message, "(2 kept)") != NULL && count_backups(roomy) == 2,
           "rotation: under the bound nothing is pruned, and the message has no prune count");
+
+    /* Two copies in one second: the second takes a "-1" suffix, and with
+     * keep = 1 it is the one that survives — the newer, not the one whose
+     * name sorts last. */
+    char twice[1200];
+    char first[64], second[64];
+    use_folder("rotation-twice", twice, sizeof twice);
+    task_config_set_int(TASK_CFG_BACKUP_KEEP, 1);
+    seen = run_backup(app);
+    check(seen.ok && sscanf(seen.message, "Backed up to %63s", first) == 1,
+          "rotation: (a first copy)");
+    task_db_list_create(app->db, "Twice", "");
+    seen = run_backup(app);
+    check(seen.ok && sscanf(seen.message, "Backed up to %63s", second) == 1 &&
+          strcmp(first, second) != 0 && count_backups(twice) == 1 && has_file(twice, second),
+          "rotation: of two copies made in one second, the newer is the one kept");
 }
 
 /*

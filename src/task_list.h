@@ -14,6 +14,11 @@
  *
  * Behavioural reference: porting/gtk_reference/task_list.c.
  */
+/* The pasteboard type of a dragged row: one item per row, its content the
+ * task id as decimal text.  Read by the list's own drop (a reorder) and by
+ * the day planner (a scheduling). */
+extern NSPasteboardType const tasks_row_drag_type;
+
 @interface TasksTaskList : NSView <TasksTaskPane>
 
 /*

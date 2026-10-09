@@ -12,6 +12,7 @@
 #include "db.h"
 #include "recur.h"
 #include "task_config.h"
+#include "task_switch.h"
 #include "task_paths.h"
 #include "task_worker.h"
 
@@ -89,9 +90,9 @@ start_config:(gchar **)out_path
 }
 
 /*
- * open_db_at: — open (or create) the database at `path` and arm the
- * background workers.  The library window must exist before this is called
- * so that status messages have somewhere to land.
+ * open_db_at: — open (or create) the database at `path`.  Only the open:
+ * the workers are armed and the health reported once the library window
+ * exists, so that what they say has somewhere to land.
  *
  * Inputs:
  *   path — filesystem path to the .db file (UTF-8)
@@ -110,31 +111,33 @@ open_db_at:(const gchar *)path
         g_clear_error(&err);
         return message;
     }
-    task_worker_arm_all(self.app, self.app->db->path);
-    [self.library report_database_health];
     return nil;
 }
 
+/* What the Welcome screen was answered with. */
+typedef NS_ENUM(NSInteger, TasksWelcomeChoice) {
+    TasksWelcomeCreate = 0,         /* a new database at the default path  */
+    TasksWelcomeOpen,               /* an existing file, the path returned */
+    TasksWelcomeQuit                /* leave without a database            */
+};
+
 /*
- * welcome_pick_path — first-run welcome: ask the user whether to open an
- * existing database or create a new one in the data directory.  Returns
- * a newly-allocated path the caller must g_free, or NULL if the user
- * chose "Create New" (the caller then uses the default path it already
- * knows) or cancelled.  `chose_existing` is set to YES when the user picked
- * a file, NO when they chose to create a new one.
+ * welcome_pick_path:choice: — first-run welcome: ask whether to open an
+ * existing database, create a new one in the data directory, or quit.
+ * Cancelling the open panel returns to the question rather than creating
+ * a database the user did not ask for.
  *
  * Inputs:
  *   default_path — the path that "Create New" will use (shown in the sheet)
- *   chose_existing — set to YES when a file was picked, NO for create-new
+ *   choice       — receives what was chosen
  *
  * Output:
- *   a g_malloc'd path the caller must g_free, or NULL for create-new.
+ *   for TasksWelcomeOpen, a g_malloc'd path the caller must g_free;
+ *   otherwise NULL.
  */
 - (gchar *)
-welcome_pick_path:(const gchar *)default_path chose_existing:(BOOL *)chose_existing
+welcome_pick_path:(const gchar *)default_path choice:(TasksWelcomeChoice *)choice
 {
-    *chose_existing = NO;
-
     NSAlert *alert    = [[NSAlert alloc] init];
     gchar   *basename = g_path_get_basename(default_path);
     NSString *db_name = tasks_string(basename);
@@ -146,32 +149,35 @@ welcome_pick_path:(const gchar *)default_path chose_existing:(BOOL *)chose_exist
         db_name];
     [alert addButtonWithTitle:@"Open Existing Database…"];
     [alert addButtonWithTitle:@"Create New Database"];
+    [alert addButtonWithTitle:@"Quit"];
 
-    NSModalResponse response = [alert runModal];
-    if (response != NSAlertFirstButtonReturn) {
-        /* "Create New Database" — caller uses the default path. */
-        return NULL;
+    for (;;) {
+        NSModalResponse response = [alert runModal];
+        if (response == NSAlertSecondButtonReturn) {
+            *choice = TasksWelcomeCreate;
+            return NULL;
+        }
+        if (response == NSAlertThirdButtonReturn) {
+            *choice = TasksWelcomeQuit;
+            return NULL;
+        }
+
+        /* "Open Existing Database…": run a synchronous open panel. */
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        panel.message              = @"Choose a Tasks database to open.";
+        panel.allowedContentTypes  = @[
+            [UTType typeWithFilenameExtension:@"db"]
+        ];
+        panel.canChooseFiles       = YES;
+        panel.canChooseDirectories = NO;
+        panel.allowsMultipleSelection = NO;
+
+        if ([panel runModal] == NSModalResponseOK && panel.URL) {
+            *choice = TasksWelcomeOpen;
+            return g_strdup(panel.URL.path.fileSystemRepresentation);
+        }
+        /* Cancelled: back to the question. */
     }
-
-    /* "Open Existing Database…": run a synchronous open panel. */
-    __block gchar *picked = NULL;
-
-    NSOpenPanel *panel = [NSOpenPanel openPanel];
-    panel.message              = @"Choose a Tasks database to open.";
-    panel.allowedContentTypes  = @[
-        [UTType typeWithFilenameExtension:@"db"]
-    ];
-    panel.canChooseFiles       = YES;
-    panel.canChooseDirectories = NO;
-    panel.allowsMultipleSelection = NO;
-
-    NSModalResponse pr = [panel runModal];
-    if (pr == NSModalResponseOK && panel.URL) {
-        NSString *path = panel.URL.path;
-        picked = g_strdup(path.fileSystemRepresentation);
-        *chose_existing = YES;
-    }
-    return picked;
 }
 
 /*
@@ -199,7 +205,8 @@ watch_sigterm
  * status message posted while arming has somewhere to land.
  *
  * On first run (no database found), a Welcome alert lets the user choose
- * between opening an existing database and creating a new one.
+ * between opening an existing database, creating a new one, and quitting.
+ * An existing database is recorded as the one to open at every launch.
  *
  * If the core cannot start, the reason is shown and the app quits.  By then
  * the data directory may have been created; no existing data has been
@@ -232,19 +239,34 @@ applicationDidFinishLaunching:(NSNotification *)note
     BOOL first_run = (default_path != NULL &&
                       !g_file_test(default_path, G_FILE_TEST_EXISTS));
     gchar *open_path = default_path;   /* borrowed; freed below */
+    TasksWelcomeChoice choice = TasksWelcomeCreate;
 
     if (first_run) {
         [NSApp activate];
-        BOOL chose_existing = NO;
-        gchar *picked = [self welcome_pick_path:default_path chose_existing:&chose_existing];
-        if (chose_existing && picked != NULL) {
+        gchar *picked = [self welcome_pick_path:default_path choice:&choice];
+        if (choice == TasksWelcomeQuit) {
+            g_free(default_path);
+            [NSApp terminate:nil];
+            return;
+        }
+        if (picked != NULL) {
             open_path = picked;        /* user's choice; free picked below  */
         }
-        /* If picked is NULL the user chose "Create New"; open_path stays
-         * as default_path and task_db_open will create the file. */
+        /* TasksWelcomeCreate: open_path stays as default_path and
+         * task_db_open will create the file. */
     }
 
     NSString *db_err = [self open_db_at:open_path];
+    /* An existing database chosen at the Welcome screen is the one opened
+     * at every launch from now on — or the Welcome screen would be back
+     * next time.  Only a file of the default name can be (task_switch.h). */
+    char *default_dir = db_err == nil && choice == TasksWelcomeOpen
+        ? task_switch_default_dir(open_path) : NULL;
+    if (default_dir != NULL) {
+        task_config_set(TASK_CFG_DB_DIR, default_dir);
+        free(default_dir);
+    }
+    BOOL for_session_only = db_err == nil && choice == TasksWelcomeOpen && default_dir == NULL;
     if (open_path != default_path) g_free(open_path);
     g_free(default_path);
 
@@ -264,7 +286,15 @@ applicationDidFinishLaunching:(NSNotification *)note
     [self.library showWindow:nil];
     [NSApp activate];
 
-    /* open_db_at: already armed the workers and reported database health. */
+    /* The workers and the health check come AFTER the window: what they
+     * report lands in its status bar and its sheets. */
+    task_worker_arm_all(self.app, self.app->db->path);
+    [self.library report_database_health];
+    if (for_session_only) {
+        task_app_status(self.app, "%s is open for this session only: a database named "
+                        TASK_DB_FILENAME " can be opened at every launch (File > Open "
+                        "Database File)", self.app->db->path);
+    }
 
     gint n_tasks = 0, n_lists = 0;
     task_db_totals(self.app->db, &n_tasks, &n_lists);

@@ -612,7 +612,7 @@ init_with_app:(TaskApp *)app task:(const Task *)task is_new:(BOOL)is_new
     NSWindow *window = [[NSWindow alloc]
         initWithContentRect:NSMakeRect(0, 0, tasks_look_editor_w, list_h)
                   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                            NSWindowStyleMaskMiniaturizable | (getenv("E6") ? 0 : NSWindowStyleMaskResizable)
+                            NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                     backing:NSBackingStoreBuffered
                       defer:YES];
 
@@ -672,7 +672,7 @@ build_layout
     if (self.parent_id == 0) add_row(self.advanced_box, [self build_subtasks]);
     add_row(self.advanced_box, [self build_attachments]);
     add_row(self.advanced_box, [self build_recurrence]);
-    if (!getenv("E4")) self.advanced_box.hidden = YES;
+    self.advanced_box.hidden = YES;
     add_row(form, self.advanced_box);
     [form setCustomSpacing:tasks_look_section_gap afterView:self.notes_scroll];
 
@@ -704,7 +704,7 @@ build_layout
     ]];
 
     /* Tab walks the controls in reading order, folds included as they open. */
-    if (!getenv("E5")) self.window.autorecalculatesKeyViewLoop = YES;
+    self.window.autorecalculatesKeyViewLoop = YES;
 }
 
 /*
@@ -725,7 +725,6 @@ build_fields:(NSStackView *)form
     self.title_field.delegate           = self;
     self.title_field.usesSingleLineMode = YES;
     add_row(form, self.title_field);
-    if (getenv("E8")) return;
 
     /* Status at the left, the due date and time at the right. */
     NSMutableArray<NSString *> *statuses = [NSMutableArray array];
@@ -835,7 +834,7 @@ build_notes
 - (NSView *)
 build_subtasks
 {
-    self.subtask_table = getenv("E2") ? [[NSTableView alloc] initWithFrame:NSZeroRect] : [[TasksEditorTable alloc] initWithFrame:NSZeroRect];
+    self.subtask_table = [[TasksEditorTable alloc] initWithFrame:NSZeroRect];
     NSScrollView *scroll = list_scroll(self.subtask_table, self);
 
     self.subtask_remove = side_button(@"Remove", self, @selector(remove_subtask:));
@@ -1647,7 +1646,7 @@ reload_subtasks
         }
     } else {
         [self.subtask_table reloadData];
-        if (!getenv("E3")) [self select_subtask:selected_id];
+        [self select_subtask:selected_id];
     }
     [self refresh_list_buttons];
 }
@@ -1692,7 +1691,7 @@ fill_subtask_cell:(NSTableCellView *)cell row:(NSInteger)row
 
     check.state = subtask->status == TASK_STATUS_DONE ? NSControlStateValueOn
                                                       : NSControlStateValueOff;
-    if (!getenv("E7")) show_text(cell.textField, tasks_string(subtask->title), YES); else cell.textField.stringValue = @"x";
+    show_text(cell.textField, tasks_string(subtask->title), YES);
 }
 
 /*
@@ -1708,7 +1707,7 @@ subtask_cell
     NSTableCellView *cell  = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
     NSButton        *check = [NSButton checkboxWithTitle:@"" target:self
                                                   action:@selector(subtask_ticked:)];
-    NSTextField     *field = getenv("E2") ? [[NSTextField alloc] initWithFrame:NSZeroRect] : [[TasksSubtaskField alloc] initWithFrame:NSZeroRect];
+    NSTextField     *field = [[TasksSubtaskField alloc] initWithFrame:NSZeroRect];
 
     check.tag         = subtask_check_tag;
     check.controlSize = NSControlSizeSmall;

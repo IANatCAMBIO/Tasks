@@ -14,24 +14,28 @@
 #include <time.h>
 #include <unistd.h>
 
-/* Backup filenames: sortable, so lexical order IS chronological order and
- * the prune can pick victims without parsing dates or trusting mtimes on
- * a destination that may be a network mount.                              */
+/* Backup filenames: the local date and time of the copy, for people
+ * reading the folder.  The prune orders the files by MODIFICATION TIME
+ * (backup_list), not by name: two passes in one second share a name and
+ * take a "-N" suffix, and the hour the clocks fall back repeats its names,
+ * so a name alone cannot say which copy is the newer.                    */
 #define BACKUP_PREFIX "tasks-"
 #define BACKUP_SUFFIX ".db"
 
-/* sync_state key holding the source's identity at the last SUCCESSFUL
- * backup, so an unchanged database is not copied again.  It lives in the
- * DATABASE rather than the ini because it describes that database — copy
- * the file elsewhere and the record travels with it.                      */
-#define BACKUP_STAMP_KEY "backup_source_stamp"
+/* The file in the destination folder holding the source's identity at the
+ * last SUCCESSFUL backup, so an unchanged database is not copied again.
+ * It lives beside the backups and NOT in the database: recording it there
+ * would itself change the database, so no two passes could ever agree.
+ * A hidden name, and not one the prune matches.                           */
+#define BACKUP_STAMP_FILE ".last-source"
 
 /* ---------------------------------------------------------------------------
  * source_stamp() — a cheap identity for "the state of the last backup":
  * the DESTINATION, plus the source file's size and modification time.
  * Not a hash: this runs on every timer tick, and the question is only
  * "would another backup right now be a duplicate", which mtime answers
- * for a file SQLite has written.
+ * for a file SQLite has written — and only SQLite writes it: task_db_open
+ * leaves an up-to-date file untouched (db.c, the user_version stamp).
  *
  * The destination is part of it deliberately.  Without it, choosing a new
  * backup folder would produce NO backup there until the database happened
@@ -47,9 +51,53 @@ source_stamp(const gchar *path, const gchar *dest_dir)
     GStatBuf sb;
     if (g_stat(path, &sb) != 0)
         return NULL;
-    return g_strdup_printf("%s|%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT,
+    /* The nanoseconds too: a write in the same second as the last stamp
+     * must not read as "unchanged" (APFS keeps them). */
+    return g_strdup_printf("%s|%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT ".%09ld",
                            dest_dir != NULL ? dest_dir : "",
-                           (gint64)sb.st_size, (gint64)sb.st_mtime);
+                           (gint64)sb.st_size, (gint64)sb.st_mtimespec.tv_sec,
+                           (long)sb.st_mtimespec.tv_nsec);
+}
+
+/*
+ * stamp_read — the stamp recorded in a destination folder.
+ *
+ * Inputs:
+ *   dir — the destination
+ *
+ * Output:
+ *   new string (g_free), or NULL when none was recorded.
+ */
+static gchar *
+stamp_read(const gchar *dir)
+{
+    gchar *path  = g_build_filename(dir, BACKUP_STAMP_FILE, NULL);
+    gchar *stamp = NULL;
+    g_file_get_contents(path, &stamp, NULL, NULL);
+    g_free(path);
+    return stamp;
+}
+
+/*
+ * stamp_write — record a stamp in a destination folder.  A failure is
+ * only logged: the backup itself is already on disk, and the cost is one
+ * more copy at the next pass.
+ *
+ * Inputs:
+ *   dir   — the destination
+ *   stamp — the stamp (borrowed)
+ */
+static void
+stamp_write(const gchar *dir, const gchar *stamp)
+{
+    gchar  *path = g_build_filename(dir, BACKUP_STAMP_FILE, NULL);
+    GError *err  = NULL;
+    if (!g_file_set_contents(path, stamp, -1, &err)) {
+        g_warning("backup: could not record the source stamp in %s: %s", dir,
+                  err != NULL ? err->message : "?");
+        g_clear_error(&err);
+    }
+    g_free(path);
 }
 
 /* backup_keep() — the retention bound, read from config with the shared
@@ -144,30 +192,44 @@ task_backup_ready(gchar **reason)
     return ok;
 }
 
+/* One backup file, for the prune's ordering. */
+typedef struct {
+    gchar  *path;
+    gint64  mtime;
+} backup_entry_t;
+
+static void
+backup_entry_free(gpointer data)
+{
+    backup_entry_t *entry = data;
+    g_free(entry->path);
+    g_free(entry);
+}
+
 /* ---------------------------------------------------------------------------
- * backup_name_cmp() — g_ptr_array_sort comparator over the paths themselves.
+ * backup_entry_cmp() — oldest first: by modification time, then, for two
+ * files of one second, by name LENGTH before name — "tasks-T-1.db" (the
+ * second copy of second T) comes after "tasks-T.db", which plain strcmp
+ * would put it before ('-' sorts before '.').
  *
- * NOT `(GCompareFunc)g_strcmp0`, which is what this was until 2026-09-12:
- * g_ptr_array_sort hands its comparator POINTERS TO THE ELEMENTS (gchar **),
- * so passing g_strcmp0 compares the POINTER VALUES as if they were the
- * strings.  The cast silences the compiler and the result is an ordering
- * that looks plausible and is arbitrary — nothing anywhere complains.
- *
- * That is load-bearing here and nowhere else in the app: this order is what
- * the prune DELETES by.  MEASURED on a four-file rotation with keep=3 (in
- * the sister Notes app, whose backup module is a port of this one), it
- * removed the SECOND-oldest and kept the oldest — so the retention window
- * silently stopped being "the most recent N".
- *
- * Every other comparator in this codebase (entry_cmp, view_cmp,
- * done_recent_cmp) dereferences correctly; they are hand-written, which is
- * the whole difference.  `g_ptr_array_sort_values` is the other way out —
- * it passes the elements.
+ * g_ptr_array_sort hands the comparator POINTERS TO THE ELEMENTS, so the
+ * arguments are backup_entry_t **.  This was once `(GCompareFunc)g_strcmp0`
+ * on an array of strings, which compared the pointer values and produced
+ * an order that looked plausible and was arbitrary — and this order is
+ * what the prune DELETES by.
  * ------------------------------------------------------------------------- */
 static gint
-backup_name_cmp(gconstpointer a, gconstpointer b)
+backup_entry_cmp(gconstpointer a, gconstpointer b)
 {
-    return g_strcmp0(*(const gchar * const *)a, *(const gchar * const *)b);
+    const backup_entry_t *ea = *(const backup_entry_t * const *)a;
+    const backup_entry_t *eb = *(const backup_entry_t * const *)b;
+
+    if (ea->mtime != eb->mtime)
+        return ea->mtime < eb->mtime ? -1 : 1;
+    size_t la = strlen(ea->path), lb = strlen(eb->path);
+    if (la != lb)
+        return la < lb ? -1 : 1;
+    return strcmp(ea->path, eb->path);
 }
 
 /* ---------------------------------------------------------------------------
@@ -177,25 +239,29 @@ backup_name_cmp(gconstpointer a, gconstpointer b)
  * keeps in that folder is ever a prune candidate — the destination may
  * well be a folder they also use for other things.
  *
- * Returns a GPtrArray of full paths (g_free each); free with
+ * Returns a GPtrArray of backup_entry_t (full paths); free with
  * g_ptr_array_free(a, TRUE) after.
  * ------------------------------------------------------------------------- */
 static GPtrArray *
 backup_list(const gchar *dir)
 {
-    GPtrArray *out = g_ptr_array_new_with_free_func(g_free);
+    GPtrArray *out = g_ptr_array_new_with_free_func(backup_entry_free);
     GDir *d = g_dir_open(dir, 0, NULL);
     if (d == NULL)
         return out;
     const gchar *name;
     while ((name = g_dir_read_name(d)) != NULL) {
-        if (g_str_has_prefix(name, BACKUP_PREFIX) &&
-            g_str_has_suffix(name, BACKUP_SUFFIX))
-            g_ptr_array_add(out, g_build_filename(dir, name, NULL));
+        if (!g_str_has_prefix(name, BACKUP_PREFIX) ||
+            !g_str_has_suffix(name, BACKUP_SUFFIX))
+            continue;
+        backup_entry_t *entry = g_new0(backup_entry_t, 1);
+        GStatBuf        sb;
+        entry->path  = g_build_filename(dir, name, NULL);
+        entry->mtime = g_stat(entry->path, &sb) == 0 ? (gint64)sb.st_mtime : 0;
+        g_ptr_array_add(out, entry);
     }
     g_dir_close(d);
-    /* Lexical == chronological, by construction of the filename.           */
-    g_ptr_array_sort(out, backup_name_cmp);
+    g_ptr_array_sort(out, backup_entry_cmp);
     return out;
 }
 
@@ -251,7 +317,7 @@ backup_finish(void *data)
  *   1. stamp the source and compare — unchanged means do nothing;
  *   2. VACUUM INTO a fresh, uniquely named file;
  *   3. VERIFY it, and delete it again if it does not pass;
- *   4. record the stamp;
+ *   4. record the stamp in the destination folder;
  *   5. ONLY NOW prune the oldest beyond `keep`.
  *
  * Step 5 last is what keeps a run of failing backups from eating the
@@ -273,7 +339,7 @@ backup_thread(void *data)
     }
 
     gchar *stamp = source_stamp(job->db_path, job->dir);
-    gchar *last  = task_db_state_get(db, BACKUP_STAMP_KEY);
+    gchar *last  = stamp_read(job->dir);
     if (stamp != NULL && last != NULL && g_strcmp0(stamp, last) == 0) {
         job->ok      = TRUE;
         job->skipped = TRUE;
@@ -312,6 +378,9 @@ backup_thread(void *data)
 
     gchar *cerr = NULL;
     if (!task_db_copy_file(db, dest, &cerr)) {
+        /* Whatever the failed copy left (SQLite creates the target before
+         * it fills it) must not stay to count as a backup.              */
+        g_unlink(dest);
         job->message = g_strdup_printf("Backup failed: %s",
                                        cerr != NULL ? cerr : "copy error");
         g_free(cerr);
@@ -340,19 +409,19 @@ backup_thread(void *data)
     }
     g_free(detail);
 
-    if (stamp != NULL)
-        task_db_state_set(db, BACKUP_STAMP_KEY, stamp);
-    g_free(stamp);
     task_db_close(db);
+    if (stamp != NULL)
+        stamp_write(job->dir, stamp);
+    g_free(stamp);
 
     /* Prune — only now, and only our own files.                            */
     GPtrArray *have = backup_list(job->dir);
     for (guint i = 0; have->len - i > (guint)job->keep; i++) {
-        if (g_unlink(g_ptr_array_index(have, i)) == 0)
+        const gchar *victim = ((backup_entry_t *)g_ptr_array_index(have, i))->path;
+        if (g_unlink(victim) == 0)
             job->pruned++;
         else
-            g_warning("backup: could not remove %s",
-                      (const gchar *)g_ptr_array_index(have, i));
+            g_warning("backup: could not remove %s", victim);
     }
     guint kept = have->len;
     g_ptr_array_free(have, TRUE);

@@ -1,18 +1,17 @@
 #import "day_planner.h"
 #import "editor_window.h"
+#import "kanban.h"
 #import "look.h"
+#import "task_list.h"
 #import "ui_util.h"
 
 #include "db.h"
 #include "task_app.h"
 #include "task_config.h"
+#include "task_dates.h"
 
 #include <math.h>
 #include <time.h>
-
-/* The pasteboard types the two task panes put on the board. */
-static NSString * const kanban_drag_type = @"com.cambio.tasks-appkit.kanban-card";
-static NSString * const list_drag_type   = @"tasks.task-row";
 
 /* Snap granularity for time placement, resize and move. */
 static const NSInteger snap_minutes  = 15;
@@ -44,7 +43,6 @@ static const CGFloat   header_h      = 36.0;
 @property (nonatomic, strong) NSScrollView                  *scroll;
 @property (nonatomic, strong) TasksDayCanvas                *canvas;
 @property (nonatomic, strong) NSTimer                       *clock_timer;
-@property (nonatomic, strong) NSTimer                       *progress_timer;
 @property (nonatomic, strong) NSMutableArray<TasksDayItem *> *items;
 @property (nonatomic)         BOOL                           is_shut_down;
 @property (nonatomic)         NSInteger                      days_offset; /* 0 = today */
@@ -90,7 +88,9 @@ static const CGFloat   header_h      = 36.0;
 /* ── Coordinate helpers ───────────────────────────────────────────────── */
 
 /*
- * midnight_for_offset — unix seconds of local midnight for today + offset days.
+ * midnight_for_offset — unix seconds of local midnight for today + offset
+ * days, by the calendar (task_day_bounds): a day across a clock change is
+ * not today's midnight plus a multiple of 24 hours.
  *
  * Inputs:
  *   offset — days relative to today; 0 = today, 1 = tomorrow, -1 = yesterday
@@ -101,11 +101,9 @@ static const CGFloat   header_h      = 36.0;
 static int64_t
 midnight_for_offset(NSInteger offset)
 {
-    time_t    now   = time(NULL);
-    struct tm local = *localtime(&now);
-    local.tm_hour = local.tm_min = local.tm_sec = 0;
-    local.tm_mday += (int)offset;
-    return (int64_t)mktime(&local);
+    gint64 lo, hi;
+    task_day_bounds((gint)offset, &lo, &hi);
+    return lo;
 }
 
 /*
@@ -364,8 +362,8 @@ drawRect:(NSRect)dirty
 draggingEntered:(id<NSDraggingInfo>)info
 {
     NSPasteboard *pb = info.draggingPasteboard;
-    BOOL ok = ([pb availableTypeFromArray:@[list_drag_type]]   != nil ||
-               [pb availableTypeFromArray:@[kanban_drag_type]] != nil);
+    BOOL ok = ([pb availableTypeFromArray:@[tasks_row_drag_type]]   != nil ||
+               [pb availableTypeFromArray:@[tasks_card_drag_type]] != nil);
     if (!ok) return NSDragOperationNone;
 
     NSPoint pt = [self convertPoint:info.draggingLocation fromView:nil];
@@ -427,7 +425,7 @@ performDragOperation:(id<NSDraggingInfo>)info
     NSPasteboard *pb = info.draggingPasteboard;
 
     /* Kanban puts a comma-separated list in one item */
-    NSString *kanban_str = [pb stringForType:kanban_drag_type];
+    NSString *kanban_str = [pb stringForType:tasks_card_drag_type];
     if (kanban_str.length > 0) {
         for (NSString *part in [kanban_str componentsSeparatedByString:@","]) {
             int64_t tid = part.longLongValue;
@@ -437,7 +435,7 @@ performDragOperation:(id<NSDraggingInfo>)info
 
     /* Task list puts one item per row */
     for (NSPasteboardItem *item in pb.pasteboardItems) {
-        NSString *s = [item stringForType:list_drag_type];
+        NSString *s = [item stringForType:tasks_row_drag_type];
         if (s.length > 0) {
             int64_t tid = s.longLongValue;
             if (tid > 0 && ![ids containsObject:@(tid)])
@@ -768,7 +766,7 @@ init_with_library:(TasksLibraryWindow *)library
     _canvas.planner      = self;
     _canvas.drop_y       = NAN;
     _canvas.selected_ids = [NSMutableSet set];
-    [_canvas registerForDraggedTypes:@[list_drag_type, kanban_drag_type]];
+    [_canvas registerForDraggedTypes:@[tasks_row_drag_type, tasks_card_drag_type]];
 
     _scroll                       = [[NSScrollView alloc] initWithFrame:NSZeroRect];
     _scroll.documentView          = _canvas;
@@ -783,7 +781,7 @@ init_with_library:(TasksLibraryWindow *)library
      * scroller appears, so the canvas follows it rather than the panel. */
     _scroll.contentView.postsFrameChangedNotifications = YES;
     [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(sync_canvas_width)
+                                             selector:@selector(sync_canvas_width:)
                                                  name:NSViewFrameDidChangeNotification
                                                object:_scroll.contentView];
 
@@ -797,23 +795,20 @@ init_with_library:(TasksLibraryWindow *)library
         [ws.canvas setNeedsDisplay:YES];
     }];
 
-    _progress_timer = [NSTimer scheduledTimerWithTimeInterval:60.0
-                                                      repeats:YES
-                                                        block:^(NSTimer *t) {
-        [ws check_and_progress];
-    }];
-
     return self;
 }
 
 /*
- * sync_canvas_width — make the canvas exactly as wide as the scroll view's
+ * sync_canvas_width: — make the canvas exactly as wide as the scroll view's
  * visible area, so nothing is laid out under a scroller.  Floored at the
  * hour-label column plus the block insets so item rectangles keep a
  * non-negative width while the panel is collapsed.
+ *
+ * Inputs:
+ *   note — NSViewFrameDidChangeNotification from the clip view (unused)
  */
 - (void)
-sync_canvas_width
+sync_canvas_width:(NSNotification *)note
 {
     CGFloat least = tasks_look_day_planner_label_w + tasks_look_day_planner_block_inset * 2.0;
     CGFloat cw    = MAX(NSWidth(self.scroll.contentView.bounds), least);
@@ -1066,8 +1061,9 @@ reload
 {
     if (self.is_shut_down) return;
 
-    int64_t   mid   = midnight_for_offset(_days_offset);
-    GPtrArray *tasks = task_db_tasks_scheduled_for_day(self.library.app->db, mid);
+    gint64 lo, hi;
+    task_day_bounds((gint)_days_offset, &lo, &hi);
+    GPtrArray *tasks = task_db_tasks_scheduled_for_day(self.library.app->db, lo, hi);
 
     [self.items removeAllObjects];
     for (guint i = 0; i < tasks->len; i++) {
@@ -1126,35 +1122,8 @@ remove_selected_from_schedule:(id)sender
 }
 
 /*
- * check_and_progress — promote any New task whose scheduled start has passed.
- * Only runs when the displayed day is today.
- */
-- (void)
-check_and_progress
-{
-    if (self.is_shut_down) return;
-    if (_days_offset != 0) return;
-
-    int64_t  now     = (int64_t)time(NULL);
-    TaskApp *app     = self.library.app;
-    BOOL     changed = NO;
-
-    for (TasksDayItem *item in self.items) {
-        if (item.start_unix > 0 && item.start_unix <= now &&
-            item.status == TASK_STATUS_NEW) {
-            task_db_task_set_status(app->db, item.task_id, TASK_STATUS_IN_PROGRESS);
-            item.status = TASK_STATUS_IN_PROGRESS;
-            changed = YES;
-        }
-    }
-    if (changed) {
-        [self.library refresh_tasks];
-        [self.canvas setNeedsDisplay:YES];
-    }
-}
-
-/*
- * shut_down — stop timers and stop watching the scroll view.  Idempotent.
+ * shut_down — stop the clock timer and stop watching the scroll view.
+ * Idempotent.
  * Documented in day_planner.h.
  */
 - (void)
@@ -1167,8 +1136,6 @@ shut_down
                                                   object:self.scroll.contentView];
     [self.clock_timer invalidate];
     self.clock_timer = nil;
-    [self.progress_timer invalidate];
-    self.progress_timer = nil;
 }
 
 @end
