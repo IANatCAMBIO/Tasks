@@ -809,7 +809,7 @@ apply_pane_mode
 
 /*
  * update_window_title — set the window title from the current selection:
- * "Tasks AppKit — Name" for a list, group or view; the plain app name
+ * "Tasks — Name" for a list, group or view; the plain app name
  * otherwise.
  */
 - (void)

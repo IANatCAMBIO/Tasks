@@ -462,9 +462,9 @@ task_recur_describe(const Task *t, gint64 now_ts)
  *              tasks.due_time; left alone when `ts` cannot be read
  *   returns    tasks.due: local midnight of the day it falls on, or 0
  *
- * tasks.due is DATE-ONLY (db.h) and so is Google's, which is why the day
- * and the clock go to two different columns rather than into one
- * timestamp.  Since v12 the clock DOES reach the task, in due_time — that
+ * tasks.due is DATE-ONLY (db.h), which is why the day and the clock go to
+ * two different columns rather than into one timestamp.  The clock
+ * reaches the task in due_time — that
  * is what makes "every Monday at 9:00 AM" produce a due date that says
  * 9:00 AM instead of leaving the time locked inside the schedule.
  *

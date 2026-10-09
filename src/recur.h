@@ -1,8 +1,8 @@
 /* ===========================================================================
  * recur.h — recurring tasks for Tasks
  *
- * A recurring task is an ORDINARY task that carries a schedule (the five
- * recur_* columns on the row, schema v10).  There is no second row type,
+ * A recurring task is an ORDINARY task that carries a schedule (the
+ * recur_* columns on the row).  There is no second row type,
  * no template, and no generated series: the same task comes back round.
  * That is the whole design, and it is what makes recurrence compose with
  * everything else for free — a recurring task has notes, subtasks,
@@ -19,14 +19,13 @@
  *   - `recur_interval` + `recur_unit` say how often ("every 2 weeks").
  *     0 interval means the task does not recur at all, which is every
  *     task until someone says otherwise.
- *   - `recur_start` (v11) is the DAY the schedule is anchored on, as a
+ *   - `recur_start` is the DAY the schedule is anchored on, as a
  *     unix local midnight — the "Monday" half of "every Monday at
  *     9:00 AM".  It is a DATE and never a time: the time of day is
  *     `recur_time`, and the editor shows the two side by side as one
  *     phrase ("Starting <date> at <time>").  0 means
  *     unset, and the anchor then falls back to the task's due date and
- *     finally to today, which is what every schedule set before v11 was
- *     built on.  A start in the FUTURE is honored as the first
+ *     finally to today.  A start in the FUTURE is honored as the first
  *     occurrence, so "every Monday starting the 7th" first fires on the
  *     7th rather than a week later.
  *   - `recur_time` is the ANCHOR'S TIME OF DAY, in minutes past local

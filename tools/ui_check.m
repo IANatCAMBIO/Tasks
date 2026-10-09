@@ -70,6 +70,7 @@
 
 #include "backup.h"
 #include "core_views.h"
+#include "gcal_store.h"
 #include "task_config.h"
 #include "task_order.h"
 #include "task_paths.h"
@@ -1994,6 +1995,135 @@ check_settings(TaskApp *app, NSString *dir)
 
 
 /*
+ * day_text_fields — every text field under a view.
+ *
+ * Inputs:
+ *   root — the view
+ *   out  — receives the fields
+ */
+static void
+day_text_fields(NSView *root, NSMutableArray<NSTextField *> *out)
+{
+    if ([root isKindOfClass:NSTextField.class]) [out addObject:(NSTextField *)root];
+    for (NSView *v in root.subviews) day_text_fields(v, out);
+}
+
+/*
+ * check_day_planner_calendar — the planner with Google Calendar events
+ * from the sync's cache: two overlapping meetings and an all-day event
+ * beside two sessions, one of them overlapping a meeting.  The sandbox's
+ * schedule, cache and switch are put back afterwards.
+ *
+ * Inputs:
+ *   app — the application context
+ *   dir — the snapshot folder
+ */
+static void
+check_day_planner_calendar(TaskApp *app, NSString *dir)
+{
+    NSArray<NSNumber *> *ids = first_task_ids(app, 2);
+    if (ids.count < 2) {
+        check(NO, "planner: the sandbox has two tasks to schedule");
+        return;
+    }
+    gint64 a = ids[0].longLongValue, b = ids[1].longLongValue;
+    Task  *ta = task_db_task_get(app->db, a), *tb = task_db_task_get(app->db, b);
+    gint64 a_start = ta->scheduled_start, b_start = tb->scheduled_start;
+    gint   a_dur   = ta->scheduled_duration, b_dur = tb->scheduled_duration;
+    task_free(ta);
+    task_free(tb);
+
+    /* The meetings sit around the current hour, which is where the planner
+     * opens on today (clamped to the hours it draws). */
+    gint64 lo, hi;
+    task_day_bounds(0, &lo, &hi);
+    gint64 base = lo + (gint64)CLAMP((time(NULL) - lo) / 3600, tasks_look_day_planner_start_h + 1,
+                                     tasks_look_day_planner_end_h - 4) * 3600;
+    gcal_store_init(app->db);
+    GPtrArray      *cals = g_ptr_array_new();
+    gcal_calendar_t work = { "work@ui-check", "Work", "#0b8043", TRUE, TRUE };
+    g_ptr_array_add(cals, &work);
+    gcal_store_set_calendars(app->db, cals);
+    g_ptr_array_free(cals, TRUE);
+
+    GPtrArray   *evs  = g_ptr_array_new();
+    gcal_event_t sync = { NULL, "e1", "Team sync", NULL, base, base + 3600, FALSE };
+    gcal_event_t one  = { NULL, "e2", "1:1 with Sam", NULL, base + 1800,
+                          base + 5400, FALSE };
+    gcal_event_t off  = { NULL, "e3", "Company offsite", NULL, lo, hi, TRUE };
+    g_ptr_array_add(evs, &sync);
+    g_ptr_array_add(evs, &one);
+    g_ptr_array_add(evs, &off);
+    gcal_store_set_events(app->db, "work@ui-check", evs);
+    g_ptr_array_free(evs, TRUE);
+
+    task_db_task_set_scheduled(app->db, a, base + 1800, 60);
+    task_db_task_set_scheduled(app->db, b, base + 2 * 3600, 90);
+    gboolean was_on = task_config_get_bool(TASK_CFG_GCAL_ENABLED);
+    task_config_set_bool(TASK_CFG_GCAL_ENABLED, TRUE);
+
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        NSWindow *window = library.window;
+        [library showWindow:nil];
+        BOOL was_hidden = library.day_planner.hidden;
+        if (was_hidden) {
+            [library perform_command:TasksCommandToggleDayPlanner param:nil];
+            check_spin(0.5);
+        }
+        TasksDayPlanner *planner = library.day_planner;
+        [planner reload];
+        [planner scroll_to_now];
+
+        NSUInteger n_events = 0, n_tasks = 0, side_by_side = 0;
+        for (id item in planner.items) {
+            if ([[item valueForKey:@"is_event"] boolValue]) n_events++;
+            else                                            n_tasks++;
+            if ([[item valueForKey:@"columns"] unsignedIntegerValue] > 1) side_by_side++;
+        }
+        check(n_events == 2 && n_tasks == 2, "planner: timed events drawn beside the sessions");
+        check(side_by_side == 3, "planner: the two meetings and the session they overlap share the width");
+
+        NSMutableArray<NSTextField *> *fields = [NSMutableArray array];
+        day_text_fields(planner, fields);
+        BOOL strip = NO;
+        for (NSTextField *f in fields) {
+            if (!f.hidden && [f.stringValue isEqualToString:@"Company offsite"]) strip = YES;
+        }
+        check(strip, "planner: the all-day event is in the strip under the date");
+
+        check(snapshot(window, dir, @"day-planner-calendar"), "snapshot: planner with calendar events");
+        window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        check(snapshot(window, dir, @"day-planner-calendar-dark"),
+              "snapshot: planner with calendar events, dark");
+        window.appearance = nil;
+
+        task_config_set_bool(TASK_CFG_GCAL_ENABLED, FALSE);
+        [planner reload];
+        n_events = 0;
+        for (id item in planner.items) {
+            if ([[item valueForKey:@"is_event"] boolValue]) n_events++;
+        }
+        check(n_events == 0, "planner: switched off, no events are drawn");
+
+        if (was_hidden) {
+            [library perform_command:TasksCommandToggleDayPlanner param:nil];
+            check_spin(0.5);
+        }
+        [window close];
+        check_spin(0.2);
+    }
+
+    task_db_task_set_scheduled(app->db, a, a_start, a_dur);
+    task_db_task_set_scheduled(app->db, b, b_start, b_dur);
+    GPtrArray *none = g_ptr_array_new();
+    gcal_store_keep_events(app->db, none);
+    gcal_store_set_calendars(app->db, none);
+    g_ptr_array_free(none, TRUE);
+    task_config_set_bool(TASK_CFG_GCAL_ENABLED, was_on);
+}
+
+/*
  * main — run the checks.
  *
  * Inputs:
@@ -2057,6 +2187,7 @@ main(int argc, const char *argv[])
         check_kanban(app, dir);
         check_editor_window(app);
         check_settings(app, dir);
+        check_day_planner_calendar(app, dir);
         check_memory_and_ownership(app);
 
         if (argc > 2) {

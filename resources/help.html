@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- The page Help > Tasks AppKit Help opens (src/app_delegate.m, show_help).
+<!-- The page Help > Tasks Help opens (src/app_delegate.m, show_help).
      It covers the main window only: its shortcuts are the command table's
      (src/commands.m) and its search rules are src/search.h's.  When either
      changes, change this page in the same commit. -->
@@ -7,7 +7,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="color-scheme" content="light dark">
-<title>Tasks AppKit Help</title>
+<title>Tasks Help</title>
 <style>
   body  { font: 14px/1.5 -apple-system, sans-serif; max-width: 42em;
           margin: 2em auto; padding: 0 1.5em; }
@@ -20,7 +20,7 @@
 </head>
 <body>
 
-<h1>Tasks AppKit Help</h1>
+<h1>Tasks Help</h1>
 
 <h2>The window</h2>
 <p>The sidebar on the left lists the views (Favorites, All Tasks, Due
@@ -58,6 +58,27 @@ database is refused.  A database named <code>tasks.db</code> can then be
 made the default, opened at every launch; one with any other name stays
 open for the session only.</p>
 
+<h2>Google Calendar</h2>
+<p>The day planner can be kept in step with your Google Calendar.  Turn it
+on in Settings: press <b>Sign In to Google…</b>, approve the request in
+your browser, and tick <b>Sync the day planner with Google Calendar</b>.</p>
+<p>Your meetings then appear in the planner, in their calendar's colour, so
+you can schedule around them; all-day events are listed under the date.
+They cannot be moved from here.  A task you drag onto the planner becomes an
+event in the calendar chosen under <b>Add scheduled tasks to</b>.  Moving or
+stretching it moves the event, and <b>Remove from Schedule</b> or deleting
+the task deletes it.  It works the other way too: move the event in Google
+Calendar and the session moves here; delete it there and the task leaves
+the planner.  If you change a session here and in Google before they sync,
+the change made here wins.</p>
+<p>The planner sends each change you make a couple of seconds after you
+make it.  It also syncs on a timer, every five minutes unless you change
+<b>Sync every … minutes</b>, and when you press <b>Sync Now</b>.  The timer
+decides how soon changes made in Google Calendar reach the planner; 0 turns
+it off.  It shows events from a
+week ago to two months ahead.  Declined invitations are left out.  Your
+sign-in is kept in the macOS keychain; <b>Sign Out</b> removes it.</p>
+
 <h2>Keyboard shortcuts</h2>
 <table>
 <tr><td>⌘N</td><td>New Task</td></tr>
@@ -76,7 +97,7 @@ open for the session only.</p>
 <h2>Where the data is kept</h2>
 <p>The database (<code>tasks.db</code>), the settings
 (<code>tasks.ini</code>) and the backups are in
-<code>~/Library/Application Support/TasksAppKit/</code>, unless a
+<code>~/Library/Application Support/Tasks/</code>, unless a
 different default database was chosen with Open Database File….</p>
 
 </body>

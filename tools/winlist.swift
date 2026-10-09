@@ -1,7 +1,7 @@
 // winlist.swift — print every on-screen window of one process:
 //   <window id> | <title> | <x> <y> <w> <h>
 //
-// Used by tools/winshot.sh to capture a Tasks AppKit window by id, which is the
+// Used by tools/winshot.sh to capture a Tasks window by id, which is the
 // only way to screenshot it when the front Space is not the one it is on.
 // Plain CoreGraphics, no dependencies; run with `swift winlist.swift PID`.
 import CoreGraphics

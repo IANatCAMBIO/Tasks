@@ -1,4 +1,4 @@
-# Tasks AppKit — Build Guide
+# Tasks — Build Guide
 
 ## Toolchain
 
@@ -23,6 +23,7 @@ xcode-select --install
 | libdispatch, CoreFoundation | timers and background work in the core; the tests' run loop | macOS SDK |
 | GLib 2 (`glib-2.0`; developed with 2.88) | utilities in the core — strings, arrays, key file, dates | MacPorts `glib2` |
 | SQLite 3 (3.35 or later; developed with 3.53) | storage | MacPorts `sqlite3` |
+| libcurl, Security | the Google Calendar sync's HTTPS calls; the keychain item holding its sign-in | macOS SDK (the system libcurl, which trusts the keychain's certificates) |
 
 ```sh
 sudo port install glib2 sqlite3 pkgconf
@@ -39,7 +40,7 @@ there when it is not on `PATH`.
 
 | Target | What it does |
 |--------|--------------|
-| `make` | Build `TasksAppKit.app` in the source directory |
+| `make` | Build `Tasks.app` in the source directory |
 | `make run` | Build, then run the app against the sandbox data in `dev/data` (seeding it first if empty) |
 | `make seed` | Recreate the sandbox test database: 2 groups, 8 lists, 42 tasks |
 | `make test` | Build and run the core tests (`tests/*_test.c`); no window is opened |
@@ -58,10 +59,10 @@ re-signs the bundle.
 ## Output
 
 ```
-TasksAppKit.app/
+Tasks.app/
 └── Contents/
     ├── Info.plist      resources/Info.plist + identity, version, build date
-    ├── MacOS/TasksAppKit
+    ├── MacOS/Tasks
     └── Resources/      document.png, the app's icon
 build/                  objects, dependency files, test binaries, seed, ui_check.app
 dev/                    sandbox data, test scratch folders, snapshots
@@ -77,6 +78,22 @@ there and run `make clean && make`.
 
 The version is the one line in `VERSION`.  The build time is written to
 `Info.plist` as `TasksBuildDate` and shown in the About panel.
+
+## Google OAuth client
+
+The Google Calendar sync needs an OAuth client.  `client_credentials.mk`
+(gitignored, optional) in the source folder supplies one at build time:
+
+```make
+GOOGLE_CLIENT_ID     = <id>.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET = <secret>
+```
+
+Only `build/oauth.o` is compiled with the two values, and it is rebuilt
+when the file changes.  Without the file the app looks for the Google Cloud
+console's client file in the data folder (`src/oauth.h`).  The client must
+be a "Desktop app" client with the Google Calendar API enabled on its
+project.
 
 ## Compiler flags
 
@@ -106,7 +123,7 @@ entitlements, no notarisation — this is a locally built app.
 make test
 ```
 
-Six programs, all linked against the core only (no AppKit):
+The programs, all linked against the core only (no AppKit), include:
 
 | Program | Covers |
 |---|---|
@@ -116,6 +133,7 @@ Six programs, all linked against the core only (no AppKit):
 | `rows_test` | the row description (lines, emphasis, notes preview) and the pane collection (filters, status line) |
 | `order_test` | saved orders: key spelling, the permutation, dropping keys |
 | `app_test` | the event bus, due-date urgency, the recurrence pass waking on a main-loop timer |
+| `gcal_test` | the calendar sync without the network: every planning rule, reading events and writing request bodies, the sync's tables (dirty check, compare-and-set reschedule, event cache, account), the sign-in's loopback listener |
 
 They work in scratch folders under `dev/test-data` and refuse to run without
 `TASKS_DATA_DIR`.
@@ -142,6 +160,13 @@ src/
   task_rows.[ch]       toolkit-neutral description of a task row
   task_pane.[ch]       sidebar selection type; collects a selection's rows
   task_order.[ch]      saved manual / Kanban orders
+  http.[ch]            one blocking HTTPS request (libcurl)
+  json.[ch]            minimal JSON parser and string escaping
+  oauth.[ch]           Google sign-in: PKCE, loopback redirect, keychain
+  gcal_plan.[ch]       the calendar sync's per-task decision
+  gcal_store.[ch]      the calendar sync's tables: calendars, events, bindings
+  gcal_api.[ch]        the Google Calendar REST calls
+  gcal_sync.[ch]       the calendar sync: worker, kick, background pass
 
   main.m               entry point
   app_delegate.[hm]    launch, menu bar, About, quit
@@ -153,6 +178,7 @@ src/
   lists_bar.[hm]       lists bar: views, groups and lists, their sheets
   task_list.[hm]       task list          (stub)
   kanban.[hm]          Kanban board       (stub)
+  day_planner.[hm]     day planner, with Google Calendar events
   editor_window.[hm]   task editor        (stub)
   settings_window.[hm] Settings           (stub)
 tests/                 core tests; check.h and fixture.h are the harness

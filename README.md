@@ -1,4 +1,4 @@
-# Tasks AppKit
+# Tasks
 
 An experimental macOS-only fork of [Tasks](https://github.com/IANatCAMBIO/Tasks):
 the same task manager — lists, tall task rows, a Kanban board, subtasks, due
@@ -39,7 +39,7 @@ nibs.
 ## Build and try it
 
 ```sh
-make          # builds TasksAppKit.app
+make          # builds Tasks.app
 make seed     # creates a test database in dev/data
 make run      # runs the app against dev/data
 make test     # core tests
@@ -51,17 +51,50 @@ the source tree.
 ## Install
 
 ```sh
-make install  # copies TasksAppKit.app to ~/Applications
+make install  # copies Tasks.app to ~/Applications
 ```
 
 A running installed copy is asked to quit first and reopened afterwards.
+
+## Google Calendar
+
+The day planner syncs with Google Calendar, both ways.  Meetings in the
+calendars you choose are drawn in the planner so you can schedule around
+them.  Tasks you drag onto the planner become events in your calendar, and
+moving, stretching or removing them updates the event.  Moving or deleting
+that event in Google Calendar updates the planner.
+
+To set it up:
+
+1. The app needs a Google OAuth client, a "Desktop app" client from the
+   Google Cloud console with the **Google Calendar API** enabled.  Either
+   put its two values in `client_credentials.mk` in the source folder and
+   rebuild:
+
+   ```make
+   GOOGLE_CLIENT_ID     = <id>.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET = <secret>
+   ```
+
+   or drop the console's downloaded client file into the data folder,
+   renamed to `client_secret.apps.googleusercontent.com.json`.  Both are
+   gitignored.  The client that the GTK app's Google Tasks sync used works
+   once the Calendar API is enabled on its project.
+2. Open Settings, press **Sign In to Google…** and approve the request in
+   your browser.
+3. Tick **Sync the day planner with Google Calendar**.  After the first
+   sync, choose the calendar tasks go to and the calendars to show.
+
+The sign-in is kept in the macOS keychain, one entry per data folder, so a
+`make run` sandbox has to be signed in separately and can never push test
+tasks into the calendar the installed app uses.
 
 ## Where the data lives
 
 Everything the app keeps is in one folder:
 
 ```
-~/Library/Application Support/TasksAppKit/
+~/Library/Application Support/Tasks/
     tasks.db        the database
     tasks.ini       the settings
     backups/        rotating backups, when switched on

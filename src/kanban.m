@@ -41,7 +41,7 @@
  */
 
 /* The pasteboard type that marks a card drag. */
-NSPasteboardType const tasks_card_drag_type = @"com.cambio.tasks-appkit.kanban-card";
+NSPasteboardType const tasks_card_drag_type = @TASKS_BUNDLE_ID ".kanban-card";
 
 /* Layout the look.h Kanban section has no entry for.  From the GTK build. */
 static const CGFloat lane_heading_gap  = 4.0;   /* a lane's heading to its box   */

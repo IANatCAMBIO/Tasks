@@ -1,4 +1,4 @@
-# Tasks AppKit — Makefile.  See BUILD.md for the full reference.
+# Tasks — Makefile.  See BUILD.md for the full reference.
 #
 #   make          build the app bundle
 #   make run      launch it against the sandbox data in dev/data
@@ -12,11 +12,14 @@
 # The ONE place the app's names are defined.  They reach the code as the
 # TASKS_* macros below and reach Info.plist through plutil; nothing else
 # spells them.
-APP_NAME      = Tasks AppKit
-APP           = TasksAppKit
-BUNDLE_ID     = com.cambio.tasks-appkit
-# Folder under ~/Library/Application Support holding the database and ini.
-DATA_DIR_NAME = TasksAppKit
+APP_NAME      = Tasks
+APP           = Tasks
+BUNDLE_ID     = com.cambio.tasks
+# Folder under ~/Library/Application Support holding the database, the ini
+# and the Google client file; also names the keychain item of the Google
+# sign-in.  Renaming it moves none of them: move the folder by hand (and
+# sign in to Google again) when it changes.
+DATA_DIR_NAME = Tasks
 
 BUNDLE   = $(APP).app
 CONTENTS = $(BUNDLE)/Contents
@@ -90,6 +93,7 @@ LINK_TARGET  := $(shell sw_vers -productVersion | cut -d. -f1).0
 # -MMD -MP: emit build/*.d header-dependency files, so editing a header
 # rebuilds every object that includes it.
 DEFS     = -DTASKS_APP_NAME='"$(APP_NAME)"' \
+           -DTASKS_BUNDLE_ID='"$(BUNDLE_ID)"' \
            -DTASKS_DATA_DIR_NAME='"$(DATA_DIR_NAME)"'
 COMMON   = -O2 -Wall -Wextra -Werror=unguarded-availability \
            -mmacosx-version-min=$(DEPLOY_TARGET) -I src -MMD -MP $(DEFS) $(PKG_CFLAGS)
@@ -100,8 +104,30 @@ CFLAGS   = -std=c11 $(COMMON)
 # notifications, delegate arguments), which would otherwise each need a
 # (void) cast.
 OBJCFLAGS = -fobjc-arc $(COMMON) -Wno-unused-parameter
-LDLIBS   = -mmacosx-version-min=$(LINK_TARGET) $(PKG_LIBS)
+# The core's own system libraries: libcurl (the SDK's, which trusts the
+# keychain's certificates, so it works behind a TLS-inspecting proxy) for
+# the Google Calendar sync, Security for the keychain item holding its
+# sign-in, CoreFoundation under both.  The tests and the seed tool link
+# the core, so they link these too.
+SYS_LIBS = -lcurl -framework Security -framework CoreFoundation
+LDLIBS   = -mmacosx-version-min=$(LINK_TARGET) $(PKG_LIBS) $(SYS_LIBS)
 LDFLAGS  = -framework Cocoa -framework UniformTypeIdentifiers -framework UserNotifications $(LDLIBS)
+
+# ── Google OAuth client ──────────────────────────────────────────────────
+# The app's OAuth client for the Google Calendar sync, baked into
+# src/oauth.c so that signing in needs no setup.  client_credentials.mk
+# is gitignored and optional; it holds two lines from a "Desktop app"
+# OAuth client in the Google Cloud console (Google Calendar API enabled):
+#   GOOGLE_CLIENT_ID     = <id>.apps.googleusercontent.com
+#   GOOGLE_CLIENT_SECRET = <secret>
+# Without it the app looks for the console's downloaded client file in
+# the data folder instead (src/oauth.h).  Only oauth.o is built with the
+# values, and it is rebuilt when the file changes.
+-include client_credentials.mk
+CREDENTIALS = $(wildcard client_credentials.mk)
+build/oauth.o: $(CREDENTIALS)
+build/oauth.o: CFLAGS += $(if $(GOOGLE_CLIENT_ID),-DTASK_GOOGLE_CLIENT_ID='"$(GOOGLE_CLIENT_ID)"') \
+                         $(if $(GOOGLE_CLIENT_SECRET),-DTASK_GOOGLE_CLIENT_SECRET='"$(GOOGLE_CLIENT_SECRET)"')
 
 # Every src/*.c is the toolkit-free core; every src/*.m is the AppKit
 # layer.  A .c and a .m must not share a base name (both would build to
@@ -124,7 +150,7 @@ all: $(BUNDLE)
 # panel.
 # The app's own icon is the one picture bundled (CFBundleIconFile names
 # it): the command icons are SF Symbols, which come with the system.
-# HELP_PAGE is what Help > Tasks AppKit Help opens.
+# HELP_PAGE is what Help > Tasks Help opens.
 APP_ICON   = icons/document.png
 HELP_PAGE  = resources/help.html
 PLIST      = $(CONTENTS)/Info.plist
@@ -183,14 +209,14 @@ seed: build/seed
 # ── Tests ────────────────────────────────────────────────────────────────
 # tests/*_test.c, each linked against the core objects only — no AppKit —
 # and run with TASKS_DATA_DIR set to a scratch directory that is emptied
-# first; every file a test creates is inside it.  CoreFoundation is linked
-# for the run loop the main-loop tests spin.
+# first; every file a test creates is inside it.  CoreFoundation (in
+# SYS_LIBS) also serves the run loop the main-loop tests spin.
 TEST_SRCS = $(wildcard tests/*_test.c)
 TEST_BINS = $(patsubst tests/%.c,build/%,$(TEST_SRCS))
 
 build/%_test: tests/%_test.c tests/check.h tests/fixture.h $(CORE_OBJS) Makefile | build
 	$(CC) $(CFLAGS) -I tests -c -o $@.o $<
-	$(CC) -o $@ $@.o $(CORE_OBJS) $(LDLIBS) -framework CoreFoundation
+	$(CC) -o $@ $@.o $(CORE_OBJS) $(LDLIBS)
 
 test: $(TEST_BINS)
 	@rm -rf "$(TEST_DATA)" && mkdir -p "$(TEST_DATA)"
@@ -221,7 +247,9 @@ ui-check: $(UI_CHECK_BIN)
 	TASKS_DATA_DIR="$(DEV_DATA)" $(UI_CHECK_BIN) "$(CURDIR)/dev/snapshots"
 
 # ── Install ──────────────────────────────────────────────────────────────
-# Per-user install: no sudo needed.  The old bundle is removed first
+# Per-user install: no sudo needed.  Whatever Tasks.app is already in
+# ~/Applications is replaced, whichever app it is.  The old bundle is
+# removed first
 # because `cp -R` into an existing bundle directory would nest the new one
 # inside it.  A running installed copy is asked to quit (SIGTERM, which the
 # app handles as a normal quit: pending edits are saved and the database is

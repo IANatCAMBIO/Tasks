@@ -184,7 +184,7 @@ make_attachments(const char *data_dir, gchar *paths[3])
             g_free(dir);
             return -1;
         }
-        fprintf(f, "Sample attachment %d for the Tasks AppKit test database.\n", i + 1);
+        fprintf(f, "Sample attachment %d for the Tasks test database.\n", i + 1);
         fclose(f);
     }
     g_free(dir);

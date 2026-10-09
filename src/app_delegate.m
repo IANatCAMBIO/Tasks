@@ -10,6 +10,7 @@
 #include "backup.h"
 #include "core_views.h"
 #include "db.h"
+#include "gcal_sync.h"
 #include "recur.h"
 #include "task_config.h"
 #include "task_switch.h"
@@ -81,6 +82,7 @@ start_config:(gchar **)out_path
     task_recur_init(app);
     task_backup_init(app);
     task_notify_init(app);
+    gcal_sync_init(app);
     self.app = app;
 
     gchar *db_dir = task_config_get(TASK_CFG_DB_DIR);
@@ -142,7 +144,7 @@ welcome_pick_path:(const gchar *)default_path choice:(TasksWelcomeChoice *)choic
     gchar   *basename = g_path_get_basename(default_path);
     NSString *db_name = tasks_string(basename);
     g_free(basename);
-    alert.messageText = @"Welcome to Tasks AppKit";
+    alert.messageText = @"Welcome to " @TASKS_APP_NAME;
     alert.informativeText = [NSString stringWithFormat:
         @"No database was found.  You can open an existing Tasks database "
         @"(such as one from the GTK app) or create a new one named \"%@\".",
@@ -357,6 +359,7 @@ applicationWillTerminate:(NSNotification *)note
     [self.library shut_down];
     self.library = nil;
     task_worker_disarm_all();
+    gcal_sync_shut_down();
     task_app_free(self.app);
     self.app = NULL;
     task_config_close();
@@ -482,7 +485,7 @@ show_about
 }
 
 /*
- * show_help — Help > Tasks AppKit Help: open the bundled help page in the
+ * show_help — Help > Tasks Help: open the bundled help page in the
  * user's browser.  (A Help Book would need an indexed help bundle; one
  * page does not earn that.)
  */

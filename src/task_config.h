@@ -73,6 +73,16 @@
 #define TASK_CFG_NOTIF_MODE          "notifications_mode"      /* "tasks" or "native"; default "tasks" */
 #define TASK_CFG_NOTIF_CHECK_MIN     "notifications_check_min" /* int minutes, 1; internal, not in Settings */
 
+/* Google Calendar sync (see gcal_sync.h) */
+#define TASK_CFG_GCAL_ENABLED        "gcal_enabled"          /* bool, 0: sync the day planner */
+#define TASK_CFG_GCAL_INTERVAL_MIN   "gcal_interval_min"     /* int minutes, 5 (Settings offers 0-1440);
+                                                            * 0 = only on change and Sync Now */
+#define TASK_CFG_GCAL_PUSH_CALENDAR  "gcal_push_calendar"    /* calendar id sessions go to; none =
+                                                            * the primary calendar */
+#define TASK_CFG_GCAL_SHOW_CALENDARS "gcal_show_calendars"   /* calendar ids, comma separated, whose
+                                                            * events the planner shows; none = the
+                                                            * primary calendar */
+
 /* Task-list header sort (written by the list; spelling in task_sort.h) */
 #define TASK_CFG_LIST_SORT           "task_list_sort"        /* column names, e.g. "due,-title"; none = unsorted */
 

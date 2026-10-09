@@ -4,6 +4,9 @@
 #import "task_notify.h"
 
 #include "backup.h"
+#include "gcal_store.h"
+#include "gcal_sync.h"
+#include "oauth.h"
 #include "task_config.h"
 #include "task_health.h"
 #include "task_paths.h"
@@ -42,6 +45,8 @@ static const NSUInteger sha_tail = 4;
 static const NSInteger backup_interval_max  = 10080;
 static const NSInteger backup_interval_step = 15;
 static const CGFloat   interval_field_w     = 56.0;  /* five digits  */
+/* The calendar sync's interval: up to a day, a minute at a time. */
+static const NSInteger gcal_interval_max    = 1440;
 static const CGFloat   keep_field_w         = 44.0;  /* three digits */
 static const CGFloat   stepper_gap          = 2.0;   /* a field to its stepper */
 
@@ -363,12 +368,26 @@ isFlipped
 @property (nonatomic, strong) NSButton *notif_tasks_btn;   /* radio: Tasks popup  */
 @property (nonatomic, strong) NSButton *notif_native_btn;  /* radio: macOS Notif. */
 
+/* Google Calendar.  Two boxes are rebuilt by refresh_gcal whenever the
+ * sign-in, a pass or a choice changes them: the status and its buttons,
+ * and the calendar choices.  Between them the switch and the interval stay
+ * put, so a pass finishing never takes away a field being typed in. */
+@property (nonatomic, strong) NSStackView *gcal_box;
+@property (nonatomic, strong) NSStackView *gcal_calendars_box;
+@property (nonatomic, strong) NSButton *gcal_switch;
+@property (nonatomic, strong) NSTextField *gcal_interval_field;
+@property (nonatomic, strong) NSStepper *gcal_interval_stepper;
+@property (nonatomic, assign) BOOL gcal_signing_in;        /* the browser is open   */
+@property (nonatomic, assign) BOOL gcal_refresh_queued;
+@property (nonatomic, assign) guint gcal_listener;         /* task events: a pass ended */
+
 @property (nonatomic, assign) BOOL is_shut_down;
 
 /* Declared here because the C callbacks below call them before their
  * definitions; documented where they are defined. */
 - (void)show_probe:(const task_health_probe_t *)probe;
 - (void)show_backup_status:(NSString *)text;
+- (void)queue_gcal_refresh;
 @end
 
 /* The one Settings window while it is open; nil otherwise.  This reference
@@ -380,6 +399,43 @@ static TasksSettingsWindow *settings_window;
 static NSUInteger last_probe_id;
 
 /* ── Core callbacks ─────────────────────────────────────────────────── */
+
+/*
+ * on_gcal_tasks — a task event, which is also how a finished calendar
+ * pass announces itself: the section's status line may have changed.
+ *
+ * Inputs:
+ *   app  — the application context (unused)
+ *   data — unused
+ */
+static void
+on_gcal_tasks(TaskApp *app, gpointer data)
+{
+    [settings_window queue_gcal_refresh];
+}
+
+/*
+ * on_signed_in — the browser sign-in finished (oauth.h).  The outcome is
+ * news about the app's sign-in, so it is shown whether or not the window
+ * that started it is still open.
+ *
+ * Inputs:
+ *   ok    — whether a grant is now stored
+ *   error — why not (borrowed), or NULL
+ *   data  — unused
+ */
+static void
+on_signed_in(gboolean ok, const gchar *error, gpointer data)
+{
+    settings_window.gcal_signing_in = NO;
+    if (ok) {
+        gcal_sync_settings_changed();
+    } else {
+        tasks_ui_notice(settings_window.window, @"Google sign-in failed",
+                        tasks_string(error != NULL ? error : "The sign-in did not finish."), nil);
+    }
+    [settings_window queue_gcal_refresh];
+}
 
 /*
  * on_probe — a database probe has reported (task_health.h).  The answer is
@@ -454,6 +510,8 @@ init_with_app:(TaskApp *)app
     window.delegate = self;
 
     [self build_form];
+    [self refresh_gcal];
+    _gcal_listener = task_app_listen_tasks(app, on_gcal_tasks, NULL);
     [self refresh_backup];
     [self refresh_database];
     [self fit_window];
@@ -730,8 +788,350 @@ notif_mode_changed:(NSButton *)sender
         task_notify_request_native_auth();
 }
 
+/* ── Google Calendar ─────────────────────────────────────────────────── */
+
 /*
- * build_form — lay the four sections out in one vertical stack, in the
+ * gcal_box_view — an empty vertical box for refresh_gcal to fill.
+ *
+ * Output:
+ *   the box.
+ */
+static NSStackView *
+gcal_box_view(void)
+{
+    NSStackView *box = [NSStackView stackViewWithViews:@[]];
+    box.orientation = NSUserInterfaceLayoutOrientationVertical;
+    box.alignment   = NSLayoutAttributeLeading;
+    box.spacing     = tasks_look_form_spacing;
+    return box;
+}
+
+/*
+ * gcal_interval_row — "Sync every [n] minutes": the calendar sync's
+ * timer, a field with a stepper like the backup's.
+ *
+ * Output:
+ *   the row.
+ */
+- (NSStackView *)
+gcal_interval_row
+{
+    self.gcal_interval_field   = number_field(interval_field_w, self,
+                                              @selector(gcal_interval_changed:));
+    self.gcal_interval_stepper = number_stepper(0, gcal_interval_max, 1, self,
+                                                @selector(gcal_interval_changed:));
+    self.gcal_interval_field.toolTip =
+        @"Minutes between syncs, which is how soon changes made in Google Calendar reach the "
+        @"planner. Changes made in the planner are sent within seconds whatever this says. "
+        @"0 syncs only on those changes and when you press Sync Now.";
+    [self show_number:task_config_get_int(TASK_CFG_GCAL_INTERVAL_MIN)
+                field:self.gcal_interval_field
+              stepper:self.gcal_interval_stepper];
+
+    NSStackView *row = [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:@"Sync every"], self.gcal_interval_field,
+        self.gcal_interval_stepper, [NSTextField labelWithString:@"minutes"]]];
+    row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    row.alignment   = NSLayoutAttributeFirstBaseline;
+    [row setCustomSpacing:stepper_gap afterView:self.gcal_interval_field];
+    return row;
+}
+
+/*
+ * gcal_rows — the Google Calendar section: its heading, the status box,
+ * the switch, the interval and the calendars box.
+ *
+ * Output:
+ *   the section's rows, heading first.
+ */
+- (NSArray<NSView *> *)
+gcal_rows
+{
+    self.gcal_box           = gcal_box_view();
+    self.gcal_calendars_box = gcal_box_view();
+    self.gcal_switch = [self gcal_checkbox:@"Sync the day planner with Google Calendar"
+                                    action:@selector(gcal_toggle:)
+                                        on:task_config_get_bool(TASK_CFG_GCAL_ENABLED)];
+    self.gcal_switch.toolTip =
+        @"Tasks dragged onto the day planner become events in your calendar, and moving, "
+        @"stretching or removing them changes the event. Events moved or deleted in Google "
+        @"Calendar change the planner too. Events from the calendars you show are drawn in "
+        @"the planner so you can schedule around them.";
+    return @[section_label(@"Google Calendar"), self.gcal_box, self.gcal_switch,
+             [self gcal_interval_row], self.gcal_calendars_box];
+}
+
+/*
+ * gcal_checkbox:action:on: — one checkbox of the section.
+ *
+ * Inputs:
+ *   title  — its label
+ *   action — its action
+ *   on     — its state
+ *
+ * Output:
+ *   the checkbox.
+ */
+- (NSButton *)
+gcal_checkbox:(NSString *)title action:(SEL)action on:(BOOL)on
+{
+    NSButton *box = [NSButton checkboxWithTitle:title target:self action:action];
+    box.state     = on ? NSControlStateValueOn : NSControlStateValueOff;
+    return box;
+}
+
+/*
+ * gcal_calendar_rows:into: — the calendar choices: the popup choosing
+ * where sessions go, and a checkbox per calendar for whose events the
+ * planner shows.  The list is the one the last pass stored; before the
+ * first pass there is nothing to choose from yet.
+ *
+ * Inputs:
+ *   cals — gcal_calendar_t* (borrowed)
+ *   rows — receives the views
+ */
+- (void)
+gcal_calendar_rows:(GPtrArray *)cals into:(NSMutableArray<NSView *> *)rows
+{
+    gchar *push = task_config_get(TASK_CFG_GCAL_PUSH_CALENDAR);
+    gchar *show = task_config_get(TASK_CFG_GCAL_SHOW_CALENDARS);
+    gchar **shown = show != NULL ? g_strsplit(show, ",", -1) : NULL;
+
+    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    popup.target = self;
+    popup.action = @selector(gcal_push_changed:);
+    for (guint i = 0; i < cals->len; i++) {
+        const gcal_calendar_t *c = g_ptr_array_index(cals, i);
+        if (!c->writable) continue;
+        [popup addItemWithTitle:tasks_string(c->summary)];
+        popup.lastItem.representedObject = tasks_string(c->id);
+        if ((push == NULL && c->is_primary) || (push != NULL && strcmp(push, c->id) == 0))
+            [popup selectItem:popup.lastItem];
+    }
+    NSStackView *push_row = [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:@"Add scheduled tasks to:"], popup]];
+    push_row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    push_row.alignment   = NSLayoutAttributeFirstBaseline;
+    [rows addObject:push_row];
+
+    [rows addObject:[NSTextField labelWithString:@"Show events from:"]];
+    for (guint i = 0; i < cals->len; i++) {
+        const gcal_calendar_t *c  = g_ptr_array_index(cals, i);
+        BOOL                   on = shown != NULL ? g_strv_contains((const gchar *const *)shown, c->id)
+                                                  : c->is_primary;
+        NSButton *box = [self gcal_checkbox:tasks_string(c->summary)
+                                     action:@selector(gcal_show_changed:) on:on];
+        box.identifier = tasks_string(c->id);
+        [rows addObject:box];
+    }
+    g_strfreev(shown);
+    g_free(show);
+    g_free(push);
+}
+
+/*
+ * refresh_gcal — rebuild the section from the sign-in, the last pass and
+ * the settings.
+ */
+- (void)
+refresh_gcal
+{
+    NSColor  *dim      = NSColor.secondaryLabelColor;
+    CGFloat   text_w   = form_content_w();
+    BOOL      client   = task_oauth_have_client();
+    BOOL      signed_in = task_oauth_authenticated();
+    NSMutableArray<NSView *> *rows = [NSMutableArray array];
+
+    NSTextField *status = wrapping_label(dim, text_w);
+    if (!client) {
+        status.stringValue = @"No Google OAuth client is configured for this build. Put the "
+                             @"Google Cloud console's Desktop-app client file (" @TASK_OAUTH_CLIENT_FILE
+                             @") in the data folder, or build with client_credentials.mk.";
+    } else if (self.gcal_signing_in) {
+        status.stringValue = @"Waiting for the sign-in in your browser…";
+    } else if (!signed_in) {
+        status.stringValue = @"Not signed in.";
+    } else {
+        gchar *line = gcal_sync_status();
+        status.stringValue = task_config_get_bool(TASK_CFG_GCAL_ENABLED)
+            ? [NSString stringWithFormat:@"Signed in. %@.", tasks_string(line)]
+            : @"Signed in. Syncing is off.";
+        g_free(line);
+    }
+    [rows addObject:status];
+
+    NSButton *sign = signed_in
+        ? [NSButton buttonWithTitle:@"Sign Out" target:self action:@selector(gcal_sign_out:)]
+        : [NSButton buttonWithTitle:@"Sign In to Google…" target:self action:@selector(gcal_sign_in:)];
+    sign.enabled = client && !self.gcal_signing_in;
+    NSButton *now = [NSButton buttonWithTitle:@"Sync Now" target:self action:@selector(gcal_sync_now:)];
+    now.enabled  = gcal_sync_active();
+    [rows addObject:button_row(@[sign, now])];
+
+    [self.gcal_box setViews:rows inGravity:NSStackViewGravityTop];
+
+    NSMutableArray<NSView *> *choices = [NSMutableArray array];
+    if (signed_in) {
+        GPtrArray *cals = gcal_store_calendars(self.app->db);
+        if (cals->len > 0) [self gcal_calendar_rows:cals into:choices];
+        g_ptr_array_free(cals, TRUE);
+    }
+    /* The interval means something only while the sync runs, as the
+     * backup's does only while backups are on. */
+    BOOL on = task_config_get_bool(TASK_CFG_GCAL_ENABLED);
+    self.gcal_interval_field.enabled   = on;
+    self.gcal_interval_stepper.enabled = on;
+
+    [self.gcal_calendars_box setViews:choices inGravity:NSStackViewGravityTop];
+    self.gcal_calendars_box.hidden = choices.count == 0;
+    [self fit_window];
+}
+
+/*
+ * queue_gcal_refresh — refresh_gcal on the next pass of the run loop:
+ * the section is rebuilt from callbacks fired while one of its own
+ * controls may still be sending its action.
+ */
+- (void)
+queue_gcal_refresh
+{
+    if (self.is_shut_down || self.gcal_refresh_queued) return;
+    self.gcal_refresh_queued = YES;
+    __weak TasksSettingsWindow *ws = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        TasksSettingsWindow *w = ws;
+        if (w == nil || w.is_shut_down) return;
+        w.gcal_refresh_queued = NO;
+        [w refresh_gcal];
+    });
+}
+
+/*
+ * gcal_sign_in: — open Google's sign-in in the browser.
+ *
+ * Inputs:
+ *   sender — the button (unused)
+ */
+- (void)
+gcal_sign_in:(id)sender
+{
+    gchar *error = NULL;
+    gchar *url   = task_oauth_begin(on_signed_in, NULL, &error);
+    if (url == NULL) {
+        tasks_ui_notice(self.window, @"Cannot sign in to Google", tasks_string(error), nil);
+        g_free(error);
+        return;
+    }
+    self.gcal_signing_in = YES;
+    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:tasks_string(url)]];
+    g_free(url);
+    [self queue_gcal_refresh];
+}
+
+/*
+ * gcal_sign_out: — delete the stored sign-in and stop drawing the
+ * calendar's events.
+ *
+ * Inputs:
+ *   sender — the button (unused)
+ */
+- (void)
+gcal_sign_out:(id)sender
+{
+    task_oauth_signout();
+    gcal_sync_signed_out();
+    gcal_sync_settings_changed();
+    [self queue_gcal_refresh];
+}
+
+/*
+ * gcal_sync_now: — run a pass now.
+ *
+ * Inputs:
+ *   sender — the button (unused)
+ */
+- (void)
+gcal_sync_now:(id)sender
+{
+    gcal_sync_now(TRUE);
+    [self queue_gcal_refresh];
+}
+
+/*
+ * gcal_toggle: — the master switch changed.
+ *
+ * Inputs:
+ *   sender — the checkbox
+ */
+- (void)
+gcal_toggle:(NSButton *)sender
+{
+    task_config_set_bool(TASK_CFG_GCAL_ENABLED, sender.state == NSControlStateValueOn);
+    gcal_sync_settings_changed();
+    [self queue_gcal_refresh];
+}
+
+/*
+ * gcal_interval_changed: — the interval's field or stepper changed: write
+ * it and restart the sync's timer on the new period.
+ *
+ * Inputs:
+ *   sender — the field or the stepper
+ */
+- (void)
+gcal_interval_changed:(NSControl *)sender
+{
+    NSInteger minutes = [self show_number:sender.integerValue
+                                    field:self.gcal_interval_field
+                                  stepper:self.gcal_interval_stepper];
+
+    /* Leaving the field without changing it also lands here, and must not
+     * start a pass. */
+    if (minutes == task_config_get_int(TASK_CFG_GCAL_INTERVAL_MIN)) return;
+    task_config_set_int(TASK_CFG_GCAL_INTERVAL_MIN, (gint)minutes);
+    gcal_sync_settings_changed();
+}
+
+/*
+ * gcal_push_changed: — a different calendar was chosen for sessions:
+ * the next pass moves the existing ones there.
+ *
+ * Inputs:
+ *   sender — the popup; the chosen item carries the calendar id
+ */
+- (void)
+gcal_push_changed:(NSPopUpButton *)sender
+{
+    NSString *cid = sender.selectedItem.representedObject;
+    task_config_set(TASK_CFG_GCAL_PUSH_CALENDAR, cid.UTF8String);
+    gcal_sync_now(FALSE);
+}
+
+/*
+ * gcal_show_changed: — a calendar was shown or hidden: write the whole
+ * list of ticked calendars and pull again.
+ *
+ * Inputs:
+ *   sender — the checkbox (unused: every box is read)
+ */
+- (void)
+gcal_show_changed:(NSButton *)sender
+{
+    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    for (NSView *v in self.gcal_calendars_box.views) {
+        if ([v isKindOfClass:NSButton.class] && v.identifier.length > 0 &&
+            ((NSButton *)v).state == NSControlStateValueOn)
+            [ids addObject:v.identifier];
+    }
+    /* An empty list is a real choice ("show none"), unlike an unset key,
+     * which means the primary calendar; a lone comma keeps it non-empty. */
+    NSString *value = ids.count > 0 ? [ids componentsJoinedByString:@","] : @",";
+    task_config_set(TASK_CFG_GCAL_SHOW_CALENDARS, value.UTF8String);
+    gcal_sync_now(FALSE);
+}
+
+/*
+ * build_form — lay the five sections out in one vertical stack, in the
  * style of Files' Preferences, inside a scroll view that only comes into
  * play when the form is taller than tasks_look_settings_max_h.
  */
@@ -740,7 +1140,7 @@ build_form
 {
     NSArray<NSArray<NSView *> *> *sections =
         @[[self appearance_rows], [self notification_rows],
-          [self database_rows], [self backup_rows]];
+          [self database_rows], [self backup_rows], [self gcal_rows]];
     NSMutableArray<NSView *> *rows = [NSMutableArray array];
     for (NSArray<NSView *> *section in sections) [rows addObjectsFromArray:section];
 
@@ -1234,6 +1634,8 @@ shut_down
     [self.window makeFirstResponder:nil];
     self.is_shut_down  = YES;
     self.awaited_probe = 0;
+    task_app_unlisten(self.app, self.gcal_listener);
+    self.gcal_listener = 0;
 }
 
 /*

@@ -27,7 +27,7 @@ static const CGFloat name_field_w  = 240.0;
 /* Dragging a list's button along the bar.  The pasteboard type is the
  * bar's own: a list drag never leaves it.  The item's content is the list
  * id as decimal text. */
-static NSPasteboardType const bar_drag_type = @"com.cambio.tasks-appkit.lists-bar-list";
+static NSPasteboardType const bar_drag_type = @TASKS_BUNDLE_ID ".lists-bar-list";
 static const CGFloat drag_threshold  = 4.0;   /* points moved before a press is a drag */
 static const CGFloat drop_rule_w     = 2.0;   /* the insertion mark                    */
 static const CGFloat dragged_alpha   = 0.4;   /* the button left behind during a drag  */

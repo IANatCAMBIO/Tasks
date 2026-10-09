@@ -311,6 +311,27 @@ test_recur_lead_default_nonrecurring(void)
  * ------------------------------------------------------------------------- */
 
 /*
+ * file_version — a connection's PRAGMA user_version.
+ *
+ * Inputs:
+ *   sq — the connection
+ *
+ * Output:
+ *   the version, or -1 when it cannot be read.
+ */
+static int
+file_version(sqlite3 *sq)
+{
+    sqlite3_stmt *st = NULL;
+    int           v  = -1;
+    if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW)
+        v = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return v;
+}
+
+/*
  * test_db_fresh_schema — a new database file opens (the full schema is created) and
  * closes.
  */
@@ -325,8 +346,55 @@ test_db_fresh_schema(void)
     TaskDatabase *db = task_db_open(path, &err);
     g_assert_no_error(err);
     g_assert_nonnull(db);
+    g_assert_cmpint(file_version(db->sq), ==, TASK_DB_SCHEMA_VERSION);
 
     task_db_close(db);
+
+    g_remove(path);
+    g_remove(tmpdir);
+    g_free(path);
+    g_free(tmpdir);
+}
+
+/*
+ * test_db_other_version_refused — a file at any schema version but the
+ * current one is refused, and left exactly as it was: not stamped, given
+ * no tables, its journal mode unchanged.
+ */
+static void
+test_db_other_version_refused(void)
+{
+    GError  *err    = NULL;
+    gchar   *tmpdir = scratch_dir();
+    gchar   *path   = g_build_filename(tmpdir, "old.db", NULL);
+    sqlite3 *sq     = NULL;
+
+    g_assert_cmpint(sqlite3_open(path, &sq), ==, SQLITE_OK);
+    g_assert_cmpint(sqlite3_exec(sq, "CREATE TABLE tasks (id INTEGER PRIMARY KEY);"
+                                     "PRAGMA user_version = 12", NULL, NULL, NULL),
+                    ==, SQLITE_OK);
+    sqlite3_close(sq);
+
+    TaskDatabase *db = task_db_open(path, &err);
+    g_assert_null(db);
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(err->message, "schema version 12"));
+    g_clear_error(&err);
+
+    g_assert_cmpint(sqlite3_open(path, &sq), ==, SQLITE_OK);
+    g_assert_cmpint(file_version(sq), ==, 12);
+    sqlite3_stmt *st = NULL;
+    g_assert_cmpint(sqlite3_prepare_v2(sq, "SELECT count(*) FROM sqlite_master",
+                                       -1, &st, NULL), ==, SQLITE_OK);
+    g_assert_cmpint(sqlite3_step(st), ==, SQLITE_ROW);
+    g_assert_cmpint(sqlite3_column_int(st, 0), ==, 1);
+    sqlite3_finalize(st);
+    g_assert_cmpint(sqlite3_prepare_v2(sq, "PRAGMA journal_mode", -1, &st, NULL),
+                    ==, SQLITE_OK);
+    g_assert_cmpint(sqlite3_step(st), ==, SQLITE_ROW);
+    g_assert_cmpstr((const char *)sqlite3_column_text(st, 0), ==, "delete");
+    sqlite3_finalize(st);
+    sqlite3_close(sq);
 
     g_remove(path);
     g_remove(tmpdir);
@@ -446,6 +514,7 @@ main(int argc, char **argv)
 
     /* Database */
     g_test_add_func("/db/fresh_schema",             test_db_fresh_schema);
+    g_test_add_func("/db/other_version_refused", test_db_other_version_refused);
     g_test_add_func("/db/create_read_task",         test_db_create_read_task);
     g_test_add_func("/db/status_stamps_updated_at", test_db_status_stamps_updated_at);
 

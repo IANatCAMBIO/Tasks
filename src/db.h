@@ -2,38 +2,34 @@
  * db.h — SQLite storage for Tasks
  *
  * Schema (PRAGMA user_version = 14 — see TASK_DB_SCHEMA_VERSION).  Every
- * column is declared in task_db_open's CREATE block, so a FRESH file needs
- * no migration at all; an EXISTING one reaches the same shape through the
- * guarded ALTERs at the end of task_db_open.
+ * column is declared in task_db_open's CREATE block.  A new file gets the
+ * whole schema; a file at any other version is refused — there are no
+ * migrations.
  *
- *   list_groups  id, name, position              (local-only; never synced)
+ *   list_groups  id, name, position              (local-only)
  *   lists        id, name, emoji, position, group_id (FK → list_groups.id;
  *                NULL = ungrouped), updated_at, deleted
  *   tasks        id, list_id, parent_id (NULL = top-level; ONE level of
  *                nesting only — a subtask can never be a parent),
  *                title, notes, due (unix local midnight; 0 = none),
  *                due_time (the time of day that date means, minutes past
- *                local midnight, default 08:00 — local-only, v12),
- *                status (TaskStatus), pinned, priority (local-only;
- *                sorts first in every view), position, updated_at,
+ *                local midnight), status (TaskStatus), pinned, priority
+ *                (sorts first in every view), position, updated_at,
  *                deleted, completed_at,
  *                recur_interval / recur_unit / recur_time / recur_lead /
- *                recur_next (the recurrence schedule — local-only, v10)
- *                and recur_start (the schedule's anchor date, v11)
- *   attachments  id, task_id, path, added_at   (local-only; never synced)
- *   sync_state   key, value                    (e.g. "last_sync")
+ *                recur_next / recur_start (the recurrence schedule),
+ *                scheduled_start / scheduled_duration (the day planner)
+ *   attachments  id, task_id, path, added_at
+ *   sync_state   key, value
  *
- * NOTHING belonging to a particular INTEGRATION is here.  A sync's
- * per-row state — a remote id, an etag, the baseline a done-only source
- * was last known to hold — lives in a SIDE TABLE keyed by row id, owned
- * by the integration (v8 moved the Google columns out, v9 the Notes
- * ones).  The tables stay in the file across the integrations' absence.
+ * NOTHING belonging to a particular INTEGRATION is here.  An integration
+ * keeps its per-row state in its own SIDE TABLE keyed by row id: the
+ * Google Calendar sync's gcal_* tables are described, and created, in
+ * gcal_store.h.
  *
- * Deletion is a SOFT flag everywhere (`deleted` = tombstone): the Google
- * Tasks sync needs to see "this existed and was deleted locally" to
- * propagate the delete, after which the row is purged for real.  Every
- * mutation stamps `updated_at` (unix seconds) — rows whose stamp is newer
- * than sync_state.last_sync are the local dirty set.
+ * Deletion is a SOFT flag (`deleted` = tombstone): a tombstoned row is
+ * hidden everywhere until it is purged.  Every mutation of a task's own
+ * fields stamps `updated_at` (unix seconds).
  * =========================================================================== */
 
 #ifndef TASK_DB_H
@@ -46,9 +42,7 @@
  * directory of task_paths.h, or the configured db_dir).                   */
 #define TASK_DB_FILENAME "tasks.db"
 
-/* The schema version this build writes.  Kept here rather than spelled as
- * a literal in task_db_open so the pre-migration backup and the version
- * stamp cannot drift apart.                                               */
+/* The schema version this build writes, and the only one it opens.       */
 #define TASK_DB_SCHEMA_VERSION 14
 
 /* ---------------------------------------------------------------------------
@@ -90,9 +84,7 @@ typedef struct {
  *
  * DONE is exactly the old boolean `done`: it strikes the title through,
  * hides the row under the completed-visibility toggle, stamps
- * completed_at, and pushes "completed" to Google Tasks / Notes.  NEW and
- * IN_PROGRESS are both "not done" and are indistinguishable to everything
- * outside Tasks — neither Google Tasks nor Notes has a third state.
+ * completed_at.  NEW and IN_PROGRESS are both "not done".
  * ------------------------------------------------------------------------- */
 typedef enum {
     TASK_STATUS_NEW         = 0,
@@ -111,8 +103,7 @@ const gchar *task_status_label(TaskStatus status);
 /* ---------------------------------------------------------------------------
  * task_status_apply_done() — the SINGLE rule mapping a binary done flag
  * onto the tri-state status, shared by every source that only knows
- * "done or not": the task list's checkbox column, the context menu, the
- * Google Tasks sync and the Notes mirror.
+ * "done or not": the task list's checkbox column and the context menu.
  *
  *   done = TRUE   → TASK_STATUS_DONE.
  *   done = FALSE  → TASK_STATUS_IN_PROGRESS when `cur` was DONE (unticking
@@ -156,12 +147,12 @@ typedef enum {
  * halves of the unit range.                                                */
 #define TASK_RECUR_TIME_DEFAULT (8 * 60)
 
-/* The time of day a DUE DATE means, in minutes past local midnight: 08:00
- * (v12, tasks.due_time).  Every due date has one — the column's DEFAULT is
+/* The time of day a DUE DATE means, in minutes past local midnight
+ * (tasks.due_time).  Every due date has one — the column's DEFAULT is
  * what gives it to a task nobody has timed by hand, existing rows
  * included — so there is no "timed or not" flag to keep honest.  It is a
  * separate macro from TASK_RECUR_TIME_DEFAULT rather than a shared one:
- * the two mean different things and only happen to agree.                  */
+ * the two mean different things and need not agree.                       */
 #define TASK_DUE_TIME_DEFAULT (17 * 60)
 
 /* How long BEFORE an occurrence a completed task is reset to New, in
@@ -196,7 +187,7 @@ typedef struct {
  *
  * There is nothing here belonging to a particular INTEGRATION.  A sync's
  * per-task state — a remote id, an etag, a deep link — lives in that
- * integration's own table keyed by task id (schema v8), so a task
+ * integration's own table keyed by task id, so a task
  * carries only what a task is.                                            */
 typedef struct {
     gint64    id;
@@ -210,15 +201,9 @@ typedef struct {
                                       * and every day-bucketing view
                                       * (Due Today, the forecast) compares
                                       * against it                          */
-    gint      due_time;              /* v12: the time of day that date
-                                      * means, minutes past local midnight,
-                                      * default 08:00.  LOCAL-ONLY, like
-                                      * pinned and priority — Google
-                                      * discards a due time and Notes has
-                                      * no verb for one, so keeping it OFF
-                                      * `due` is what stops a remote pull
-                                      * (which writes `due` alone) from
-                                      * erasing it                          */
+    gint      due_time;              /* the time of day that date means,
+                                      * minutes past local midnight,
+                                      * default TASK_DUE_TIME_DEFAULT       */
     TaskStatus status;             /* New / In Progress / Done — DONE is
                                       * what every "is it complete?" test
                                       * asks for                            */
@@ -234,10 +219,8 @@ typedef struct {
                                       * clears it, so it outlives someone
                                       * reopening the task               */
 
-    /* The recurrence schedule (v10) — LOCAL-ONLY, like pinned and
-     * priority: neither Google Tasks nor Notes is told any of it, and what
-     * they DO see is the ordinary due date and status the pass writes.
-     * See recur.h for the rule these five spell out together.             */
+    /* The recurrence schedule.  See recur.h for the rule these six spell
+     * out together.                                                        */
     gint      recur_interval;        /* repeat every N units; 0 = never     */
     TaskRecurUnit recur_unit;        /* the unit of that N                  */
     gint      recur_time;            /* minutes past local midnight; the
@@ -249,15 +232,14 @@ typedef struct {
     gint64    recur_next;            /* unix time of the next occurrence;
                                       * 0 = not computed yet (the pass
                                       * seeds it)                          */
-    gint64    recur_start;           /* v11: unix LOCAL MIDNIGHT of the day
+    gint64    recur_start;           /* unix LOCAL MIDNIGHT of the day
                                       * the schedule is anchored on — the
                                       * "starting Monday" half of "every
                                       * Monday at 9:00 AM".  The time of
                                       * day is recur_time, never this.
                                       * 0 = unset, and the anchor falls
                                       * back to the due date and then to
-                                      * today, which is what every task
-                                      * predating v11 does               */
+                                      * today                            */
 
     /* Day planner schedule — LOCAL-ONLY (never synced).                     */
     gint64    scheduled_start;       /* unix seconds; 0 = not scheduled       */
@@ -275,8 +257,10 @@ void task_list_free(TaskList *l);
 void task_free(Task *t);
 
 /* ---------------------------------------------------------------------------
- * task_db_open() — open (creating/migrating as needed) the database at
- * `path`.  Returns the handle, or NULL with `err` set.
+ * task_db_open() — open the database at `path`, creating the schema in a
+ * new file.  Returns the handle, or NULL with `err` set — also for a file
+ * at any schema version but TASK_DB_SCHEMA_VERSION, which is refused
+ * untouched.
  *
  * A path inside the GTK app's live data directory (task_paths.h) is
  * REFUSED, as it is by task_db_verify_file, task_db_file_sha256 and
@@ -417,16 +401,6 @@ void task_db_lists_reorder(TaskDatabase *db, const gint64 *ids, gsize n);
 
 TaskList  *task_db_list_get(TaskDatabase *db, gint64 id);
 
-/* Seed a list's emoji — ONLY while it is still empty, so a later edit by
- * the user is never overwritten.  Does NOT stamp updated_at: an emoji is
- * local-only, and stamping would make every launch look like a change.
- *
- * Keyed on the LIST ID.  It used to take a Google tasklist id and find
- * the list by it, which put one integration's addressing scheme into a
- * core function; the caller resolves its own id to a list now.           */
-void task_db_list_emoji_if_empty(TaskDatabase *db, gint64 list_id,
-                                 const gchar *emoji);
-
 /* Create a list.  `emoji` is the optional local-only display prefix
  * (NULL/"" for none) — it is never part of the synced name.                */
 gint64   task_db_list_create(TaskDatabase *db, const gchar *name,
@@ -440,11 +414,6 @@ void     task_db_list_update(TaskDatabase *db, gint64 id, const gchar *name,
 /* Tombstone the list AND every task in it (they must disappear from the
  * remote side too).                                                        */
 void     task_db_list_delete(TaskDatabase *db, gint64 id);
-
-/* Undo a list tombstone: restore the list and its still-tombstoned
- * tasks (used when Google refuses the deletion — its default tasklist
- * cannot be deleted; remote remains the source of truth).                  */
-void     task_db_list_restore(TaskDatabase *db, gint64 id);
 
 /* --------------------------------- tasks --------------------------------- */
 
@@ -486,8 +455,7 @@ GPtrArray *task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi,
                                      gboolean open_only);
 
 /* Every task row of ONE list, including subtasks and tombstones, parents
- * before subtasks (sync — a new parent must own a gtasks_id before its
- * children push).                                                          */
+ * before subtasks.                                                         */
 GPtrArray *task_db_tasks_in_list_all(TaskDatabase *db, gint64 list_id);
 
 /* Create a task ('' title allowed).  parent_id = 0 for top-level; the
@@ -575,19 +543,6 @@ void task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction);
  * the end; stamps updated_at.                                              */
 void task_db_task_move_list(TaskDatabase *db, gint64 id, gint64 dest_list);
 
-/* Physically remove every DONE task of a list (and their subtasks) —
- * the local half of "Clear Completed" (the remote half is tasks.clear,
- * which hides them on Google's side, so no tombstones are needed).         */
-void task_db_purge_done(TaskDatabase *db, gint64 list_id);
-
-/* Insert a bare tombstone row in `list_id` and return its id, or 0.
- *
- * The caller is an integration recording "something that used to exist
- * here has gone" — it attaches its own remote identity to the returned
- * id in its own table.  The tombstone itself carries none, which is why
- * this takes no identity argument.                                        */
-gint64 task_db_insert_remote_tombstone(TaskDatabase *db, gint64 list_id);
-
 /* ------------------------------ attachments ------------------------------ */
 
 GPtrArray *task_db_attachments(TaskDatabase *db, gint64 task_id);
@@ -605,46 +560,6 @@ GHashTable *task_db_attachment_counts(TaskDatabase *db);
 /* Live totals for the About dialog: non-tombstoned task and list counts.
  * Either out-pointer may be NULL; a failed query leaves 0.                 */
 void task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists);
-
-/* ---------------------------------------------------------------------------
- * task_db_task_apply_done_source() — apply what a DONE-ONLY source
- * reports about a task: its title, its due date, and whether it is done.
- *
- * Stamps updated_at, so the change propagates on to anything else
- * watching the row.  The status transition is the app's own rule, spelled
- * as a CASE over the row's CURRENT status so it needs no read-back:
- * done → Done; not-done → In Progress only if it WAS Done (unticking
- * means work resumed), otherwise unchanged, so a New task survives a
- * round trip through a system that has no third state.
- *
- * `completed_at` is stamped on ENTERING Done and NOTHING clears it: it
- * answers "when was this last completed?", which stays true after
- * someone reopens the task.  An already-Done task keeps its stamp, and
- * re-completing moves it forward.  The remote path merges with `MAX`
- * rather than assigning, so a source that reports 0 for "not done" (every
- * one of them) cannot erase it.
- *
- * The source's own bookkeeping — what it last knew, for diffing — is
- * NOT here.  That belongs to the integration, in its own table.
- * ------------------------------------------------------------------------- */
-void task_db_task_apply_done_source(TaskDatabase *db, gint64 id,
-                                    const gchar *title, gboolean done,
-                                    gint64 due);
-
-/* ---------------------------------------------------------------------------
- * task_db_scalar() — a one-value SELECT, or -1 when the statement could
- * not run AT ALL — a caller checking a count must be able to tell "zero
- * problems" from "the check never ran".
- * ------------------------------------------------------------------------- */
-gint64   task_db_scalar(TaskDatabase *db, const gchar *sql);
-
-
-
-/* Overwrite a row from remote data WITHOUT the usual now() stamp — the
- * caller passes the remote updated time so the row is clean afterwards.    */
-void task_db_list_apply_remote(TaskDatabase *db, gint64 id, const gchar *name,
-                               gint64 updated_at);
-void task_db_task_apply_remote(TaskDatabase *db, const Task *t);
 
 /* Physically remove tombstoned/remotely-deleted rows.                      */
 void task_db_list_purge(TaskDatabase *db, gint64 id);   /* + its tasks      */

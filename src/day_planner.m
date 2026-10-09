@@ -6,6 +6,8 @@
 #import "ui_util.h"
 
 #include "db.h"
+#include "gcal_store.h"
+#include "gcal_sync.h"
 #include "task_app.h"
 #include "task_config.h"
 #include "task_dates.h"
@@ -19,14 +21,31 @@ static const NSInteger snap_minutes  = 15;
 /* Height of the date-navigation header above the scroll area. */
 static const CGFloat   header_h      = 36.0;
 
+/* Height of the all-day strip under the header, when the day has any
+ * all-day events (zero otherwise). */
+static const CGFloat   all_day_h     = 20.0;
+
+/* Width of the calendar-coloured bar down a calendar event's left edge. */
+static const CGFloat   event_bar_w   = 3.0;
+
 /* ── TasksDayItem ──────────────────────────────────────────────────────── */
 
+/* One block: a scheduled task, or (is_event) an event from Google
+ * Calendar (gcal_sync.h), which is drawn to plan around and cannot be
+ * selected, moved or stretched — its task_id is 0. */
 @interface TasksDayItem : NSObject
 @property (nonatomic) int64_t task_id;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic) int64_t start_unix;
 @property (nonatomic) int duration;          /* minutes */
 @property (nonatomic) TaskStatus status;
+@property (nonatomic) BOOL is_event;
+@property (nonatomic, strong) NSColor *event_fill;  /* is_event: its calendar's colour, dimmed */
+@property (nonatomic, strong) NSColor *event_bar;   /* is_event: the colour itself            */
+/* Side-by-side placement among the blocks it overlaps: column `column`
+ * of `columns` (layout_columns). */
+@property (nonatomic) NSUInteger column;
+@property (nonatomic) NSUInteger columns;
 /* The "H:MM–H:MM (Xhr Ymin)" line, built when first drawn and again after
  * the start or the duration changes; drawRect runs per frame of a drag. */
 @property (nonatomic, readonly) NSString *time_text;
@@ -66,6 +85,9 @@ time_text
 @property (nonatomic)         NSInteger                      days_offset; /* 0 = today */
 @property (nonatomic, weak)   NSTextField                   *date_label;
 @property (nonatomic, weak)   NSButton                      *today_button;
+@property (nonatomic, weak)   NSTextField                   *all_day_label;
+@property (nonatomic, strong) NSLayoutConstraint            *all_day_height;
+- (void)committed_block;
 @end
 
 /* ── TasksDayCanvas ────────────────────────────────────────────────────── */
@@ -228,8 +250,12 @@ item_rect:(TasksDayItem *)item
 - (NSRect)
 item_rect:(TasksDayItem *)item midnight:(int64_t)mid
 {
-    CGFloat x = tasks_look_day_planner_label_w + tasks_look_day_planner_block_inset;
-    CGFloat w = NSWidth(self.bounds) - x - tasks_look_day_planner_block_inset;
+    CGFloat   left = tasks_look_day_planner_label_w + tasks_look_day_planner_block_inset;
+    CGFloat   all  = NSWidth(self.bounds) - left - tasks_look_day_planner_block_inset;
+    NSUInteger n   = item.columns > 0 ? item.columns : 1;
+    CGFloat   w    = all / (CGFloat)n;
+    CGFloat   x    = left + w * (CGFloat)item.column;
+    if (n > 1) w  -= tasks_look_day_planner_block_inset;
     CGFloat y = [self y_for_unix:item.start_unix midnight:mid];
     CGFloat h = (item.duration / 60.0) * tasks_look_day_planner_hour_h;
     CGFloat min_h = tasks_look_day_planner_resize_h * 2.0 + 4.0;
@@ -250,7 +276,7 @@ item_rect:(TasksDayItem *)item midnight:(int64_t)mid
 item_named:(int64_t)task_id
 {
     for (TasksDayItem *item in self.planner.items) {
-        if (item.task_id == task_id) return item;
+        if (!item.is_event && item.task_id == task_id) return item;
     }
     return nil;
 }
@@ -349,6 +375,7 @@ typedef struct {
     NSDictionary *label_attrs;
     NSDictionary *title_attrs;
     NSDictionary *time_attrs;
+    NSDictionary *event_attrs;               /* a calendar event's title */
     CGFloat       title_h;
     CGFloat       time_h;
     NSArray<NSString *> *hour_labels;         /* indexed by hour - start_h */
@@ -379,6 +406,8 @@ canvas_look(void)
         look.title_attrs = @{ NSFontAttributeName:            title_font,
                               NSForegroundColorAttributeName: NSColor.labelColor };
         look.time_attrs  = @{ NSFontAttributeName:            time_font,
+                              NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
+        look.event_attrs = @{ NSFontAttributeName:            title_font,
                               NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
         look.title_h = title_font.ascender - title_font.descender + title_font.leading;
         look.time_h  = time_font.ascender  - time_font.descender  + time_font.leading;
@@ -461,6 +490,11 @@ drawRect:(NSRect)dirty
         NSRect r = [self item_rect:item midnight:mid];
         if (!NSIntersectsRect(r, dirty)) continue;
 
+        if (item.is_event) {
+            [self draw_event:item in:r look:look];
+            continue;
+        }
+
         NSBezierPath *path =
             [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(r, 0.5, 0.5)
                                             xRadius:4.0 yRadius:4.0];
@@ -513,6 +547,77 @@ drawRect:(NSRect)dirty
             [[NSBezierPath bezierPathWithOvalInRect:dot] fill];
         }
     }
+}
+
+/*
+ * draw_event:in:look: — draw a calendar event: a flat tint of its
+ * calendar's colour with a solid bar down the left edge, unlike a task's
+ * bordered block, so that what can be moved and what cannot tell apart.
+ *
+ * Inputs:
+ *   item — the event
+ *   r    — its frame
+ *   look — the shared drawing resources
+ */
+- (void)
+draw_event:(TasksDayItem *)item in:(NSRect)r look:(const canvas_look_t *)look
+{
+    NSRect body = NSInsetRect(r, 0.5, 0.5);
+    [item.event_fill setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:body xRadius:4.0 yRadius:4.0] fill];
+    [item.event_bar setFill];
+    NSRectFill(NSMakeRect(NSMinX(body), NSMinY(body) + 1.0, event_bar_w, NSHeight(body) - 2.0));
+
+    NSRect content = NSInsetRect(r, 4.0, 3.0);
+    content.origin.x   += event_bar_w;
+    content.size.width -= event_bar_w;
+    NSRect title_rect = NSMakeRect(content.origin.x, content.origin.y,
+                                   content.size.width, look->title_h);
+    [item.title drawInRect:title_rect withAttributes:look->event_attrs];
+    NSRect time_rect = NSMakeRect(content.origin.x, NSMaxY(title_rect) + 1.0,
+                                  content.size.width, look->time_h);
+    if (NSMaxY(time_rect) <= NSMaxY(content))
+        [item.time_text drawInRect:time_rect withAttributes:look->time_attrs];
+}
+
+/*
+ * event_at: — the calendar event under a point.
+ *
+ * Inputs:
+ *   pt — canvas coordinates
+ *
+ * Output:
+ *   the event, or nil.
+ */
+- (TasksDayItem *)
+event_at:(NSPoint)pt
+{
+    int64_t mid = [self midnight];
+    for (TasksDayItem *item in self.planner.items) {
+        if (item.is_event && NSPointInRect(pt, [self item_rect:item midnight:mid])) return item;
+    }
+    return nil;
+}
+
+/*
+ * view:stringForToolTip:point:userData: — a calendar event's tooltip:
+ * its title and times (the block may be too short to show them).
+ *
+ * Inputs:
+ *   view  — this canvas
+ *   tag   — the tooltip rectangle (unused)
+ *   point — where the pointer is
+ *   data  — unused
+ *
+ * Output:
+ *   the text, or nil when no event is under the pointer.
+ */
+- (NSString *)
+view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data
+{
+    TasksDayItem *item = [self event_at:point];
+    if (item == nil) return nil;
+    return [NSString stringWithFormat:@"%@\n%@ · Google Calendar", item.title, item.time_text];
 }
 
 /* ── Drag destination ─────────────────────────────────────────────────── */
@@ -618,6 +723,7 @@ performDragOperation:(id<NSDraggingInfo>)info
         offset_min += (NSInteger)snap_minutes;
     }
     [self.planner reload];
+    gcal_sync_kick();
     return YES;
 }
 
@@ -657,6 +763,7 @@ mouseDown:(NSEvent *)event
 
     int64_t mid = [self midnight];
     for (TasksDayItem *item in self.planner.items) {
+        if (item.is_event) continue;
         NSRect r = [self item_rect:item midnight:mid];
         if (!NSPointInRect(pt, r)) continue;
 
@@ -795,7 +902,7 @@ mouseUp:(NSEvent *)event
     if (self.resizing) {
         self.resizing = NO;
         for (TasksDayItem *item in self.planner.items) {
-            if (item.task_id == self.resize_id) {
+            if (!item.is_event && item.task_id == self.resize_id) {
                 task_db_task_set_scheduled(self.planner.library.app->db,
                                            item.task_id,
                                            item.start_unix,
@@ -804,14 +911,14 @@ mouseUp:(NSEvent *)event
             }
         }
         self.resize_id = 0;
-        [self.window invalidateCursorRectsForView:self];
+        [self.planner committed_block];
         return;
     }
 
     if (self.moving) {
         self.moving = NO;
         for (TasksDayItem *item in self.planner.items) {
-            if (item.task_id == self.move_id) {
+            if (!item.is_event && item.task_id == self.move_id) {
                 task_db_task_set_scheduled(self.planner.library.app->db,
                                            item.task_id,
                                            item.start_unix,
@@ -820,7 +927,7 @@ mouseUp:(NSEvent *)event
             }
         }
         self.move_id = 0;
-        [self.window invalidateCursorRectsForView:self];
+        [self.planner committed_block];
         return;
     }
 
@@ -837,8 +944,13 @@ resetCursorRects
 {
     int64_t mid = [self midnight];
     [self addCursorRect:self.bounds cursor:NSCursor.arrowCursor];
+    [self removeAllToolTips];
     for (TasksDayItem *item in self.planner.items) {
         NSRect  r    = [self item_rect:item midnight:mid];
+        if (item.is_event) {
+            [self addToolTipRect:r owner:self userData:NULL];
+            continue;
+        }
         CGFloat ez   = MIN(tasks_look_day_planner_resize_h, r.size.height * 0.4);
         NSRect  top  = NSMakeRect(r.origin.x, r.origin.y,           r.size.width, ez);
         NSRect  bot  = NSMakeRect(r.origin.x, NSMaxY(r) - ez,       r.size.width, ez);
@@ -870,7 +982,7 @@ menuForEvent:(NSEvent *)event
     TasksDayItem *clicked = nil;
     int64_t       mid     = [self midnight];
     for (TasksDayItem *item in self.planner.items) {
-        if (NSPointInRect(pt, [self item_rect:item midnight:mid])) {
+        if (!item.is_event && NSPointInRect(pt, [self item_rect:item midnight:mid])) {
             clicked = item;
             break;
         }
@@ -898,6 +1010,72 @@ menuForEvent:(NSEvent *)event
 }
 
 @end
+
+/* ── Layout ───────────────────────────────────────────────────────────── */
+
+/*
+ * layout_columns — place overlapping blocks side by side, the way a
+ * calendar does: blocks are taken by start (the longer first on a tie),
+ * each goes in the leftmost column free at its start, and every block of
+ * a run of mutually overlapping ones shares that run's column count.
+ *
+ * Inputs:
+ *   items — the day's blocks; their column and columns are set
+ */
+static void
+layout_columns(NSArray<TasksDayItem *> *items)
+{
+    NSArray<TasksDayItem *> *sorted =
+        [items sortedArrayUsingComparator:^NSComparisonResult(TasksDayItem *a, TasksDayItem *b) {
+            if (a.start_unix != b.start_unix) return a.start_unix < b.start_unix ? NSOrderedAscending
+                                                                                 : NSOrderedDescending;
+            if (a.duration != b.duration) return a.duration > b.duration ? NSOrderedAscending
+                                                                         : NSOrderedDescending;
+            return NSOrderedSame;
+        }];
+
+    NSMutableArray<NSNumber *>     *col_end = [NSMutableArray array]; /* per column */
+    NSMutableArray<TasksDayItem *> *run     = [NSMutableArray array];
+    int64_t run_end = INT64_MIN;
+
+    for (TasksDayItem *item in sorted) {
+        int64_t end = item.start_unix + (int64_t)MAX(item.duration, 1) * 60;
+        if (item.start_unix >= run_end && run.count > 0) {
+            for (TasksDayItem *done in run) done.columns = col_end.count;
+            [run removeAllObjects];
+            [col_end removeAllObjects];
+        }
+        NSUInteger col = 0;
+        while (col < col_end.count && col_end[col].longLongValue > item.start_unix) col++;
+        if (col == col_end.count) [col_end addObject:@(end)];
+        else                      col_end[col] = @(end);
+        item.column = col;
+        [run addObject:item];
+        run_end = run.count == 1 ? end : MAX(run_end, end);
+    }
+    for (TasksDayItem *done in run) done.columns = col_end.count;
+}
+
+/*
+ * calendar_color — a Google calendar's "#rrggbb" colour.
+ *
+ * Inputs:
+ *   hex — the colour, or "" when unknown
+ *
+ * Output:
+ *   the colour; the system blue when it cannot be read.
+ */
+static NSColor *
+calendar_color(const char *hex)
+{
+    unsigned int rgb = 0;
+    if (hex == NULL || hex[0] != '#' || sscanf(hex + 1, "%6x", &rgb) != 1)
+        return NSColor.systemBlueColor;
+    return [NSColor colorWithSRGBRed:((rgb >> 16) & 0xff) / 255.0
+                               green:((rgb >> 8) & 0xff) / 255.0
+                                blue:(rgb & 0xff) / 255.0
+                               alpha:1.0];
+}
 
 /* ── TasksDayPlanner ──────────────────────────────────────────────────── */
 
@@ -1089,7 +1267,21 @@ build_header
     sep.layer.backgroundColor = NSColor.separatorColor.CGColor;
     sep.translatesAutoresizingMaskIntoConstraints = NO;
 
+    /* The all-day strip: the day's all-day calendar events, one line,
+     * collapsed to nothing on a day without any. */
+    NSTextField *all_day = [NSTextField labelWithString:@""];
+    all_day.font          = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+    all_day.textColor     = NSColor.secondaryLabelColor;
+    all_day.lineBreakMode = NSLineBreakByTruncatingTail;
+    all_day.hidden        = YES;
+    all_day.translatesAutoresizingMaskIntoConstraints = NO;
+    [all_day setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                      forOrientation:NSLayoutConstraintOrientationHorizontal];
+    _all_day_label  = all_day;
+    _all_day_height = [all_day.heightAnchor constraintEqualToConstant:0.0];
+
     [self addSubview:header];
+    [self addSubview:all_day];
     [self addSubview:sep];
     [self addSubview:_scroll];
 
@@ -1099,7 +1291,12 @@ build_header
         [header.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
         [header.heightAnchor   constraintEqualToConstant:header_h],
 
-        [sep.topAnchor         constraintEqualToAnchor:header.bottomAnchor],
+        [all_day.topAnchor      constraintEqualToAnchor:header.bottomAnchor],
+        [all_day.leadingAnchor  constraintEqualToAnchor:self.leadingAnchor constant:8.0],
+        [all_day.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-8.0],
+        _all_day_height,
+
+        [sep.topAnchor         constraintEqualToAnchor:all_day.bottomAnchor],
         [sep.leadingAnchor     constraintEqualToAnchor:self.leadingAnchor],
         [sep.trailingAnchor    constraintEqualToAnchor:self.trailingAnchor],
         [sep.heightAnchor      constraintEqualToConstant:1.0],
@@ -1258,9 +1455,13 @@ reload
 
     gint64 lo, hi;
     task_day_bounds((gint)_days_offset, &lo, &hi);
-    GPtrArray *tasks = task_db_tasks_scheduled_for_day(self.library.app->db, lo, hi);
+    TaskDatabase *db    = self.library.app->db;
+    GPtrArray    *tasks = task_db_tasks_scheduled_for_day(db, lo, hi);
 
+    /* The old items are the tooltip rectangles' subject: drop those first. */
+    [self.canvas removeAllToolTips];
     [self.items removeAllObjects];
+    NSMutableSet<NSNumber *> *present = [NSMutableSet set];
     for (guint i = 0; i < tasks->len; i++) {
         Task          *t    = g_ptr_array_index(tasks, i);
         TasksDayItem  *item = [[TasksDayItem alloc] init];
@@ -1270,13 +1471,80 @@ reload
         item.duration   = t->scheduled_duration > 0 ? t->scheduled_duration : 60;
         item.status     = t->status;
         [self.items addObject:item];
+        [present addObject:@(t->id)];
     }
     task_ptr_array_free_tasks(tasks);
 
-    [self.canvas.selected_ids removeAllObjects];
+    [self add_events_from:lo to:hi];
+    layout_columns(self.items);
+
+    /* A reload (a sync finishing, an edit elsewhere) keeps the selection
+     * of every block still on the day. */
+    [self.canvas.selected_ids intersectSet:present];
 
     [self.canvas setNeedsDisplay:YES];
     [self.canvas.window invalidateCursorRectsForView:self.canvas];
+}
+
+/*
+ * add_events_from:to: — add the day's Google Calendar events (the sync's
+ * cache, gcal_store.h) while the sync is switched on: timed ones as
+ * blocks, all-day ones to the strip under the header.  Signing out empties
+ * the cache, so the switch is the only thing to ask.
+ *
+ * Inputs:
+ *   lo — the day's local midnight
+ *   hi — the next local midnight
+ */
+- (void)
+add_events_from:(gint64)lo to:(gint64)hi
+{
+    NSMutableArray<NSString *> *all_day = [NSMutableArray array];
+
+    if (task_config_get_bool(TASK_CFG_GCAL_ENABLED)) {
+        GPtrArray *events = gcal_store_events_for_day(self.library.app->db, lo, hi);
+        for (guint i = 0; i < events->len; i++) {
+            const gcal_event_t *e     = g_ptr_array_index(events, i);
+            NSString           *title = *e->title != '\0' ? tasks_string(e->title) : @"Busy";
+            if (e->all_day) {
+                [all_day addObject:title];
+                continue;
+            }
+            int64_t start = MAX(e->start, lo);
+            int64_t end   = MIN(e->end, hi);
+            NSColor *base = calendar_color(e->color);
+
+            TasksDayItem *item = [[TasksDayItem alloc] init];
+            item.is_event   = YES;
+            item.title      = title;
+            item.start_unix = start;
+            item.duration   = (int)MAX((end - start) / 60, 1);
+            item.event_fill = tasks_color_dimmed(base, 22);
+            item.event_bar  = base;
+            [self.items addObject:item];
+        }
+        g_ptr_array_free(events, TRUE);
+    }
+
+    NSString *text = [all_day componentsJoinedByString:@" · "];
+    self.all_day_label.stringValue = text;
+    self.all_day_label.toolTip     = all_day.count > 0 ? text : nil;
+    self.all_day_label.hidden      = all_day.count == 0;
+    self.all_day_height.constant   = all_day.count > 0 ? all_day_h : 0.0;
+}
+
+/*
+ * committed_block — a move or a stretch was written: lay the blocks out
+ * again (the block may now overlap others, or no longer), and let the
+ * calendar sync push it.
+ */
+- (void)
+committed_block
+{
+    layout_columns(self.items);
+    [self.canvas setNeedsDisplay:YES];
+    [self.canvas.window invalidateCursorRectsForView:self.canvas];
+    gcal_sync_kick();
 }
 
 /*
@@ -1314,6 +1582,7 @@ remove_selected_from_schedule:(id)sender
     [self.canvas.selected_ids removeAllObjects];
     [self reload];
     [self.library refresh_tasks];
+    gcal_sync_kick();
 }
 
 /*

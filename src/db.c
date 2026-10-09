@@ -27,25 +27,6 @@ exec(TaskDatabase *db, const gchar *sql)
     return TRUE;
 }
 
-/* ---------------------------------------------------------------------------
- * scalar() — run a one-value SELECT and return it, or -1 when the
- * statement could not run at all.  The -1 matters: a verification query
- * that never executed must not be mistaken for one that returned zero
- * problems, which is the "checked, all good, when nothing was checked"
- * failure the error discipline exists to prevent.
- * ------------------------------------------------------------------------- */
-gint64
-task_db_scalar(TaskDatabase *db, const gchar *sql)
-{
-    sqlite3_stmt *st = NULL;
-    gint64 v = -1;
-    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW)
-        v = sqlite3_column_int64(st, 0);
-    sqlite3_finalize(st);
-    return v;
-}
-
 /* task_db_transaction_begin() — see db.h.                                   */
 gboolean
 task_db_transaction_begin(TaskDatabase *db)
@@ -276,37 +257,6 @@ task_db_resolve_path(const gchar *dir)
     if (dir != NULL && *dir != '\0')
         return g_build_filename(dir, TASK_DB_FILENAME, NULL);
     return task_db_default_path();     /* also creates the directory        */
-}
-
-/*
- * table_has_column — does `table` already carry a column called `column`?
- *
- * Inputs:
- *   db     — open connection
- *   table  — table name (a literal here; NOT interpolated from user data)
- *   column — column name to look for
- *
- * Output:
- *   TRUE when PRAGMA table_info names it.  FALSE when it does not — AND
- *   also when the PRAGMA could not run at all, which is the conservative
- *   answer for the only caller: a migration that then tries the ALTER and
- *   reports sqlite's own message through exec(), rather than one that
- *   silently decides the column is already there and moves on.
- */
-static gboolean
-table_has_column(TaskDatabase *db, const gchar *table, const gchar *column)
-{
-    gchar *sql = sqlite3_mprintf("PRAGMA table_info(%Q)", table);
-    sqlite3_stmt *st = NULL;
-    gboolean found = FALSE;
-    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK)
-        while (!found && sqlite3_step(st) == SQLITE_ROW) {
-            const guchar *n = sqlite3_column_text(st, 1);   /* 1 = name     */
-            found = n != NULL && g_strcmp0((const gchar *)n, column) == 0;
-        }
-    sqlite3_finalize(st);
-    sqlite3_free(sql);
-    return found;
 }
 
 /* ---------------------------------------------------------------------------
@@ -589,7 +539,7 @@ task_db_copy_file(TaskDatabase *db, const gchar *dest, gchar **err)
 }
 
 /* ---------------------------------------------------------------------------
- * task_db_open() — open + create/migrate the schema (see db.h).
+ * task_db_open() — open, and create the schema in a new file (see db.h).
  * ------------------------------------------------------------------------- */
 TaskDatabase *
 task_db_open(const gchar *path, GError **err)
@@ -613,6 +563,28 @@ task_db_open(const gchar *path, GError **err)
     db->path = g_strdup(path);
 
     sqlite3_busy_timeout(sq, 5000);  /* GUI + sync worker share the file    */
+
+    /* The file's schema version, read BEFORE anything is written: this
+     * build opens a file at TASK_DB_SCHEMA_VERSION, or a new one (0), and
+     * refuses every other.  There are no migrations — the one database in
+     * use was converted to the current schema, and an older or newer file
+     * is left exactly as it was found rather than half-changed.            */
+    sqlite3_stmt *vst = NULL;
+    gint uv = -1;
+    if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
+        == SQLITE_OK && sqlite3_step(vst) == SQLITE_ROW)
+        uv = sqlite3_column_int(vst, 0);
+    sqlite3_finalize(vst);
+    if (uv != 0 && uv != TASK_DB_SCHEMA_VERSION) {
+        g_set_error(err, g_quark_from_static_string("task-db"), 3,
+                    uv < 0 ? "%s is not a database this app can read"
+                           : "%s is at schema version %d; this build opens "
+                             "only version " G_STRINGIFY(TASK_DB_SCHEMA_VERSION)
+                             " files",
+                    path, uv);
+        task_db_close(db);
+        return NULL;
+    }
     exec(db, "PRAGMA foreign_keys = ON");
 
     /* Write-ahead logging on a local disk: a reader (the hourly VACUUM INTO
@@ -629,12 +601,9 @@ task_db_open(const gchar *path, GError **err)
     }
 
     /* The schema, in full.  CREATE IF NOT EXISTS keeps reopen cheap, and
-     * every column is declared HERE, so a FRESH file is complete the
-     * moment this block has run and needs no migration at all.  An
-     * EXISTING file reaches the same shape through the guarded ALTERs
-     * below — v10 added the recurrence columns, and CREATE IF NOT EXISTS
-     * is a no-op on a file that already has the table (gotcha 24).
-     * list_groups comes first: lists.group_id references it.              */
+     * every column is declared HERE, so a new file is complete the moment
+     * this block has run.  list_groups comes first: lists.group_id
+     * references it.                                                       */
     exec(db,
         "CREATE TABLE IF NOT EXISTS list_groups ("
         "  id       INTEGER PRIMARY KEY,"
@@ -649,10 +618,8 @@ task_db_open(const gchar *path, GError **err)
         "  group_id   INTEGER REFERENCES list_groups(id),"
         "  updated_at INTEGER NOT NULL DEFAULT 0,"
         "  deleted    INTEGER NOT NULL DEFAULT 0)");
-    /* The recurrence columns' DEFAULTs come from the macros rather than
-     * from literals, and so does the v10 ALTER block below: two spellings
-     * of "8am, five days ahead" is how a fresh file and a migrated one
-     * come to disagree about what an untouched row means.                  */
+    /* The recurrence and due-time DEFAULTs come from the macros rather than
+     * from literals: one spelling of what an untouched row means.          */
     {
         gchar *tasks_sql = g_strdup_printf(
             "CREATE TABLE IF NOT EXISTS tasks ("
@@ -669,22 +636,17 @@ task_db_open(const gchar *path, GError **err)
             "  updated_at   INTEGER NOT NULL DEFAULT 0,"
             "  deleted      INTEGER NOT NULL DEFAULT 0,"
             "  completed_at INTEGER NOT NULL DEFAULT 0,"
-            /* The recurrence schedule (v10, plus recur_start at v11).
-             * Declared HERE so a fresh file needs no migration at all;
-             * the v10 and v11 blocks below ADD the same columns to a
-             * file that predates them.                                 */
+            /* The recurrence schedule (recur.h).                       */
             "  recur_interval INTEGER NOT NULL DEFAULT 0,"
             "  recur_unit     INTEGER NOT NULL DEFAULT 0,"
             "  recur_time     INTEGER NOT NULL DEFAULT %d,"
             "  recur_lead     INTEGER NOT NULL DEFAULT %d,"
             "  recur_next     INTEGER NOT NULL DEFAULT 0,"
             "  recur_start    INTEGER NOT NULL DEFAULT 0,"
-            /* The due date's time of day (v12).  Its DEFAULT is the whole
-             * migration for existing rows: every due date that nobody has
-             * timed by hand means TASK_DUE_TIME_DEFAULT (08:00 at v12,
-             * 17:00 since v13), here and in the ALTER below.            */
+            /* The due date's time of day: a due date nobody has timed
+             * by hand means TASK_DUE_TIME_DEFAULT.                      */
             "  due_time            INTEGER NOT NULL DEFAULT %d,"
-            /* Day planner schedule (v14) — LOCAL-ONLY, never synced.    */
+            /* Day planner schedule — LOCAL-ONLY, never synced.        */
             "  scheduled_start    INTEGER NOT NULL DEFAULT 0,"
             "  scheduled_duration INTEGER NOT NULL DEFAULT 60)",
             TASK_RECUR_TIME_DEFAULT, TASK_RECUR_LEAD_DEFAULT,
@@ -704,10 +666,7 @@ task_db_open(const gchar *path, GError **err)
         "  key   TEXT PRIMARY KEY,"
         "  value TEXT)");
     /* NO integration-owned tables here.  A side table belongs to whatever
-     * owns the integration.  The two MIGRATIONS below still name those
-     * tables — they have to, because a migration moves data that already
-     * exists — so each one creates what it needs itself rather than
-     * relying on a block up here.                                        */
+     * owns the integration (the calendar sync's: gcal_store.h).          */
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
              "ON tasks(list_id, parent_id, position)");
     /* The task pane's one subtask query, and the Due views: both are
@@ -716,377 +675,31 @@ task_db_open(const gchar *path, GError **err)
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_parent "
              "ON tasks(parent_id) WHERE parent_id IS NOT NULL");
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due)");
-
-    sqlite3_stmt *vst = NULL;
-    gint uv = 0;                     /* the file's schema version           */
-    if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
-        == SQLITE_OK && sqlite3_step(vst) == SQLITE_ROW)
-        uv = sqlite3_column_int(vst, 0);
-    sqlite3_finalize(vst);
-
-    /* ---------------------------------------------------------------------
-     * BACK THE FILE UP BEFORE ANY MIGRATION RUNS.
-     *
-     * This is live, not a placeholder: it fires for every file older than
-     * TASK_DB_SCHEMA_VERSION, and v8, v9 and v10 have all used it.  A
-     * later schema change inherits it for free — bump the constant and
-     * add the migration below this block, and the backup happens.
-     *
-     * Not paranoia.  A table-rewriting migration (`ALTER TABLE … DROP
-     * COLUMN`) running with no backup, against a database in a sync
-     * folder, is exactly how a 1965-task database became unrecoverable on
-     * 2026-08-26.  One file per FROM-version, never overwritten, so
-     * repeated launches cannot erode it.
-     * ------------------------------------------------------------------- */
-    if (uv > 0 && uv < TASK_DB_SCHEMA_VERSION) {
-        gchar *bak = g_strdup_printf("%s.pre-v%d.bak", path, uv);
-        if (!g_file_test(bak, G_FILE_TEST_EXISTS)) {
-            /* VACUUM INTO, not a byte copy: it is transactionally
-             * consistent, so it cannot capture a torn page even if
-             * something else is mid-write.                              */
-            gchar *q = sqlite3_mprintf("VACUUM INTO %Q", bak);
-            gchar *msg = NULL;
-            if (sqlite3_exec(sq, q, NULL, NULL, &msg) == SQLITE_OK)
-                g_message("Backed up the pre-v%d database to %s before "
-                          "migrating", uv, bak);
-            else
-                g_warning("could not back up %s before the v%d migration "
-                          "(%s) — MIGRATING ANYWAY", path, uv,
-                          msg != NULL ? msg : "?");
-            sqlite3_free(msg);
-            sqlite3_free(q);
-        }
-        g_free(bak);
-    }
-
-    /* Stamp the version, then READ IT BACK.  A PRAGMA that reports success
-     * without taking effect leaves the file claiming an older schema than
-     * it has, and every later launch re-runs migrations it does not need —
-     * silently, since re-running them is harmless.  That is exactly the
-     * "checked, all good, when nothing was checked" failure the error
-     * discipline forbids, so it gets a warning naming the file.  Seen once
-     * on a database living in an iCloud Drive folder, where two copies of
-     * the file can diverge; never reproduced locally.                      */
-    /* -----------------------------------------------------------------
-     * v8 — the Google Tasks columns move to side tables the sync owns.
-     *
-     * COPY, VERIFY, and only then DROP.  The drop rewrites the whole
-     * tasks table, and doing that to someone's only copy after a copy
-     * that silently did nothing is precisely how a 1965-task database
-     * became unrecoverable.  A verify that fails leaves every column in
-     * place and says so: an un-migrated database still works, because
-     * the readers below no longer look at those columns either way.
-     *
-     * The copy is guarded on gtasks_id/etag/... EXISTING, which they do
-     * not on a fresh file — hence the version test rather than an
-     * unconditional run.
-     * ----------------------------------------------------------------- */
-    if (uv > 0 && uv < 8) {
-        gboolean copied =
-            /* The destinations are created HERE rather than in the schema
-             * block above: they belong to the Google sync, and this
-             * migration must still run on a database whose owner is not
-             * present.  IF NOT EXISTS because the owner may have created
-             * them already.                                              */
-            exec(db, "CREATE TABLE IF NOT EXISTS gtasks_list ("
-                     "  list_id   INTEGER PRIMARY KEY REFERENCES lists(id)"
-                     "            ON DELETE CASCADE,"
-                     "  gtasks_id TEXT)") &&
-            exec(db, "CREATE TABLE IF NOT EXISTS gtasks_task ("
-                     "  task_id   INTEGER PRIMARY KEY REFERENCES tasks(id)"
-                     "            ON DELETE CASCADE,"
-                     "  gtasks_id TEXT,"
-                     "  etag      TEXT,"
-                     "  web_link  TEXT,"
-                     "  glinks    TEXT,"
-                     "  assigned  TEXT)") &&
-            exec(db, "INSERT OR REPLACE INTO gtasks_list (list_id, gtasks_id)"
-                     "  SELECT id, gtasks_id FROM lists"
-                     "   WHERE gtasks_id IS NOT NULL") &&
-            exec(db, "INSERT OR REPLACE INTO gtasks_task"
-                     "       (task_id, gtasks_id, etag, web_link, glinks,"
-                     "        assigned)"
-                     "  SELECT id, gtasks_id, etag, web_link, glinks,"
-                     "         assigned FROM tasks"
-                     "   WHERE gtasks_id IS NOT NULL OR etag IS NOT NULL"
-                     "      OR web_link IS NOT NULL OR glinks IS NOT NULL"
-                     "      OR assigned IS NOT NULL");
-
-        /* VERIFY: every row that had a remote identity must have one now,
-         * and it must be the SAME one.  Counting is not enough — a copy
-         * that wrote the right number of wrong rows would pass that.     */
-        gint64 wrong = copied
-            ? task_db_scalar(db, "SELECT COUNT(*) FROM tasks t"
-                         " LEFT JOIN gtasks_task g ON g.task_id = t.id"
-                         " WHERE (t.gtasks_id IS NOT NULL"
-                         "        AND g.gtasks_id IS NOT t.gtasks_id)"
-                         "    OR (t.etag IS NOT NULL"
-                         "        AND g.etag IS NOT t.etag)")
-            : -1;
-        gint64 wrong_l = copied && wrong == 0
-            ? task_db_scalar(db, "SELECT COUNT(*) FROM lists l"
-                         " LEFT JOIN gtasks_list g ON g.list_id = l.id"
-                         " WHERE l.gtasks_id IS NOT NULL"
-                         "   AND g.gtasks_id IS NOT l.gtasks_id")
-            : -1;
-
-        if (copied && wrong == 0 && wrong_l == 0) {
-            /* An sqlite too old for DROP COLUMN (< 3.35) simply leaves the
-             * columns behind, unread.  Harmless: nothing selects them any
-             * more, and the data now lives in the side tables.           */
-            exec(db, "ALTER TABLE lists DROP COLUMN gtasks_id");
-            exec(db, "ALTER TABLE tasks DROP COLUMN gtasks_id");
-            exec(db, "ALTER TABLE tasks DROP COLUMN etag");
-            exec(db, "ALTER TABLE tasks DROP COLUMN web_link");
-            exec(db, "ALTER TABLE tasks DROP COLUMN glinks");
-            exec(db, "ALTER TABLE tasks DROP COLUMN assigned");
-            g_message("Migrated %s to schema v8: the Google Tasks columns "
-                      "now live in gtasks_task / gtasks_list", path);
-        } else {
-            g_warning("db: %s — the v8 copy did not verify (%lld task "
-                      "mismatches, %lld list mismatches); the old columns "
-                      "were LEFT IN PLACE and nothing was dropped",
-                      path, (long long)wrong, (long long)wrong_l);
-        }
-    }
-
-    /* -----------------------------------------------------------------
-     * v9 — the Notes mirror's columns move to its own side table, the
-     * same shape v8 gave the Google sync.  COPY, VERIFY, then DROP.
-     *
-     * It still copies bn_deleted into notes_deleted, and that is
-     * deliberate even though the mirror STOPPED USING suppression on
-     * 2026-09-08 and its db_open now drops notes_deleted outright.  A
-     * migration's job is to move what existed WHEN IT RAN; rewriting one
-     * to know about a decision taken later is how the single path nobody
-     * can easily test acquires a bug.  The `lost` check below also GATES
-     * the drop of bn_uid/bn_done/bn_due — unpick the copy and that gate
-     * reads a missing table, returns -1, and every pre-v9 database stays
-     * half-migrated forever.  The table is dropped once, afterwards, in
-     * one place (notes.c), whatever version the file started at.
-     *
-     * The INDEX goes first: SQLite refuses ALTER TABLE ... DROP COLUMN on
-     * an indexed column, so leaving idx_tasks_bn_uid in place would fail
-     * the drop and strand the migration half-applied.
-     * ----------------------------------------------------------------- */
-    if (uv > 0 && uv < 9) {
-        gboolean copied =
-            exec(db, "CREATE TABLE IF NOT EXISTS notes_task ("
-                     "  task_id INTEGER PRIMARY KEY REFERENCES tasks(id)"
-                     "          ON DELETE CASCADE,"
-                     "  uid     INTEGER NOT NULL,"
-                     "  done    INTEGER NOT NULL DEFAULT 0,"
-                     "  due     INTEGER NOT NULL DEFAULT 0)") &&
-            exec(db, "CREATE INDEX IF NOT EXISTS idx_notes_task_uid "
-                     "ON notes_task(uid)") &&
-            exec(db, "CREATE TABLE IF NOT EXISTS notes_deleted ("
-                     "  uid INTEGER PRIMARY KEY)") &&
-            exec(db, "INSERT OR REPLACE INTO notes_task"
-                     "       (task_id, uid, done, due)"
-                     "  SELECT id, bn_uid, bn_done, bn_due FROM tasks"
-                     "   WHERE bn_uid > 0") &&
-            exec(db, "INSERT OR IGNORE INTO notes_deleted (uid)"
-                     "  SELECT uid FROM bn_deleted");
-
-        gint64 wrong = copied
-            ? task_db_scalar(db,
-                  "SELECT COUNT(*) FROM tasks t"
-                  " LEFT JOIN notes_task n ON n.task_id = t.id"
-                  " WHERE t.bn_uid > 0"
-                  "   AND (n.uid IS NOT t.bn_uid"
-                  "     OR n.done IS NOT t.bn_done"
-                  "     OR n.due IS NOT t.bn_due)")
-            : -1;
-        gint64 lost = copied && wrong == 0
-            ? task_db_scalar(db, "SELECT (SELECT COUNT(*) FROM bn_deleted)"
-                                 "     - (SELECT COUNT(*) FROM notes_deleted)")
-            : -1;
-
-        if (copied && wrong == 0 && lost == 0) {
-            exec(db, "DROP INDEX IF EXISTS idx_tasks_bn_uid");
-            exec(db, "ALTER TABLE tasks DROP COLUMN bn_uid");
-            exec(db, "ALTER TABLE tasks DROP COLUMN bn_done");
-            exec(db, "ALTER TABLE tasks DROP COLUMN bn_due");
-            exec(db, "DROP TABLE IF EXISTS bn_deleted");
-
-            /* bn_pins / bn_priority stored a Notes item's pin and
-             * priority back when action items were a special row type;
-             * the 2026-08-05 mirror rewrite made them ordinary tasks
-             * carrying the ordinary flags, and nothing has referenced
-             * either table since.  Dropped ONLY when provably empty — a
-             * row in one is evidence the assumption is wrong, and that is
-             * worth more than the tidiness.                             */
-            if (task_db_scalar(db, "SELECT COUNT(*) FROM bn_pins") == 0)
-                exec(db, "DROP TABLE IF EXISTS bn_pins");
-            else
-                g_warning("db: bn_pins is not empty \xe2\x80\x94 left in place");
-            if (task_db_scalar(db, "SELECT COUNT(*) FROM bn_priority") == 0)
-                exec(db, "DROP TABLE IF EXISTS bn_priority");
-            else
-                g_warning("db: bn_priority is not empty \xe2\x80\x94 left in place");
-
-            g_message("Migrated %s to schema v9: the Notes mirror's "
-                      "columns now live in notes_task / notes_deleted",
-                      path);
-        } else {
-            g_warning("db: %s \xe2\x80\x94 the v9 copy did not verify (%lld task "
-                      "mismatches, %lld suppressions lost); the old columns "
-                      "were LEFT IN PLACE", path,
-                      (long long)wrong, (long long)lost);
-        }
-    }
-
-    /* -----------------------------------------------------------------
-     * v10 — the recurrence schedule joins the task row.
-     *
-     * ADD COLUMN only: nothing is copied, nothing is dropped, and the
-     * whole table is not rewritten, so this is the cheap and safe end of
-     * the migration spectrum — the opposite of v7's DROP COLUMN.  Five
-     * columns whose defaults mean "does not recur", which is what every
-     * existing task is.
-     *
-     * Guarded on the COLUMN not existing rather than on the version
-     * alone, so it is idempotent: the version stamp has been seen not to
-     * stick on a database living in a sync folder (see below), and an
-     * ALTER re-run on a healthy file would log "duplicate column name"
-     * on every launch.  A warning that fires on the ordinary path is a
-     * warning nobody reads.
-     *
-     * NO INDEX is created on these.  That is deliberate — an index on an
-     * ALTER-added column must be created after the migrations rather
-     * than in the schema block (gotcha 16), and the recurrence pass
-     * scans a few thousand rows every few minutes, which wants no index
-     * at all.
-     * ----------------------------------------------------------------- */
-    {
-        static const struct { const gchar *name; gint def; } recur_cols[] = {
-            { "recur_interval", 0 },
-            { "recur_unit",     0 },
-            { "recur_time",     TASK_RECUR_TIME_DEFAULT },
-            { "recur_lead",     TASK_RECUR_LEAD_DEFAULT },
-            { "recur_next",     0 },
-        };
-        gint added = 0;
-        for (gsize i = 0; i < G_N_ELEMENTS(recur_cols); i++) {
-            if (table_has_column(db, "tasks", recur_cols[i].name))
-                continue;
-            gchar *sql = g_strdup_printf(
-                "ALTER TABLE tasks ADD COLUMN %s INTEGER NOT NULL "
-                "DEFAULT %d", recur_cols[i].name, recur_cols[i].def);
-            if (exec(db, sql))
-                added++;
-            g_free(sql);
-        }
-        if (added > 0)
-            g_message("Migrated %s to schema v10: added %d recurrence "
-                      "column(s) to tasks", path, added);
-    }
-
-    /* -----------------------------------------------------------------
-     * v11 — recur_start, the schedule's own anchor date.
-     *
-     * A block of its own rather than a sixth row in the v10 table above,
-     * so the log message keeps saying which version added what.  Same
-     * shape and same guard: ADD COLUMN, keyed on the column not existing
-     * so it is idempotent (gotcha 24).
-     *
-     * DEFAULT 0 means "unset", and unset is exactly what every existing
-     * recurring task wants: the anchor then falls back to the due date,
-     * which is the rule those tasks were created under.
-     * ----------------------------------------------------------------- */
-    if (!table_has_column(db, "tasks", "recur_start")) {
-        if (exec(db, "ALTER TABLE tasks ADD COLUMN recur_start INTEGER "
-                     "NOT NULL DEFAULT 0"))
-            g_message("Migrated %s to schema v11: added tasks.recur_start",
-                      path);
-    }
-
-    /* -----------------------------------------------------------------
-     * v12 — due_time, the time of day a due DATE means.
-     *
-     * ADD COLUMN, guarded on the column (gotcha 24), and the DEFAULT does
-     * the whole data migration: every existing due date comes back
-     * meaning 08:00, which is what "all due dates default to 8am" asks
-     * for.  Nothing is rewritten and no row is touched.
-     *
-     * The value is built from TASK_DUE_TIME_DEFAULT rather than written
-     * as a literal, because the CREATE above spells the same default and
-     * two spellings is how a fresh file and a migrated one come to
-     * disagree about what an untouched row means (gotcha 24 again).
-     * ----------------------------------------------------------------- */
-    if (!table_has_column(db, "tasks", "due_time")) {
-        gchar *sql = g_strdup_printf(
-            "ALTER TABLE tasks ADD COLUMN due_time INTEGER NOT NULL "
-            "DEFAULT %d", TASK_DUE_TIME_DEFAULT);
-        if (exec(db, sql))
-            g_message("Migrated %s to schema v12: added tasks.due_time",
-                      path);
-        g_free(sql);
-    }
-
-    /* -----------------------------------------------------------------
-     * v13 — default due time changed from 08:00 to 17:00.
-     *
-     * Any row whose due_time is still the old default (8*60 = 480) was
-     * never set by hand and should move to the new default (17*60 = 1020).
-     * The guard on uv keeps this idempotent: once the stamp reaches 13 the
-     * UPDATE never runs again, even on a re-opened database.
-     * ----------------------------------------------------------------- */
-    if (uv < 13 && uv > 0) {
-        if (exec(db, "UPDATE tasks SET due_time = 1020 WHERE due_time = 480"))
-            g_message("Migrated %s to schema v13: due_time default 08:00→17:00",
-                      path);
-    }
-
-    /* -----------------------------------------------------------------
-     * v14 — scheduled_start and scheduled_duration, day planner.
-     * Local-only (never synced); ADD COLUMN, guarded on the column.
-     * ----------------------------------------------------------------- */
-    if (!table_has_column(db, "tasks", "scheduled_start")) {
-        if (exec(db, "ALTER TABLE tasks ADD COLUMN scheduled_start INTEGER "
-                     "NOT NULL DEFAULT 0"))
-            g_message("Migrated %s to schema v14: added tasks.scheduled_start",
-                      path);
-    }
-    if (!table_has_column(db, "tasks", "scheduled_duration")) {
-        if (exec(db, "ALTER TABLE tasks ADD COLUMN scheduled_duration INTEGER "
-                     "NOT NULL DEFAULT 60"))
-            g_message("Migrated %s to schema v14: added tasks.scheduled_duration",
-                      path);
-    }
-
-    /* An index on an ALTER-added column is created AFTER the migration
-     * that adds the column (gotcha 16).  The day planner and the
-     * notification worker read a day's sessions by this range.          */
+    /* The day planner and the notification worker read a day's sessions
+     * by this range.                                                       */
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_scheduled "
              "ON tasks(scheduled_start)");
 
-    if (uv != TASK_DB_SCHEMA_VERSION) {
-        /* Stamped from the CONSTANT for the same reason — and only when
-         * the file does not already say so: re-writing an unchanged
-         * user_version still writes page 1, which moves the file's
-         * modification time on every open.  That dirtied the database at
-         * every launch and defeated the backup's "unchanged, skip" check
-         * (backup.c), which compares that time.                        */
-        gchar *stamp = g_strdup_printf("PRAGMA user_version = %d",
-                                       TASK_DB_SCHEMA_VERSION);
-        exec(db, stamp);
-        g_free(stamp);
+    if (uv == 0) {
+        /* A new file: stamp it, then READ IT BACK.  A PRAGMA that reports
+         * success without taking effect leaves the file unstamped, and the
+         * next open would treat it as new again — harmless, but silent,
+         * which the error discipline forbids.  Only a new file is stamped:
+         * re-writing an unchanged user_version still writes page 1, which
+         * moves the file's modification time on every open and defeats
+         * the backup's "unchanged, skip" check (backup.c).                 */
+        exec(db, "PRAGMA user_version = " G_STRINGIFY(TASK_DB_SCHEMA_VERSION));
+        gint stamped = -1;
+        vst = NULL;
+        if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
+            == SQLITE_OK && sqlite3_step(vst) == SQLITE_ROW)
+            stamped = sqlite3_column_int(vst, 0);
+        sqlite3_finalize(vst);
+        if (stamped != TASK_DB_SCHEMA_VERSION)
+            g_warning("db: %s reports schema version %d after being stamped %d "
+                      "— the version stamp did not stick", path, stamped,
+                      TASK_DB_SCHEMA_VERSION);
     }
-    gint uv_after = -1;              /* what the file now claims            */
-    vst = NULL;
-    if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
-        == SQLITE_OK && sqlite3_step(vst) == SQLITE_ROW)
-        uv_after = sqlite3_column_int(vst, 0);
-    sqlite3_finalize(vst);
-    /* Checked against the CONSTANT, not a literal: the two drifted apart
-     * once already, and a check comparing to the wrong number warns on
-     * every SUCCESSFUL migration.                                      */
-    if (uv_after != TASK_DB_SCHEMA_VERSION)
-        g_warning("db: %s still reports schema version %d after the "
-                  "migration to %d — the version stamp did not stick "
-                  "(migrations will re-run harmlessly on every launch)",
-                  path, uv_after, TASK_DB_SCHEMA_VERSION);
     return db;
 }
 
@@ -1104,7 +717,7 @@ task_db_close(TaskDatabase *db)
 
 /* ---------------------------------------------------------------------------
  * read_list() — build a TaskList from the standard lists SELECT
- * (LIST_COLS: id, name, position, gtasks_id, updated_at, deleted, emoji).
+ * (LIST_COLS: id, name, position, updated_at, deleted, emoji, group_id).
  * ------------------------------------------------------------------------- */
 static TaskList *
 read_list(sqlite3_stmt *st)
@@ -1265,23 +878,6 @@ task_db_list_delete(TaskDatabase *db, gint64 id)
 }
 
 /* ---------------------------------------------------------------------------
- * task_db_list_restore() — undo a list tombstone (see db.h).  Tombstones
- * only persist until a sync pushes them, so any task tombstone still in
- * the list belongs to the same refused deletion and is restored too.
- * ------------------------------------------------------------------------- */
-void
-task_db_list_restore(TaskDatabase *db, gint64 id)
-{
-    gchar *sql = sqlite3_mprintf(
-        "UPDATE tasks SET deleted = 0, updated_at = %lld "
-        "  WHERE list_id = %lld AND deleted = 1;"
-        "UPDATE lists SET deleted = 0, updated_at = %lld WHERE id = %lld;",
-        (long long)now(), (long long)id, (long long)now(), (long long)id);
-    exec_txn(db, sql);
-    sqlite3_free(sql);
-}
-
-/* ---------------------------------------------------------------------------
  * Group CRUD.
  * ------------------------------------------------------------------------- */
 
@@ -1404,26 +1000,6 @@ task_db_list_set_group(TaskDatabase *db, gint64 list_id, gint64 group_id)
               (long long)group_id, (long long)list_id);
     exec_txn(db, sql);
     sqlite3_free(sql);
-}
-
-/* task_db_list_emoji_if_empty() — seed the emoji of the list bound to
- * `gtasks_id` (see db.h).  Deliberately NO updated_at bump: the emoji
- * is local-only and must not dirty the row for sync.                       */
-void
-task_db_list_emoji_if_empty(TaskDatabase *db, gint64 list_id,
-                            const gchar *emoji)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
-            "UPDATE lists SET emoji = ?1 WHERE id = ?2 AND "
-            "emoji = '' AND deleted = 0", -1, &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, emoji, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 2, list_id);
-        step_done(db, st, "list emoji seed");
-    } else {
-        step_done(db, NULL, "list emoji seed");
-    }
-    sqlite3_finalize(st);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2176,73 +1752,6 @@ task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists)
 /* ---------------------------------------------------------------------------
  * Sync-side mutators (no updated_at stamp — see db.h).
  * ------------------------------------------------------------------------- */
-/* task_db_list_apply_remote() — overwrite name with the remote's, stamping
- * the REMOTE updated time so the row is clean after the sync.              */
-void
-task_db_list_apply_remote(TaskDatabase *db, gint64 id, const gchar *name,
-                          gint64 updated_at)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
-            "UPDATE lists SET name = ?, updated_at = ? WHERE id = ?", -1,
-            &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 2, updated_at);
-        sqlite3_bind_int64(st, 3, id);
-        step_done(db, st, "list apply remote");
-    } else {
-        step_done(db, NULL, "list apply remote");
-    }
-    sqlite3_finalize(st);
-}
-
-/* task_db_task_apply_remote() — overwrite the fields a remote source
- * owns (title, notes, due, status, completed_at) WITHOUT the usual now()
- * stamp: the caller passes the remote `updated_at`, so the row lands
- * clean rather than immediately dirty again.  pinned and priority are
- * local-only and untouched.
- *
- * completed_at is the ONE field here that is MERGED rather than
- * overwritten: `MAX(completed_at, ?)`, reading the OLD row (gotcha 8).
- * The stamp only ever moves FORWARD — it answers "when was this last
- * completed?" — and a remote source reports 0 for anything it does not
- * currently consider done, so a plain assignment would let an un-tick on
- * Google erase local history Google never knew about.  A remote
- * completion NEWER than ours still wins, which is the only case where
- * the remote genuinely knows better.
- *
- * `t->status` is written VERBATIM.  A done-only source has already
- * folded its flag through task_status_apply_done against the row it
- * read, which is what stops a round trip promoting a New task.
- *
- * An integration's OWN per-task state (a remote id, an etag, a deep
- * link) is not here: it lives in that integration's side table, and it
- * writes that itself.                                                     */
-void
-task_db_task_apply_remote(TaskDatabase *db, const Task *t)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
-            "UPDATE tasks SET title = ?, notes = ?, due = ?, status = ?, "
-            "updated_at = ?, completed_at = MAX(completed_at, ?) "
-            "WHERE id = ?", -1, &st, NULL)
-        == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 2, t->notes, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 3, t->due);
-        sqlite3_bind_int(st, 4, (gint)t->status);
-        sqlite3_bind_int64(st, 5, t->updated_at);
-        sqlite3_bind_int64(st, 6, t->completed_at);
-        sqlite3_bind_int64(st, 7, t->id);
-        step_done(db, st, "task apply remote");
-    } else {
-        step_done(db, NULL, "task apply remote");
-    }
-    sqlite3_finalize(st);
-    if (t->status == TASK_STATUS_DONE)
-        parent_started(db, t->id);
-}
-
 /* ---------------------------------------------------------------------------
  * task_db_task_move_list() — cross-list move (see db.h).
  * ------------------------------------------------------------------------- */
@@ -2261,75 +1770,6 @@ task_db_task_move_list(TaskDatabase *db, gint64 id, gint64 dest_list)
         (long long)dest_list, (long long)now(), (long long)id);
     exec_txn(db, sql);
     sqlite3_free(sql);
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_purge_done() — remove a list's completed tasks (see db.h).
- * ------------------------------------------------------------------------- */
-void
-task_db_purge_done(TaskDatabase *db, gint64 list_id)
-{
-    gchar *sql = sqlite3_mprintf(
-        "DELETE FROM tasks WHERE list_id = %lld AND parent_id IN "
-        "  (SELECT id FROM tasks WHERE list_id = %lld AND status = 2);"
-        "DELETE FROM tasks WHERE list_id = %lld AND status = 2;",
-        (long long)list_id, (long long)list_id, (long long)list_id);
-    exec_txn(db, sql);
-    sqlite3_free(sql);
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_task_apply_done_source() — see db.h.
- * ------------------------------------------------------------------------- */
-void
-task_db_task_apply_done_source(TaskDatabase *db, gint64 id,
-                               const gchar *title, gboolean done, gint64 due)
-{
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
-            "UPDATE tasks SET completed_at = CASE "
-            "                     WHEN ?1 = 1 AND status <> 2 THEN ?2 "
-            "                     ELSE completed_at END, "
-            "title = ?3, due = ?4, "
-            "status = CASE WHEN ?1 = 1   THEN 2 "     /* → Done            */
-            "              WHEN status = 2 THEN 1 "   /* Done → In Progress*/
-            "              ELSE status END, "         /* New/In Prog. stay */
-            "updated_at = ?2 WHERE id = ?5", -1, &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_int(st, 1, done ? 1 : 0);
-        sqlite3_bind_int64(st, 2, now());
-        sqlite3_bind_text(st, 3, title != NULL ? title : "", -1,
-                          SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 4, due);
-        sqlite3_bind_int64(st, 5, id);
-        step_done(db, st, "task apply done-source");
-    } else {
-        step_done(db, NULL, "task apply done-source");
-    }
-    sqlite3_finalize(st);
-    if (done)
-        parent_started(db, id);
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_insert_remote_tombstone() — offline-move stub (see db.h).
- * ------------------------------------------------------------------------- */
-gint64
-task_db_insert_remote_tombstone(TaskDatabase *db, gint64 list_id)
-{
-    sqlite3_stmt *st = NULL;
-    gint64 id = 0;
-    if (sqlite3_prepare_v2(db->sq,
-            "INSERT INTO tasks(list_id, title, deleted, updated_at) "
-            "VALUES(?, '', 1, ?)", -1, &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(st, 1, list_id);
-        sqlite3_bind_int64(st, 2, now());
-        if (step_done(db, st, "remote tombstone insert"))
-            id = sqlite3_last_insert_rowid(db->sq);
-    } else {
-        step_done(db, NULL, "remote tombstone insert");
-    }
-    sqlite3_finalize(st);
-    return id;
 }
 
 /* task_db_list_purge() — physically delete a list row + all its tasks'

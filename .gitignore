@@ -16,3 +16,8 @@ dev/
 # Agent worktrees live INSIDE the repo, so `git add` turns one into a
 # phantom submodule.  Ignore the parent so it cannot happen.
 .claude/worktrees/
+
+# The Google OAuth client (see the Makefile and src/oauth.h).  It identifies
+# the app rather than granting anything, but it is per-developer.
+client_credentials.mk
+client_secret*.json
