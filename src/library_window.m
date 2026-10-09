@@ -193,6 +193,44 @@ save_size(const char *w_key, const char *h_key, NSSize size)
     task_config_set_int(h_key, (gint)size.height);
 }
 
+/*
+ * TasksSplitHost — the plain container of the window's main split view,
+ * which keeps the split view exactly its own size.  The split view has no
+ * autoresizing link to it (see build_layout), so it is sized here.
+ */
+@interface TasksSplitHost : NSView
+@end
+
+@implementation TasksSplitHost
+
+/*
+ * setFrameSize: — the container was resized: make the split view fill it.
+ *
+ * Inputs:
+ *   size — the new size
+ */
+- (void)
+setFrameSize:(NSSize)size
+{
+    [super setFrameSize:size];
+    self.subviews.firstObject.frame = self.bounds;
+}
+
+/*
+ * didAddSubview: — the split view arrived: make it fill the container.
+ *
+ * Inputs:
+ *   view — the subview added
+ */
+- (void)
+didAddSubview:(NSView *)view
+{
+    [super didAddSubview:view];
+    view.frame = self.bounds;
+}
+
+@end
+
 @implementation TasksLibraryWindow
 
 /* ── Construction ────────────────────────────────────────────────────── */
@@ -436,15 +474,28 @@ build_layout
     self.status_left  = status_label(NSTextAlignmentCenter);
     self.status_right = status_label(NSTextAlignmentRight);
 
-    for (NSView *v in @[split, rule, self.status_left, self.status_right]) {
+    /* The split view sits in a container that sizes it by hand (TasksSplitHost)
+     * and carries NO autoresizing link to it.  Pinned to the window by
+     * constraints, or tied to its container by a flexible autoresizing mask,
+     * NSSplitView turns its subviews' frames into required width
+     * constraints, and the window then takes the size they add up to as its
+     * least size: once the day planner was shown the window could grow but
+     * never shrink again.  The container is constrained as the split view
+     * used to be; the window's least size is content_min_size alone. */
+    NSView *split_host = [[TasksSplitHost alloc] initWithFrame:NSZeroRect];
+    split.translatesAutoresizingMaskIntoConstraints = YES;
+    split.autoresizingMask = NSViewNotSizable;
+    [split_host addSubview:split];
+
+    for (NSView *v in @[split_host, rule, self.status_left, self.status_right]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:v];
     }
     [NSLayoutConstraint activateConstraints:@[
-        [split.topAnchor constraintEqualToAnchor:content.topAnchor],
-        [split.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [split.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [split.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
+        [split_host.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [split_host.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [split_host.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [split_host.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
 
         [rule.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [rule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
