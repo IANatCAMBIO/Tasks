@@ -457,7 +457,9 @@ GPtrArray *task_db_tasks_toplevel(TaskDatabase *db, gint64 list_id);
 GPtrArray *task_db_subtasks(TaskDatabase *db, gint64 parent_id);
 
 /* ALL visible subtasks (every list), ordered by parent then position —
- * one query for the task pane instead of one per top-level row.            */
+ * one query for the task pane instead of one per top-level row.  Their
+ * `notes` come back EMPTY: the pane and the search read a subtask's title
+ * and status only, and the notes are the bulk of a task's bytes.          */
 GPtrArray *task_db_subtasks_all_visible(TaskDatabase *db);
 
 /* Visible pinned tasks across all lists (any level), pinned order = list
@@ -478,8 +480,10 @@ GPtrArray *task_db_tasks_all_visible(TaskDatabase *db);
  * (or an id naming no group) yields the empty array, never NULL.           */
 GPtrArray *task_db_tasks_in_group(TaskDatabase *db, gint64 group_id);
 
-/* Visible tasks (any level) with lo <= due < hi, soonest first.            */
-GPtrArray *task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi);
+/* Visible tasks (any level) with lo <= due < hi, soonest first; open_only
+ * leaves the Done ones out (the notification worker's question).           */
+GPtrArray *task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi,
+                                     gboolean open_only);
 
 /* Every task row of ONE list, including subtasks and tombstones, parents
  * before subtasks (sync — a new parent must own a gtasks_id before its
@@ -539,14 +543,27 @@ void task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next);
 void task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
                                 gint64 start_unix, gint duration_min);
 
-/* Tasks scheduled within the 24-hour window starting at day_midnight
- * (unix seconds of a local midnight), ordered by scheduled_start.  Returns
+/* Tasks scheduled within a local day, [lo, hi) in unix seconds (the
+ * bounds from task_day_bounds), ordered by scheduled_start.  Returns
  * Task* elements; free with task_ptr_array_free_tasks after use.
  * Never NULL.                                                             */
 GPtrArray *task_db_tasks_scheduled_for_day(TaskDatabase *db, gint64 lo, gint64 hi);
 
 /* Tombstone the task and its subtasks, in one transaction.                */
 void task_db_task_delete(TaskDatabase *db, gint64 id);
+
+/* Tombstone every completed top-level task of a list and their subtasks,
+ * in ONE transaction.  Returns how many top-level tasks went.              */
+guint task_db_tasks_delete_done(TaskDatabase *db, gint64 list_id);
+
+/* A transaction round several writes that belong together (a drop that
+ * changes the status of five cards): one journalled write instead of
+ * five.  begin returns FALSE when the transaction could not start (the
+ * writes then run on their own; nothing is lost but the batching); end
+ * COMMITs on ok and ROLLS BACK otherwise, and after a failed COMMIT, so
+ * the connection is never left inside a transaction.                      */
+gboolean task_db_transaction_begin(TaskDatabase *db);
+void     task_db_transaction_end(TaskDatabase *db, gboolean ok);
 
 /* Swap the display position of subtask `id` with its neighbor in the
  * current sorted order (direction = -1 up, +1 down).  No-op at the

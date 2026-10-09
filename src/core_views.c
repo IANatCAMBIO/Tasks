@@ -55,7 +55,7 @@ today_query(TaskApp *app, gpointer d)
     task_day_bounds(0, &lo, &hi);
     if (task_config_get_bool(TASK_CFG_DUE_TODAY_OVERDUE))
         lo = 1;
-    return task_db_tasks_due_between(app->db, lo, hi);
+    return task_db_tasks_due_between(app->db, lo, hi, FALSE);
 }
 
 static const TaskView core_view_pinned = {

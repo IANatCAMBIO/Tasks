@@ -29,13 +29,38 @@
  * A hidden name, and not one the prune matches.                           */
 #define BACKUP_STAMP_FILE ".last-source"
 
+/*
+ * stamp_part — one file's share of a source stamp: its size and
+ * modification time, to the nanosecond (APFS keeps them): a write in the
+ * same second as the last stamp must not read as "unchanged".
+ *
+ * Inputs:
+ *   out  — the stamp being built
+ *   path — the file; one that is not there contributes "-"
+ */
+static void
+stamp_part(GString *out, const gchar *path)
+{
+    GStatBuf sb;
+    if (g_stat(path, &sb) != 0) {
+        g_string_append(out, "|-");
+        return;
+    }
+    g_string_append_printf(out, "|%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT ".%09ld",
+                           (gint64)sb.st_size, (gint64)sb.st_mtimespec.tv_sec,
+                           (long)sb.st_mtimespec.tv_nsec);
+}
+
 /* ---------------------------------------------------------------------------
  * source_stamp() — a cheap identity for "the state of the last backup":
- * the DESTINATION, plus the source file's size and modification time.
+ * the DESTINATION, plus the size and modification time of the source file
+ * AND of its write-ahead log.  Under WAL (db.c) a write lands in the
+ * "-wal" file beside the database, and the database file itself changes
+ * only at a checkpoint, so the log is as much the source as the file is.
  * Not a hash: this runs on every timer tick, and the question is only
- * "would another backup right now be a duplicate", which mtime answers
- * for a file SQLite has written — and only SQLite writes it: task_db_open
- * leaves an up-to-date file untouched (db.c, the user_version stamp).
+ * "would another backup right now be a duplicate", which the times answer
+ * for files only SQLite writes: task_db_open leaves an up-to-date file
+ * untouched (db.c, the user_version stamp).
  *
  * The destination is part of it deliberately.  Without it, choosing a new
  * backup folder would produce NO backup there until the database happened
@@ -51,12 +76,13 @@ source_stamp(const gchar *path, const gchar *dest_dir)
     GStatBuf sb;
     if (g_stat(path, &sb) != 0)
         return NULL;
-    /* The nanoseconds too: a write in the same second as the last stamp
-     * must not read as "unchanged" (APFS keeps them). */
-    return g_strdup_printf("%s|%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT ".%09ld",
-                           dest_dir != NULL ? dest_dir : "",
-                           (gint64)sb.st_size, (gint64)sb.st_mtimespec.tv_sec,
-                           (long)sb.st_mtimespec.tv_nsec);
+
+    GString *stamp = g_string_new(dest_dir != NULL ? dest_dir : "");
+    gchar   *wal   = g_strconcat(path, "-wal", NULL);
+    stamp_part(stamp, path);
+    stamp_part(stamp, wal);
+    g_free(wal);
+    return g_string_free(stamp, FALSE);
 }
 
 /*

@@ -27,16 +27,5 @@ task_ops_move_to_list(TaskApp *app, gint64 task_id, gint64 dest_list_id)
 guint
 task_ops_clear_completed(TaskApp *app, gint64 list_id)
 {
-    GPtrArray *tasks = task_db_tasks_toplevel(app->db, list_id);
-    guint n = 0;
-
-    for (guint i = 0; i < tasks->len; i++) {
-        Task *t = g_ptr_array_index(tasks, i);
-        if (t->status == TASK_STATUS_DONE) {
-            task_db_task_delete(app->db, t->id);
-            n++;
-        }
-    }
-    task_ptr_array_free_tasks(tasks);
-    return n;
+    return task_db_tasks_delete_done(app->db, list_id);
 }

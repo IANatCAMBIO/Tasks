@@ -94,6 +94,7 @@ initWithTaskId:(int64_t)task_id title:(NSString *)title subtitle:(NSString *)sub
 @property (nonatomic, strong) NSTextField   *hero_title;
 @property (nonatomic, strong) NSTextField   *hero_subtitle;
 @property (nonatomic, strong) NSImageView   *hero_icon;
+@property (nonatomic, assign) BOOL           refresh_pending;  /* a show_items is queued */
 
 + (instancetype)shared;
 - (void)addItem:(TasksReminderItem *)item;
@@ -386,16 +387,36 @@ place_lower_right
 
 /*
  * addItem: — append a reminder to the list and bring the window forward.
- * A window coming on screen appears in the lower-right corner; one already
- * showing stays where it is.
+ * The showing waits for the next run-loop pass, so that a pass delivering
+ * twenty overdue tasks at launch reloads the table and orders the window
+ * front once, not twenty times.
  */
 - (void)
 addItem:(TasksReminderItem *)item
 {
     [_items addObject:item];
+    if (self.refresh_pending) return;
+
+    self.refresh_pending = YES;
+    __weak TasksReminderWindowController *ws = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        TasksReminderWindowController *s = ws;
+        s.refresh_pending = NO;
+        [s show_items];
+    });
+}
+
+/*
+ * show_items — make the window show the list as it now is and bring it
+ * forward.  A window coming on screen appears in the lower-right corner;
+ * one already showing stays where it is.
+ */
+- (void)
+show_items
+{
     [_table reloadData];
 
-    /* Select the new item if nothing is selected, else keep selection. */
+    /* Select the newest item if nothing is selected, else keep selection. */
     if (_table.selectedRow < 0 || _table.selectedRow >= (NSInteger)_items.count)
         [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:0]
             byExtendingSelection:NO];

@@ -7,6 +7,8 @@
 #include <glib/gstdio.h>             /* g_unlink, g_stat                    */
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>               /* statfs, MNT_LOCAL                   */
+#include <sys/param.h>
 #include <time.h>
 
 /* ---------------------------------------------------------------------------
@@ -44,6 +46,25 @@ task_db_scalar(TaskDatabase *db, const gchar *sql)
     return v;
 }
 
+/* task_db_transaction_begin() — see db.h.                                   */
+gboolean
+task_db_transaction_begin(TaskDatabase *db)
+{
+    return exec(db, "BEGIN IMMEDIATE");
+}
+
+/* task_db_transaction_end() — see db.h.                                     */
+void
+task_db_transaction_end(TaskDatabase *db, gboolean ok)
+{
+    if (ok) {
+        if (!exec(db, "COMMIT"))
+            exec(db, "ROLLBACK");
+    } else {
+        exec(db, "ROLLBACK");
+    }
+}
+
 /* ---------------------------------------------------------------------------
  * exec_txn() — run `sql` (one or more statements) inside a transaction,
  * ROLLING BACK on failure.  A bare "BEGIN;…;COMMIT;" through exec()
@@ -55,14 +76,28 @@ task_db_scalar(TaskDatabase *db, const gchar *sql)
 static void
 exec_txn(TaskDatabase *db, const gchar *sql)
 {
-    if (!exec(db, "BEGIN IMMEDIATE"))
+    if (!task_db_transaction_begin(db))
         return;
-    if (exec(db, sql)) {
-        if (!exec(db, "COMMIT"))
-            exec(db, "ROLLBACK");
-    } else {
-        exec(db, "ROLLBACK");
+    task_db_transaction_end(db, exec(db, sql));
+}
+
+/* ---------------------------------------------------------------------------
+ * volume_is_local() — whether a path lies on a local volume (a disk of
+ * this machine), as against a network mount.  A file that does not exist
+ * yet is judged by its folder.
+ * ------------------------------------------------------------------------- */
+static gboolean
+volume_is_local(const gchar *path)
+{
+    struct statfs sf;
+    if (statfs(path, &sf) != 0) {
+        gchar *dir = g_path_get_dirname(path);
+        int    rc  = statfs(dir, &sf);
+        g_free(dir);
+        if (rc != 0)
+            return FALSE;
     }
+    return (sf.f_flags & MNT_LOCAL) != 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -580,6 +615,19 @@ task_db_open(const gchar *path, GError **err)
     sqlite3_busy_timeout(sq, 5000);  /* GUI + sync worker share the file    */
     exec(db, "PRAGMA foreign_keys = ON");
 
+    /* Write-ahead logging on a local disk: a reader (the hourly VACUUM INTO
+     * of the backup, the integrity probe) then no longer blocks the main
+     * thread's writes, which under the rollback journal waited out the
+     * busy timeout and then failed.  NORMAL synchronous is WAL's durable
+     * setting short of a power cut.  Not on a network mount, where the
+     * shared memory WAL needs does not work; and the journal is folded back
+     * into the file when the last connection closes, so a database at rest
+     * is one file either way.                                              */
+    if (volume_is_local(path)) {
+        exec(db, "PRAGMA journal_mode = WAL");
+        exec(db, "PRAGMA synchronous = NORMAL");
+    }
+
     /* The schema, in full.  CREATE IF NOT EXISTS keeps reopen cheap, and
      * every column is declared HERE, so a FRESH file is complete the
      * moment this block has run and needs no migration at all.  An
@@ -662,6 +710,12 @@ task_db_open(const gchar *path, GError **err)
      * relying on a block up here.                                        */
     exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
              "ON tasks(list_id, parent_id, position)");
+    /* The task pane's one subtask query, and the Due views: both are
+     * whole-table scans without these — idx_tasks_list leads on list_id,
+     * which neither has.                                                   */
+    exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_parent "
+             "ON tasks(parent_id) WHERE parent_id IS NOT NULL");
+    exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due)");
 
     sqlite3_stmt *vst = NULL;
     gint uv = 0;                     /* the file's schema version           */
@@ -1000,6 +1054,12 @@ task_db_open(const gchar *path, GError **err)
             g_message("Migrated %s to schema v14: added tasks.scheduled_duration",
                       path);
     }
+
+    /* An index on an ALTER-added column is created AFTER the migration
+     * that adds the column (gotcha 16).  The day planner and the
+     * notification worker read a day's sessions by this range.          */
+    exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_scheduled "
+             "ON tasks(scheduled_start)");
 
     if (uv != TASK_DB_SCHEMA_VERSION) {
         /* Stamped from the CONSTANT for the same reason — and only when
@@ -1369,12 +1429,18 @@ task_db_list_emoji_if_empty(TaskDatabase *db, gint64 list_id,
 /* ---------------------------------------------------------------------------
  * read_task() — build a Task from the standard tasks SELECT.
  * ------------------------------------------------------------------------- */
-#define TASK_COLS "id, list_id, COALESCE(parent_id, 0), title, notes, due, " \
+#define TASK_COLS_WITH(notes) \
+                  "id, list_id, COALESCE(parent_id, 0), title, " notes ", due, " \
                   "status, pinned, position, updated_at, deleted, "\
                   "completed_at, priority, "\
                   "recur_interval, recur_unit, recur_time, recur_lead, "\
                   "recur_next, recur_start, due_time, "\
                   "scheduled_start, scheduled_duration"
+#define TASK_COLS       TASK_COLS_WITH("notes")
+/* The same shape with the notes left out (an empty string in their
+ * place), for a query whose rows are read for their titles alone: the
+ * notes are the bulk of a task's bytes.                                    */
+#define TASK_COLS_BRIEF TASK_COLS_WITH("''")
 
 static Task *
 read_task(sqlite3_stmt *st)
@@ -1487,12 +1553,13 @@ task_db_subtasks(TaskDatabase *db, gint64 parent_id)
         1, parent_id, 0);
 }
 
-/* task_db_subtasks_all_visible() — every visible subtask, one query.       */
+/* task_db_subtasks_all_visible() — every visible subtask, one query, their
+ * notes left out (db.h): the pane reads their titles and statuses.          */
 GPtrArray *
 task_db_subtasks_all_visible(TaskDatabase *db)
 {
     return task_query(db,
-        "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NOT NULL AND "
+        "SELECT " TASK_COLS_BRIEF " FROM tasks WHERE parent_id IS NOT NULL AND "
         "deleted = 0 ORDER BY parent_id, priority DESC, position, id",
         0, 0, 0);
 }
@@ -1547,18 +1614,23 @@ task_db_tasks_in_group(TaskDatabase *db, gint64 group_id)
         1, group_id, 0);
 }
 
-/* task_db_tasks_due_between() — the Due Today / Weekly Forecast views.     */
+/* task_db_tasks_due_between() — the Due Today / Weekly Forecast views and
+ * the notification worker (see db.h).                                      */
 GPtrArray *
-task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi)
+task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi, gboolean open_only)
 {
     return task_query(db,
         /* due_time joins the sort so a day's tasks read in the order they
          * actually come due — `due` alone is midnight for every row in
          * the bucket and so cannot separate them (the Weekly Forecast's
          * day sections are the visible case).                            */
-        "SELECT " TASK_COLS " FROM tasks WHERE due >= ? AND due < ? AND "
-        "deleted = 0 ORDER BY priority DESC, due, due_time, list_id, "
-        "position",
+        open_only
+        ? "SELECT " TASK_COLS " FROM tasks WHERE due >= ? AND due < ? AND "
+          "deleted = 0 AND status <> 2 ORDER BY priority DESC, due, due_time, "
+          "list_id, position"
+        : "SELECT " TASK_COLS " FROM tasks WHERE due >= ? AND due < ? AND "
+          "deleted = 0 ORDER BY priority DESC, due, due_time, list_id, "
+          "position",
         2, lo, hi);
 }
 
@@ -1943,20 +2015,23 @@ task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction)
     g_ptr_array_index(subs, idx)    = g_ptr_array_index(subs, target);
     g_ptr_array_index(subs, target) = tmp;
 
-    for (guint i = 0; i < subs->len; i++) {
-        gint64 sid = ((Task *)g_ptr_array_index(subs, i))->id;
-        sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(db->sq,
-                "UPDATE tasks SET position = ? WHERE id = ?",
-                -1, &st, NULL) != SQLITE_OK) {
-            step_done(db, NULL, "subtask_move prepare");
-            continue;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db->sq, "UPDATE tasks SET position = ? WHERE id = ?",
+                           -1, &st, NULL) != SQLITE_OK) {
+        step_done(db, NULL, "subtask_move prepare");
+    } else if (task_db_transaction_begin(db)) {
+        /* One statement, one transaction: a row per sibling, not a
+         * journalled write per sibling. */
+        gboolean ok = TRUE;
+        for (guint i = 0; ok && i < subs->len; i++) {
+            sqlite3_reset(st);
+            sqlite3_bind_int(st, 1, (int)i);
+            sqlite3_bind_int64(st, 2, ((Task *)g_ptr_array_index(subs, i))->id);
+            ok = step_done(db, st, "subtask_move");
         }
-        sqlite3_bind_int(st, 1, (int)i);
-        sqlite3_bind_int64(st, 2, sid);
-        step_done(db, st, "subtask_move");
-        sqlite3_finalize(st);
+        task_db_transaction_end(db, ok);
     }
+    sqlite3_finalize(st);
     task_ptr_array_free_tasks(subs);
 }
 
@@ -1974,6 +2049,31 @@ task_db_task_delete(TaskDatabase *db, gint64 id)
         (long long)now(), (long long)id, (long long)now(), (long long)id);
     exec_txn(db, sql);
     sqlite3_free(sql);
+}
+
+/* ---------------------------------------------------------------------------
+ * task_db_tasks_delete_done() — tombstone a list's completed top-level
+ * tasks and their subtasks, in ONE transaction (see db.h).  The subtasks
+ * go first: the second statement is what the first selects them by.
+ * ------------------------------------------------------------------------- */
+guint
+task_db_tasks_delete_done(TaskDatabase *db, gint64 list_id)
+{
+    long long stamp = (long long)now();
+    gchar *sql = sqlite3_mprintf(
+        "UPDATE tasks SET deleted = 1, updated_at = %lld "
+        "  WHERE deleted = 0 AND parent_id IN "
+        "    (SELECT id FROM tasks WHERE list_id = %lld AND parent_id IS NULL "
+        "       AND status = %d AND deleted = 0);"
+        "UPDATE tasks SET deleted = 1, updated_at = %lld "
+        "  WHERE list_id = %lld AND parent_id IS NULL AND status = %d AND deleted = 0;",
+        stamp, (long long)list_id, (int)TASK_STATUS_DONE,
+        stamp, (long long)list_id, (int)TASK_STATUS_DONE);
+    exec_txn(db, sql);
+    sqlite3_free(sql);
+    /* The changes of the last UPDATE: the parents.  Zero after a rollback
+     * too, since the rollback is not a write of its own. */
+    return (guint)MAX(sqlite3_changes(db->sq), 0);
 }
 
 /* ---------------------------------------------------------------------------

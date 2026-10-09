@@ -162,10 +162,9 @@ notify_run(TaskApp *app, const gchar *db_path)
     if (!startup_done) {
         startup_done = TRUE;
         GPtrArray *past =
-            task_db_tasks_due_between(app->db, 0, today_hi);
+            task_db_tasks_due_between(app->db, 0, today_hi, TRUE);
         for (guint i = 0; i < past->len; i++) {
             const Task *t = past->pdata[i];
-            if (t->status == TASK_STATUS_DONE) continue;
 
             time_t due_t = (time_t)t->due;
             struct tm due_tm = *localtime(&due_t);
@@ -191,10 +190,9 @@ notify_run(TaskApp *app, const gchar *db_path)
         minutes_now < notify_due_minute + notify_due_window) {
 
         GPtrArray *due =
-            task_db_tasks_due_between(app->db, today_lo, today_hi);
+            task_db_tasks_due_between(app->db, today_lo, today_hi, TRUE);
         for (guint i = 0; i < due->len; i++) {
             const Task *t = due->pdata[i];
-            if (t->status == TASK_STATUS_DONE) continue;
 
             gchar *key = g_strdup_printf("due:%" G_GINT64_FORMAT ":%s",
                                          t->id, today_iso);

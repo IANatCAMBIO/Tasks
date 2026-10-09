@@ -263,8 +263,10 @@ task_board_drop(TaskApp *app, task_sel_t sel, const task_board_t *board,
     const char *one_title = NULL;   /* the first card that changed lane   */
     if (alive == NULL) abort();
 
-    /* The status half.  The database, not the board, says what a task's
-     * status is now and whether it still exists: a refresh may be pending. */
+    /* The status half, in one transaction.  The database, not the board,
+     * says what a task's status is now and whether it still exists: a
+     * refresh may be pending. */
+    bool in_txn = task_db_transaction_begin(app->db);
     for (size_t i = 0; i < n_moving; i++) {
         TaskStatus shown_in;
         size_t     index;
@@ -281,6 +283,7 @@ task_board_drop(TaskApp *app, task_sel_t sel, const task_board_t *board,
         task_db_task_set_status(app->db, moving[i], lane);
         if (n_status++ == 0) one_title = board->lanes[shown_in].cards[index]->title;
     }
+    if (in_txn) task_db_transaction_end(app->db, true);
 
     /* The order half: nothing to save when the order shown already is it. */
     size_t   count = 0;
