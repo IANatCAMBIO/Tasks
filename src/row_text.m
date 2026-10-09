@@ -61,59 +61,6 @@ paragraph_style(TasksRowLayout layout)
 }
 
 /*
- * dimmed — a text colour at a line's strength, STILL DYNAMIC.
- *
- * -colorWithAlphaComponent: on a system colour resolves it on the spot,
- * for whichever appearance is current at that moment, and the result no
- * longer follows light and dark: rows built in a light window stayed black
- * when the window went dark.  So the dimmed colour is a dynamic one that
- * resolves the base each time it is drawn.  The strength scales the base's
- * own alpha (labelColor is not fully opaque), so a dimmed line is never
- * stronger than an undimmed one.
- *
- * Inputs:
- *   base      — the row's text colour (a system colour)
- *   alpha_pct — the line's strength, 0-100
- *
- * Output:
- *   the base itself at full strength, else a new dynamic colour.
- */
-static NSColor *
-dimmed(NSColor *base, int alpha_pct)
-{
-    if (alpha_pct >= 100) return base;
-
-    /* One dynamic colour per base and strength, kept.  A dynamic colour
-     * made of a block is equal to nothing but itself, so two strings
-     * built with fresh ones never compared equal and every card redrew on
-     * every refresh (kanban.m show_text:); with the colour shared, an
-     * unchanged row's string is equal to the one it had. */
-    static NSMapTable<NSColor *, NSMutableDictionary<NSNumber *, NSColor *> *> *cache;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ cache = [NSMapTable strongToStrongObjectsMapTable]; });
-
-    NSMutableDictionary<NSNumber *, NSColor *> *by_alpha = [cache objectForKey:base];
-    if (by_alpha == nil) {
-        by_alpha = [NSMutableDictionary dictionary];
-        [cache setObject:by_alpha forKey:base];
-    }
-    NSColor *known = by_alpha[@(alpha_pct)];
-    if (known != nil) return known;
-
-    CGFloat strength = alpha_pct / 100.0;
-    NSColor *made = [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *appearance) {
-        __block NSColor *resolved = nil;
-        [appearance performAsCurrentDrawingAppearance:^{
-            NSColor *now = [base colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
-            resolved = [now colorWithAlphaComponent:now.alphaComponent * strength];
-        }];
-        return resolved;
-    }];
-    by_alpha[@(alpha_pct)] = made;
-    return made;
-}
-
-/*
  * tasks_row_text — the attributed string for one row.
  * Inputs/output are documented in row_text.h.
  */
@@ -144,7 +91,7 @@ tasks_row_text(const task_row_t *row, BOOL emphasized, TasksRowLayout layout)
 
         NSMutableDictionary<NSAttributedStringKey, id> *attrs = [@{
             NSFontAttributeName:            font,
-            NSForegroundColorAttributeName: dimmed(base, line->alpha_pct),
+            NSForegroundColorAttributeName: tasks_color_dimmed(base, line->alpha_pct),
             NSParagraphStyleAttributeName:  para,
         } mutableCopy];
         if (line->strike) attrs[NSStrikethroughStyleAttributeName] = @(NSUnderlineStyleSingle);

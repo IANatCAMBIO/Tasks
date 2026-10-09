@@ -146,6 +146,25 @@ typedef NS_ENUM(NSInteger, TasksColor) {
 NSColor *tasks_color(TasksColor which);
 
 /*
+ * tasks_color_dimmed — a system colour at a fraction of its strength, STILL
+ * DYNAMIC.  -colorWithAlphaComponent: on a system colour resolves it on the
+ * spot, for whichever appearance is current, and the result no longer
+ * follows light and dark; this returns a dynamic colour that resolves the
+ * base each time it is drawn, scaling the base's own alpha.  One colour per
+ * base and strength, kept: a dynamic colour made of a block is equal to
+ * nothing but itself, so callers that compare attributed strings (the
+ * Kanban card's "unchanged, do not redraw") need the same object back.
+ *
+ * Inputs:
+ *   base      — a system colour (labelColor, controlAccentColor, ...)
+ *   alpha_pct — the strength, 0-100; 100 returns the base itself
+ *
+ * Output:
+ *   shared dynamic NSColor.  Main thread.
+ */
+NSColor *tasks_color_dimmed(NSColor *base, int alpha_pct);
+
+/*
  * tasks_due_color — the Due cell's text colour for a due date.
  *
  * Inputs:

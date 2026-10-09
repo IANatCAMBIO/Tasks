@@ -425,6 +425,30 @@ same_tasks(const GPtrArray *a, const GPtrArray *b)
     return YES;
 }
 
+/*
+ * same_attachments — whether two attachment arrays hold the same files in
+ * the same order.
+ *
+ * Inputs:
+ *   a, b — GPtrArrays of TaskAttachment *; either may be NULL
+ *
+ * Output:
+ *   YES when both exist, are equally long and agree id for id and path for
+ *   path.
+ */
+static BOOL
+same_attachments(const GPtrArray *a, const GPtrArray *b)
+{
+    if (a == NULL || b == NULL || a->len != b->len) return NO;
+
+    for (guint i = 0; i < a->len; i++) {
+        const TaskAttachment *x = g_ptr_array_index(a, i);
+        const TaskAttachment *y = g_ptr_array_index(b, i);
+        if (x->id != y->id || g_strcmp0(x->path, y->path) != 0) return NO;
+    }
+    return YES;
+}
+
 /* ── The subtask list's two small classes ───────────────────────────── */
 
 /*
@@ -1371,10 +1395,19 @@ refresh_recurrence
     task_edit_form_t form     = [self form];
     Task             schedule = task_edit_schedule(&form, self.recur_next);
     gchar           *summary  = task_recur_describe(&schedule, (int64_t)time(NULL));
-
-    self.recur_summary.stringValue = tasks_string(summary);
+    NSString        *text     = tasks_string(summary);
     g_free(summary);
-    [self refit_animated:YES];
+
+    /* The fit (two layout passes of the whole form) only when it would
+     * change something: the summary's text, whose wrapped height it sets,
+     * or a fold that is not yet as its switch says. */
+    BOOL body_now = self.recur_check.state == NSControlStateValueOn;
+    BOOL changed  = ![self.recur_summary.stringValue isEqualToString:text] ||
+                    self.recur_body.hidden == body_now ||
+                    self.advanced_box.hidden == self.advanced_shown;
+
+    self.recur_summary.stringValue = text;
+    if (changed) [self refit_animated:YES];
 }
 
 /*
@@ -1893,8 +1926,16 @@ reload_attachments
                                                                  (guint)selected))->id;
     }
 
+    /* The same attachments as shown: nothing to redo.  A reload comes with
+     * every field blur and every refresh of every editor, and the icon
+     * lookup below touches each file — on a network volume, slowly. */
+    GPtrArray *fresh = task_db_attachments(self.app->db, self.task_id);
+    if (same_attachments(self.attachments, fresh)) {
+        task_ptr_array_free_attachments(fresh);
+        return;
+    }
     task_ptr_array_free_attachments(self.attachments);
-    self.attachments = task_db_attachments(self.app->db, self.task_id);
+    self.attachments = fresh;
 
     NSMutableArray<NSImage *> *icons = [NSMutableArray array];
     for (guint row = 0; row < self.attachments->len; row++) {

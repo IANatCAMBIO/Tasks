@@ -56,6 +56,7 @@
 #import <Cocoa/Cocoa.h>
 
 #import "app_delegate.h"
+#import "day_planner.h"
 #import "editor_window.h"
 #import "library_window.h"
 #import "look.h"
@@ -1323,8 +1324,17 @@ check_task_list(TaskApp *app, NSString *dir)
         NSWindow *window = library.window;
         [library showWindow:nil];
         /* The list must be the visible pane: a run that stopped in the
-         * Kanban checks leaves the setting on the board. */
+         * Kanban checks leaves the setting on the board.  And the day
+         * planner hidden: the widths below are the whole pane's, and a
+         * window set narrower than its minimum (setContentSize: does not
+         * hold to it) would leave the pane beside a planner too narrow for
+         * any columns.  The user's choice is put back at the end. */
         if (library.kanban_on) [library perform_command:TasksCommandTogglePane param:nil];
+        BOOL planner_shown = !library.day_planner.hidden;
+        if (planner_shown) {
+            [library perform_command:TasksCommandToggleDayPlanner param:nil];
+            check_spin(0.3);
+        }
 
         /* The list pane, wherever the window keeps it. */
         TasksTaskList *list = nil;
@@ -1473,6 +1483,10 @@ check_task_list(TaskApp *app, NSString *dir)
         check_spin(0.05);
         check(visible_windows() == open_before + 1, "list: Return opens the selected task's editor");
 
+        if (planner_shown) {
+            [library perform_command:TasksCommandToggleDayPlanner param:nil];
+            check_spin(0.3);
+        }
         [library close];
     }
     check_spin(0.2);

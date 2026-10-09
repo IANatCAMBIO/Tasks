@@ -27,9 +27,27 @@ static const CGFloat   header_h      = 36.0;
 @property (nonatomic) int64_t start_unix;
 @property (nonatomic) int duration;          /* minutes */
 @property (nonatomic) TaskStatus status;
+/* The "H:MM–H:MM (Xhr Ymin)" line, built when first drawn and again after
+ * the start or the duration changes; drawRect runs per frame of a drag. */
+@property (nonatomic, readonly) NSString *time_text;
 @end
 
-@implementation TasksDayItem
+static NSString *format_block_time(int64_t start_unix, int duration_min);
+
+@implementation TasksDayItem {
+    NSString *_time_text;
+}
+
+- (void)setStart_unix:(int64_t)start_unix { _start_unix = start_unix; _time_text = nil; }
+- (void)setDuration:(int)duration         { _duration   = duration;   _time_text = nil; }
+
+- (NSString *)
+time_text
+{
+    if (_time_text == nil) _time_text = format_block_time(_start_unix, _duration);
+    return _time_text;
+}
+
 @end
 
 /* ── Forward declaration ─────────────────────────────────────────────── */
@@ -70,6 +88,8 @@ static const CGFloat   header_h      = 36.0;
 @property (nonatomic) CGFloat move_start_mouse_y;
 /* Drop highlight Y, NAN when no drag is over */
 @property (nonatomic) CGFloat drop_y;
+/* Where the current-time line was last drawn, for redrawing just it */
+@property (nonatomic) CGFloat now_y;
 /* Selected task ids */
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *selected_ids;
 @end
@@ -118,8 +138,38 @@ midnight_for_offset(NSInteger offset)
 - (CGFloat)
 y_for_unix:(int64_t)t
 {
-    NSInteger offset   = self.planner ? self.planner.days_offset : 0;
-    double    hours    = (double)(t - midnight_for_offset(offset)) / 3600.0;
+    return [self y_for_unix:t midnight:[self midnight]];
+}
+
+/*
+ * midnight — the displayed day's local midnight.  A loop over the items
+ * takes it once rather than once per item (task_day_bounds is calendar
+ * arithmetic for any day but today).
+ *
+ * Output:
+ *   unix seconds.
+ */
+- (int64_t)
+midnight
+{
+    return midnight_for_offset(self.planner ? self.planner.days_offset : 0);
+}
+
+/*
+ * y_for_unix:midnight: — canvas Y for a unix timestamp, the day's midnight
+ * given.
+ *
+ * Inputs:
+ *   t   — unix seconds
+ *   mid — the displayed day's local midnight
+ *
+ * Output:
+ *   Y in flipped canvas coordinates (Y=0 at top).
+ */
+- (CGFloat)
+y_for_unix:(int64_t)t midnight:(int64_t)mid
+{
+    double hours = (double)(t - mid) / 3600.0;
     return tasks_look_day_planner_pad_v +
            (hours - (double)tasks_look_day_planner_start_h) * tasks_look_day_planner_hour_h;
 }
@@ -161,13 +211,92 @@ unix_for_y:(CGFloat)y
 - (NSRect)
 item_rect:(TasksDayItem *)item
 {
+    return [self item_rect:item midnight:[self midnight]];
+}
+
+/*
+ * item_rect:midnight: — canvas rectangle for a scheduled item, the day's
+ * midnight given.
+ *
+ * Inputs:
+ *   item — the item
+ *   mid  — the displayed day's local midnight
+ *
+ * Output:
+ *   block frame in canvas coordinates.
+ */
+- (NSRect)
+item_rect:(TasksDayItem *)item midnight:(int64_t)mid
+{
     CGFloat x = tasks_look_day_planner_label_w + tasks_look_day_planner_block_inset;
     CGFloat w = NSWidth(self.bounds) - x - tasks_look_day_planner_block_inset;
-    CGFloat y = [self y_for_unix:item.start_unix];
+    CGFloat y = [self y_for_unix:item.start_unix midnight:mid];
     CGFloat h = (item.duration / 60.0) * tasks_look_day_planner_hour_h;
     CGFloat min_h = tasks_look_day_planner_resize_h * 2.0 + 4.0;
     if (h < min_h) h = min_h;
     return NSMakeRect(x, y, w, h);
+}
+
+/*
+ * item_named: — the item of a task.
+ *
+ * Inputs:
+ *   task_id — the task
+ *
+ * Output:
+ *   the item, or nil when the day has none for it.
+ */
+- (TasksDayItem *)
+item_named:(int64_t)task_id
+{
+    for (TasksDayItem *item in self.planner.items) {
+        if (item.task_id == task_id) return item;
+    }
+    return nil;
+}
+
+/*
+ * redraw_block_from:to: — invalidate what a block's move or resize
+ * uncovers and covers: its old frame and its new one, with room for the
+ * stroke, rather than the whole canvas per frame of the drag.
+ *
+ * Inputs:
+ *   before — the block's frame before the change
+ *   after  — its frame after
+ */
+- (void)
+redraw_block_from:(NSRect)before to:(NSRect)after
+{
+    [self setNeedsDisplayInRect:NSInsetRect(NSUnionRect(before, after), -2.0, -2.0)];
+}
+
+/*
+ * set_drop_y: — move the drop indicator, redrawing only where it was and
+ * where it is.
+ *
+ * Inputs:
+ *   y — the indicator's canvas Y, or NAN for none
+ */
+- (void)
+set_drop_y:(CGFloat)y
+{
+    CGFloat w = NSWidth(self.bounds);
+    if (!isnan(self.drop_y)) [self setNeedsDisplayInRect:NSMakeRect(0, self.drop_y - 2.0, w, 4.0)];
+    self.drop_y = y;
+    if (!isnan(y)) [self setNeedsDisplayInRect:NSMakeRect(0, y - 2.0, w, 4.0)];
+}
+
+/*
+ * redraw_now_line — the clock moved: redraw the current-time line where
+ * it was drawn and where it now belongs, and nothing else.
+ */
+- (void)
+redraw_now_line
+{
+    CGFloat w   = NSWidth(self.bounds);
+    CGFloat now = [self y_for_unix:(int64_t)time(NULL)];
+    [self setNeedsDisplayInRect:NSMakeRect(0, self.now_y - 6.0, w, 12.0)];
+    [self setNeedsDisplayInRect:NSMakeRect(0, now - 6.0, w, 12.0)];
 }
 
 /* ── Drawing helpers ──────────────────────────────────────────────────── */
@@ -212,8 +341,78 @@ format_block_time(int64_t start_unix, int duration_min)
 
 /* ── Drawing ──────────────────────────────────────────────────────────── */
 
+/* What every frame draws with, made once: the fonts, the attribute
+ * dictionaries, the hour labels and their sizes.  The colours are dynamic
+ * (tasks_color_dimmed), so one set serves light and dark. */
+typedef struct {
+    NSFont       *label_font;
+    NSDictionary *label_attrs;
+    NSDictionary *title_attrs;
+    NSDictionary *time_attrs;
+    CGFloat       title_h;
+    CGFloat       time_h;
+    NSArray<NSString *> *hour_labels;         /* indexed by hour - start_h */
+    CGFloat       hour_label_h;
+    NSColor      *acc_fill_n, *acc_bord_n, *done_fill_n, *done_bord_n;
+    NSColor      *acc_fill_s, *acc_bord_s, *done_fill_s, *done_bord_s;
+} canvas_look_t;
+
+/*
+ * canvas_look — the shared drawing resources.
+ *
+ * Output:
+ *   the resources (static storage).
+ */
+static const canvas_look_t *
+canvas_look(void)
+{
+    static canvas_look_t   look;
+    static dispatch_once_t once;
+
+    dispatch_once(&once, ^{
+        look.label_font = [NSFont monospacedDigitSystemFontOfSize:10.0
+                                                           weight:NSFontWeightRegular];
+        look.label_attrs = @{ NSFontAttributeName:            look.label_font,
+                              NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
+        NSFont *title_font = [NSFont systemFontOfSize:tasks_look_row_small_font];
+        NSFont *time_font  = [NSFont systemFontOfSize:tasks_look_row_small_font - 1.0];
+        look.title_attrs = @{ NSFontAttributeName:            title_font,
+                              NSForegroundColorAttributeName: NSColor.labelColor };
+        look.time_attrs  = @{ NSFontAttributeName:            time_font,
+                              NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
+        look.title_h = title_font.ascender - title_font.descender + title_font.leading;
+        look.time_h  = time_font.ascender  - time_font.descender  + time_font.leading;
+
+        NSMutableArray<NSString *> *labels = [NSMutableArray array];
+        for (NSInteger h = tasks_look_day_planner_start_h; h < tasks_look_day_planner_end_h; h++) {
+            NSString *text;
+            if (h == 0)       text = @"12 AM";
+            else if (h < 12)  text = [NSString stringWithFormat:@"%ld AM", (long)h];
+            else if (h == 12) text = @"12 PM";
+            else              text = [NSString stringWithFormat:@"%ld PM", (long)(h - 12)];
+            [labels addObject:text];
+        }
+        look.hour_labels  = [labels copy];
+        look.hour_label_h = [labels.firstObject sizeWithAttributes:look.label_attrs].height;
+
+        /* Task blocks — two tones: normal and selected (darker) */
+        NSColor *accent = NSColor.controlAccentColor;
+        NSColor *second = NSColor.secondaryLabelColor;
+        look.acc_fill_n  = tasks_color_dimmed(accent, 18);
+        look.acc_bord_n  = tasks_color_dimmed(accent, 55);
+        look.done_fill_n = tasks_color_dimmed(second, 10);
+        look.done_bord_n = tasks_color_dimmed(second, 28);
+        look.acc_fill_s  = tasks_color_dimmed(accent, 38);
+        look.acc_bord_s  = tasks_color_dimmed(accent, 82);
+        look.done_fill_s = tasks_color_dimmed(second, 22);
+        look.done_bord_s = tasks_color_dimmed(second, 52);
+    });
+    return &look;
+}
+
 /*
  * drawRect: — draw hour grid, task blocks, drop indicator, current time line.
+ * Only what meets the dirty rectangle is laid out or drawn.
  *
  * Inputs:
  *   dirty — the rectangle to redraw
@@ -221,11 +420,13 @@ format_block_time(int64_t start_unix, int duration_min)
 - (void)
 drawRect:(NSRect)dirty
 {
+    const canvas_look_t *look = canvas_look();
     NSInteger start_h = tasks_look_day_planner_start_h;
     NSInteger end_h   = tasks_look_day_planner_end_h;
     CGFloat   hour_h  = tasks_look_day_planner_hour_h;
     CGFloat   pad     = tasks_look_day_planner_pad_v;
     CGFloat   label_w = tasks_look_day_planner_label_w;
+    int64_t   mid     = [self midnight];
 
     [NSColor.textBackgroundColor setFill];
     NSRectFill(dirty);
@@ -237,13 +438,6 @@ drawRect:(NSRect)dirty
         NSRectFill(col_rule);
     }
 
-    NSFont *label_font = [NSFont monospacedDigitSystemFontOfSize:10.0
-                                                          weight:NSFontWeightRegular];
-    NSDictionary *label_attrs = @{
-        NSFontAttributeName:            label_font,
-        NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
-    };
-
     for (NSInteger h = start_h; h <= end_h; h++) {
         CGFloat y = pad + (h - start_h) * hour_h;
 
@@ -254,40 +448,17 @@ drawRect:(NSRect)dirty
         }
 
         if (h < end_h) {
-            NSString *text;
-            if (h == 0)       text = @"12 AM";
-            else if (h < 12)  text = [NSString stringWithFormat:@"%ld AM", (long)h];
-            else if (h == 12) text = @"12 PM";
-            else               text = [NSString stringWithFormat:@"%ld PM", (long)(h - 12)];
-            NSSize  sz   = [text sizeWithAttributes:label_attrs];
-            NSRect  lrec = NSMakeRect(2.0, y - sz.height - 2.0, label_w - 4.0, sz.height);
-            if (NSIntersectsRect(lrec, dirty))
-                [text drawInRect:lrec withAttributes:label_attrs];
+            NSRect lrec = NSMakeRect(2.0, y - look->hour_label_h - 2.0, label_w - 4.0,
+                                     look->hour_label_h);
+            if (NSIntersectsRect(lrec, dirty)) {
+                [look->hour_labels[(NSUInteger)(h - start_h)] drawInRect:lrec
+                                                          withAttributes:look->label_attrs];
+            }
         }
     }
 
-    /* Task blocks — two tones: normal and selected (darker) */
-    NSColor *acc_fill_n  = [NSColor.controlAccentColor colorWithAlphaComponent:0.18];
-    NSColor *acc_bord_n  = [NSColor.controlAccentColor colorWithAlphaComponent:0.55];
-    NSColor *done_fill_n = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.10];
-    NSColor *done_bord_n = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.28];
-    NSColor *acc_fill_s  = [NSColor.controlAccentColor colorWithAlphaComponent:0.38];
-    NSColor *acc_bord_s  = [NSColor.controlAccentColor colorWithAlphaComponent:0.82];
-    NSColor *done_fill_s = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.22];
-    NSColor *done_bord_s = [NSColor.secondaryLabelColor colorWithAlphaComponent:0.52];
-    NSFont  *title_font = [NSFont systemFontOfSize:tasks_look_row_small_font];
-    NSFont  *time_font  = [NSFont systemFontOfSize:tasks_look_row_small_font - 1.0];
-    NSDictionary *title_attrs = @{
-        NSFontAttributeName:            title_font,
-        NSForegroundColorAttributeName: NSColor.labelColor,
-    };
-    NSDictionary *time_attrs = @{
-        NSFontAttributeName:            time_font,
-        NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
-    };
-
     for (TasksDayItem *item in self.planner.items) {
-        NSRect r = [self item_rect:item];
+        NSRect r = [self item_rect:item midnight:mid];
         if (!NSIntersectsRect(r, dirty)) continue;
 
         NSBezierPath *path =
@@ -295,31 +466,27 @@ drawRect:(NSRect)dirty
                                             xRadius:4.0 yRadius:4.0];
         BOOL sel = [self.selected_ids containsObject:@(item.task_id)];
         if (item.status == TASK_STATUS_DONE) {
-            [sel ? done_fill_s : done_fill_n setFill];   [path fill];
-            [sel ? done_bord_s : done_bord_n setStroke]; [path stroke];
+            [sel ? look->done_fill_s : look->done_fill_n setFill];   [path fill];
+            [sel ? look->done_bord_s : look->done_bord_n setStroke]; [path stroke];
         } else {
-            [sel ? acc_fill_s : acc_fill_n setFill];   [path fill];
-            [sel ? acc_bord_s : acc_bord_n setStroke]; [path stroke];
+            [sel ? look->acc_fill_s : look->acc_fill_n setFill];   [path fill];
+            [sel ? look->acc_bord_s : look->acc_bord_n setStroke]; [path stroke];
         }
 
         NSRect content = NSInsetRect(r, 4.0, 3.0);
 
         /* Title on the first line */
-        CGFloat title_h = title_font.ascender - title_font.descender + title_font.leading;
         NSRect title_rect = NSMakeRect(content.origin.x, content.origin.y,
-                                       content.size.width, title_h);
-        [item.title drawInRect:title_rect withAttributes:title_attrs];
+                                       content.size.width, look->title_h);
+        [item.title drawInRect:title_rect withAttributes:look->title_attrs];
 
         /* Time / duration on the second line, if there is room */
-        CGFloat time_h = time_font.ascender - time_font.descender + time_font.leading;
         NSRect time_rect = NSMakeRect(content.origin.x,
                                       NSMaxY(title_rect) + 1.0,
-                                      content.size.width, time_h);
+                                      content.size.width, look->time_h);
         if (NSMaxY(time_rect) <= NSMaxY(content)) {
-            NSString *time_str = format_block_time(item.start_unix, item.duration);
-            [time_str drawInRect:time_rect withAttributes:time_attrs];
+            [item.time_text drawInRect:time_rect withAttributes:look->time_attrs];
         }
-
     }
 
     /* Drop indicator */
@@ -332,7 +499,8 @@ drawRect:(NSRect)dirty
 
     /* Current-time line: only shown when viewing today */
     if (!self.planner || self.planner.days_offset == 0) {
-        CGFloat now_y = [self y_for_unix:(int64_t)time(NULL)];
+        CGFloat now_y = [self y_for_unix:(int64_t)time(NULL) midnight:mid];
+        self.now_y = now_y;
         if (now_y >= pad && now_y <= NSMaxY(self.bounds) - pad) {
             NSRect tl = NSMakeRect(label_w - 5.0,
                                    now_y - tasks_look_day_planner_time_w / 2.0,
@@ -367,8 +535,7 @@ draggingEntered:(id<NSDraggingInfo>)info
     if (!ok) return NSDragOperationNone;
 
     NSPoint pt = [self convertPoint:info.draggingLocation fromView:nil];
-    self.drop_y = [self y_for_unix:[self unix_for_y:pt.y]];
-    [self setNeedsDisplay:YES];
+    [self set_drop_y:[self y_for_unix:[self unix_for_y:pt.y]]];
     return NSDragOperationLink;
 }
 
@@ -385,8 +552,7 @@ draggingEntered:(id<NSDraggingInfo>)info
 draggingUpdated:(id<NSDraggingInfo>)info
 {
     NSPoint pt = [self convertPoint:info.draggingLocation fromView:nil];
-    self.drop_y = [self y_for_unix:[self unix_for_y:pt.y]];
-    [self setNeedsDisplay:YES];
+    [self set_drop_y:[self y_for_unix:[self unix_for_y:pt.y]]];
     return NSDragOperationLink;
 }
 
@@ -399,8 +565,7 @@ draggingUpdated:(id<NSDraggingInfo>)info
 - (void)
 draggingExited:(id<NSDraggingInfo>)info
 {
-    self.drop_y = NAN;
-    [self setNeedsDisplay:YES];
+    [self set_drop_y:NAN];
 }
 
 - (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)info { return YES; }
@@ -417,7 +582,7 @@ draggingExited:(id<NSDraggingInfo>)info
 - (BOOL)
 performDragOperation:(id<NSDraggingInfo>)info
 {
-    self.drop_y = NAN;
+    [self set_drop_y:NAN];
     NSPoint pt    = [self convertPoint:info.draggingLocation fromView:nil];
     int64_t start = [self unix_for_y:pt.y];
 
@@ -490,8 +655,9 @@ mouseDown:(NSEvent *)event
     self.move_pending = NO;
     self.moving       = NO;
 
+    int64_t mid = [self midnight];
     for (TasksDayItem *item in self.planner.items) {
-        NSRect r = [self item_rect:item];
+        NSRect r = [self item_rect:item midnight:mid];
         if (!NSPointInRect(pt, r)) continue;
 
         /* Double-click: open the editor */
@@ -563,37 +729,30 @@ mouseDragged:(NSEvent *)event
         int     delta = (int)round((dy / tasks_look_day_planner_hour_h) * 60.0);
         delta = (delta / (int)snap_minutes) * (int)snap_minutes;
 
+        TasksDayItem *item = [self item_named:self.resize_id];
+        if (item == nil) return;
+        int64_t mid    = [self midnight];
+        NSRect  before = [self item_rect:item midnight:mid];
+
         if (self.resize_top) {
             /* Top edge: move start time, keep end time fixed */
-            int64_t   new_start = self.resize_orig_start_unix + (int64_t)delta * 60;
-            int64_t   new_end   = self.resize_orig_end_unix;
-            NSInteger offset    = self.planner ? self.planner.days_offset : 0;
-            int64_t   lo        = midnight_for_offset(offset)
-                                  + (int64_t)tasks_look_day_planner_start_h * 3600;
+            int64_t new_start = self.resize_orig_start_unix + (int64_t)delta * 60;
+            int64_t new_end   = self.resize_orig_end_unix;
+            int64_t lo        = mid + (int64_t)tasks_look_day_planner_start_h * 3600;
             if (new_start < lo)
                 new_start = lo;
             if (new_start > new_end - (int64_t)snap_minutes * 60)
                 new_start = new_end - (int64_t)snap_minutes * 60;
-            for (TasksDayItem *item in self.planner.items) {
-                if (item.task_id == self.resize_id) {
-                    item.start_unix = new_start;
-                    item.duration   = (int)((new_end - new_start) / 60);
-                    break;
-                }
-            }
+            item.start_unix = new_start;
+            item.duration   = (int)((new_end - new_start) / 60);
         } else {
             /* Bottom edge: keep start time fixed, move end time */
             int new_dur = self.resize_orig_duration + delta;
             if (new_dur < (int)snap_minutes) new_dur = (int)snap_minutes;
             if (new_dur > 8 * 60)           new_dur = 8 * 60;
-            for (TasksDayItem *item in self.planner.items) {
-                if (item.task_id == self.resize_id) {
-                    item.duration = new_dur;
-                    break;
-                }
-            }
+            item.duration = new_dur;
         }
-        [self setNeedsDisplay:YES];
+        [self redraw_block_from:before to:[self item_rect:item midnight:mid]];
         return;
     }
 
@@ -607,20 +766,19 @@ mouseDragged:(NSEvent *)event
         CGFloat dy        = pt.y - self.move_start_mouse_y;
         int     delta_min = (int)round((dy / tasks_look_day_planner_hour_h) * 60.0);
         delta_min = (delta_min / (int)snap_minutes) * (int)snap_minutes;
-        for (TasksDayItem *item in self.planner.items) {
-            if (item.task_id != self.move_id) continue;
-            int64_t   new_start = self.move_orig_start_unix + (int64_t)delta_min * 60;
-            NSInteger offset    = self.planner ? self.planner.days_offset : 0;
-            int64_t   mid       = midnight_for_offset(offset);
-            int64_t   lo        = mid + (int64_t)tasks_look_day_planner_start_h * 3600;
-            int64_t   hi        = mid + (int64_t)tasks_look_day_planner_end_h   * 3600
-                                  - (int64_t)item.duration * 60;
-            if (new_start < lo) new_start = lo;
-            if (new_start > hi) new_start = hi;
-            item.start_unix = new_start;
-            break;
-        }
-        [self setNeedsDisplay:YES];
+
+        TasksDayItem *item = [self item_named:self.move_id];
+        if (item == nil) return;
+        int64_t mid       = [self midnight];
+        NSRect  before    = [self item_rect:item midnight:mid];
+        int64_t new_start = self.move_orig_start_unix + (int64_t)delta_min * 60;
+        int64_t lo        = mid + (int64_t)tasks_look_day_planner_start_h * 3600;
+        int64_t hi        = mid + (int64_t)tasks_look_day_planner_end_h   * 3600
+                            - (int64_t)item.duration * 60;
+        if (new_start < lo) new_start = lo;
+        if (new_start > hi) new_start = hi;
+        item.start_unix = new_start;
+        [self redraw_block_from:before to:[self item_rect:item midnight:mid]];
         return;
     }
 }
@@ -677,9 +835,10 @@ mouseUp:(NSEvent *)event
 - (void)
 resetCursorRects
 {
+    int64_t mid = [self midnight];
     [self addCursorRect:self.bounds cursor:NSCursor.arrowCursor];
     for (TasksDayItem *item in self.planner.items) {
-        NSRect  r    = [self item_rect:item];
+        NSRect  r    = [self item_rect:item midnight:mid];
         CGFloat ez   = MIN(tasks_look_day_planner_resize_h, r.size.height * 0.4);
         NSRect  top  = NSMakeRect(r.origin.x, r.origin.y,           r.size.width, ez);
         NSRect  bot  = NSMakeRect(r.origin.x, NSMaxY(r) - ez,       r.size.width, ez);
@@ -709,8 +868,9 @@ menuForEvent:(NSEvent *)event
     NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
 
     TasksDayItem *clicked = nil;
+    int64_t       mid     = [self midnight];
     for (TasksDayItem *item in self.planner.items) {
-        if (NSPointInRect(pt, [self item_rect:item])) {
+        if (NSPointInRect(pt, [self item_rect:item midnight:mid])) {
             clicked = item;
             break;
         }
@@ -786,15 +946,7 @@ init_with_library:(TasksLibraryWindow *)library
                                                object:_scroll.contentView];
 
     [self build_header];
-
-    __weak TasksDayPlanner *ws = self;
-
-    _clock_timer = [NSTimer scheduledTimerWithTimeInterval:30.0
-                                                   repeats:YES
-                                                     block:^(NSTimer *t) {
-        [ws.canvas setNeedsDisplay:YES];
-    }];
-
+    [self sync_clock_timer];
     return self;
 }
 
@@ -963,7 +1115,8 @@ build_header
 
 /*
  * update_header_controls — sync the date label text and Today button enabled
- * state to the current days_offset.
+ * state to the current days_offset, and the clock timer with it: the
+ * current-time line is drawn on today only.
  */
 - (void)
 update_header_controls
@@ -974,6 +1127,48 @@ update_header_controls
     strftime(buf, sizeof(buf), "%a, %b %-d", &local);
     _date_label.stringValue = @(buf);
     _today_button.enabled   = (_days_offset != 0);
+    [self sync_clock_timer];
+}
+
+/*
+ * sync_clock_timer — run the timer that moves the current-time line only
+ * while the line is on screen: the panel shown, today displayed.  A hidden
+ * panel's timer dirtied a canvas nobody saw every 30 seconds.  The
+ * tolerance lets the system fire it alongside other work.
+ */
+- (void)
+sync_clock_timer
+{
+    BOOL wanted = !self.hidden && _days_offset == 0 && !self.is_shut_down;
+
+    if (!wanted) {
+        [self.clock_timer invalidate];
+        self.clock_timer = nil;
+        return;
+    }
+    if (self.clock_timer != nil) return;
+
+    __weak TasksDayPlanner *ws = self;
+    self.clock_timer = [NSTimer scheduledTimerWithTimeInterval:30.0
+                                                       repeats:YES
+                                                         block:^(NSTimer *t) {
+        [ws.canvas redraw_now_line];
+    }];
+    self.clock_timer.tolerance = 5.0;
+}
+
+/*
+ * setHidden: — the window shows or hides the panel: the clock runs only
+ * while it shows.
+ *
+ * Inputs:
+ *   hidden — whether the panel is hidden
+ */
+- (void)
+setHidden:(BOOL)hidden
+{
+    [super setHidden:hidden];
+    [self sync_clock_timer];
 }
 
 /*
@@ -1134,8 +1329,7 @@ shut_down
     [[NSNotificationCenter defaultCenter] removeObserver:self
                                                     name:NSViewFrameDidChangeNotification
                                                   object:self.scroll.contentView];
-    [self.clock_timer invalidate];
-    self.clock_timer = nil;
+    [self sync_clock_timer];        /* shut down: stops it */
 }
 
 @end

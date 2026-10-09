@@ -998,24 +998,66 @@ fit_columns_if_pending
     BOOL full_fit = self.fit_pending;
     self.fit_pending = NO;
 
-    CGFloat others  = 0.0;
-    BOOL    changed = NO;
+    BOOL changed = NO;
+    for (int i = col_status; i < col_count; i++) {
+        NSTableColumn *column = self.table.tableColumns[(NSUInteger)i];
+        if (column.hidden) continue;
+        CGFloat w = [self fitted_width:i];
+        if (full_fit || w > column.width) {
+            column.width = w;
+            changed = YES;
+        }
+    }
+    if (changed) [self place_task_column];
+}
+
+/*
+ * place_task_column — give the Task column what the pane has left after the
+ * other columns, so the table is exactly as wide as the pane.  Short of
+ * room — the pane at its least width beside the day planner — the data
+ * columns first give back what the Task column's floor needs, each down to
+ * its own floor, so the table never overflows the pane; the next refresh
+ * widens them again if the room has come back.
+ */
+- (void)
+place_task_column
+{
+    CGFloat        room   = self.scroll.contentSize.width;
+    NSTableColumn *task   = self.table.tableColumns[col_task];
+    CGFloat        others = 0.0;
+
     for (int i = 0; i < col_count; i++) {
         NSTableColumn *column = self.table.tableColumns[(NSUInteger)i];
-        if (i == col_task || column.hidden) continue;
-        if (i >= col_status) {
-            CGFloat w = [self fitted_width:i];
-            if (full_fit || w > column.width) {
-                column.width = w;
-                changed = YES;
-            }
-        }
-        others += column.width;
+        if (i != col_task && !column.hidden) others += column.width;
     }
+    CGFloat deficit = others + task.minWidth - room;
+    for (int i = col_count - 1; deficit > 0.0 && i >= col_status; i--) {
+        NSTableColumn *column = self.table.tableColumns[(NSUInteger)i];
+        if (column.hidden) continue;
+        CGFloat give = MIN(deficit, column.width - column.minWidth);
+        if (give <= 0.0) continue;
+        column.width -= give;
+        others       -= give;
+        deficit      -= give;
+    }
+    task.width = MAX(task.minWidth, room - others);
+}
 
-    if (!changed) return;
-    NSTableColumn *task = self.table.tableColumns[col_task];
-    task.width = MAX(task.minWidth, self.scroll.contentSize.width - others);
+/*
+ * setFrameSize: — the pane was resized (the window, the split): a table
+ * now wider than the pane is fitted to it again (place_task_column); the
+ * uniform autoresizing shrinks the Task column only down to its floor.
+ *
+ * Inputs:
+ *   size — the new size
+ */
+- (void)
+setFrameSize:(NSSize)size
+{
+    [super setFrameSize:size];
+    if (_rows != NULL && NSWidth(self.table.frame) > self.scroll.contentSize.width + 0.5) {
+        [self place_task_column];
+    }
 }
 
 /* ── Table: rows and cells ───────────────────────────────────────────── */
