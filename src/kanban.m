@@ -150,7 +150,14 @@ grip_glyph(void)
 static CGFloat
 grip_width(void)
 {
-    return ceil(grip_glyph().size.width) + 2.0 * tasks_look_card_grip_pad;
+    static CGFloat width;
+    static dispatch_once_t once;
+
+    /* Measured once: every card asks on every draw and cursor-rect reset. */
+    dispatch_once(&once, ^{
+        width = ceil(grip_glyph().size.width) + 2.0 * tasks_look_card_grip_pad;
+    });
+    return width;
 }
 
 /*

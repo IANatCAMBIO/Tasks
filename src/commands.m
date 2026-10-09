@@ -244,14 +244,21 @@ tasks_command_apply(TasksCommandState *state, id item)
         return;
     }
 
-    /* A toolbar item or a button: the two answer the same three setters. */
+    /* A toolbar item or a button: the two answer the same three getters
+     * and setters.  Only a value that differs is set: the toolbar asks
+     * after every event, and a toolbar item given a new image (even an
+     * equal one) is redrawn.  The images are cached, so an unchanged icon
+     * is the same object. */
     NSImage *icon = nil;
     if (state.icon) {
         icon = [item isKindOfClass:NSToolbarItem.class]
-            ? [NSImage imageWithSystemSymbolName:state.icon accessibilityDescription:nil]
+            ? tasks_symbol(state.icon)
             : tasks_icon(state.icon, tasks_look_toolbar_icon);
     }
-    [item setImage:icon];
-    [item setToolTip:state.tooltip];
-    [item setEnabled:state.enabled];
+    if ([item image] != icon) [item setImage:icon];
+    NSString *tooltip = [item toolTip];
+    if (tooltip != state.tooltip && ![tooltip isEqualToString:state.tooltip]) {
+        [item setToolTip:state.tooltip];
+    }
+    if ([item isEnabled] != state.enabled) [item setEnabled:state.enabled];
 }

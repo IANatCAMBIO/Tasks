@@ -75,6 +75,18 @@ tasks_icon(NSString *name, CGFloat size)
 }
 
 /*
+ * tasks_symbol — an SF Symbol at the toolbar's own size, cached.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSImage *
+tasks_symbol(NSString *name)
+{
+    return cached_icon(name, 0.0, ^NSImage *{
+        return [NSImage imageWithSystemSymbolName:name accessibilityDescription:nil];
+    });
+}
+
+/*
  * scaled_bitmap — a copy of an image holding ONE bitmap of size x size
  * points at icon_scale, so the full-size source can be let go.
  *

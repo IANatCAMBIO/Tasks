@@ -175,7 +175,9 @@ canDragRowsWithIndexes:(NSIndexSet *)indexes atPoint:(NSPoint)point
 @implementation TasksListCell
 
 /*
- * setBackgroundStyle: — AppKit reports the row's emphasis.
+ * setBackgroundStyle: — AppKit reports the row's emphasis.  The row view
+ * reports it on every selection and key-window change, and once for a
+ * cell it has just been given; only a change rebuilds the cell's text.
  *
  * Inputs:
  *   style — emphasized for a selected row of a focused table in the key
@@ -184,8 +186,10 @@ canDragRowsWithIndexes:(NSIndexSet *)indexes atPoint:(NSPoint)point
 - (void)
 setBackgroundStyle:(NSBackgroundStyle)style
 {
+    BOOL changed = style != self.backgroundStyle;
+
     [super setBackgroundStyle:style];
-    [self.list cell_emphasis_changed:self];
+    if (changed) [self.list cell_emphasis_changed:self];
 }
 
 @end
@@ -355,6 +359,34 @@ label_text(const task_row_t *row, NSInteger column)
     case col_completed: return row->completed_text;
     default:            return "";
     }
+}
+
+/*
+ * label_width — the width a label's text takes in the label font, cached
+ * per text.  The column fit measures every row's Due Date and Completed
+ * text on every refresh; the texts are dates, of which a list has a few
+ * dozen distinct ones, so after the first refresh this is a lookup.
+ *
+ * Inputs:
+ *   text  — the label's text
+ *   attrs — the label font, as sizeWithAttributes: takes it
+ *
+ * Output:
+ *   the width in points.
+ */
+static CGFloat
+label_width(NSString *text, NSDictionary<NSAttributedStringKey, id> *attrs)
+{
+    static NSMutableDictionary<NSString *, NSNumber *> *widths;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ widths = [NSMutableDictionary dictionary]; });
+
+    NSNumber *known = widths[text];
+    if (known != nil) return known.doubleValue;
+
+    CGFloat width = [text sizeWithAttributes:attrs].width;
+    widths[text]  = @(width);
+    return width;
 }
 
 /*
@@ -925,7 +957,7 @@ fitted_width:(int)index
         for (size_t i = 0; i < limit; i++) {
             const char *text = label_text(_rows->rows[i], index);
             if (text[0] == '\0') continue;
-            widest = MAX(widest, [tasks_string(text) sizeWithAttributes:attrs].width);
+            widest = MAX(widest, label_width(tasks_string(text), attrs));
         }
     }
 

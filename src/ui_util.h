@@ -58,6 +58,20 @@ NSString *tasks_string(const char *text);
 NSImage *tasks_icon(NSString *name, CGFloat size);
 
 /*
+ * tasks_symbol — an SF Symbol with no point size of its own, for a
+ * toolbar item, which sizes its image itself.  Cached per name: the
+ * toolbar re-validates its items after every event.
+ *
+ * Inputs:
+ *   name — SF Symbol name
+ *
+ * Output:
+ *   shared NSImage (do not modify it), or nil when the system has no
+ *   symbol of that name.
+ */
+NSImage *tasks_symbol(NSString *name);
+
+/*
  * tasks_app_icon — the app's own icon (the bundled "document" artwork, the
  * one PNG the app ships), for the Dock tile, alerts and the About panel.
  * macOS 26 puts a bundle icon that is not its rounded-square shape on a

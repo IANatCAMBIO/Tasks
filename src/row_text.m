@@ -17,6 +17,12 @@
 static NSFont *
 row_font(BOOL small, BOOL bold, BOOL italic)
 {
+    /* Eight faces, each made once: a row's string is built on every
+     * refresh, and the italic face goes through a font descriptor. */
+    static NSFont *faces[8];
+    unsigned       which = (small ? 4 : 0) | (bold ? 2 : 0) | (italic ? 1 : 0);
+    if (faces[which] != nil) return faces[which];
+
     CGFloat size = small ? tasks_look_row_small_font : tasks_look_row_font;
     NSFont *font = bold ? [NSFont boldSystemFontOfSize:size] : [NSFont systemFontOfSize:size];
 
@@ -26,6 +32,7 @@ row_font(BOOL small, BOOL bold, BOOL italic)
                                              NSFontDescriptorTraitItalic];
         font = [NSFont fontWithDescriptor:desc size:size] ?: font;
     }
+    faces[which] = font;
     return font;
 }
 
@@ -36,17 +43,21 @@ row_font(BOOL small, BOOL bold, BOOL italic)
  *   layout — wrap or truncate
  *
  * Output:
- *   new paragraph style.
+ *   the shared style for that layout.
  */
 static NSParagraphStyle *
 paragraph_style(TasksRowLayout layout)
 {
-    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    static NSParagraphStyle *styles[2];
+    unsigned which = layout == TasksRowLayoutTruncate ? 1 : 0;
+    if (styles[which] != nil) return styles[which];
 
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
     style.lineBreakMode    = layout == TasksRowLayoutTruncate ? NSLineBreakByTruncatingTail
                                                               : NSLineBreakByWordWrapping;
     style.paragraphSpacing = tasks_look_row_line_gap;
-    return style;
+    styles[which] = [style copy];
+    return styles[which];
 }
 
 /*
@@ -72,8 +83,25 @@ dimmed(NSColor *base, int alpha_pct)
 {
     if (alpha_pct >= 100) return base;
 
+    /* One dynamic colour per base and strength, kept.  A dynamic colour
+     * made of a block is equal to nothing but itself, so two strings
+     * built with fresh ones never compared equal and every card redrew on
+     * every refresh (kanban.m show_text:); with the colour shared, an
+     * unchanged row's string is equal to the one it had. */
+    static NSMapTable<NSColor *, NSMutableDictionary<NSNumber *, NSColor *> *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [NSMapTable strongToStrongObjectsMapTable]; });
+
+    NSMutableDictionary<NSNumber *, NSColor *> *by_alpha = [cache objectForKey:base];
+    if (by_alpha == nil) {
+        by_alpha = [NSMutableDictionary dictionary];
+        [cache setObject:by_alpha forKey:base];
+    }
+    NSColor *known = by_alpha[@(alpha_pct)];
+    if (known != nil) return known;
+
     CGFloat strength = alpha_pct / 100.0;
-    return [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *appearance) {
+    NSColor *made = [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *appearance) {
         __block NSColor *resolved = nil;
         [appearance performAsCurrentDrawingAppearance:^{
             NSColor *now = [base colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
@@ -81,6 +109,8 @@ dimmed(NSColor *base, int alpha_pct)
         }];
         return resolved;
     }];
+    by_alpha[@(alpha_pct)] = made;
+    return made;
 }
 
 /*
