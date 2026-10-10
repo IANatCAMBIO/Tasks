@@ -112,6 +112,7 @@ static const CGFloat    tasks_look_day_planner_time_w      = 2.0;    /* current-
 
 typedef NS_ENUM(NSInteger, TasksColor) {
     TasksColorRowStripe = 0,        /* even list rows (not over selection) */
+    TasksColorHeaderFill,           /* the list's column headers           */
     TasksColorDragRow,              /* the row held during a manual drag   */
     TasksColorDueOverdue,           /* Due cell text: before today         */
     TasksColorDueToday,             /* ... today                           */

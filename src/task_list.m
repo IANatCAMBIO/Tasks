@@ -86,13 +86,13 @@ static const CGFloat task_col_min_w = 120.0;    /* the Task column's floor      
 static const CGFloat data_col_min_w = 40.0;     /* Status, Due Date, Completed  */
 static const CGFloat header_fit_pad = 10.0;     /* header title to column edges
                                                  * when fitting a column        */
-/* The sort indicator, measured via sortIndicatorRectForBounds:, starts 17pt
- * from the right edge of the frame passed to super in drawInteriorWithFrame:.
- * That frame is already 4pt narrower on the left (tasks_look_header_inset), so
- * the title needs: col_w >= title_w + 4 (inset) + 17 (indicator) = title_w + 21.
- * header_fit_pad (10) already covers the no-indicator case; for sortable columns
- * we add the difference plus a 4pt margin.  4 + 17 - 10 + 4 = 15. */
-static const CGFloat sort_indicator_w = 15.0;  /* extra width for sortable columns */
+/* A sortable column's header must also fit the sort indicator, and the
+ * sorted column's title is drawn in BOLD (macOS 26), so a sortable column
+ * is fitted to its bold title.  Measured by rendering the header: a title
+ * truncates below bold_title_w + 29..31 (the leading inset, AppKit's own
+ * title margins and the indicator 17pt from the right edge); 10 + 22 = 32
+ * leaves a point to spare. */
+static const CGFloat sort_indicator_w = 22.0;  /* extra width for sortable columns */
 static const CGFloat label_inset    = 2.0;      /* an NSTextField draws its text
                                                  * this far inside its frame    */
 static const size_t  fit_row_limit  = 2000;     /* rows measured to fit a column */
@@ -144,20 +144,68 @@ canDragRowsWithIndexes:(NSIndexSet *)indexes atPoint:(NSPoint)point
 @end
 
 /*
- * TasksHeaderCell — column header cell with a wider leading inset so the
- * title aligns with the row content below it.
+ * TasksHeaderCell — column header cell filled with TasksColorHeaderFill,
+ * and, for a leading-aligned title, a wider leading inset so the title
+ * aligns with the row content below it.
  */
 @interface TasksHeaderCell : NSTableHeaderCell
 @end
 
 @implementation TasksHeaderCell
 
+/*
+ * drawWithFrame:inView: — paint the header fill, then let AppKit draw the
+ * separators, title and sort indicator over it.
+ *
+ * The sorted column's cell draws the divider on its left 1pt OUTSIDE its
+ * own frame, in the last point of the column to its left, and AppKit
+ * draws the header cells right to left: that column's fill, painted next,
+ * would cover the divider.  So after drawing, a cell has the column to
+ * its right draw again, clipped to that last point, to put the divider
+ * back.  (Unsorted, the column to the right draws nothing there.)
+ *
+ * Inputs:
+ *   frame — the cell's rect in view
+ *   view  — the table's header view
+ */
+- (void)drawWithFrame:(NSRect)frame inView:(NSView *)view
+{
+    static BOOL redrawing_divider = NO;
+
+    [tasks_color(TasksColorHeaderFill) setFill];
+    NSRectFill(frame);
+    [super drawWithFrame:frame inView:view];
+    if (redrawing_divider) return;
+
+    NSTableHeaderView *header = (NSTableHeaderView *)view;
+    NSInteger next = [header columnAtPoint:NSMakePoint(NSMaxX(frame) + 0.5, NSMidY(frame))];
+    if (next < 0) return;
+
+    [NSGraphicsContext saveGraphicsState];
+    NSRectClip(NSMakeRect(NSMaxX(frame) - 1.0, NSMinY(frame), 1.0, NSHeight(frame)));
+    redrawing_divider = YES;
+    [header.tableView.tableColumns[(NSUInteger)next].headerCell
+        drawWithFrame:[header headerRectOfColumn:next] inView:view];
+    redrawing_divider = NO;
+    [NSGraphicsContext restoreGraphicsState];
+}
+
+/*
+ * drawInteriorWithFrame:inView: — draw the title, inset when it is not
+ * centred.
+ *
+ * Inputs:
+ *   frame — the cell's interior rect in view
+ *   view  — the table's header view
+ */
 - (void)drawInteriorWithFrame:(NSRect)frame inView:(NSView *)view
 {
     /* Shift the leading edge inward; right edge stays fixed so the sort
-     * indicator position is unchanged. */
-    frame.origin.x   += tasks_look_header_inset;
-    frame.size.width -= tasks_look_header_inset;
+     * indicator position is unchanged.  A centred title stays centred. */
+    if (self.alignment != NSTextAlignmentCenter) {
+        frame.origin.x   += tasks_look_header_inset;
+        frame.size.width -= tasks_look_header_inset;
+    }
     [super drawInteriorWithFrame:frame inView:view];
 }
 
@@ -618,6 +666,7 @@ build_table
             column.minWidth     = tasks_look_check_col_w;
             column.maxWidth     = tasks_look_check_col_w;
             column.resizingMask = NSTableColumnNoResizing;
+            column.headerCell   = [[TasksHeaderCell alloc] initTextCell:column.title];
             column.headerCell.alignment = NSTextAlignmentCenter;
         } else if (i == col_task) {
             column.headerCell   = [[TasksHeaderCell alloc] initTextCell:column.title];
@@ -962,11 +1011,17 @@ fitted_width:(int)index
     }
 
     CGFloat cell_w   = ceil(widest) + 2.0 * (label_inset + tasks_look_row_pad_h);
-    CGFloat title_w  = ceil([column.title sizeWithAttributes:
-                                @{ NSFontAttributeName: column.headerCell.font }].width);
     /* Use the column spec's sort field rather than sortDescriptorPrototype:
      * the prototype may not be set yet when the first fit runs at startup. */
-    CGFloat indicator = column_specs[index].sort != NO_SORT ? sort_indicator_w : 0.0;
+    BOOL    sortable = column_specs[index].sort != NO_SORT;
+    NSFont *title_font = column.headerCell.font;
+    if (sortable) {
+        title_font = [NSFontManager.sharedFontManager convertFont:title_font
+                                                      toHaveTrait:NSBoldFontMask];
+    }
+    CGFloat title_w   = ceil([column.title sizeWithAttributes:
+                                 @{ NSFontAttributeName: title_font }].width);
+    CGFloat indicator = sortable ? sort_indicator_w : 0.0;
     CGFloat header_w  = title_w + header_fit_pad + indicator;
     return MAX(column.minWidth, MAX(cell_w, header_w));
 }

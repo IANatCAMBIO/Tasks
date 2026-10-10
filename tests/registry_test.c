@@ -31,7 +31,7 @@ static const struct {
     { TASK_CFG_BACKUP_KEEP,         kind_int,  "10"  },
     { TASK_CFG_BOLD_TITLES,         kind_bool, "0"   },
     { TASK_CFG_KANBAN_SHADOW,       kind_bool, "1"   },
-    { TASK_CFG_DUE_TODAY_OVERDUE,   kind_bool, "0"   },
+    { TASK_CFG_FORECAST_BUSINESS_DAYS, kind_bool, "1" },
     { TASK_CFG_SHOW_COMPLETED,      kind_bool, "1"   },
     { TASK_CFG_KANBAN_VIEW,         kind_bool, "0"   },
     { TASK_CFG_COMPACT,             kind_bool, "0"   },

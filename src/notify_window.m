@@ -20,22 +20,24 @@
 
 /* ── Layout constants ────────────────────────────────────────────────── */
 
-static const CGFloat win_w         = 480.0;
-static const CGFloat win_h         = 230.0;
-static const CGFloat win_min_h     = 190.0;
+static const CGFloat win_w         = 389.0;
+static const CGFloat win_h         = 186.0;
+static const CGFloat win_min_w     = 243.0;
+static const CGFloat win_min_h     = 154.0;
 static const CGFloat screen_margin = 15.0;   /* to the screen's right and bottom edges */
-static const CGFloat hero_h        = 78.0;
-static const CGFloat btn_bar_h     = 44.0;
-static const CGFloat btn_h         = 28.0;
-static const CGFloat btn_w         = 92.0;   /* tighter than the combo button's own size */
+static const CGFloat hero_h        = 43.0;
+static const CGFloat btn_bar_h     = 31.0;
+static const CGFloat btn_h         = 25.0;
+static const CGFloat btn_w         = 83.0;   /* tighter than the combo button's own size */
 static const CGFloat btn_gap       = 8.0;
 static const CGFloat btn_margin    = 12.0;
-static const CGFloat row_h         = 30.0;
-static const CGFloat icon_size     = 16.0;
-static const CGFloat hero_icon_sz  = 24.0;
+static const CGFloat row_h         = 27.0;
+static const CGFloat icon_size     = 14.0;
+static const CGFloat hero_icon_sz  = 22.0;
+static const CGFloat text_size     = 11.0;  /* every label and button title */
 static const CGFloat hero_h_pad    = 16.0;  /* horizontal inset in hero */
 static const NSInteger snooze_default_mins = 10;
-static const CGFloat hero_v_pad    = 10.0;
+static const CGFloat hero_v_pad    = 3.0;   /* title to subtitle */
 
 /* ── Data model ──────────────────────────────────────────────────────── */
 
@@ -137,8 +139,15 @@ init_window
     _items = [[NSMutableArray alloc] init];
 
     panel.title    = @"Reminders";
-    panel.minSize  = NSMakeSize(300.0, win_min_h);
+    panel.minSize  = NSMakeSize(win_min_w, win_min_h);
     panel.becomesKeyOnlyIfNeeded = NO;
+    /* A reminder stays in view while another app is in front: above
+     * ordinary windows, not hidden when Tasks deactivates, and on every
+     * Space, full-screen ones included. */
+    panel.floatingPanel      = YES;
+    panel.hidesOnDeactivate  = NO;
+    panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+                               NSWindowCollectionBehaviorFullScreenAuxiliary;
 
     NSView *cv = panel.contentView;
 
@@ -167,7 +176,7 @@ init_window
 
     /* Hero title */
     _hero_title = [NSTextField labelWithString:@""];
-    _hero_title.font                  = [NSFont boldSystemFontOfSize:15.0];
+    _hero_title.font                  = [NSFont boldSystemFontOfSize:text_size];
     _hero_title.textColor             = NSColor.whiteColor;
     _hero_title.lineBreakMode         = NSLineBreakByTruncatingTail;
     _hero_title.maximumNumberOfLines  = 1;
@@ -176,7 +185,7 @@ init_window
 
     /* Hero subtitle */
     _hero_subtitle = [NSTextField labelWithString:@""];
-    _hero_subtitle.font                  = [NSFont systemFontOfSize:12.0];
+    _hero_subtitle.font                  = [NSFont systemFontOfSize:text_size];
     _hero_subtitle.textColor             = [NSColor colorWithWhite:0.88 alpha:1.0];
     _hero_subtitle.lineBreakMode         = NSLineBreakByTruncatingTail;
     _hero_subtitle.maximumNumberOfLines  = 1;
@@ -313,6 +322,7 @@ make_split_button:(NSString *)title action:(SEL)action menu:(NSMenu *)menu
                                                       target:self
                                                       action:action];
     btn.style = NSComboButtonStyleSplit;
+    btn.font  = [NSFont systemFontOfSize:text_size];
     return btn;
 }
 
@@ -601,7 +611,7 @@ tableView:(NSTableView *)tv
 
         /* Title */
         NSTextField *tf = [NSTextField labelWithString:@""];
-        tf.font          = [NSFont systemFontOfSize:13.0];
+        tf.font          = [NSFont systemFontOfSize:text_size];
         tf.lineBreakMode = NSLineBreakByTruncatingTail;
         tf.maximumNumberOfLines = 1;
         tf.translatesAutoresizingMaskIntoConstraints = NO;
@@ -610,7 +620,7 @@ tableView:(NSTableView *)tv
 
         /* Status label (right-aligned) */
         NSTextField *st = [NSTextField labelWithString:@""];
-        st.font          = [NSFont systemFontOfSize:11.0];
+        st.font          = [NSFont systemFontOfSize:text_size];
         st.textColor     = NSColor.secondaryLabelColor;
         st.lineBreakMode = NSLineBreakByTruncatingTail;
         st.maximumNumberOfLines = 1;

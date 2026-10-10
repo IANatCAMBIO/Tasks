@@ -1190,7 +1190,7 @@ task_db_tasks_in_group(TaskDatabase *db, gint64 group_id)
         1, group_id, 0);
 }
 
-/* task_db_tasks_due_between() — the Due Today / Weekly Forecast views and
+/* task_db_tasks_due_between() — the 3-Day Forecast view and
  * the notification worker (see db.h).                                      */
 GPtrArray *
 task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi, gboolean open_only)
@@ -1198,8 +1198,8 @@ task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi, gboolean open_
     return task_query(db,
         /* due_time joins the sort so a day's tasks read in the order they
          * actually come due — `due` alone is midnight for every row in
-         * the bucket and so cannot separate them (the Weekly Forecast's
-         * day sections are the visible case).                            */
+         * the bucket and so cannot separate them (the 3-Day Forecast,
+         * which spans several days, is the visible case).                */
         open_only
         ? "SELECT " TASK_COLS " FROM tasks WHERE due >= ? AND due < ? AND "
           "deleted = 0 AND status <> 2 ORDER BY priority DESC, due, due_time, "

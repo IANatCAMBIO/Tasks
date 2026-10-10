@@ -199,7 +199,7 @@ typedef struct {
                                       * The DATE only — always midnight,
                                       * because Google's due is date-only
                                       * and every day-bucketing view
-                                      * (Due Today, the forecast) compares
+                                      * (the 3-Day Forecast) compares
                                       * against it                          */
     gint      due_time;              /* the time of day that date means,
                                       * minutes past local midnight,

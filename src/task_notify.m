@@ -158,7 +158,7 @@ notify_run(TaskApp *app, const gchar *db_path)
 
     /* ── Startup pass ────────────────────────────────────────────────── */
     /* On first run, immediately fire for every non-done task whose due
-     * date is today or in the past — same as the Due Today view.       */
+     * date is today or in the past.                                    */
     if (!startup_done) {
         startup_done = TRUE;
         GPtrArray *past =

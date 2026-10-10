@@ -677,6 +677,10 @@ draggingExited:(id<NSDraggingInfo>)info
 
 /*
  * performDragOperation: — schedule each dropped task at the target time.
+ * A card dragged from the Kanban board that is still New also moves to
+ * In Progress (a list row keeps its status), and the whole window is then
+ * refreshed so the card changes lane — on the next run-loop pass, because
+ * this runs inside the drag's own handler.
  *
  * Inputs:
  *   info — the dragging session; its pasteboard holds the task ids
@@ -696,11 +700,13 @@ performDragOperation:(id<NSDraggingInfo>)info
 
     /* Kanban puts a comma-separated list in one item */
     NSString *kanban_str = [pb stringForType:tasks_card_drag_type];
+    NSUInteger n_cards   = 0;
     if (kanban_str.length > 0) {
         for (NSString *part in [kanban_str componentsSeparatedByString:@","]) {
             int64_t tid = part.longLongValue;
             if (tid > 0) [ids addObject:@(tid)];
         }
+        n_cards = ids.count;
     }
 
     /* Task list puts one item per row */
@@ -715,14 +721,29 @@ performDragOperation:(id<NSDraggingInfo>)info
 
     if (ids.count == 0) return NO;
 
-    TaskApp   *app        = self.planner.library.app;
-    NSInteger  offset_min = 0;
-    for (NSNumber *tid in ids) {
-        task_db_task_set_scheduled(app->db, tid.longLongValue,
-                                   start + offset_min * 60, 60);
+    TasksLibraryWindow *library    = self.planner.library;
+    TaskApp            *app        = library.app;
+    NSInteger           offset_min = 0;
+    BOOL                promoted   = NO;
+    for (NSUInteger i = 0; i < ids.count; i++) {
+        int64_t tid = ids[i].longLongValue;
+        task_db_task_set_scheduled(app->db, tid, start + offset_min * 60, 60);
         offset_min += (NSInteger)snap_minutes;
+        if (i >= n_cards) continue;
+
+        Task *task = task_db_task_get(app->db, tid);
+        if (task != NULL && task->status == TASK_STATUS_NEW) {
+            task_db_task_set_status(app->db, tid, TASK_STATUS_IN_PROGRESS);
+            promoted = YES;
+        }
+        task_free(task);
     }
-    [self.planner reload];
+    if (promoted) {
+        __weak TasksLibraryWindow *weak_library = library;
+        dispatch_async(dispatch_get_main_queue(), ^{ [weak_library full_refresh]; });
+    } else {
+        [self.planner reload];
+    }
     gcal_sync_kick();
     return YES;
 }

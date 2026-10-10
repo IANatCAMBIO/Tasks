@@ -5,19 +5,46 @@
 #include <string.h>
 
 /*
+ * icon_label — an icon, two spaces, a name; the name alone when there is
+ * no icon.
+ *
+ * Inputs:
+ *   icon — the icon text, "" for none
+ *   name — the name
+ *
+ * Output:
+ *   new string (free it).  Aborts when out of memory.
+ */
+static char *
+icon_label(const char *icon, const char *name)
+{
+    char *label = NULL;
+    int   rc    = icon[0] != '\0'
+        ? asprintf(&label, "%s  %s", icon, name)
+        : asprintf(&label, "%s", name);
+
+    if (rc < 0) abort();
+    return label;
+}
+
+/*
  * task_sidebar_list_label — a list's display label.
  * Inputs/output are documented in task_sidebar.h.
  */
 char *
 task_sidebar_list_label(const TaskList *list)
 {
-    char *label = NULL;
-    int   rc    = list->emoji[0] != '\0'
-        ? asprintf(&label, "%s  %s", list->emoji, list->name)
-        : asprintf(&label, "%s", list->name);
+    return icon_label(list->emoji, list->name);
+}
 
-    if (rc < 0) abort();
-    return label;
+/*
+ * task_sidebar_group_label — a group's display label.
+ * Inputs/output are documented in task_sidebar.h.
+ */
+char *
+task_sidebar_group_label(const TaskGroup *group)
+{
+    return icon_label("\xe2\x96\xbc", group->name);       /* ▼ */
 }
 
 /*

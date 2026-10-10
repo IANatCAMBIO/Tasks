@@ -42,20 +42,21 @@ all_query(TaskApp *app, gpointer d)
     return task_db_tasks_all_visible(app->db);
 }
 
-/* --- Due Today ----------------------------------------------------------- */
+/* --- 3-Day Forecast ------------------------------------------------------ */
 
-/* "due_today_show_overdue" widens the low bound to 1 rather than to 0:
- * due == 0 means "no date at all", so 0 would sweep in every undated
- * task instead of every past-due one.                                     */
+#define FORECAST_DAYS 3             /* today and the next two, or the next
+                                     * three business days counting today */
+
+/* Everything past due, then everything due within the forecast.  The low
+ * bound is 1 rather than 0: due == 0 means "no date at all", so 0 would
+ * sweep in every undated task instead of every past-due one.             */
 static GPtrArray *
-today_query(TaskApp *app, gpointer d)
+forecast_query(TaskApp *app, gpointer d)
 {
     (void)d;
-    gint64 lo, hi;
-    task_day_bounds(0, &lo, &hi);
-    if (task_config_get_bool(TASK_CFG_DUE_TODAY_OVERDUE))
-        lo = 1;
-    return task_db_tasks_due_between(app->db, lo, hi, FALSE);
+    gint64 hi = task_forecast_end(FORECAST_DAYS,
+                                  task_config_get_bool(TASK_CFG_FORECAST_BUSINESS_DAYS));
+    return task_db_tasks_due_between(app->db, 1, hi, FALSE);
 }
 
 static const TaskView core_view_pinned = {
@@ -77,12 +78,12 @@ static const TaskView core_view_all = {
     .virtual_rows = TRUE,
 };
 
-static const TaskView core_view_today = {
-    .id           = "today",
-    .label        = "\xe2\x98\x80\xef\xb8\x8f  Due Today",
-    .name         = "Due Today",
+static const TaskView core_view_forecast = {
+    .id           = "forecast",
+    .label        = "\xe2\x98\x80\xef\xb8\x8f  3-Day Forecast",
+    .name         = "3-Day Forecast",
     .sort         = 40,
-    .query        = today_query,
+    .query        = forecast_query,
     .virtual_rows = TRUE,
 };
 
@@ -91,5 +92,5 @@ task_core_views_init(void)
 {
     task_view_register(&core_view_pinned);
     task_view_register(&core_view_all);
-    task_view_register(&core_view_today);
+    task_view_register(&core_view_forecast);
 }

@@ -95,7 +95,7 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 | `recur` | recurrence arithmetic and the deadline-armed pass |
 | `backup` | rotating backups on a background job |
 | `task_worker` | the scheduler the recurrence pass and the backup are registered with |
-| `task_view`, `core_views` | the registry of sidebar views (Favorites, All Tasks, Due Today) |
+| `task_view`, `core_views` | the registry of sidebar views (Favorites, All Tasks, 3-Day Forecast) |
 | `task_ops` | move-to-list, clear-completed |
 | `task_rows` | what a task row SAYS, as toolkit-neutral data |
 | `task_pane` | the sidebar selection type; collects a selection's rows + status line |

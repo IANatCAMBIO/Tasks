@@ -65,7 +65,9 @@ static const option_spec_t appearance_options[] = {
     { @"Show task titles in bold",          TASK_CFG_BOLD_TITLES,   nil },
     { @"Show drop shadows on Kanban cards", TASK_CFG_KANBAN_SHADOW,
       @"Lifts each card off its lane." },
-    { @"Include all past-due tasks in the Due Today view", TASK_CFG_DUE_TODAY_OVERDUE, nil },
+    { @"Count only business days (Mon\u2013Fri) in the 3-Day Forecast",
+      TASK_CFG_FORECAST_BUSINESS_DAYS,
+      @"On a Friday the forecast runs to Tuesday; past-due tasks are always shown." },
 };
 #define APPEARANCE_OPTION_COUNT (sizeof(appearance_options) / sizeof(appearance_options[0]))
 

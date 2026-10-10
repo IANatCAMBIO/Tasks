@@ -67,6 +67,36 @@ GDateTime *task_local_dt(gint64 unix_ts);
 void task_day_bounds(gint offset_days, gint64 *lo, gint64 *hi);
 
 /*
+ * task_forecast_span — how many calendar days, today first, a forecast of
+ * `days` days covers.  Counting business days, only Monday to Friday
+ * count, but the weekend days between them stay inside the span: on a
+ * Friday three business days are Friday, Monday and Tuesday, a span of 5.
+ *
+ * Inputs:
+ *   weekday       — today, 1 = Monday ... 7 = Sunday (GLib's numbering)
+ *   days          — the days to count, at least 1
+ *   business_days — TRUE to count Monday to Friday only
+ *
+ * Output:
+ *   the span in days, >= days; days itself when not counting business
+ *   days (or when days < 1, 1).
+ */
+gint task_forecast_span(gint weekday, gint days, gboolean business_days);
+
+/*
+ * task_forecast_end — the local midnight that ends a forecast of `days`
+ * days from today (task_forecast_span on today's weekday).
+ *
+ * Inputs:
+ *   days          — the days to count, at least 1
+ *   business_days — TRUE to count Monday to Friday only
+ *
+ * Output:
+ *   the exclusive upper bound, unix seconds.
+ */
+gint64 task_forecast_end(gint days, gboolean business_days);
+
+/*
  * task_due_format — a date for display, e.g. "Jul 13, 2026".
  *
  * Inputs:

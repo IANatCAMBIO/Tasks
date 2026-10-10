@@ -1095,7 +1095,7 @@ check_lists_bar(TaskApp *app, NSString *dir)
 
         int64_t admin = list_named(@"Admin");
         [library select:(task_sel_t){ task_sel_list, admin }];
-        check([lit() isEqualToString:@"Work"], "lists bar: a grouped list lights its group's button");
+        check([lit() isEqualToString:@"\u25BC  Work"], "lists bar: a grouped list lights its group's button");
         check([library state_of_command:TasksCommandEditList].enabled &&
               [library state_of_command:TasksCommandRemoveFromGroup].enabled,
               "lists bar: a grouped list enables Edit List and Remove from Group");
@@ -1153,16 +1153,38 @@ check_lists_bar(TaskApp *app, NSString *dir)
          * Remove from Group. */
         [library perform_command:TasksCommandMoveToGroup param:@(check_group)];
         check(group_of(check_list) == check_group && button_of(@"Check List") == nil &&
-              [lit() isEqualToString:@"Check Renamed"],
+              [lit() isEqualToString:@"\u25BC  Check Renamed"],
               "lists bar: Move to Group files the selected list under its group's button");
         [library select:task_sel_default()];
         menu = menu_for(button_of(@"Check Renamed"));
-        check(library.selection.kind == task_sel_group && library.selection.id == check_group,
-              "lists bar: a right-click selects the group it is on");
+        check(library.selection.kind == task_sel_default().kind &&
+              library.selection.id == task_sel_default().id,
+              "lists bar: a right-click on a group leaves the selection alone");
         check(menu.numberOfItems == 5 && menu.itemArray[3].tag == TasksCommandRenameGroup &&
               menu.itemArray[4].tag == TasksCommandDeleteGroup &&
               [menu.itemArray[4].representedObject longLongValue] == check_group,
               "lists bar: a group's menu adds Rename Group and Remove Group for that group");
+        /* A left-click's menu: All Tasks (the group itself), its lists,
+         * then the group's commands; the selection is checked. */
+        menu = [bar menu_for_group:check_group];
+        check(menu.numberOfItems == 6 && [menu.itemArray[0].title isEqualToString:@"All Tasks"] &&
+              menu.itemArray[0].state == NSControlStateValueOff &&
+              [menu.itemArray[2].title hasSuffix:@"Check List"] &&
+              menu.itemArray[2].state == NSControlStateValueOff &&
+              menu.itemArray[4].tag == TasksCommandRenameGroup &&
+              menu.itemArray[5].tag == TasksCommandDeleteGroup,
+              "lists bar: a group's click menu offers All Tasks, its lists, then its commands");
+        [NSApp sendAction:menu.itemArray[2].action to:menu.itemArray[2].target from:menu.itemArray[2]];
+        check(library.selection.kind == task_sel_list && library.selection.id == check_list,
+              "lists bar: choosing a list in a group's menu selects that list");
+        menu = [bar menu_for_group:check_group];
+        check(menu.itemArray[0].state == NSControlStateValueOff &&
+              menu.itemArray[2].state == NSControlStateValueOn,
+              "lists bar: ... and the menu then checks that list");
+        [NSApp sendAction:menu.itemArray[0].action to:menu.itemArray[0].target from:menu.itemArray[0]];
+        check(library.selection.kind == task_sel_group && library.selection.id == check_group &&
+              [lit() isEqualToString:@"\u25BC  Check Renamed"],
+              "lists bar: All Tasks selects the group's aggregate view");
         menu = menu_for(button_of(@"Reading"));
         check(library.selection.kind == task_sel_list && library.selection.id == list_named(@"Reading"),
               "lists bar: a right-click selects the list it is on");
@@ -1440,6 +1462,15 @@ check_task_list(TaskApp *app, NSString *dir)
               "list: a column command shows its column and the rest make room");
         check(snapshot(window, dir, @"task-list-sorted"), "snapshot: task list, sorted, Status shown");
         [library perform_command:TasksCommandColumnStatus param:nil];
+
+        /* Sorted by the last column: its bold title and the indicator fit,
+         * and the divider on its left survives the header fill. */
+        table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"completed" ascending:NO]];
+        settle(0);
+        check(snapshot(window, dir, @"task-list-sorted-completed"),
+              "snapshot: task list, sorted by Completed");
+        table.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"title" ascending:NO]];
+        settle(0);
 
         window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
         check(snapshot(window, dir, @"task-list-dark"), "snapshot: task list, sorted, dark");
@@ -1901,7 +1932,7 @@ check_settings(TaskApp *app, NSString *dir)
         NSDictionary<NSString *, NSString *> *boxes = @{
             @"Show task titles in bold":                         @TASK_CFG_BOLD_TITLES,
             @"Show drop shadows on Kanban cards":                @TASK_CFG_KANBAN_SHADOW,
-            @"Include all past-due tasks in the Due Today view": @TASK_CFG_DUE_TODAY_OVERDUE,
+            @"Count only business days (Mon\u2013Fri) in the 3-Day Forecast": @TASK_CFG_FORECAST_BUSINESS_DAYS,
         };
         BOOL boxes_write = YES;
         for (NSString *title in boxes) {

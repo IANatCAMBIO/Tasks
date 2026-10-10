@@ -8,8 +8,9 @@
  * TasksListsBar — a 28 pt horizontal scrolling strip of buttons for
  * selecting a task list or virtual view.
  *
- * Virtual views appear first, then group buttons that open a menu of the
- * group's member lists (with Rename Group and Remove Group below them),
+ * Virtual views appear first, then group buttons that open a menu of All
+ * Tasks (the group's aggregate view) and the group's member lists (with
+ * Rename Group and Remove Group below them),
  * then the lists in no group.  Clicking any item calls [library select:].
  *
  * The bar OWNS: the list and group sheets (New List, Edit List, New Group,
@@ -72,6 +73,21 @@
  *   is, or an unknown list.
  */
 - (BOOL)drop_list:(int64_t)list_id at:(NSPoint)point;
+
+/*
+ * menu_for_group: — the menu a click on a group's button pops up: All
+ * Tasks (the group itself: every member list's tasks together), the
+ * group's lists, then Rename Group and Remove Group.  The item for the
+ * current selection carries a check mark.  Public so the menu can be
+ * exercised without popping it up.
+ *
+ * Inputs:
+ *   group_id — the group
+ *
+ * Output:
+ *   the menu; empty once the bar is shut down.
+ */
+- (NSMenu *)menu_for_group:(int64_t)group_id;
 
 /*
  * perform_command:param: — carry out one of the bar's commands.

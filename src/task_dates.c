@@ -99,6 +99,42 @@ task_day_bounds(gint offset_days, gint64 *lo, gint64 *hi)
 }
 
 /*
+ * task_forecast_span — the calendar days a forecast covers.
+ * Inputs/output are documented in task_dates.h.
+ */
+gint
+task_forecast_span(gint weekday, gint days, gboolean business_days)
+{
+    if (days < 1) days = 1;
+    if (!business_days) return days;
+
+    gint span    = 0;
+    gint counted = 0;
+    while (counted < days) {
+        gint day = (weekday - 1 + span) % 7 + 1;
+        if (day <= 5) counted++;
+        span++;
+    }
+    return span;
+}
+
+/*
+ * task_forecast_end — the end of a forecast from today.
+ * Inputs/output are documented in task_dates.h.
+ */
+gint64
+task_forecast_end(gint days, gboolean business_days)
+{
+    GDateTime *now     = g_date_time_new_now(task_local_tz());
+    gint       weekday = g_date_time_get_day_of_week(now);
+    gint64     lo, hi;
+
+    g_date_time_unref(now);
+    task_day_bounds(task_forecast_span(weekday, days, business_days) - 1, &lo, &hi);
+    return hi;
+}
+
+/*
  * format_local — a timestamp through one g_date_time_format pattern.
  *
  * Inputs:

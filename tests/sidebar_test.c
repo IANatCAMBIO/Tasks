@@ -96,6 +96,10 @@ main(void)
     check(label_is("\xf0\x9f\x9a\x80", "Deployments", "\xf0\x9f\x9a\x80  Deployments"),
           "label: emoji, two spaces, name");
     check(label_is("", "Someday", "Someday"), "label: the name alone without an emoji");
+    TaskGroup group       = { .id = 1, .name = "Work" };
+    char     *group_label = task_sidebar_group_label(&group);
+    check(strcmp(group_label, "\xe2\x96\xbc  Work") == 0, "label: a group is \xe2\x96\xbc, two spaces, name");
+    free(group_label);
 
     /* Selection: step 1, the same row. */
     check(pick(task_sel_view, 1) == 1, "pick: the same view");

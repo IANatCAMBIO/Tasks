@@ -18,6 +18,7 @@ typedef struct {
  * and white at it in dark, which is what the theme colour resolved to. */
 static const color_spec_t color_specs[TasksColorCount] = {
     [TasksColorRowStripe]         = { color_fixed,  { 0.953, 0.953, 0.953, 1.00 }, { 0.145, 0.145, 0.145, 1.00 } },
+    [TasksColorHeaderFill]        = { color_fixed,  { 0.957, 0.957, 0.957, 1.00 }, { 0.173, 0.173, 0.173, 1.00 } },
     [TasksColorDragRow]           = { color_fixed,  { 0.992, 0.902, 0.541, 1.00 }, { 0.478, 0.384, 0.125, 1.00 } },
     [TasksColorDueOverdue]        = { color_fixed,  { 0.753, 0.110, 0.157, 1.00 }, { 0.965, 0.380, 0.318, 1.00 } },
     [TasksColorDueToday]          = { color_fixed,  { 0.820, 0.604, 0.000, 1.00 }, { 0.973, 0.894, 0.361, 1.00 } },

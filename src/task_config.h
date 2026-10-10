@@ -42,7 +42,8 @@
 /* Appearance (Settings window) */
 #define TASK_CFG_BOLD_TITLES         "bold_task_titles"        /* bool, 0 */
 #define TASK_CFG_KANBAN_SHADOW       "kanban_shadow"           /* bool, 1 */
-#define TASK_CFG_DUE_TODAY_OVERDUE   "due_today_show_overdue"  /* bool, 0 */
+#define TASK_CFG_FORECAST_BUSINESS_DAYS "forecast_business_days" /* bool, 1: the 3-Day
+                                                               * Forecast counts Mon-Fri */
 
 /* Library window state */
 #define TASK_CFG_SHOW_COMPLETED      "show_completed"        /* bool, 1 */

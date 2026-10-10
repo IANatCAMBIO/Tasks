@@ -1,12 +1,15 @@
 /*
- * app_test.c — the event bus (src/task_app.h), the due-date tint
- * (src/task_dates.h) and the worker scheduler running under the main-loop
+ * app_test.c — the event bus (src/task_app.h), the due-date tint and
+ * the 3-Day Forecast (src/task_dates.h, src/core_views.h) and the worker scheduler running under the main-loop
  * service (src/task_worker.h, src/recur.h).
  */
 
 #include "fixture.h"
+#include "core_views.h"
 #include "recur.h"
+#include "task_config.h"
 #include "task_dates.h"
+#include "task_view.h"
 #include "task_worker.h"
 
 #include <string.h>
@@ -129,6 +132,116 @@ test_urgency(void)
 }
 
 /*
+ * test_forecast_span — the 3-Day Forecast's window: three calendar days,
+ * or three business days with the weekend between them kept inside.
+ */
+static void
+test_forecast_span(void)
+{
+    check(task_forecast_span(1, 3, FALSE) == 3, "forecast: three calendar days");
+    check(task_forecast_span(5, 3, FALSE) == 3, "forecast: ... even from a Friday");
+    check(task_forecast_span(1, 3, TRUE) == 3, "forecast: Monday's business days are Mon-Wed");
+    check(task_forecast_span(3, 3, TRUE) == 3, "forecast: Wednesday's are Wed-Fri");
+    check(task_forecast_span(4, 3, TRUE) == 5, "forecast: Thursday's run to Monday");
+    check(task_forecast_span(5, 3, TRUE) == 5, "forecast: Friday's run to Tuesday");
+    check(task_forecast_span(6, 3, TRUE) == 5, "forecast: Saturday's run to Wednesday");
+    check(task_forecast_span(7, 3, TRUE) == 4, "forecast: Sunday's run to Wednesday");
+    check(task_forecast_span(1, 0, TRUE) == 1, "forecast: fewer than one day counts one");
+
+    gint64 lo, hi;
+    task_day_bounds(2, &lo, &hi);
+    check(task_forecast_end(3, FALSE) == hi, "forecast: the calendar window ends after the day after tomorrow");
+    check(task_forecast_end(3, TRUE) >= hi, "forecast: the business window ends no sooner");
+}
+
+/*
+ * due_task — a task in a list, due at a given local midnight.
+ *
+ * Inputs:
+ *   app   — the context
+ *   list  — the list
+ *   title — the title
+ *   due   — local midnight, or 0 for no date
+ *
+ * Output:
+ *   the task's id.
+ */
+static gint64
+due_task(TaskApp *app, gint64 list, const char *title, gint64 due)
+{
+    gint64 id = task_db_task_create(app->db, list, 0, title);
+    Task  *t  = task_db_task_get(app->db, id);
+    t->due = due;
+    task_db_task_update(app->db, t);
+    task_free(t);
+    return id;
+}
+
+/*
+ * forecast_has — whether the 3-Day Forecast view shows a task.
+ *
+ * Inputs:
+ *   app — the context
+ *   id  — the task
+ *
+ * Output:
+ *   TRUE when the view's query returns it.
+ */
+static gboolean
+forecast_has(TaskApp *app, gint64 id)
+{
+    GPtrArray *tasks = task_view_find("forecast")->query(app, NULL);
+    gboolean   found = FALSE;
+    for (guint i = 0; i < tasks->len && !found; i++) {
+        found = ((const Task *)g_ptr_array_index(tasks, i))->id == id;
+    }
+    task_ptr_array_free_tasks(tasks);
+    return found;
+}
+
+/*
+ * test_forecast_view — the 3-Day Forecast shows everything past due and
+ * everything due inside its window, and nothing later or undated; the
+ * business-days setting is on by default and widens the window.
+ *
+ * Inputs:
+ *   app — the context
+ */
+static void
+test_forecast_view(TaskApp *app)
+{
+    task_core_views_init();
+    check(task_config_get_bool(TASK_CFG_FORECAST_BUSINESS_DAYS),
+          "forecast: business days are counted by default");
+
+    gint64 list = task_db_list_create(app->db, "Forecast", NULL);
+    gint64 lo, hi;
+    task_day_bounds(-30, &lo, &hi);
+    gint64 overdue = due_task(app, list, "Long overdue", lo);
+    task_day_bounds(0, &lo, &hi);
+    gint64 today   = due_task(app, list, "Today", lo);
+    gint64 undated = due_task(app, list, "Undated", 0);
+
+    gint64 business_end = task_forecast_end(3, TRUE);
+    gint64 last_in      = due_task(app, list, "Last business day", business_end - 24 * 3600);
+    gint64 after        = due_task(app, list, "After", business_end);
+
+    check(forecast_has(app, overdue) && forecast_has(app, today),
+          "forecast: past-due and today's tasks are shown");
+    check(forecast_has(app, last_in), "forecast: the window's last day is shown");
+    check(!forecast_has(app, after) && !forecast_has(app, undated),
+          "forecast: later and undated tasks are not");
+
+    task_config_set_bool(TASK_CFG_FORECAST_BUSINESS_DAYS, FALSE);
+    task_day_bounds(2, &lo, &hi);
+    gint64 day_after = due_task(app, list, "Day after tomorrow", lo);
+    gint64 day_three = due_task(app, list, "Three days out", hi);
+    check(forecast_has(app, day_after) && !forecast_has(app, day_three),
+          "forecast: calendar days run to the day after tomorrow");
+    task_config_set_bool(TASK_CFG_FORECAST_BUSINESS_DAYS, TRUE);
+}
+
+/*
  * test_recurrence_timer — the recurrence pass, armed by the scheduler, is
  * woken by a main-loop timer: a Done task whose next occurrence is a second
  * away is reopened without anything calling the pass again.
@@ -189,6 +302,8 @@ main(void)
 
     test_events(app);
     test_urgency();
+    test_forecast_span();
+    test_forecast_view(app);
     test_recurrence_timer(app);
     fixture_close(app);
     return check_result();

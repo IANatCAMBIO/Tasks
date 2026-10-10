@@ -824,9 +824,11 @@ reload
     for (guint i = 0; i < groups->len; i++) {
         const TaskGroup *group = g_ptr_array_index(groups, i);
 
+        char *label = task_sidebar_group_label(group);
         rows[n_rows++] = (task_sel_t){ task_sel_group, group->id };
-        [self add_button:tasks_string(group->name) sel:rows[n_rows - 1] at:&x
+        [self add_button:tasks_string(label) sel:rows[n_rows - 1] at:&x
                   action:@selector(group_btn_clicked:)];
+        free(label);
         for (guint j = 0; j < lists->len; j++) {
             const TaskList *list = g_ptr_array_index(lists, j);
             if (list->group_id == group->id) {
@@ -882,9 +884,57 @@ btn_clicked:(TasksListsBtn *)sender
 }
 
 /*
- * group_btn_clicked: — a group button was clicked: build a menu of the
- * group's lists, with Rename Group and Remove Group below them, and pop it
- * up just below the button.
+ * menu_for_group: — the menu a group button's click pops up.
+ * Inputs/output are documented in lists_bar.h.
+ */
+- (NSMenu *)
+menu_for_group:(int64_t)group_id
+{
+    TasksLibraryWindow *library = self.library;
+    NSMenu             *menu    = [[NSMenu alloc] initWithTitle:@""];
+    if (!library || self.is_shut_down) return menu;
+
+    task_sel_t current = library.selection;
+
+    /* The group's own view: every member list's tasks together. */
+    NSMenuItem *all = [[NSMenuItem alloc]
+        initWithTitle:@"All Tasks" action:@selector(sel_item_chosen:) keyEquivalent:@""];
+    all.target            = self;
+    all.representedObject = sel_array(task_sel_group, group_id);
+    all.state             = current.kind == task_sel_group && current.id == group_id
+                            ? NSControlStateValueOn : NSControlStateValueOff;
+    [menu addItem:all];
+
+    bool       separated = false;
+    GPtrArray *lists     = task_db_lists(library.app->db, FALSE);
+    for (guint i = 0; i < lists->len; i++) {
+        const TaskList *list = g_ptr_array_index(lists, i);
+        if (list->group_id != group_id) continue;
+        if (!separated) { [menu addItem:NSMenuItem.separatorItem]; separated = true; }
+
+        char     *label   = task_sidebar_list_label(list);
+        NSString *title   = tasks_string(label);
+        free(label);
+
+        NSMenuItem *item = [[NSMenuItem alloc]
+            initWithTitle:title action:@selector(sel_item_chosen:) keyEquivalent:@""];
+        item.target            = self;
+        item.representedObject = sel_array(task_sel_list, list->id);
+        item.state             = current.kind == task_sel_list && current.id == list->id
+                                 ? NSControlStateValueOn : NSControlStateValueOff;
+        [menu addItem:item];
+    }
+    task_ptr_array_free_lists(lists);
+
+    [menu addItem:NSMenuItem.separatorItem];
+    [menu addItem:tasks_command_menu_item(TasksCommandRenameGroup, @(group_id), library)];
+    [menu addItem:tasks_command_menu_item(TasksCommandDeleteGroup, @(group_id), library)];
+    return menu;
+}
+
+/*
+ * group_btn_clicked: — a group button was clicked: pop up its menu
+ * (menu_for_group:) just below the button.
  *
  * Inputs:
  *   sender — the button; sel_data is @[@(task_sel_group), @(group_id)]
@@ -894,50 +944,26 @@ group_btn_clicked:(TasksListsBtn *)sender
 {
     if (self.is_shut_down) return;
 
-    TasksLibraryWindow *library  = self.library;
-    int64_t             group_id = sel_of(sender).id;
-    NSMenu             *menu     = [[NSMenu alloc] initWithTitle:@""];
-
-    GPtrArray *lists = task_db_lists(library.app->db, FALSE);
-    for (guint i = 0; i < lists->len; i++) {
-        const TaskList *list = g_ptr_array_index(lists, i);
-        if (list->group_id != group_id) continue;
-
-        char     *label   = task_sidebar_list_label(list);
-        NSString *title   = tasks_string(label);
-        free(label);
-
-        NSMenuItem *item = [[NSMenuItem alloc]
-            initWithTitle:title action:@selector(list_item_chosen:) keyEquivalent:@""];
-        item.target            = self;
-        item.representedObject = @(list->id);
-        [menu addItem:item];
-    }
-    task_ptr_array_free_lists(lists);
-
-    if (menu.numberOfItems > 0) [menu addItem:NSMenuItem.separatorItem];
-    [menu addItem:tasks_command_menu_item(TasksCommandRenameGroup, @(group_id), library)];
-    [menu addItem:tasks_command_menu_item(TasksCommandDeleteGroup, @(group_id), library)];
-
-    [menu popUpMenuPositioningItem:nil
-                        atLocation:NSMakePoint(0, NSHeight(sender.bounds))
-                            inView:sender];
-    /* The click turned the toggle on whether or not a list was chosen. */
+    [[self menu_for_group:sel_of(sender).id] popUpMenuPositioningItem:nil
+                                                           atLocation:NSMakePoint(0, NSHeight(sender.bounds))
+                                                               inView:sender];
+    /* The click turned the toggle on whether or not an item was chosen. */
     [self update_selection_display];
 }
 
 /*
- * list_item_chosen: — a list menu item was chosen: select that list.
+ * sel_item_chosen: — an item of a group's menu was chosen: select the
+ * group (All Tasks) or one of its lists.
  *
  * Inputs:
- *   sender — the menu item; representedObject is the list id as NSNumber
+ *   sender — the menu item; representedObject is @[@(kind), @(id)]
  */
 - (void)
-list_item_chosen:(NSMenuItem *)sender
+sel_item_chosen:(NSMenuItem *)sender
 {
     if (self.is_shut_down) return;
-    int64_t    list_id = [sender.representedObject longLongValue];
-    task_sel_t sel     = { task_sel_list, list_id };
+    NSArray   *repr = sender.representedObject;
+    task_sel_t sel  = { (task_sel_kind_t)[repr[0] integerValue], [repr[1] longLongValue] };
     [self.library select:sel];
     [self update_selection_display];
 }
@@ -997,9 +1023,10 @@ add_list_commands:(int64_t)list_id to:(NSMenu *)menu
  * Group anywhere; a list button adds its list's commands; a group button
  * adds the group's own and, when the selection is a list of that group,
  * that list's commands too (a grouped list has no button of its own: its
- * group's button is lit for it).  A list or group clicked becomes the
- * selection first, since the list commands act on the selection — except
- * a group whose list is selected, which keeps that list.
+ * group's button is lit for it).  A list clicked becomes the selection
+ * first, since the list commands act on the selection; a group clicked
+ * does not — its commands carry its id, and showing its tasks is the
+ * left-click menu's All Tasks.
  *
  * Inputs:
  *   event — the right mouse-down
@@ -1028,7 +1055,7 @@ menuForEvent:(NSEvent *)event
         task_list_free(list);
     }
 
-    if ((sel.kind == task_sel_list || sel.kind == task_sel_group) && in_group == 0) {
+    if (sel.kind == task_sel_list) {
         [library select:sel];
         [self update_selection_display];
     }

@@ -34,6 +34,19 @@
 char *task_sidebar_list_label(const TaskList *list);
 
 /*
+ * task_sidebar_group_label — what a group's button in the lists bar says:
+ * ▼, two spaces, its name — the ▼ marking it as a button that opens its
+ * lists, in the place a list's emoji takes.
+ *
+ * Inputs:
+ *   group — the group
+ *
+ * Output:
+ *   new string (free it).
+ */
+char *task_sidebar_group_label(const TaskGroup *group);
+
+/*
  * task_sidebar_pick — the row to select after the sidebar was rebuilt.
  *
  * Exactly one row is always selected and the Lists header never is.  When
