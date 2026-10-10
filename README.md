@@ -1,13 +1,20 @@
 # Tasks
 
-An experimental macOS-only fork of [Tasks](https://github.com/IANatCAMBIO/Tasks):
-the same task manager — lists, tall task rows, a Kanban board, subtasks, due
-dates, recurring tasks, all in one SQLite file — with the GTK4 interface being
-replaced by a native AppKit one.
+A macOS task manager — lists, tall task rows, a Kanban board, subtasks, due
+dates, recurring tasks, all in one SQLite file — with a native AppKit
+interface.  It began as a port of the GTK4 [Tasks](https://github.com/IANatCAMBIO/Tasks)
+app; the AppKit app is now the project's main line.
 
-**Status: foundation only.**  The non-UI core is carried over and runs under
-the Cocoa run loop; the AppKit interface is a working skeleton with
-placeholder panes.  What works today:
+## Branches
+
+| Branch | What it is |
+|---|---|
+| `master` | The AppKit app for macOS.  This is the project. |
+| `gtk4-testing` | The original GTK4 app (Linux and macOS), kept as a testing branch: the behavioural reference for the port, and a place to try ideas against the GTK code.  It is not the product and does not receive AppKit work. |
+
+**Status: in progress.**  The non-UI core is carried over from the GTK app and
+runs under the Cocoa run loop; parts of the AppKit interface are still
+skeletons with placeholder panes.  What works today:
 
 - the main window: toolbar, search field, sidebar (flat list of views and
   lists), task list (tall rows, read-only), status bar, the standard menus;
@@ -105,11 +112,11 @@ On first run the folder and an empty database are created.
 Setting the environment variable `TASKS_DATA_DIR` to another folder moves all
 of it there; that is what `make run`, `make seed` and `make test` do.
 
-**The fork does not share data with the GTK Tasks app** and cannot open that
-app's folder (`~/.local/share/tasks`): the database code refuses any path
-inside it.  This is deliberate while the fork is experimental.  To try the
-fork on a copy of real tasks, copy `tasks.db` yourself into another folder
-and point `TASKS_DATA_DIR` at it.
+**This app does not share data with the GTK Tasks app** (the `gtk4-testing`
+branch) and cannot open that app's folder (`~/.local/share/tasks`): the
+database code refuses any path inside it, so the two can never write to the
+same database.  To try this app on a copy of real tasks, copy `tasks.db`
+yourself into another folder and point `TASKS_DATA_DIR` at it.
 
 ## Configuration
 
@@ -143,7 +150,7 @@ toggles.  Every key and its default is listed in `src/task_config.h`.
   conventions and lessons from the Files app.
 - `porting/gtk_reference/` — the GTK sources and documents, kept as the
   behavioural reference until the port is complete.  They describe the GTK
-  app, not this fork.
+  app, not this one.  The full GTK4 app is on the `gtk4-testing` branch.
 
 ## License
 

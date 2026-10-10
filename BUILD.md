@@ -197,7 +197,9 @@ file left in `src/` is built: delete what is no longer used.
 
 ## Platform notes
 
-- **macOS only.**  The GTK app's Linux support does not carry over.
+- **macOS only.**  The GTK app's Linux support does not carry over; the GTK4
+  app lives on the `gtk4-testing` branch, which has its own build
+  instructions.
 - **The app runs on the macOS it was built on, or later — not yet on 14.**
   The sources are compiled for macOS 14.0 and use no newer API, but the
   binary is linked for the build machine's macOS (`LINK_TARGET` in the
