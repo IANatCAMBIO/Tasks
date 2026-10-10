@@ -1241,9 +1241,9 @@ task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
     gint64 id = 0;                   /* the new rowid                       */
     if (sqlite3_prepare_v2(db->sq,
             "INSERT INTO tasks(list_id, parent_id, title, position, "
-            "updated_at) VALUES(?, ?, ?, (SELECT COALESCE(MAX(position), 0)"
-            " + 1 FROM tasks WHERE list_id = ?1 AND "
-            "COALESCE(parent_id, 0) = COALESCE(?2, 0)), ?)", -1,
+            "updated_at, due_time) VALUES(?, ?, ?, (SELECT "
+            "COALESCE(MAX(position), 0) + 1 FROM tasks WHERE list_id = ?1 "
+            "AND COALESCE(parent_id, 0) = COALESCE(?2, 0)), ?, ?)", -1,
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(st, 1, list_id);
         if (parent_id != 0)
@@ -1252,6 +1252,10 @@ task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
             sqlite3_bind_null(st, 2);
         sqlite3_bind_text(st, 3, title, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 4, now());
+        /* Bound, not left to the column DEFAULT: a file created under an
+         * older default keeps that DEFAULT forever (SQLite cannot alter
+         * one), so only the macro is a reliable source.                  */
+        sqlite3_bind_int(st, 5, TASK_DUE_TIME_DEFAULT);
         if (step_done(db, st, "task create"))
             id = sqlite3_last_insert_rowid(db->sq);
     } else {

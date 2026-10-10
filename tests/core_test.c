@@ -442,6 +442,54 @@ test_db_create_read_task(void)
 }
 
 /*
+ * test_db_create_due_time_default — a new task's due time is
+ * TASK_DUE_TIME_DEFAULT even in a file whose tasks table was created under
+ * an older default: SQLite cannot alter a column DEFAULT, so the file's
+ * stale one (08:00 here) must not be what a new task gets.
+ */
+static void
+test_db_create_due_time_default(void)
+{
+    GError  *err    = NULL;
+    gchar   *tmpdir = scratch_dir();
+    gchar   *path   = g_build_filename(tmpdir, "tasks.db", NULL);
+    sqlite3 *sq     = NULL;
+
+    TaskDatabase *db = task_db_open(path, &err);
+    g_assert_no_error(err);
+    task_db_close(db);
+
+    /* Rewrite the stored schema to the 08:00 default an older build wrote. */
+    gchar *old_default = g_strdup_printf(
+        "PRAGMA writable_schema = ON;"
+        "UPDATE sqlite_master SET sql = replace(sql, 'due_time            "
+        "INTEGER NOT NULL DEFAULT %d', 'due_time            INTEGER NOT NULL "
+        "DEFAULT 480') WHERE name = 'tasks';"
+        "PRAGMA writable_schema = OFF", TASK_DUE_TIME_DEFAULT);
+    g_assert_cmpint(sqlite3_open(path, &sq), ==, SQLITE_OK);
+    g_assert_cmpint(sqlite3_exec(sq, old_default, NULL, NULL, NULL), ==, SQLITE_OK);
+    g_assert_cmpint(sqlite3_changes(sq), ==, 1);
+    sqlite3_close(sq);
+    g_free(old_default);
+
+    db = task_db_open(path, &err);
+    g_assert_no_error(err);
+    gint64 list_id = task_db_list_create(db, "L", NULL);
+    gint64 task_id = task_db_task_create(db, list_id, 0, "Task");
+
+    Task *t = task_db_task_get(db, task_id);
+    g_assert_nonnull(t);
+    g_assert_cmpint(t->due_time, ==, TASK_DUE_TIME_DEFAULT);
+    task_free(t);
+
+    task_db_close(db);
+    g_remove(path);
+    g_remove(tmpdir);
+    g_free(path);
+    g_free(tmpdir);
+}
+
+/*
  * test_db_status_stamps_updated_at — a status change stamps updated_at (sleeps one
  * second so the clock moves).
  */
@@ -516,6 +564,7 @@ main(int argc, char **argv)
     g_test_add_func("/db/fresh_schema",             test_db_fresh_schema);
     g_test_add_func("/db/other_version_refused", test_db_other_version_refused);
     g_test_add_func("/db/create_read_task",         test_db_create_read_task);
+    g_test_add_func("/db/create_due_time_default",  test_db_create_due_time_default);
     g_test_add_func("/db/status_stamps_updated_at", test_db_status_stamps_updated_at);
 
     return g_test_run();

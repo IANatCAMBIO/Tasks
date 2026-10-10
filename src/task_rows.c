@@ -346,7 +346,7 @@ task_row_describe(const Task *t, const TaskRowCtx *ctx)
     lines_build(row, t, list_name, att_count, task_row_ctx_subtasks(ctx, t),
                 ctx->bold);
 
-    /* The due cell carries its time of day only when that is not the 08:00
+    /* The due cell carries its time of day only when that is not the 17:00
      * default (task_due_format_at).  due_instant is the sort key, since
      * `due` alone is local midnight for every row of the same day. */
     gchar *due_text       = task_due_format_at(t->due, t->due_time);

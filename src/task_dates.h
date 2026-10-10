@@ -4,7 +4,7 @@
  *
  * A due date is stored as TWO values (db.h): `due`, a unix timestamp that
  * is always a LOCAL MIDNIGHT (0 = no date), and `due_time`, minutes past
- * that midnight (TASK_DUE_TIME_DEFAULT = 08:00).  Bucket by day with `due`;
+ * that midnight (TASK_DUE_TIME_DEFAULT = 17:00).  Bucket by day with `due`;
  * sort and compare moments with task_due_instant.
  *
  * USE task_local_tz / task_local_dt RATHER THAN GLib's "_local"
@@ -149,7 +149,7 @@ gint64 task_due_instant(gint64 due, gint due_time);
 
 /*
  * task_due_format_at — "Jul 13, 2026", plus " 2:30 PM" when due_time is not
- * the 08:00 default.  The default is left unsaid on purpose: every task has
+ * the 17:00 default.  The default is left unsaid on purpose: every task has
  * a due time, so printing it always would put a clock on every row and
  * distinguish nothing.
  *

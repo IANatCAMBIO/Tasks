@@ -148,11 +148,11 @@ typedef enum {
 #define TASK_RECUR_TIME_DEFAULT (8 * 60)
 
 /* The time of day a DUE DATE means, in minutes past local midnight
- * (tasks.due_time).  Every due date has one — the column's DEFAULT is
- * what gives it to a task nobody has timed by hand, existing rows
- * included — so there is no "timed or not" flag to keep honest.  It is a
- * separate macro from TASK_RECUR_TIME_DEFAULT rather than a shared one:
- * the two mean different things and need not agree.                       */
+ * (tasks.due_time).  Every due date has one — task creation writes
+ * this macro, and the column DEFAULT covers rows added by an ALTER — so
+ * there is no "timed or not" flag to keep honest.  It is a separate macro
+ * from TASK_RECUR_TIME_DEFAULT rather than a shared one: the two mean
+ * different things and need not agree.                                    */
 #define TASK_DUE_TIME_DEFAULT (17 * 60)
 
 /* How long BEFORE an occurrence a completed task is reset to New, in
