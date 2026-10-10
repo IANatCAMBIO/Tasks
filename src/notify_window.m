@@ -125,10 +125,11 @@ shared
 init_window
 {
     NSRect frame = NSMakeRect(0, 0, win_w, win_h);
-    NSWindowStyleMask mask = (NSWindowStyleMaskTitled      |
-                              NSWindowStyleMaskClosable    |
-                              NSWindowStyleMaskMiniaturizable |
-                              NSWindowStyleMaskResizable);
+    /* Utility mask: the small tool-window titlebar (no minimize button). */
+    NSWindowStyleMask mask = (NSWindowStyleMaskTitled        |
+                              NSWindowStyleMaskClosable      |
+                              NSWindowStyleMaskResizable     |
+                              NSWindowStyleMaskUtilityWindow);
     NSPanel *panel = [[NSPanel alloc] initWithContentRect:frame
                                                 styleMask:mask
                                                   backing:NSBackingStoreBuffered
