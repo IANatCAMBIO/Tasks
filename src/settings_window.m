@@ -954,9 +954,12 @@ refresh_gcal
     } else if (!signed_in) {
         status.stringValue = @"Not signed in.";
     } else {
-        gchar *line = gcal_sync_status();
+        /* A failure carries Google's own message, which ends in a full
+         * stop already; a "Last synced at" line does not. */
+        gchar    *line = gcal_sync_status();
+        NSString *stop = g_str_has_suffix(line, ".") ? @"" : @".";
         status.stringValue = task_config_get_bool(TASK_CFG_GCAL_ENABLED)
-            ? [NSString stringWithFormat:@"Signed in. %@.", tasks_string(line)]
+            ? [NSString stringWithFormat:@"Signed in. %@%@", tasks_string(line), stop]
             : @"Signed in. Syncing is off.";
         g_free(line);
     }
