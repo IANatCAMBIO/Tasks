@@ -114,6 +114,10 @@ time_text
 @property (nonatomic) CGFloat now_y;
 /* Selected task ids */
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *selected_ids;
+/* The hours shown, [first_h, end_h): business hours widened to fit the
+ * day's blocks (fit_hours) */
+@property (nonatomic) NSInteger first_h;
+@property (nonatomic) NSInteger end_h;
 @end
 
 @implementation TasksDayCanvas
@@ -193,7 +197,7 @@ y_for_unix:(int64_t)t midnight:(int64_t)mid
 {
     double hours = (double)(t - mid) / 3600.0;
     return tasks_look_day_planner_pad_v +
-           (hours - (double)tasks_look_day_planner_start_h) * tasks_look_day_planner_hour_h;
+           (hours - (double)self.first_h) * tasks_look_day_planner_hour_h;
 }
 
 /*
@@ -211,11 +215,11 @@ unix_for_y:(CGFloat)y
 {
     NSInteger offset   = self.planner ? self.planner.days_offset : 0;
     double    hours    = (y - tasks_look_day_planner_pad_v) / tasks_look_day_planner_hour_h
-                         + (double)tasks_look_day_planner_start_h;
+                         + (double)self.first_h;
     int total_min = (int)round(hours * 60.0);
     total_min = (total_min / (int)snap_minutes) * (int)snap_minutes;
-    int lo_min = (int)tasks_look_day_planner_start_h * 60;
-    int hi_min = (int)tasks_look_day_planner_end_h   * 60 - (int)snap_minutes;
+    int lo_min = (int)self.first_h * 60;
+    int hi_min = (int)self.end_h   * 60 - (int)snap_minutes;
     if (total_min < lo_min) total_min = lo_min;
     if (total_min > hi_min) total_min = hi_min;
     return midnight_for_offset(offset) + (int64_t)total_min * 60;
@@ -378,7 +382,7 @@ typedef struct {
     NSDictionary *event_attrs;               /* a calendar event's title */
     CGFloat       title_h;
     CGFloat       time_h;
-    NSArray<NSString *> *hour_labels;         /* indexed by hour - start_h */
+    NSArray<NSString *> *hour_labels;         /* indexed by hour, 0-23 */
     CGFloat       hour_label_h;
     NSColor      *acc_fill_n, *acc_bord_n, *done_fill_n, *done_bord_n;
     NSColor      *acc_fill_s, *acc_bord_s, *done_fill_s, *done_bord_s;
@@ -413,7 +417,7 @@ canvas_look(void)
         look.time_h  = time_font.ascender  - time_font.descender  + time_font.leading;
 
         NSMutableArray<NSString *> *labels = [NSMutableArray array];
-        for (NSInteger h = tasks_look_day_planner_start_h; h < tasks_look_day_planner_end_h; h++) {
+        for (NSInteger h = 0; h < 24; h++) {
             NSString *text;
             if (h == 0)       text = @"12 AM";
             else if (h < 12)  text = [NSString stringWithFormat:@"%ld AM", (long)h];
@@ -450,8 +454,8 @@ canvas_look(void)
 drawRect:(NSRect)dirty
 {
     const canvas_look_t *look = canvas_look();
-    NSInteger start_h = tasks_look_day_planner_start_h;
-    NSInteger end_h   = tasks_look_day_planner_end_h;
+    NSInteger start_h = self.first_h;
+    NSInteger end_h   = self.end_h;
     CGFloat   hour_h  = tasks_look_day_planner_hour_h;
     CGFloat   pad     = tasks_look_day_planner_pad_v;
     CGFloat   label_w = tasks_look_day_planner_label_w;
@@ -480,7 +484,7 @@ drawRect:(NSRect)dirty
             NSRect lrec = NSMakeRect(2.0, y - look->hour_label_h - 2.0, label_w - 4.0,
                                      look->hour_label_h);
             if (NSIntersectsRect(lrec, dirty)) {
-                [look->hour_labels[(NSUInteger)(h - start_h)] drawInRect:lrec
+                [look->hour_labels[(NSUInteger)h] drawInRect:lrec
                                                           withAttributes:look->label_attrs];
             }
         }
@@ -866,7 +870,7 @@ mouseDragged:(NSEvent *)event
             /* Top edge: move start time, keep end time fixed */
             int64_t new_start = self.resize_orig_start_unix + (int64_t)delta * 60;
             int64_t new_end   = self.resize_orig_end_unix;
-            int64_t lo        = mid + (int64_t)tasks_look_day_planner_start_h * 3600;
+            int64_t lo        = mid + (int64_t)self.first_h * 3600;
             if (new_start < lo)
                 new_start = lo;
             if (new_start > new_end - (int64_t)snap_minutes * 60)
@@ -900,8 +904,8 @@ mouseDragged:(NSEvent *)event
         int64_t mid       = [self midnight];
         NSRect  before    = [self item_rect:item midnight:mid];
         int64_t new_start = self.move_orig_start_unix + (int64_t)delta_min * 60;
-        int64_t lo        = mid + (int64_t)tasks_look_day_planner_start_h * 3600;
-        int64_t hi        = mid + (int64_t)tasks_look_day_planner_end_h   * 3600
+        int64_t lo        = mid + (int64_t)self.first_h * 3600;
+        int64_t hi        = mid + (int64_t)self.end_h   * 3600
                             - (int64_t)item.duration * 60;
         if (new_start < lo) new_start = lo;
         if (new_start > hi) new_start = hi;
@@ -1100,6 +1104,23 @@ calendar_color(const char *hex)
 
 /* ── TasksDayPlanner ──────────────────────────────────────────────────── */
 
+/*
+ * canvas_height — the canvas height for the hours it shows, with the
+ * padding above the first hour line and below the last.
+ *
+ * Inputs:
+ *   canvas — the canvas, its first_h and end_h set
+ *
+ * Output:
+ *   height in points.
+ */
+static CGFloat
+canvas_height(TasksDayCanvas *canvas)
+{
+    return tasks_look_day_planner_pad_v * 2.0 +
+           (CGFloat)(canvas.end_h - canvas.first_h) * tasks_look_day_planner_hour_h;
+}
+
 @implementation TasksDayPlanner
 
 /*
@@ -1116,12 +1137,11 @@ init_with_library:(TasksLibraryWindow *)library
     _items       = [NSMutableArray array];
     _days_offset = 0;
 
-    NSInteger n_hours  = tasks_look_day_planner_end_h - tasks_look_day_planner_start_h;
-    CGFloat   canvas_h = tasks_look_day_planner_pad_v * 2.0 +
-                         n_hours * tasks_look_day_planner_hour_h;
-
     _canvas         = [[TasksDayCanvas alloc]
-                           initWithFrame:NSMakeRect(0, 0, tasks_look_day_planner_w, canvas_h)];
+                           initWithFrame:NSMakeRect(0, 0, tasks_look_day_planner_w, 0)];
+    _canvas.first_h      = tasks_look_day_planner_start_h;
+    _canvas.end_h        = tasks_look_day_planner_end_h;
+    [_canvas setFrameSize:NSMakeSize(tasks_look_day_planner_w, canvas_height(_canvas))];
     _canvas.planner      = self;
     _canvas.drop_y       = NAN;
     _canvas.selected_ids = [NSMutableSet set];
@@ -1497,6 +1517,7 @@ reload
     task_ptr_array_free_tasks(tasks);
 
     [self add_events_from:lo to:hi];
+    [self fit_hours_from:lo];
     layout_columns(self.items);
 
     /* A reload (a sync finishing, an edit elsewhere) keeps the selection
@@ -1552,6 +1573,38 @@ add_events_from:(gint64)lo to:(gint64)hi
     self.all_day_label.toolTip     = all_day.count > 0 ? text : nil;
     self.all_day_label.hidden      = all_day.count == 0;
     self.all_day_height.constant   = all_day.count > 0 ? all_day_h : 0.0;
+}
+
+/*
+ * fit_hours_from: — show business hours, widened to whole hours that take
+ * in every block of the day, and size the canvas to them.  A wider top
+ * shifts everything down, so the scroll position follows to keep the same
+ * times in view.
+ *
+ * Inputs:
+ *   lo — the day's local midnight
+ */
+- (void)
+fit_hours_from:(gint64)lo
+{
+    NSInteger first = tasks_look_day_planner_start_h;
+    NSInteger end   = tasks_look_day_planner_end_h;
+    for (TasksDayItem *item in self.items) {
+        int64_t from = item.start_unix - lo;
+        int64_t to   = from + (int64_t)item.duration * 60;
+        first = MIN(first, (NSInteger)MAX(from, 0) / 3600);
+        end   = MAX(end, (NSInteger)((MIN(to, 24 * 3600) + 3599) / 3600));
+    }
+
+    NSInteger shift = self.canvas.first_h - first;
+    if (shift == 0 && end == self.canvas.end_h) return;
+
+    self.canvas.first_h = first;
+    self.canvas.end_h   = end;
+    NSPoint origin = self.scroll.contentView.bounds.origin;
+    [self.canvas setFrameSize:NSMakeSize(NSWidth(self.canvas.frame), canvas_height(self.canvas))];
+    origin.y = MAX(0.0, origin.y + shift * tasks_look_day_planner_hour_h);
+    [self.canvas scrollPoint:origin];
 }
 
 /*
