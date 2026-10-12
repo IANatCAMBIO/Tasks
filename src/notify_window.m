@@ -15,6 +15,7 @@
 
 #import "notify_window.h"
 #import "editor_window.h"
+#import "ui_util.h"
 
 #include "db.h"
 
@@ -264,7 +265,7 @@ init_window
     ]];
 
     /* ── Table ───────────────────────────────────────────────────────── */
-    _table = [[NSTableView alloc] init];
+    _table = [[TasksTable alloc] init];
     _table.dataSource       = self;
     _table.delegate         = self;
     _table.headerView       = nil;

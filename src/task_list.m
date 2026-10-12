@@ -116,9 +116,10 @@ static const size_t  fit_row_limit  = 2000;     /* rows measured to fit a column
 /*
  * TasksListTable — the list's table view.  A subclass for one reason: a
  * row drag may not begin on the checkbox, and AppKit asks the table
- * itself, not its delegate, where a drag may begin.
+ * itself, not its delegate, where a drag may begin.  (Selecting on
+ * mouse-down comes from TasksTable.)
  */
-@interface TasksListTable : NSTableView
+@interface TasksListTable : TasksTable
 @end
 
 @implementation TasksListTable

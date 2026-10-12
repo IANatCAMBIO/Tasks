@@ -296,6 +296,8 @@ constant there rather than a literal in your file.
 `tasks_app_icon`, `tasks_image_view`, `tasks_ui_notice`, `tasks_ui_confirm`,
 `tasks_ui_pick_path`, `tasks_ui_sheet`.  Every dialog takes a completion
 block; with a parent window it is a sheet and the call returns at once.
+Every table is a `TasksTable` (or a subclass of it), which selects a
+clicked row on mouse-down.
 
 **Focus rings**: `NSFocusRingTypeNone` on toolbar text fields ONLY (the search
 field has it).  Every other field keeps the system ring: use a stock bezeled

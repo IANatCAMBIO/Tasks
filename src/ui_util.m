@@ -162,6 +162,71 @@ tasks_image_view(NSImage *image, CGFloat size)
     return view;
 }
 
+/* ── Tables ─────────────────────────────────────────────────────────── */
+
+/*
+ * delegate_selection — the rows a table's delegate lets a click on one row
+ * select, asked the way NSTableView asks it: the delegate's
+ * tableView:selectionIndexesForProposedSelection: when it has one, else
+ * its tableView:shouldSelectRow:.
+ *
+ * Inputs:
+ *   table — the table
+ *   row   — the clicked row, >= 0
+ *
+ * Output:
+ *   the rows to select: just `row` when the delegate has neither method,
+ *   possibly empty when it refuses.
+ */
+static NSIndexSet *
+delegate_selection(NSTableView *table, NSInteger row)
+{
+    id<NSTableViewDelegate> delegate = table.delegate;
+    NSIndexSet *proposed = [NSIndexSet indexSetWithIndex:(NSUInteger)row];
+
+    if ([delegate respondsToSelector:@selector(tableView:selectionIndexesForProposedSelection:)]) {
+        return [delegate tableView:table selectionIndexesForProposedSelection:proposed];
+    }
+    if ([delegate respondsToSelector:@selector(tableView:shouldSelectRow:)] &&
+        ![delegate tableView:table shouldSelectRow:row]) {
+        return [NSIndexSet indexSet];
+    }
+    return proposed;
+}
+
+@implementation TasksTable
+
+/*
+ * mouseDown: — selects the row under a plain left click at once, then lets
+ * NSTableView handle the click as usual (drags, double-clicks).  Left
+ * alone: a row that is already selected, so the whole selection can still
+ * be dragged (NSTableView narrows it on mouse-up if there was no drag);
+ * ⌘-, ⇧- and ^-clicks, which extend the selection or open the menu; a
+ * press on a button in a cell; a row the delegate refuses.
+ *
+ * Inputs:
+ *   event — the mouse-down event
+ */
+- (void)
+mouseDown:(NSEvent *)event
+{
+    NSEventModifierFlags mods = event.modifierFlags & (NSEventModifierFlagCommand |
+                                                       NSEventModifierFlagShift |
+                                                       NSEventModifierFlagControl);
+    NSInteger row = [self rowAtPoint:[self convertPoint:event.locationInWindow fromView:nil]];
+
+    if (mods == 0 && event.clickCount == 1 && row >= 0 && ![self isRowSelected:row]) {
+        NSView *hit = [self hitTest:[self.superview convertPoint:event.locationInWindow
+                                                        fromView:nil]];
+        NSIndexSet *rows = [hit isKindOfClass:NSButton.class] ? nil
+                                                               : delegate_selection(self, row);
+        if (rows.count > 0) [self selectRowIndexes:rows byExtendingSelection:NO];
+    }
+    [super mouseDown:event];
+}
+
+@end
+
 /* ── Dialogs ────────────────────────────────────────────────────────── */
 
 /*

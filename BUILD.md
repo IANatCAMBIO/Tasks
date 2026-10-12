@@ -173,7 +173,7 @@ src/
   library_window.[hm]  main window: shared state, refresh, commands (skeleton)
   commands.[hm]        the command table (menus, toolbar, validation)
   look.[hm]            sizes, timings, colours
-  ui_util.[hm]         icons, image views, dialogs
+  ui_util.[hm]         icons, image views, the shared table view, dialogs
   row_text.[hm]        the renderer of a task row's text
   lists_bar.[hm]       lists bar: views, groups and lists, their sheets
   task_list.[hm]       task list          (stub)

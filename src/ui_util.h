@@ -2,8 +2,9 @@
 
 /*
  * ui_util — small AppKit helpers shared by every window, so each exists
- * exactly once: the icons, correctly framed image views, and the four
- * kinds of dialog (notice, confirm, path picker, custom sheet).
+ * exactly once: the icons, correctly framed image views, the table view
+ * every list is made of, and the four kinds of dialog (notice, confirm,
+ * path picker, custom sheet).
  *
  * Every dialog takes a completion block, called once on the main thread.
  * Given a parent window the dialog is a sheet and the call returns at once
@@ -115,6 +116,26 @@ NSImage *tasks_app_icon(CGFloat size);
  *   new NSImageView, size x size points, scaling proportionally down.
  */
 NSImageView *tasks_image_view(NSImage *image, CGFloat size);
+
+/* ── Tables ─────────────────────────────────────────────────────────── */
+
+/*
+ * TasksTable — THE table view of this app: every list is one (or a
+ * subclass of one).  It selects a clicked row on mouse-DOWN, as Finder
+ * does, where a stock NSTableView waits for mouse-up while it tells a
+ * click from a drag.  Everything else is NSTableView's own: drags (of the
+ * whole selection, when the press lands on a selected row), double-click
+ * actions, type-select and the context menu.
+ *
+ * Left to NSTableView as before: a press on a row that is already
+ * selected, a ⌘-, ⇧- or ^-click, a double-click, and a press on a button
+ * inside a cell (a checkbox acts on its own row and leaves the selection
+ * alone).  The delegate's tableView:selectionIndexesForProposedSelection:
+ * or tableView:shouldSelectRow: is asked first, so a row it refuses is not
+ * selected early.
+ */
+@interface TasksTable : NSTableView
+@end
 
 /* ── Dialogs ────────────────────────────────────────────────────────── */
 

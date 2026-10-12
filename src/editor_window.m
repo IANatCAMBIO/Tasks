@@ -455,8 +455,9 @@ same_attachments(const GPtrArray *a, const GPtrArray *b)
  * TasksEditorTable — the subtask list.  A table normally makes a row's
  * text field wait for a second click on an already-selected row before it
  * edits; here a subtask's title is edited by clicking it, like any field.
+ * (Selecting on mouse-down comes from TasksTable.)
  */
-@interface TasksEditorTable : NSTableView
+@interface TasksEditorTable : TasksTable
 @end
 
 @implementation TasksEditorTable
@@ -894,7 +895,7 @@ build_subtasks
 - (NSView *)
 build_attachments
 {
-    self.attachment_table = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    self.attachment_table = [[TasksTable alloc] initWithFrame:NSZeroRect];
     NSScrollView *scroll = list_scroll(self.attachment_table, self);
 
     self.attachment_table.target       = self;
