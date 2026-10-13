@@ -468,16 +468,14 @@ on_probe(TaskApp *app, const task_health_probe_t *probe, void *data)
  * Inputs:
  *   app     — the application context (unused)
  *   ok      — whether the pass succeeded
- *   message — its one-line outcome (borrowed); NULL from a pass that found
- *             nothing new to copy
+ *   message — its one-line outcome (borrowed)
  *   data    — unused
  */
 static void
 on_backup_done(TaskApp *app, gboolean ok, const gchar *message, gpointer data)
 {
     NSString *text = message != NULL ? tasks_string(message)
-                   : ok              ? @"Nothing has changed since the last backup"
-                                     : @"Backup failed";
+                   : ok              ? @"Backed up" : @"Backup failed";
 
     [settings_window show_backup_status:text];
 }
@@ -656,20 +654,20 @@ schedule_row
     self.interval_stepper = number_stepper(0, backup_interval_max, backup_interval_step,
                                            self, @selector(interval_changed:));
     self.keep_field       = number_field(keep_field_w, self, @selector(keep_changed:));
-    self.keep_stepper     = number_stepper(TASK_BACKUP_KEEP_MIN, TASK_BACKUP_KEEP_MAX, 1,
+    self.keep_stepper     = number_stepper(SHARED_BACKUP_KEEP_MIN, SHARED_BACKUP_KEEP_MAX, 1,
                                            self, @selector(keep_changed:));
 
     self.interval_field.toolTip =
-        @"Minutes between backups. 0 backs up only when you press Back Up Now. A pass whose "
-        @"database has not changed since the last backup writes nothing.";
+        @"Minutes between backups. 0 backs up only when you press Back Up Now. Notes "
+        @"and Tasks share this setting, and whichever is running makes the backup.";
     self.keep_field.toolTip =
         @"How many backup files to retain. The oldest are removed once a new backup has been "
         @"verified, never before.";
 
-    [self show_number:task_config_get_int(TASK_CFG_BACKUP_INTERVAL_MIN)
+    [self show_number:(NSInteger)task_backup_setting(self.app, SHARED_SETTING_BACKUP_INTERVAL_MIN)
                 field:self.interval_field
               stepper:self.interval_stepper];
-    [self show_number:task_config_get_int(TASK_CFG_BACKUP_KEEP)
+    [self show_number:(NSInteger)task_backup_setting(self.app, SHARED_SETTING_BACKUP_KEEP)
                 field:self.keep_field
               stepper:self.keep_stepper];
 
@@ -704,9 +702,10 @@ backup_rows
                                            target:self
                                            action:@selector(toggle_backup:)];
     self.backup_box.toolTip =
-        @"Writes a verified copy of the database into a folder of your choice on a timer, "
-        @"keeping only the most recent few. Worth pointing at a disk independent of wherever "
-        @"the database itself lives, so one mishap cannot take both.";
+        @"Writes a verified copy of the database Notes and Tasks share into a folder of your "
+        @"choice on a timer, keeping only the most recent few. Both apps follow these "
+        @"settings. Worth pointing at a disk independent of wherever the database itself "
+        @"lives, so one mishap cannot take both.";
 
     self.folder_label  = wrapping_label(dim, text_w);
     self.fate_label    = wrapping_label(dim, text_w);
@@ -1450,17 +1449,16 @@ show_number:(NSInteger)value field:(NSTextField *)field stepper:(NSStepper *)ste
  * leaves usable, and where the copies land.
  *
  * The folder line names the RESOLVED folder in every case, from the same
- * call the backup pass uses, so the line cannot promise a folder the
- * copies do not go to.  A folder that is, or is inside, the database's own
+ * call every backup pass asks first (task_backup_dir), so the line cannot
+ * promise a folder the copies do not go to — and when that call refuses,
+ * the line says why.  A folder that is, or is inside, the database's own
  * gets the warning: those copies are real backups but cannot survive
- * losing that folder — and it is the default, so saying nothing would let
- * the arrangement most in need of changing look like the one nobody need
- * think about.
+ * losing that folder.
  */
 - (void)
 refresh_backup
 {
-    BOOL on = task_config_get_bool(TASK_CFG_BACKUP_ENABLED);
+    BOOL on = task_backup_setting(self.app, SHARED_SETTING_BACKUP_ENABLED) != 0;
 
     self.backup_box.state         = on ? NSControlStateValueOn : NSControlStateValueOff;
     self.interval_field.enabled   = on;
@@ -1470,18 +1468,23 @@ refresh_backup
     self.choose_button.enabled    = on;
     self.backup_button.enabled    = on;
 
-    gchar    *dir    = task_backup_dir();
-    NSString *db_dir = [tasks_string(shared_db_file(self.app->db->shared)) stringByDeletingLastPathComponent];
-    self.folder_label.stringValue =
-        [NSString stringWithFormat:@"Backing up to %@", tasks_string(dir)];
-    self.fate_label.hidden = !task_path_shares_fate(dir, db_dir.fileSystemRepresentation);
-    g_free(dir);
+    char     *why    = NULL;
+    char     *dir    = task_backup_dir(self.app, &why);
+    NSString *db_dir = [tasks_string(shared_db_file(self.app->db->shared))
+                        stringByDeletingLastPathComponent];
+    self.folder_label.stringValue = dir != NULL
+        ? [NSString stringWithFormat:@"Backing up to %@", tasks_string(dir)]
+        : tasks_string(why);
+    self.fate_label.hidden = dir == NULL ||
+                             !task_path_shares_fate(dir, db_dir.fileSystemRepresentation);
+    free(dir);
+    free(why);
 }
 
 /*
- * toggle_backup: — the master switch: write it and re-arm the timer.  No
+ * toggle_backup: — the master switch: write it to the shared policy.  No
  * folder is asked for: the backup has a default destination, so switching
- * this on always does something.
+ * this on always does something; the poll picks the change up by itself.
  *
  * Inputs:
  *   sender — the checkbox
@@ -1489,14 +1492,14 @@ refresh_backup
 - (void)
 toggle_backup:(NSButton *)sender
 {
-    task_config_set_bool(TASK_CFG_BACKUP_ENABLED, sender.state == NSControlStateValueOn);
-    task_backup_auto_start(self.app, shared_db_file(self.app->db->shared));
+    task_backup_set_setting(self.app, SHARED_SETTING_BACKUP_ENABLED,
+                            sender.state == NSControlStateValueOn);
     [self refresh_backup];
 }
 
 /*
  * interval_changed: — the interval's field or stepper changed: write the
- * cadence and re-arm the timer with it.
+ * cadence to the shared policy, which the next poll applies.
  *
  * Inputs:
  *   sender — the field or the stepper
@@ -1508,18 +1511,15 @@ interval_changed:(NSControl *)sender
                                     field:self.interval_field
                                   stepper:self.interval_stepper];
 
-    /* Leaving the field without changing it also lands here, and must not
-     * restart the wait for the next pass. */
-    if (minutes == task_config_get_int(TASK_CFG_BACKUP_INTERVAL_MIN)) return;
-    task_config_set_int(TASK_CFG_BACKUP_INTERVAL_MIN, (gint)minutes);
-    task_backup_auto_start(self.app, shared_db_file(self.app->db->shared));
+    /* Leaving the field without changing it also lands here, and need not
+     * write the database. */
+    if (minutes == task_backup_setting(self.app, SHARED_SETTING_BACKUP_INTERVAL_MIN)) return;
+    task_backup_set_setting(self.app, SHARED_SETTING_BACKUP_INTERVAL_MIN, minutes);
 }
 
 /*
- * keep_changed: — the retention field or stepper changed: write the bound.
- * The timer is NOT re-armed: the cadence has not moved, re-arming would
- * restart the wait for the next pass, and the bound is read afresh at the
- * start of every pass.
+ * keep_changed: — the retention field or stepper changed: write the bound
+ * to the shared policy; the module reads it at every backup.
  *
  * Inputs:
  *   sender — the field or the stepper
@@ -1531,7 +1531,8 @@ keep_changed:(NSControl *)sender
                                  field:self.keep_field
                                stepper:self.keep_stepper];
 
-    task_config_set_int(TASK_CFG_BACKUP_KEEP, (gint)keep);
+    if (keep == task_backup_setting(self.app, SHARED_SETTING_BACKUP_KEEP)) return;
+    task_backup_set_setting(self.app, SHARED_SETTING_BACKUP_KEEP, keep);
 }
 
 /*
@@ -1546,7 +1547,8 @@ keep_changed:(NSControl *)sender
 - (void)
 choose_folder:(id)sender
 {
-    gchar *current = task_backup_dir();
+    char *why     = NULL;
+    char *current = task_backup_dir(self.app, &why);
     __weak TasksSettingsWindow *ws = self;
 
     tasks_ui_pick_path(self.window, TasksPickFolder, @"Choose Backup Folder", @"Select", nil,
@@ -1555,13 +1557,14 @@ choose_folder:(id)sender
         if (!s || s.is_shut_down || !path) return;   /* closed meanwhile, or cancelled */
         [s use_backup_folder:path];
     });
-    g_free(current);
+    free(current);
+    free(why);
 }
 
 /*
  * use_backup_folder: — make a chosen folder the backup destination, if the
- * core will use it.  task_backup_ready is the judge: a folder it refuses —
- * one inside the live Tasks data directory above all, which this build
+ * core will use it.  task_backup_set_dir is the judge: a folder it refuses
+ * — one inside the live Tasks data directory above all, which this app
  * never touches — is not kept, and its reason is shown as given.
  *
  * Inputs:
@@ -1570,21 +1573,16 @@ choose_folder:(id)sender
 - (void)
 use_backup_folder:(NSString *)path
 {
-    gchar *previous = task_config_get(TASK_CFG_BACKUP_DIR);
-    gchar *reason   = NULL;
+    char *reason = NULL;
 
-    task_config_set(TASK_CFG_BACKUP_DIR, path.fileSystemRepresentation);
-    if (task_backup_ready(&reason)) {
-        task_backup_auto_start(self.app, shared_db_file(self.app->db->shared));
+    if (task_backup_set_dir(self.app, path.fileSystemRepresentation, &reason)) {
         [self refresh_backup];
         [self fit_window];
     } else {
-        task_config_set(TASK_CFG_BACKUP_DIR, previous);
         tasks_ui_notice(self.window, @"Backups cannot go to that folder",
                         tasks_string(reason), nil);
     }
-    g_free(reason);
-    g_free(previous);
+    free(reason);
 }
 
 /*
@@ -1606,7 +1604,7 @@ back_up_now:(id)sender
         return;
     }
     [self show_backup_status:@"Backing up…"];
-    task_backup_start(self.app, shared_db_file(self.app->db->shared), on_backup_done, NULL);
+    task_backup_start(self.app, on_backup_done, NULL);
 }
 
 /*

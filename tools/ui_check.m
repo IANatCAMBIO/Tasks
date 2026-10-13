@@ -1890,13 +1890,13 @@ check_settings(TaskApp *app, NSString *dir)
     NSString      *live    = [xdg stringByAppendingPathComponent:@"tasks"];
     __weak NSWindow *weak_window = nil;
 
-    /* The app delegate's job in the app: Settings re-arms the backup's
-     * timer, which has to be registered first.  The backup settings start
-     * from their defaults (off, default folder) whatever an earlier run
-     * left in the sandbox, and are put back to them at the end. */
-    task_backup_init(app);
-    task_config_set(TASK_CFG_BACKUP_ENABLED, NULL);
-    task_config_set(TASK_CFG_BACKUP_DIR, NULL);
+    /* The backup policy is the shared database's (backup.h).  It starts
+     * switched off here, in the folder the seed chose (beside the sandbox
+     * database), whatever an earlier run left, and is put back at the end. */
+    gint64 was_enabled = task_backup_setting(app, SHARED_SETTING_BACKUP_ENABLED);
+    char  *seeded_dir  = NULL;
+    shared_settings_get(app->db->shared, SHARED_SETTING_BACKUP_DIR, &seeded_dir, NULL);
+    task_backup_set_setting(app, SHARED_SETTING_BACKUP_ENABLED, 0);
 
     [files createDirectoryAtPath:backups withIntermediateDirectories:YES attributes:nil error:NULL];
     [files createDirectoryAtPath:live withIntermediateDirectories:YES attributes:nil error:NULL];
@@ -1968,22 +1968,23 @@ check_settings(TaskApp *app, NSString *dir)
               "settings: ... and the plate says so");
 
         /* Backups: the switch, then a number held to its range. */
-        gint interval = task_config_get_int(TASK_CFG_BACKUP_INTERVAL_MIN);
+        gint64 interval = task_backup_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN);
         [button(@"Back up the database automatically") performClick:nil];
-        check(task_config_get_bool(TASK_CFG_BACKUP_ENABLED) && button(@"Back Up Now").enabled,
-              "settings: the backup switch writes its setting and wakes the controls");
+        check(task_backup_setting(app, SHARED_SETTING_BACKUP_ENABLED) == 1 &&
+              button(@"Back Up Now").enabled,
+              "settings: the backup switch writes the shared setting and wakes the controls");
         check(label(@"⚠ alongside the database") != nil,
-              "settings: the default backup folder is flagged as alongside the database");
+              "settings: a backup folder beside the database is flagged as such");
 
         NSTextField *interval_field = (NSTextField *)find(^BOOL(NSView *view) {
             return [view isKindOfClass:NSTextField.class] && ((NSTextField *)view).editable;
         });
         interval_field.stringValue = @"99999";
         [interval_field sendAction:interval_field.action to:interval_field.target];
-        check(task_config_get_int(TASK_CFG_BACKUP_INTERVAL_MIN) == 10080 &&
+        check(task_backup_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN) == 10080 &&
               interval_field.integerValue == 10080,
               "settings: a typed interval is held to its range and written");
-        interval_field.integerValue = interval;
+        interval_field.integerValue = (NSInteger)interval;
         [interval_field sendAction:interval_field.action to:interval_field.target];
 
         /* A folder the core refuses is not kept, and the refusal is shown.
@@ -1993,10 +1994,11 @@ check_settings(TaskApp *app, NSString *dir)
         setenv("XDG_DATA_HOME", xdg.fileSystemRepresentation, 1);
         [NSApp sendAction:use_folder to:window.delegate from:live];
         check_spin(0.3);
-        gchar *kept = task_config_get(TASK_CFG_BACKUP_DIR);
-        check(kept == NULL && window.attachedSheet != nil,
+        char *kept = NULL;
+        shared_settings_get(app->db->shared, SHARED_SETTING_BACKUP_DIR, &kept, NULL);
+        check(g_strcmp0(kept, seeded_dir) == 0 && window.attachedSheet != nil,
               "settings: a backup folder inside live data is refused with a notice, not kept");
-        g_free(kept);
+        free(kept);
         if (window.attachedSheet) [window endSheet:window.attachedSheet];
         check_spin(0.3);
         unsetenv("XDG_DATA_HOME");
@@ -2006,25 +2008,31 @@ check_settings(TaskApp *app, NSString *dir)
         check(label([@"Backing up to " stringByAppendingString:backups]) != nil &&
               label(@"⚠ alongside the database") == nil,
               "settings: a folder away from the database is used, without the warning");
+        NSPredicate *named = [NSPredicate predicateWithFormat:@"SELF BEGINSWITH %@",
+                              @SHARED_DB_BACKUP_PREFIX];
         [button(@"Back Up Now") performClick:nil];
         for (int i = 0; i < 100 && label(@"Backed up to") == nil; i++) check_spin(0.05);
-        /* The folder also holds the backup's hidden source stamp (backup.c). */
         NSArray<NSString *> *made = [[files contentsOfDirectoryAtPath:backups error:NULL]
-            filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'tasks-'"]];
+            filteredArrayUsingPredicate:named];
         check(label(@"Backed up to") != nil && made.count == 1,
-              "settings: Back Up Now writes one backup there and reports it");
+              "settings: Back Up Now writes one backup there through the shared module");
         [button(@"Back Up Now") performClick:nil];
-        for (int i = 0; i < 100 && label(@"Nothing has changed") == nil; i++) check_spin(0.05);
-        check(label(@"Nothing has changed") != nil &&
-              [[files contentsOfDirectoryAtPath:backups error:NULL]
-                  filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'tasks-'"]].count == 1,
-              "settings: Back Up Now again says nothing has changed, and writes nothing");
+        for (int i = 0; i < 100 && [[files contentsOfDirectoryAtPath:backups error:NULL]
+                                        filteredArrayUsingPredicate:named].count < 2; i++) {
+            check_spin(0.05);
+        }
+        check_spin(0.2);
+        check([[files contentsOfDirectoryAtPath:backups error:NULL]
+                  filteredArrayUsingPredicate:named].count == 2 && !app->backup_running,
+              "settings: Back Up Now again makes a second, new backup");
         check(snapshot(window, dir, @"settings-backups"), "settings: snapshot, backups on");
 
         /* Put the settings back, then close with a probe still in flight. */
-        task_config_set(TASK_CFG_BACKUP_DIR, NULL);
+        shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_DIR, seeded_dir, NULL);
         [button(@"Back up the database automatically") performClick:nil];
-        check(!task_config_get_bool(TASK_CFG_BACKUP_ENABLED), "settings: (backups off again)");
+        check(task_backup_setting(app, SHARED_SETTING_BACKUP_ENABLED) == 0,
+              "settings: (backups off again)");
+        task_backup_set_setting(app, SHARED_SETTING_BACKUP_ENABLED, was_enabled);
         [button(@"Update") performClick:nil];
         [window close];
     }
@@ -2032,6 +2040,7 @@ check_settings(TaskApp *app, NSString *dir)
     check(weak_window == nil, "settings: a window closed during a check is released");
     [files removeItemAtPath:backups error:NULL];
     [files removeItemAtPath:xdg error:NULL];
+    free(seeded_dir);
 }
 
 

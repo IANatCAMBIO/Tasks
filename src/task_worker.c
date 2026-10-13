@@ -83,7 +83,8 @@ tick_cb(void *data)
 }
 
 /*
- * interval_minutes — the worker's period from config.
+ * interval_minutes — the worker's period: from config, or its fixed
+ * period_min when it has no interval key.
  *
  * A negative value from a hand-edited ini folds to 0 (manual only) rather
  * than through to the arming arithmetic.
@@ -98,7 +99,7 @@ static gint
 interval_minutes(const TaskWorkerDef *def)
 {
     if (def->interval_key == NULL)
-        return 0;
+        return def->period_min > 0 ? def->period_min : 0;
     gint minutes = task_config_get_int(def->interval_key);
     return minutes < 0 ? 0 : minutes;
 }

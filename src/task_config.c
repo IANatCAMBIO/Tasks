@@ -14,9 +14,6 @@ static const struct {
     const gchar *key;
     const gchar *value;
 } config_defaults[] = {
-    { TASK_CFG_BACKUP_ENABLED,      "0"   },
-    { TASK_CFG_BACKUP_INTERVAL_MIN, "60"  },
-    { TASK_CFG_BACKUP_KEEP,         "10"  },
     { TASK_CFG_BOLD_TITLES,         "0"   },
     { TASK_CFG_KANBAN_SHADOW,       "1"   },
     { TASK_CFG_FORECAST_BUSINESS_DAYS, "1" },

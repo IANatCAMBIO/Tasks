@@ -9,8 +9,9 @@
  * (task_config.h) and there is no OK or Apply.  A setting that changes
  * what the task pane shows is followed by task_app_notify_tasks, and the
  * panes re-read their settings on every refresh — so Settings never needs
- * to reach into another window.  A change to the backup settings is
- * followed by task_backup_auto_start to re-arm the timer.
+ * to reach into another window.  The backup settings are the shared
+ * database's (backup.h), which Notes follows too; the periodic poll reads
+ * them afresh every time, so nothing needs re-arming.
  *
  * The module owns its one window: created on first open, released when it
  * closes.

@@ -1,49 +1,35 @@
 /* ===========================================================================
- * backup.h — optional rotating database backups for Tasks
+ * backup.h — backups of the shared database, through the shared module
  *
- * OFF by default.  Enabled in Settings → Database, where the user may
- * also pick a destination directory — and when they have not, backups go
- * to a `backups/` folder inside the app's data directory (task_paths.h).
- * Switching the feature on therefore always does something; there is no
- * enabled-but-inert state to fall into.
+ * The copy, its verification, the retention and the schedule all belong to
+ * the shared module (shared_db.h: shared_db_backup, shared_db_backup_if_due)
+ * and its policy lives IN the database, in shared_settings, so one policy
+ * serves Notes and Tasks: whichever app is running makes the backup when it
+ * is due, and it is made once.  The keys are SHARED_SETTING_BACKUP_*:
  *
- * The reason to choose a folder anyway: the point of the feature is a copy
- * somewhere INDEPENDENT of wherever the live file lives, so one mishap
- * cannot take both.  That matters here because the live database routinely
- * sits in a sync folder (iCloud Drive), and a sync daemon can replace or
- * re-generate a file underneath an open SQLite connection.  The default
- * is off in the home directory, which is already independent of a synced
- * database — but it is the SAME folder when the database itself is at its
- * default location, and Settings says so rather than implying otherwise.
+ *   backup_enabled       1|0, default SHARED_BACKUP_ENABLED_DEFAULT.
+ *   backup_dir           destination folder; unset = the module's default
+ *                        (~/Library/Application Support/camb.io/backups).
+ *   backup_interval_min  minutes between backups, default
+ *                        SHARED_BACKUP_INTERVAL_MIN_DEFAULT; 0 = only when
+ *                        "Back Up Now" is pressed.
+ *   backup_keep          files retained, SHARED_BACKUP_KEEP_MIN..MAX.
+ *   backup_last_at       when the last backup was made (the module's).
+ *   backup_last_error    why the last one failed (the module's).
  *
- * Each pass writes "tasks-YYYYMMDD-HHMMSS.db" into that directory and
- * then prunes the oldest, keeping at most `backup_keep` files — bounded
- * by design, so an hourly timer cannot fill a disk.  A pass whose source
- * has not changed since the last backup does nothing at all, so an idle
- * app writes nothing.
+ * What this module adds is Tasks' part: the background thread (with its
+ * OWN connection — a connection never crosses threads — so a slow
+ * destination never blocks the UI), the periodic poll registered with the
+ * shared scheduler (task_worker.h), and two refusals the module cannot
+ * know about:
+ *   - a destination inside the GTK app's live data directory
+ *     (task_paths.h);
+ *   - the module's DEFAULT destination while $CAMBIO_SHARED_DB names the
+ *     database: that is a development or test sandbox, whose backups must
+ *     never land in the per-user folder.  Such a run must set backup_dir
+ *     (`make seed` does).
  *
- * Safety rules this module will not bend:
- *   - the copy is VACUUM INTO (task_db_copy_file), never a byte copy: it
- *     runs in a read transaction and so cannot capture a torn page;
- *   - every new backup is VERIFIED (task_db_verify_file) before it counts,
- *     and a copy that fails verification is removed rather than left to
- *     be mistaken for a good one;
- *   - PRUNING HAPPENS ONLY AFTER a new backup has verified, so a failing
- *     backup can never erode the history that is already there.
- *
- * Threading: a background job (task_loop_background) with its OWN SQLite
- * connection (a connection never crosses threads), so a slow or
- * unreachable destination — a network mount, a sleeping external disk —
- * never blocks the UI.  Completion is handed back to the main thread with
- * task_loop_main_async.
- *
- * Config keys (all in the [tasks] group):
- *   backup_enabled       1|0, default 0 — the master switch.
- *   backup_dir           destination directory; absent = backups/ in the
- *                        data directory.
- *   backup_interval_min  minutes between passes, default 60; 0 = only
- *                        when "Back Up Now" is pressed.
- *   backup_keep          how many files to retain, default 10.
+ * MAIN THREAD ONLY, apart from the pass's own thread.
  * =========================================================================== */
 
 #ifndef TASK_BACKUP_H
@@ -51,72 +37,92 @@
 
 #include "task_app.h"
 
-/* The retention bound's limits.  The defaults of both settings live in the
- * config registry (task_config.h), which is what the Settings window and
- * the timer both read, so they cannot disagree about what "unset" means.   */
-#define TASK_BACKUP_KEEP_MIN 1
-#define TASK_BACKUP_KEEP_MAX 500
+/* How often the periodic worker asks the module whether a backup is due,
+ * in minutes.  The module answers from the policy above, so a change in
+ * Settings takes effect at the next poll without re-arming anything.     */
+#define TASK_BACKUP_POLL_MIN 1
 
 /* Completion callback; runs on the main thread.  `message` is a short
- * human-readable summary or error (not owned by the callee).               */
+ * human-readable outcome (not owned by the callee).                        */
 typedef void (*TaskBackupDoneFn)(TaskApp *app, gboolean ok, const gchar *message,
                                  gpointer user_data);
 
 /* ---------------------------------------------------------------------------
- * task_backup_dir() — where backups actually go: `backup_dir` when it names
- * something, otherwise a `backups/` folder inside the data directory,
- * CREATED if missing so the fallback is always usable.  That default is
- * TIDY, not independent: it shares the fate of the folder holding the
- * database, and Settings says so.
+ * task_backup_setting() — one integer of the backup policy, read from
+ * shared_settings on the app's connection, with the module's default when
+ * it is unset (and backup_keep held to SHARED_BACKUP_KEEP_MIN..MAX).
  *
- * Returns a new string (g_free), or NULL only when no data directory can
- * be determined (task_config_init would already have failed).  This is the
- * single answer
- * to "where?" — Settings displays it and the worker writes to it, so the
- * label can never disagree with the behavior.
+ * Inputs:
+ *   app — the application context, its database open
+ *   key — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN, _KEEP or _LAST_AT
+ *
+ * Output:
+ *   the value; the default (0 for LAST_AT) when unset or unreadable.
  * ------------------------------------------------------------------------- */
-gchar *task_backup_dir(void);
+gint64 task_backup_setting(TaskApp *app, const gchar *key);
 
 /* ---------------------------------------------------------------------------
- * task_backup_ready() — is the feature usable right now?
+ * task_backup_set_setting() — write one integer of the backup policy to
+ * shared_settings (a failure is logged).  Both apps read it from there.
  *
- * Returns TRUE when backups are enabled and task_backup_dir() is a writable
- * directory outside the GTK app's live data directory (task_paths.h — a
- * backup pass prunes old files, so it must never be pointed there).  On
- * FALSE, *reason (optional; g_free) says which of those failed, in words
- * fit for a status bar or a dialog.  Callers use it to
- * explain themselves rather than failing silently.
+ * Inputs:
+ *   app   — the application context, its database open
+ *   key   — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN or _KEEP
+ *   value — the new value
  * ------------------------------------------------------------------------- */
-gboolean task_backup_ready(gchar **reason);
+void task_backup_set_setting(TaskApp *app, const gchar *key, gint64 value);
 
 /* ---------------------------------------------------------------------------
- * task_backup_start() — run one backup pass on a worker thread.
+ * task_backup_dir() — where backups go: shared_db_backup_dir (the
+ * backup_dir setting, else the module's default; created when missing),
+ * unless that is refused — a folder inside the GTK app's live data, or the
+ * default while $CAMBIO_SHARED_DB is set (see above).
  *
- * Early-outs, each with a status message: disabled or misconfigured (see
- * task_backup_ready), and "already running" (which does not fire `done`).
- * A pass whose source is unchanged since the last backup reports that and
- * writes nothing.  `done` may be NULL.  Main thread only.
+ * The single answer to "where?": Settings displays it and every pass asks
+ * it first, so the label cannot disagree with the behaviour.
+ *
+ * Inputs:
+ *   app — the application context, its database open
+ *   why — receives the reason when the answer is NULL (free it)
+ *
+ * Output:
+ *   the folder (free it), or NULL with *why set.
  * ------------------------------------------------------------------------- */
-void task_backup_start(TaskApp *app, const gchar *db_path,
-                       TaskBackupDoneFn done, gpointer user_data);
+char *task_backup_dir(TaskApp *app, char **why);
 
 /* ---------------------------------------------------------------------------
- * task_backup_auto_start() — (re)install the periodic timer from
- * `backup_interval_min`, or remove it when backups are off.  Safe to call
- * again whenever the settings change; must be called again whenever the
- * app opens a different database, since the timer carries the path —
- * task_worker_arm_all is what does that.
+ * task_backup_set_dir() — make `dir` the backup destination, if it can be:
+ * an absolute path to a writable folder, outside the live data.  A folder
+ * that is refused is not stored.
  *
- * Unlike the sync timers this does NOT run an immediate pass: an app that
- * has just started has nothing new to preserve, and a backup on every
- * launch would churn the rotation for anyone who opens the app often.
+ * Inputs:
+ *   app — the application context, its database open
+ *   dir — the folder chosen
+ *   why — receives the reason on refusal (free it), otherwise NULL
+ *
+ * Output:
+ *   TRUE when it is now the destination.
  * ------------------------------------------------------------------------- */
-void task_backup_auto_start(TaskApp *app, const gchar *db_path);
+gboolean task_backup_set_dir(TaskApp *app, const gchar *dir, char **why);
 
 /* ---------------------------------------------------------------------------
- * task_backup_init() — register the backup's periodic worker with the
- * shared scheduler (see task_worker.h).  Call ONCE from main(), before
- * any thread exists.
+ * task_backup_start() — "Back Up Now": one backup on a worker thread,
+ * regardless of the schedule (shared_db_backup).  Refused, with `done`
+ * called at once and the reason posted as a status message, when
+ * task_backup_dir refuses; ignored (no callback) when a pass is already in
+ * flight.  `done` may be NULL.  The outcome is also posted as a status
+ * message.
+ * ------------------------------------------------------------------------- */
+void task_backup_start(TaskApp *app, TaskBackupDoneFn done, gpointer user_data);
+
+/* ---------------------------------------------------------------------------
+ * task_backup_init() — register the periodic worker with the shared
+ * scheduler (task_worker.h): every TASK_BACKUP_POLL_MIN minutes, and once
+ * when armed, a worker thread runs shared_db_backup_if_due, which makes a
+ * backup only when the shared policy says one is due and claims it so that
+ * a second app polling at once does not make another.  A poll that finds
+ * nothing due says nothing; one that backs up or fails posts a status
+ * message.  Call ONCE from main(), before any thread exists.
  * ------------------------------------------------------------------------- */
 void task_backup_init(TaskApp *app);
 

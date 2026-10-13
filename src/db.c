@@ -415,27 +415,6 @@ task_db_health(TaskDatabase *db)
     return db->health.when != 0 ? &db->health : NULL;
 }
 
-/* task_db_copy_file() — a transactionally consistent copy (see db.h).      */
-gboolean
-task_db_copy_file(TaskDatabase *db, const gchar *dest, gchar **err)
-{
-    if (err != NULL)
-        *err = NULL;
-    if (task_path_is_live_data(dest)) {
-        if (err != NULL)
-            *err = g_strdup_printf(LIVE_DATA_REFUSAL, dest);
-        return FALSE;
-    }
-    gchar *q   = sqlite3_mprintf("VACUUM INTO %Q", dest);
-    gchar *msg = NULL;
-    gboolean ok = (sqlite3_exec(shared_db_handle(db->shared), q, NULL, NULL, &msg) == SQLITE_OK);
-    if (!ok && err != NULL)
-        *err = g_strdup(msg != NULL ? msg : "?");
-    sqlite3_free(msg);
-    sqlite3_free(q);
-    return ok;
-}
-
 /* ---------------------------------------------------------------------------
  * task_db_open() — open a connection to the shared file (see db.h).  The
  * schema, the stamps, the refusal of any other file, WAL and the pragmas

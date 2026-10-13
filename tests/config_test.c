@@ -284,16 +284,6 @@ test_fence_enforced(const char *scratch)
     g_free(detail);
     check(task_db_file_sha256(target) == NULL, "enforced: task_db_file_sha256 refuses it");
 
-    snprintf(path, sizeof path, "%s/good.db", clean);
-    TaskDatabase *db = task_db_open(path, NULL);
-    check(db != NULL, "enforced: (opened a sandbox database)");
-    snprintf(path, sizeof path, "%s/copy-from-fork.db", live);
-    gchar *cerr = NULL;
-    check(!task_db_copy_file(db, path, &cerr) && cerr != NULL,
-          "enforced: task_db_copy_file refuses a destination in the live directory");
-    g_free(cerr);
-    check(!exists(path), "enforced: ... and wrote nothing there");
-    task_db_close(db);
 
     /* The stand-in live files are exactly as they were made. */
     char  seen[32] = "";
@@ -348,8 +338,8 @@ test_config(const char *scratch)
     check(!task_config_get_bool(TASK_CFG_COMPACT), "config: compact_layout defaults off");
     check(task_config_get_bool(TASK_CFG_KANBAN_SHADOW), "config: kanban_shadow defaults on");
     check(!task_config_get_bool(TASK_CFG_COL_STATUS), "config: the Status column defaults hidden");
-    check(task_config_get_int(TASK_CFG_BACKUP_INTERVAL_MIN) == 60,
-          "config: backup interval defaults to 60");
+    check(task_config_get_int(TASK_CFG_GCAL_INTERVAL_MIN) == 5,
+          "config: the calendar sync interval defaults to 5");
     check(task_config_get_int(TASK_CFG_WIN_W) == 980 &&
           task_config_get_int(TASK_CFG_WIN_H) == 640,
           "config: window size defaults to 980 x 640");

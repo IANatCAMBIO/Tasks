@@ -31,11 +31,8 @@
  * Every fixed key, with its type and default.  "bool" is "1"/"0".  A key
  * with no default reads as NULL / FALSE / 0 until it is written. */
 
-/* Database backups */
-#define TASK_CFG_BACKUP_ENABLED      "backup_enabled"      /* bool, 0 */
-#define TASK_CFG_BACKUP_DIR          "backup_dir"          /* dir; none = <data dir>/backups */
-#define TASK_CFG_BACKUP_INTERVAL_MIN "backup_interval_min" /* int minutes, 60; 0 = manual only */
-#define TASK_CFG_BACKUP_KEEP         "backup_keep"         /* int files, 10 (clamped 1-500) */
+/* The backup policy is not here: it lives in the shared database's
+ * shared_settings (backup.h), one policy for Notes and Tasks. */
 
 /* Appearance (Settings window) */
 #define TASK_CFG_BOLD_TITLES         "bold_task_titles"        /* bool, 0 */

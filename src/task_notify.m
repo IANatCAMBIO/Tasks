@@ -257,6 +257,7 @@ static const TaskWorkerDef notif_worker = {
     0,                              /* sort         */
     NULL,                           /* enabled_key  (always on) */
     TASK_CFG_NOTIF_CHECK_MIN,       /* interval_key */
+    0,                              /* period_min   (the key gives it) */
     TASK_WORKER_INITIAL_ARMED,      /* initial      */
     NULL,                           /* running      */
     &notif_timer_id,                /* timer        */

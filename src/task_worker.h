@@ -65,7 +65,10 @@ typedef enum {
  *                      registry's); NULL means always enabled.
  *   interval_key     — config key holding the period in MINUTES (default
  *                      from the registry); <= 0 means "no timer" (manual
- *                      only).  NULL means the worker has no period.
+ *                      only).  NULL means the period is period_min.
+ *   period_min       — a FIXED period in minutes, for a worker whose
+ *                      cadence is not a setting (the backup's poll); used
+ *                      only when interval_key is NULL.  0 = no timer.
  *   initial          — see above.
  *   running          — the subsystem's own in-flight flag, so a tick that
  *                      lands on a still-running pass is skipped.  Every
@@ -81,6 +84,7 @@ typedef struct {
     gint              sort;
     const gchar      *enabled_key;
     const gchar      *interval_key;
+    gint              period_min;
     TaskWorkerInitial initial;
     gboolean         *running;
     guint            *timer;

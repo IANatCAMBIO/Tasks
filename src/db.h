@@ -244,8 +244,8 @@ void task_free(Task *t);
  * the handle, or NULL with `err` set to the module's own words.
  *
  * A path inside the GTK app's live data directory (task_paths.h) is
- * REFUSED, as it is by task_db_verify_file, task_db_file_sha256 and
- * task_db_copy_file: this app never reads or writes there.
+ * REFUSED, as it is by task_db_verify_file and task_db_file_sha256: this
+ * app never reads or writes there.
  * ------------------------------------------------------------------------- */
 TaskDatabase *task_db_open(const gchar *path, GError **err);
 
@@ -334,18 +334,6 @@ void task_db_health_record(TaskDatabase *db, TaskDbHealth *verdict);
  * comparable with `shasum -a 256` or with a backup.
  * ------------------------------------------------------------------------- */
 gchar *task_db_file_sha256(const gchar *path);
-
-/* ---------------------------------------------------------------------------
- * task_db_copy_file() — a CONSISTENT copy of the open database at `dest`,
- * made with VACUUM INTO rather than a byte copy: it runs inside a read
- * transaction, so it cannot capture a torn page, and it cannot be
- * confused by a sync daemon rewriting the source mid-read.
- *
- * `dest` must not already exist (VACUUM INTO refuses to overwrite) — the
- * caller removes it first if that is what it means to do.  Returns TRUE
- * on success; on failure *err (optional, g_free) gets sqlite's message.
- * ------------------------------------------------------------------------- */
-gboolean task_db_copy_file(TaskDatabase *db, const gchar *dest, gchar **err);
 
 /* --------------------------------- lists --------------------------------- */
 
