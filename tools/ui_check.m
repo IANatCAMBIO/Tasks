@@ -1421,6 +1421,9 @@ check_lists_bar(TaskApp *app, NSString *dir)
         check(all_shown && [lit() isEqualToString:items_label],
               "lists bar: selecting Action Items lists every Notes-born task");
         check(snapshot(window, dir, @"lists-bar-action-items"), "lists bar: snapshot, Action Items");
+        check(![library state_of_command:TasksCommandNewTask].enabled &&
+              [library state_of_command:TasksCommandQuickTask].enabled,
+              "lists bar: New Task is disabled in Action Items (only Notes fills it), Quick Task is not");
 
         for (guint i = 0; i < items->len; i++) {
             task_db_task_delete(app->db, ((const Task *)g_ptr_array_index(items, i))->id);
@@ -2026,7 +2029,7 @@ check_editor_window(TaskApp *app, NSString *dir)
             gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
             gint64 new_id  = task_db_task_create(app->db, list_id, 0, "cancel-test");
 
-            tasks_editor_open_new(app, new_id);
+            tasks_editor_open_new(app, new_id, false);
             check_spin(0.05);
             NSWindow *editor_win = nil;
             for (NSWindow *w in NSApp.windows) {
@@ -2089,6 +2092,64 @@ check_editor_window(TaskApp *app, NSString *dir)
             tasks_editor_close(id);
             check_spin(0.1);
             task_db_task_delete(app->db, id);
+        }
+        task_ptr_array_free_lists(lists);
+        [library close];
+    }
+
+    /* Quick Task: with one list selected, the task still goes to the
+     * default list, and its editor opens in the lower-right corner of the
+     * screen; Cancel takes the task away again.  With a VIEW selected, New
+     * Task also uses the default list. */
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        [library showWindow:nil];
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        if (lists->len > 1) {
+            gint64 selected = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+            gint64 fallback = ((const TaskList *)g_ptr_array_index(lists, 1))->id;
+            guint (^count_in)(gint64) = ^guint(gint64 list_id) {
+                GPtrArray *tasks = task_db_tasks_toplevel(app->db, list_id);
+                guint      n     = tasks->len;
+                task_ptr_array_free_tasks(tasks);
+                return n;
+            };
+            /* The New Task editor, which is the only window titled so. */
+            NSWindow *(^new_editor)(void) = ^NSWindow *(void) {
+                for (NSWindow *w in NSApp.windows) {
+                    if (w.visible && [w.title isEqualToString:@"New Task"]) return w;
+                }
+                return nil;
+            };
+            guint in_selected = count_in(selected), in_fallback = count_in(fallback);
+
+            [library select:(task_sel_t){ task_sel_list, selected }];
+            task_config_set_int(TASK_CFG_DEFAULT_LIST, (gint)fallback);
+            [library perform_command:TasksCommandQuickTask param:nil];
+            check_spin(0.1);
+            NSWindow *editor_win = new_editor();
+            check(count_in(fallback) == in_fallback + 1 && count_in(selected) == in_selected,
+                  "quick task: goes to the default list, not the selected one");
+            NSRect area = NSScreen.mainScreen.visibleFrame;
+            check(editor_win != nil &&
+                  fabs(NSMaxX(editor_win.frame) - (NSMaxX(area) - tasks_look_screen_margin)) < 1 &&
+                  fabs(NSMinY(editor_win.frame) - (NSMinY(area) + tasks_look_screen_margin)) < 1,
+                  "quick task: its editor opens in the screen's lower-right corner");
+            if (editor_win) send_escape(editor_win);
+            check_spin(0.2);
+            check(count_in(fallback) == in_fallback, "quick task: Cancel deletes the task");
+
+            [library select:task_sel_default()];
+            check([library state_of_command:TasksCommandNewTask].enabled,
+                  "new task: enabled in All Tasks");
+            [library perform_command:TasksCommandNewTask param:nil];
+            check_spin(0.1);
+            editor_win = new_editor();
+            check(count_in(fallback) == in_fallback + 1,
+                  "new task: with a view selected it goes to the default list");
+            if (editor_win) send_escape(editor_win);
+            check_spin(0.2);
+            task_config_set(TASK_CFG_DEFAULT_LIST, NULL);
         }
         task_ptr_array_free_lists(lists);
         [library close];

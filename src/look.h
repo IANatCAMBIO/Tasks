@@ -87,6 +87,12 @@ static const NSInteger tasks_look_done_cap       = 10;     /* Done lane shows th
 
 /* ── Editor and Settings windows ────────────────────────────────────── */
 
+static const CGFloat tasks_look_screen_margin    = 15.0;   /* a window placed in a
+                                                             * screen's lower-right
+                                                             * corner (reminders,
+                                                             * Quick Task), from the
+                                                             * work area's edges  */
+
 static const CGFloat tasks_look_editor_w         = 490.0;  /* height fits content */
 static const NSInteger tasks_look_editor_notes_lines = 8;
 static const CGFloat tasks_look_settings_w       = 470.0;

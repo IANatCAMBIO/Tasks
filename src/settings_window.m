@@ -2,6 +2,7 @@
 #import "look.h"
 #import "ui_util.h"
 #import "task_notify.h"
+#import "hotkey.h"
 
 #include "backup.h"
 #include "gcal_store.h"
@@ -9,6 +10,7 @@
 #include "oauth.h"
 #include "task_config.h"
 #include "task_health.h"
+#include "task_ops.h"
 #include "task_paths.h"
 
 #include <time.h>
@@ -334,7 +336,7 @@ isFlipped
 
 /* ── The window ─────────────────────────────────────────────────────── */
 
-@interface TasksSettingsWindow : NSWindowController <NSWindowDelegate>
+@interface TasksSettingsWindow : NSWindowController <NSWindowDelegate, NSMenuDelegate>
 @property (nonatomic, assign) TaskApp *app;              /* borrowed; outlives the window */
 @property (nonatomic, strong) NSScrollView *scroll;      /* the window's content          */
 @property (nonatomic, strong) NSStackView *form;         /* every row, top to bottom      */
@@ -376,6 +378,10 @@ isFlipped
 @property (nonatomic, strong) NSButton *backup_button;
 @property (nonatomic, strong) NSTextField *backup_status; /* the last Back Up Now's outcome;
                                                            * hidden until there is one    */
+
+/* New tasks. */
+@property (nonatomic, strong) NSPopUpButton *default_list_popup; /* None, then every list;
+                                                                  * rebuilt as it opens */
 
 /* Notifications. */
 @property (nonatomic, strong) NSButton *notif_tasks_btn;   /* radio: Tasks popup  */
@@ -742,6 +748,107 @@ backup_rows
     return @[section_label(@"Backups"), self.backup_box, [self schedule_row],
              self.folder_label, self.fate_label, self.last_label, self.error_label,
              button_row(@[self.choose_button, self.backup_button]), self.backup_status];
+}
+
+/*
+ * new_task_rows — the New Tasks section: the default list, and whether
+ * Quick Task's shortcut works from any app.
+ *
+ * Output:
+ *   the section's rows, heading first.
+ */
+- (NSArray<NSView *> *)
+new_task_rows
+{
+    self.default_list_popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    self.default_list_popup.target        = self;
+    self.default_list_popup.action        = @selector(default_list_changed:);
+    self.default_list_popup.menu.delegate = self;
+    self.default_list_popup.toolTip       =
+        @"New Task files its task here when a group or a view is selected; "
+        @"Quick Task always does.";
+    [self menuNeedsUpdate:self.default_list_popup.menu];
+
+    NSStackView *list_row = [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:@"Default list:"], self.default_list_popup]];
+    list_row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    list_row.alignment   = NSLayoutAttributeFirstBaseline;
+
+    NSButton *hotkey = [NSButton checkboxWithTitle:
+                            @"Quick Task (\u2303\u2325\u2318T) works from any app"
+                                            target:self
+                                            action:@selector(hotkey_toggled:)];
+    hotkey.state = task_config_get_bool(TASK_CFG_QUICK_TASK_HOTKEY) ? NSControlStateValueOn
+                                                                      : NSControlStateValueOff;
+
+    NSTextField *note = wrapping_label(NSColor.secondaryLabelColor, form_content_w());
+    note.stringValue =
+        @"New Task uses the default list when a group or a view is selected. Quick Task "
+        @"always uses it, and opens its editor in the lower-right corner of the screen.";
+
+    return @[section_label(@"New Tasks"), list_row, hotkey, note];
+}
+
+/*
+ * menuNeedsUpdate: — the default-list popup's menu is about to open (or is
+ * being built): fill it afresh from the database, so lists made, renamed
+ * or deleted while Settings is open are offered as they now are.  "None"
+ * leads; a default list that has gone shows as None.
+ *
+ * Inputs:
+ *   menu — the popup's menu
+ */
+- (void)
+menuNeedsUpdate:(NSMenu *)menu
+{
+    [menu removeAllItems];
+    NSMenuItem *none = [menu addItemWithTitle:@"None" action:NULL keyEquivalent:@""];
+    none.tag = 0;
+    [menu addItem:NSMenuItem.separatorItem];
+
+    GPtrArray *lists = task_db_lists(self.app->db, FALSE);
+    for (guint i = 0; i < lists->len; i++) {
+        const TaskList *list = g_ptr_array_index(lists, i);
+        NSMenuItem *item = [menu addItemWithTitle:tasks_list_title(list) action:NULL
+                                    keyEquivalent:@""];
+        item.tag = (NSInteger)list->id;
+    }
+    task_ptr_array_free_lists(lists);
+
+    [self.default_list_popup selectItemWithTag:(NSInteger)task_ops_default_list(self.app)];
+}
+
+/*
+ * default_list_changed: — a default list (or None) was chosen.
+ *
+ * Inputs:
+ *   sender — the popup; the chosen item's tag is the list id, 0 for None
+ */
+- (void)
+default_list_changed:(NSPopUpButton *)sender
+{
+    task_config_set_int(TASK_CFG_DEFAULT_LIST, (gint)sender.selectedTag);
+}
+
+/*
+ * hotkey_toggled: — the Quick Task shortcut checkbox changed: write the
+ * setting and register or unregister the shortcut.  A shortcut another app
+ * holds cannot be registered: the box goes back off, the setting with it,
+ * and a notice says why.
+ *
+ * Inputs:
+ *   sender — the checkbox
+ */
+- (void)
+hotkey_toggled:(NSButton *)sender
+{
+    task_config_set_bool(TASK_CFG_QUICK_TASK_HOTKEY, sender.state == NSControlStateValueOn);
+    if (tasks_hotkey_apply()) return;
+
+    sender.state = NSControlStateValueOff;
+    task_config_set_bool(TASK_CFG_QUICK_TASK_HOTKEY, FALSE);
+    tasks_ui_notice(self.window, @"The shortcut is in use",
+                    @"Another app has already taken \u2303\u2325\u2318T.", nil);
 }
 
 /*
@@ -1153,7 +1260,7 @@ gcal_show_changed:(NSButton *)sender
 }
 
 /*
- * build_form — lay the five sections out in one vertical stack, in the
+ * build_form — lay the six sections out in one vertical stack, in the
  * style of Files' Preferences, inside a scroll view that only comes into
  * play when the form is taller than tasks_look_settings_max_h.
  */
@@ -1161,7 +1268,7 @@ gcal_show_changed:(NSButton *)sender
 build_form
 {
     NSArray<NSArray<NSView *> *> *sections =
-        @[[self appearance_rows], [self notification_rows],
+        @[[self appearance_rows], [self new_task_rows], [self notification_rows],
           [self database_rows], [self backup_rows], [self gcal_rows]];
     NSMutableArray<NSView *> *rows = [NSMutableArray array];
     for (NSArray<NSView *> *section in sections) [rows addObjectsFromArray:section];

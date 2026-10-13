@@ -30,16 +30,20 @@
 void tasks_editor_open(TaskApp *app, int64_t task_id);
 
 /*
- * tasks_editor_open_new — tasks_editor_open for a task the New Task command
- * has JUST created: the same window plus a Cancel button, which closes the
- * editor and deletes the task again.  This is a separate entry point
+ * tasks_editor_open_new — tasks_editor_open for a task New Task or Quick
+ * Task has JUST created: the same window plus a Cancel button, which closes
+ * the editor and deletes the task again.  This is a separate entry point
  * because Cancel must never do that to a task that existed before.
  *
  * Inputs:
- *   app     — the application context
- *   task_id — the newly created task
+ *   app       — the application context
+ *   task_id   — the newly created task
+ *   in_corner — true for Quick Task: the window opens in the lower-right
+ *               corner of the screen the user is working on
+ *               (NSScreen.mainScreen), out of the way of what they were
+ *               doing; false opens it centred like any editor
  */
-void tasks_editor_open_new(TaskApp *app, int64_t task_id);
+void tasks_editor_open_new(TaskApp *app, int64_t task_id, bool in_corner);
 
 /*
  * tasks_editor_close — close one task's editor if it is open, flushing its

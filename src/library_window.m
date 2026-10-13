@@ -5,6 +5,7 @@
 #import "look.h"
 #import "lists_bar.h"
 #import "notify_window.h"
+#import "settings_window.h"
 #import "task_list.h"
 #import "ui_util.h"
 
@@ -1097,10 +1098,8 @@ add_list_destinations:(NSMenu *)menu
     for (guint i = 0; i < lists->len; i++) {
         const TaskList *list = g_ptr_array_index(lists, i);
         if (only != NULL && list->id == only->list_id) continue;
-        NSString *title = *list->emoji != '\0'
-            ? [NSString stringWithFormat:@"%@  %@", tasks_string(list->emoji), tasks_string(list->name)]
-            : tasks_string(list->name);
-        [menu addItem:[self titled_item:TasksCommandMoveToList param:@(list->id) title:title]];
+        [menu addItem:[self titled_item:TasksCommandMoveToList param:@(list->id)
+                                  title:tasks_list_title(list)]];
     }
     task_ptr_array_free_lists(lists);
     task_free(only);
@@ -1242,29 +1241,68 @@ plural(NSUInteger count)
 }
 
 /*
- * new_task — create an empty task in the selected list and open its editor
- * (the variant with Cancel, which deletes the task again).  A view or a
- * group has no one list to create it in, and the status bar says which.
+ * create_task_in:quick: — create an empty task in a list and open its
+ * editor (the variant with Cancel, which deletes the task again).
+ *
+ * Inputs:
+ *   list_id — the list; not 0
+ *   quick   — YES for Quick Task: the editor opens in the corner of the
+ *             screen the user is on, and the app comes forward with it
+ *             (the shortcut may have been pressed in another app)
  */
 - (void)
-new_task
+create_task_in:(int64_t)list_id quick:(BOOL)quick
 {
-    int64_t list_id = task_sel_list_id(self.selection);
-    if (list_id == 0) {
-        task_app_status(self.app, "Select a list first \xe2\x80\x94 %s",
-                        self.selection.kind == task_sel_group
-                            ? "a group has no one list to create the task in"
-                            : "tasks cannot be created in the virtual views");
-        return;
-    }
-
     int64_t task_id = task_db_task_create(self.app->db, list_id, 0, "New Task");
     if (task_id == 0) {
         task_app_status(self.app, "Could not create the task");
         return;
     }
     [self full_refresh];
-    tasks_editor_open_new(self.app, task_id);
+    tasks_editor_open_new(self.app, task_id, quick);
+    if (quick) [NSApp activate];
+}
+
+/*
+ * new_task — New Task: a task in the selected list or, when a group or a
+ * view is selected, in the default list (task_sel_new_task_list).  With no
+ * default list the status bar says how to get one.  Action Items refuses
+ * new tasks (the command is disabled there).
+ */
+- (void)
+new_task
+{
+    int64_t list_id = task_sel_new_task_list(self.app, self.selection);
+    if (list_id == 0) {
+        if (task_sel_takes_new_tasks(self.selection)) {
+            task_app_status(self.app, "Select a list, or choose a default list in Settings");
+        }
+        return;
+    }
+    [self create_task_in:list_id quick:NO];
+}
+
+/*
+ * quick_task — Quick Task (the menu item or the system-wide shortcut): a
+ * task in the default list whatever is selected, its editor in the lower-
+ * right corner of the screen.  With no default list it says so and opens
+ * Settings, where one is chosen.
+ */
+- (void)
+quick_task
+{
+    int64_t list_id = task_ops_default_list(self.app);
+    if (list_id == 0) {
+        TaskApp *app = self.app;
+        [NSApp activate];
+        tasks_ui_notice(nil, @"Choose a default list first",
+                        @"Quick Task files its task in the default list. "
+                        @"Choose one in Settings, under New Tasks.", ^{
+            tasks_settings_window_open(app);
+        });
+        return;
+    }
+    [self create_task_in:list_id quick:YES];
 }
 
 /*
@@ -1754,6 +1792,9 @@ perform_shell_command:(TasksCommand)command param:(NSNumber *)param
     case TasksCommandNewTask:
         [self new_task];
         break;
+    case TasksCommandQuickTask:
+        [self quick_task];
+        break;
     case TasksCommandDeleteTask:
         [self delete_tasks];
         break;
@@ -1864,6 +1905,9 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
     case TasksCommandSetPriority:
     case TasksCommandMoveToList:
         state.enabled = selected > 0;
+        break;
+    case TasksCommandNewTask:
+        state.enabled = task_sel_takes_new_tasks(self.selection);
         break;
     case TasksCommandClearCompleted:
         state.enabled = task_sel_list_id(self.selection) != 0;

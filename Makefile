@@ -127,7 +127,7 @@ OBJCFLAGS = -fobjc-arc $(COMMON) -Wno-unused-parameter
 # the core, so they link these too.
 SYS_LIBS = -lcurl -framework Security -framework CoreFoundation
 LDLIBS   = -mmacosx-version-min=$(LINK_TARGET) $(PKG_LIBS) $(SYS_LIBS)
-LDFLAGS  = -framework Cocoa -framework UniformTypeIdentifiers -framework UserNotifications $(LDLIBS)
+LDFLAGS  = -framework Cocoa -framework Carbon -framework UniformTypeIdentifiers -framework UserNotifications $(LDLIBS)
 
 # ── Google OAuth client ──────────────────────────────────────────────────
 # The app's OAuth client for the Google Calendar sync, baked into

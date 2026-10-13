@@ -2,8 +2,9 @@
 #include "task_app.h"
 
 /*
- * settings_window — the Settings window: Appearance, the database health
- * plate, rotating backups.
+ * settings_window — the Settings window: Appearance, New Tasks (the
+ * default list, Quick Task's system-wide shortcut), notifications, the
+ * database health plate, rotating backups, Google Calendar.
  *
  * Every control is write-through: a change lands in the config at once
  * (task_config.h) and there is no OK or Apply.  A setting that changes

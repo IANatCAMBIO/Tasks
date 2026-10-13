@@ -25,7 +25,6 @@ static const CGFloat win_w         = 389.0;
 static const CGFloat win_h         = 186.0;
 static const CGFloat win_min_w     = 243.0;
 static const CGFloat win_min_h     = 154.0;
-static const CGFloat screen_margin = 15.0;   /* to the screen's right and bottom edges */
 static const CGFloat hero_h        = 43.0;
 static const CGFloat btn_bar_h     = 31.0;
 static const CGFloat btn_h         = 25.0;
@@ -383,19 +382,12 @@ make_dismiss_button
 
 /*
  * place_lower_right — put the window in the lower-right corner of the
- * primary display, screen_margin in from the right and bottom edges of the
- * area the menu bar and the Dock leave free.  The window keeps its size.
+ * primary display (tasks_ui_place_lower_right).  The window keeps its size.
  */
 - (void)
 place_lower_right
 {
-    NSScreen *screen = NSScreen.screens.firstObject;
-    if (screen == nil) return;
-
-    NSRect vis  = screen.visibleFrame;
-    NSSize size = self.window.frame.size;
-    [self.window setFrameOrigin:NSMakePoint(NSMaxX(vis) - size.width  - screen_margin,
-                                            NSMinY(vis) + screen_margin)];
+    tasks_ui_place_lower_right(self.window, NSScreen.screens.firstObject);
 }
 
 /*

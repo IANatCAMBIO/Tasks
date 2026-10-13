@@ -1609,7 +1609,10 @@ advanced_action:(id)sender
 /*
  * set_content_height:animated:then: — give the window's content a new
  * height, keeping the window's TOP edge where it is (AppKit's origin is the
- * bottom-left corner, so the origin moves by the difference).
+ * bottom-left corner, so the origin moves by the difference) — unless that
+ * would push its bottom edge below the screen's work area, as it would for
+ * a Quick Task editor in the lower-right corner opening its Advanced fold:
+ * the window then moves up just far enough, never above the work area.
  *
  * Inputs:
  *   height   — the new content height
@@ -1626,6 +1629,14 @@ set_content_height:(CGFloat)height animated:(BOOL)animated then:(void (^)(void))
     content.origin.y   += NSHeight(content) - height;
     content.size.height = height;
     NSRect frame = [window frameRectForContentRect:content];
+
+    NSScreen *screen = window.screen;
+    if (screen != nil && NSMinY(frame) < NSMinY(screen.visibleFrame)) {
+        /* Bottom on the work area's bottom; a window taller than the
+         * work area keeps its title bar at the top instead. */
+        NSRect area    = screen.visibleFrame;
+        frame.origin.y = MIN(NSMinY(area), NSMaxY(area) - NSHeight(frame));
+    }
 
     if (!animated) {
         [window setFrame:frame display:window.visible];
@@ -2669,9 +2680,11 @@ windowWillClose:(NSNotification *)note
  *   task_id — the task; one that no longer exists opens nothing
  *   is_new  — YES for a task New Task has just created (adds Cancel); it
  *             has no effect on an editor that is already open
+ *   corner  — YES to open a new window in the lower-right corner of the
+ *             screen the user is working on rather than centred
  */
 static void
-open_editor(TaskApp *app, int64_t task_id, BOOL is_new)
+open_editor(TaskApp *app, int64_t task_id, BOOL is_new, BOOL corner)
 {
     TasksEditorWindow *editor = editors()[@(task_id)];
     if (editor) {
@@ -2683,6 +2696,7 @@ open_editor(TaskApp *app, int64_t task_id, BOOL is_new)
     if (task != NULL && !task->deleted) {
         editor = [[TasksEditorWindow alloc] init_with_app:app task:task is_new:is_new];
         editors()[@(task_id)] = editor;
+        if (corner) tasks_ui_place_lower_right(editor.window, NSScreen.mainScreen);
         [editor present:YES];
     }
     task_free(task);
@@ -2695,18 +2709,18 @@ open_editor(TaskApp *app, int64_t task_id, BOOL is_new)
 void
 tasks_editor_open(TaskApp *app, int64_t task_id)
 {
-    open_editor(app, task_id, NO);
+    open_editor(app, task_id, NO, NO);
 }
 
 /*
  * tasks_editor_open_new — open the editor of a just-created task, with
- * Cancel.
+ * Cancel, centred or in the corner.
  * Inputs are documented in editor_window.h.
  */
 void
-tasks_editor_open_new(TaskApp *app, int64_t task_id)
+tasks_editor_open_new(TaskApp *app, int64_t task_id, bool in_corner)
 {
-    open_editor(app, task_id, YES);
+    open_editor(app, task_id, YES, in_corner);
 }
 
 /*

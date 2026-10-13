@@ -20,6 +20,7 @@ xcode-select --install
 | Library | Used for | Where it comes from |
 |---|---|---|
 | Cocoa, UniformTypeIdentifiers | the interface | macOS SDK |
+| Carbon (`RegisterEventHotKey` only) | Quick Task's system-wide shortcut, ⌃⌥⌘T (`src/hotkey.m`); needs no Accessibility permission | macOS SDK |
 | libdispatch, CoreFoundation | timers and background work in the core; the tests' run loop | macOS SDK |
 | GLib 2 (`glib-2.0`; developed with 2.88) | utilities in the core — strings, arrays, key file, dates | MacPorts `glib2` |
 | SQLite 3 (3.35 or later; developed with 3.53) | storage | MacPorts `sqlite3` |
@@ -156,7 +157,7 @@ The programs, all linked against the core only (no AppKit), include:
 | `shared_test` | the shared database: the column-diff update (two connections change different fields and both survive) and its stamping rules; Notes action items (the note lookup, the note context every read carries — a folder, the top level, a task not from Notes, a folder renamed — the tombstone, the purge Tasks refuses); refreshing only on a change to Tasks' data (`change_rev`), never on its own writes; writes failing, and then succeeding, while a second process (this test re-run with `--hold`) holds the write lock past the busy timeout — this test takes about 20 s |
 | `backup_test` | backups through the shared module: refused destinations (Tasks' live-data fence and the module's folder checks), Back Up Now and its UTC file name, retention, the periodic poll |
 | `switch_test` | Open Database File: refusals (an old `tasks.db` and an empty file among them, left untouched), a switch, Make Default under the sandbox |
-| `rows_test` | the row description (lines, emphasis, notes preview, the note-context prefix) and the pane collection (filters, a search matching the prefix, status line) |
+| `rows_test` | the row description (lines, emphasis, notes preview, the note-context prefix) and the pane collection (filters, a search matching the prefix, status line); where New Task files a task (the selected list, else the default list while it exists; refused in Action Items) |
 | `order_test` | saved orders: key spelling, the permutation, dropping keys |
 | `app_test` | the event bus, the outside-change watch (`data_version`), due-date urgency, the recurrence pass waking on a main-loop timer |
 | `gcal_test` | the calendar sync without the network: every planning rule, reading events and writing request bodies, the sync's tables (dirty check, compare-and-set reschedule, event cache, account), the sign-in's loopback listener |

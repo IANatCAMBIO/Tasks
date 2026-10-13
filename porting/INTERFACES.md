@@ -98,7 +98,7 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 | `backup` | backups through the shared module, on a background job; policy in `shared_settings` |
 | `task_worker` | the scheduler the recurrence pass and the backup are registered with |
 | `task_view`, `core_views` | the registry of sidebar views (Favorites, All Tasks, 3-Day Forecast, Action Items) |
-| `task_ops` | move-to-list, clear-completed |
+| `task_ops` | move-to-list, clear-completed, the default list (`task_ops_default_list`) |
 | `task_rows` | what a task row SAYS, as toolkit-neutral data |
 | `task_pane` | the sidebar selection type; collects a selection's rows + status line |
 | `task_order` | saved manual and Kanban orders |
@@ -287,6 +287,7 @@ One table (`src/commands.m`) drives menu items, toolbar items and validation.
 |---|---|---|---|
 | About, Settings… | app | –, ⌘, | |
 | New Task | shell | ⌘N | |
+| Quick Task | shell | ⌃⌥⌘T (also system-wide, `hotkey.h`) | |
 | Delete Task | shell | ⌘⌫ | |
 | Info… (open editor) | shell | ⌘I | |
 | Clear Completed Tasks | shell | | |
@@ -305,6 +306,16 @@ One table (`src/commands.m`) drives menu items, toolbar items and validation.
 | New Group…, Edit List…, Delete List, Remove from Group | sidebar | | |
 | Move to Group, Rename Group…, Remove Group | sidebar | | group id |
 | Done / Status / Due Date / Completion Date columns | task list | | |
+
+**Where a new task goes.**  New Task files its task in
+`task_sel_new_task_list(app, selection)` (`task_pane.h`): the selected list,
+or for a group or a view the default list (`TASK_CFG_DEFAULT_LIST`, chosen in
+Settings; `task_ops_default_list` treats a deleted list as none).  A view
+with `refuses_new_tasks` (Action Items: only Notes writes those) disables New
+Task (`task_sel_takes_new_tasks`).  Quick Task always uses the default list,
+and opens the editor in the lower-right corner of `NSScreen.mainScreen`
+(`tasks_editor_open_new(…, true)`); `src/hotkey.m` registers its shortcut
+system-wide through Carbon while `TASK_CFG_QUICK_TASK_HOTKEY` is on.
 
 A bare key is never destructive: Delete is ⌘⌫ through the menu, not a
 `keyDown:` case.  Delete Task is disabled while any text is being edited (the
@@ -328,9 +339,10 @@ which adapts to light/dark by itself.  The dark values were chosen for this
 port (GTK had light values only) and are open to the owner's taste.  Add a
 constant there rather than a literal in your file.
 
-**Utilities** (`src/ui_util.h`): `tasks_string`, `tasks_icon`,
-`tasks_app_icon`, `tasks_image_view`, `tasks_ui_notice`, `tasks_ui_confirm`,
-`tasks_ui_pick_path`, `tasks_ui_sheet`.  Every dialog takes a completion
+**Utilities** (`src/ui_util.h`): `tasks_string`, `tasks_list_title`,
+`tasks_icon`, `tasks_app_icon`, `tasks_image_view`, `tasks_ui_notice`,
+`tasks_ui_confirm`, `tasks_ui_pick_path`, `tasks_ui_place_lower_right`,
+`tasks_ui_sheet`.  Every dialog takes a completion
 block; with a parent window it is a sheet and the call returns at once.
 Every table is a `TasksTable` (or a subclass of it), which selects a
 clicked row on mouse-down.

@@ -54,6 +54,19 @@ NSString *tasks_string(const char *text);
  */
 NSString *tasks_title_string(const Task *task, NSString *untitled);
 
+/*
+ * tasks_list_title — the text a menu item shows for a list: its emoji, two
+ * spaces and its name, as the lists bar spells it, or the name alone when
+ * it has no emoji.
+ *
+ * Inputs:
+ *   list — the list, not NULL
+ *
+ * Output:
+ *   the string; never nil.
+ */
+NSString *tasks_list_title(const TaskList *list);
+
 /* ── Images ─────────────────────────────────────────────────────────── */
 
 /*
@@ -210,6 +223,19 @@ typedef NS_ENUM(NSInteger, TasksPickKind) {
 void tasks_ui_pick_path(NSWindow *parent, TasksPickKind kind, NSString *message,
                         NSString *action, NSArray<NSString *> *extensions,
                         NSString *start_dir, void (^done)(NSString *path));
+
+/*
+ * tasks_ui_place_lower_right — move a window to the lower-right corner of a
+ * screen's work area (what the menu bar and the Dock leave free),
+ * tasks_look_screen_margin in from its right and bottom edges.  The window
+ * keeps its size; a window too big for the corner keeps its title bar on
+ * screen.
+ *
+ * Inputs:
+ *   window — the window to move
+ *   screen — the screen; nil leaves the window where it is
+ */
+void tasks_ui_place_lower_right(NSWindow *window, NSScreen *screen);
 
 /*
  * tasks_ui_sheet — show custom content as a sheet with a Cancel / <accept>

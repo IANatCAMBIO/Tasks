@@ -42,6 +42,18 @@ tasks_title_string(const Task *task, NSString *untitled)
     return text;
 }
 
+/*
+ * tasks_list_title — a list's emoji and name, for a menu item.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSString *
+tasks_list_title(const TaskList *list)
+{
+    return *list->emoji != '\0'
+        ? [NSString stringWithFormat:@"%@  %@", tasks_string(list->emoji), tasks_string(list->name)]
+        : tasks_string(list->name);
+}
+
 /* ── Images ─────────────────────────────────────────────────────────── */
 
 /*
@@ -439,4 +451,20 @@ tasks_ui_sheet(NSWindow *parent, NSView *content, NSString *accept, void (^done)
     [parent beginSheet:panel completionHandler:^(NSModalResponse response) {
         done(response == NSModalResponseOK);
     }];
+}
+
+/*
+ * tasks_ui_place_lower_right — a window to a screen's lower-right corner.
+ * Inputs are documented in ui_util.h.
+ */
+void
+tasks_ui_place_lower_right(NSWindow *window, NSScreen *screen)
+{
+    if (screen == nil) return;
+
+    NSRect area = screen.visibleFrame;
+    NSSize size = window.frame.size;
+    [window setFrameOrigin:NSMakePoint(
+        MAX(NSMaxX(area) - size.width - tasks_look_screen_margin, NSMinX(area)),
+        MIN(NSMinY(area) + tasks_look_screen_margin, NSMaxY(area) - size.height))];
 }

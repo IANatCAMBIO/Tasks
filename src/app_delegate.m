@@ -1,5 +1,6 @@
 #import "app_delegate.h"
 #import "commands.h"
+#import "hotkey.h"
 #import "library_window.h"
 #import "settings_window.h"
 #import "task_notify.h"
@@ -299,6 +300,7 @@ applicationDidFinishLaunching:(NSNotification *)note
     task_worker_arm_all(self.app, shared_db_file(self.app->db->shared));
     task_app_watch_start(self.app);
     [self.library report_database_health];
+    [self start_hotkey];
     if (for_session_only) {
         task_app_status(self.app, "%s is open for this session only",
                         shared_db_file(self.app->db->shared));
@@ -309,6 +311,23 @@ applicationDidFinishLaunching:(NSNotification *)note
     NSLog(@"[launch] config %@, database %@: %d tasks in %d lists",
           tasks_string(task_config_path()), tasks_string(shared_db_file(self.app->db->shared)),
           n_tasks, n_lists);
+}
+
+/*
+ * start_hotkey — arm Quick Task's system-wide shortcut (hotkey.h), which
+ * runs Quick Task in the library window from any app.  A shortcut another
+ * app already holds is reported in the status bar.
+ */
+- (void)
+start_hotkey
+{
+    __weak TasksAppDelegate *ws = self;
+    BOOL ok = tasks_hotkey_start(^{
+        [ws.library perform_command:TasksCommandQuickTask param:nil];
+    });
+    if (!ok) {
+        task_app_status(self.app, "The Quick Task shortcut is in use by another app");
+    }
 }
 
 /*
@@ -376,6 +395,7 @@ applicationWillTerminate:(NSNotification *)note
     if (self.app == NULL) return;
 
     [NSNotificationCenter.defaultCenter removeObserver:self];
+    tasks_hotkey_stop();
     task_app_watch_stop(self.app);
     [self.library shut_down];
     self.library = nil;
@@ -669,6 +689,7 @@ build_menu_bar
      * list, the selected group, and the file all of it is kept in. */
     NSMenu *file_menu = add_menu(bar, @"File");
     [file_menu addItem:command(TasksCommandNewTask)];
+    [file_menu addItem:command(TasksCommandQuickTask)];
     [file_menu addItem:command(TasksCommandNewList)];
     [file_menu addItem:command(TasksCommandNewGroup)];
     [file_menu addItem:NSMenuItem.separatorItem];

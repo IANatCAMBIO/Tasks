@@ -45,7 +45,9 @@ typedef NS_ENUM(NSInteger, TasksCommand) {
     TasksCommandHelp,               /* open the bundled help page             */
 
     /* Library window (the shell) */
-    TasksCommandNewTask,
+    TasksCommandNewTask,            /* in the selected list, else the default */
+    TasksCommandQuickTask,          /* in the default list, editor in the
+                                     * screen's corner; also a global hotkey  */
     TasksCommandDeleteTask,         /* the selected task(s), after a confirm  */
     TasksCommandTaskInfo,           /* open the editor; one task selected     */
     TasksCommandClearCompleted,     /* the selected list's Done tasks         */

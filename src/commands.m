@@ -16,7 +16,12 @@ static const tasks_command_spec_t command_specs[] = {
       @TASKS_APP_NAME @" Help",    @"?", 0, nil, nil },
 
     { TasksCommandNewTask,         TasksCommandOwnerShell,    @"tasks.new-task",
-      @"New Task",                 @"n", 0, @"plus", @"Create a task in the selected list" },
+      @"New Task",                 @"n", 0, @"plus",
+      @"Create a task in the selected list, or else in the default list" },
+    /* The same shortcut is registered system-wide by hotkey.m. */
+    { TasksCommandQuickTask,       TasksCommandOwnerShell,    @"tasks.quick-task",
+      @"Quick Task",               @"t", NSEventModifierFlagControl | NSEventModifierFlagOption,
+      nil, nil },
     { TasksCommandDeleteTask,      TasksCommandOwnerShell,    @"tasks.delete-task",
       @"Delete Task",              @"\x08", 0, @"trash", @"Delete the selected task" },
     { TasksCommandTaskInfo,        TasksCommandOwnerShell,    @"tasks.task-info",

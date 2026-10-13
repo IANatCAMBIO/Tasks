@@ -185,7 +185,9 @@ Settings are changed in the app and stored in `tasks.ini` (group `[tasks]`,
 written by the app; comments are not preserved), apart from the backup
 settings, which live in the shared database so that Notes follows them too.
 The Settings window (⌘,) holds the appearance options (bold titles, Kanban
-shadows, business-day forecast, the note-context title prefix), the database's health
+shadows, business-day forecast, the note-context title prefix), New Tasks
+(the default list, and whether Quick Task's ⌃⌥⌘T works from any app),
+the database's health
 and fingerprint, the backups, notifications and Google Calendar; the View
 menu holds the rest.  Every key and its default is listed in
 `src/task_config.h`.
@@ -194,7 +196,8 @@ menu holds the rest.  Every key and its default is listed in
 
 | Shortcut | Action |
 |---|---|
-| ⌘N | New Task (in the selected list) |
+| ⌘N | New Task (in the selected list; with a group or a view selected, in the default list; disabled in Action Items, which only Notes fills) |
+| ⌃⌥⌘T | Quick Task — a task in the default list whatever is selected, its editor in the lower-right corner of the screen; works from any app while Tasks is running |
 | ⇧⌘N | New List… |
 | ⌘I | Info… — open the task editor |
 | ⌘⌫ | Delete the selected task(s) |
