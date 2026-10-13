@@ -137,7 +137,7 @@ gint64 task_recur_period_seconds(TaskRecurUnit unit, gint interval);
 
 /* ---------------------------------------------------------------------------
  * task_recur_lead_default() — the lead to seed a NEW schedule with, in
- * minutes: TASK_RECUR_LEAD_DEFAULT (one week), or HALF the repeat period
+ * minutes: SHARED_DB_TASK_RECUR_LEAD_DEFAULT (one week), or HALF the repeat period
  * when that is shorter.
  *
  * A flat week is meaningless at the fast end — it is longer than an hourly

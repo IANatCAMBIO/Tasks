@@ -178,14 +178,14 @@ test_check_file(TaskApp *app)
     TaskDbHealth verdict = { 0 };
     int64_t      before  = (int64_t)time(NULL);
 
-    check(task_db_health_check_file(app->db->path, &verdict) && verdict.ok && verdict.ran &&
+    check(task_db_health_check_file(shared_db_file(app->db->shared), &verdict) && verdict.ok && verdict.ran &&
           verdict.detail == NULL && verdict.when >= before,
           "check file: a sound database passes, with the time of the check");
     check(task_db_health(app->db) == NULL,
           "check file: ... and nothing is stored on the open handle");
 
     /* A file that is not a database: the check learned nothing. */
-    snprintf(path, sizeof path, "%s.garbage", app->db->path);
+    snprintf(path, sizeof path, "%s.garbage", shared_db_file(app->db->shared));
     FILE *f = fopen(path, "w");
     fputs("this is not a SQLite database, only some text of about the right shape", f);
     fclose(f);
@@ -196,7 +196,7 @@ test_check_file(TaskApp *app)
     g_free(verdict.detail);
 
     /* A file that is not there is not created by being checked. */
-    snprintf(path, sizeof path, "%s.missing", app->db->path);
+    snprintf(path, sizeof path, "%s.missing", shared_db_file(app->db->shared));
     memset(&verdict, 0, sizeof verdict);
     check(!task_db_health_check_file(path, &verdict) && !verdict.ran && verdict.detail != NULL,
           "check file: a missing file did not complete");
@@ -204,16 +204,16 @@ test_check_file(TaskApp *app)
     g_free(verdict.detail);
 
     /* A broken reference: the checks ran and found something. */
-    sqlite3_exec(app->db->sq,
+    sqlite3_exec(shared_db_handle(app->db->shared),
                  "PRAGMA foreign_keys = OFF;"
                  "INSERT INTO attachments (task_id, path) VALUES (424242, '/nowhere');"
                  "PRAGMA foreign_keys = ON;", NULL, NULL, NULL);
     memset(&verdict, 0, sizeof verdict);
-    check(!task_db_health_check_file(app->db->path, &verdict) && verdict.ran &&
+    check(!task_db_health_check_file(shared_db_file(app->db->shared), &verdict) && verdict.ran &&
           verdict.detail != NULL && strstr(verdict.detail, "attachments") != NULL,
           "check file: a dangling reference is \"problems found\", naming the table");
     g_free(verdict.detail);
-    sqlite3_exec(app->db->sq, "DELETE FROM attachments WHERE task_id = 424242", NULL, NULL, NULL);
+    sqlite3_exec(shared_db_handle(app->db->shared), "DELETE FROM attachments WHERE task_id = 424242", NULL, NULL, NULL);
 
     /* The same pass through the open handle agrees, and is stored. */
     check(task_db_health_check(app->db) && task_db_health(app->db) != NULL &&
@@ -222,9 +222,9 @@ test_check_file(TaskApp *app)
 
     /* task_db_verify_file is the same body, reporting less. */
     gchar *detail = NULL;
-    check(task_db_verify_file(app->db->path, &detail) && detail == NULL,
+    check(task_db_verify_file(shared_db_file(app->db->shared), &detail) && detail == NULL,
           "check file: task_db_verify_file still passes a sound file");
-    snprintf(path, sizeof path, "%s.garbage", app->db->path);
+    snprintf(path, sizeof path, "%s.garbage", shared_db_file(app->db->shared));
     check(!task_db_verify_file(path, &detail) && detail != NULL,
           "check file: ... and still fails a bad one with a reason");
     g_free(detail);
@@ -302,9 +302,9 @@ test_probe(TaskApp *app)
 
     /* Without the check: the file's facts, and the verdict left alone. */
     seen_t  plain  = run_probe(app, false);
-    gchar  *digest = task_db_file_sha256(app->db->path);
+    gchar  *digest = task_db_file_sha256(shared_db_file(app->db->shared));
     check(plain.calls == 1 && plain.current, "probe: reports once, about the open database");
-    check(stat(app->db->path, &sb) == 0 && plain.size == (int64_t)sb.st_size && plain.size > 0,
+    check(stat(shared_db_file(app->db->shared), &sb) == 0 && plain.size == (int64_t)sb.st_size && plain.size > 0,
           "probe: the size is the file's size on disk");
     check(strlen(plain.sha256) == 64 && digest != NULL && strcmp(plain.sha256, digest) == 0,
           "probe: the digest is the file's SHA-256");
@@ -324,7 +324,7 @@ test_probe(TaskApp *app)
     /* The staleness guard: the app opens another database while a probe
      * is in flight.  The answer is about the old file and is dropped. */
     char other_path[1200];
-    snprintf(other_path, sizeof other_path, "%s.other", app->db->path);
+    snprintf(other_path, sizeof other_path, "%s.other", shared_db_file(app->db->shared));
     TaskDatabase *first = app->db;
     TaskDatabase *other = task_db_open(other_path, NULL);
     check(other != NULL, "probe: (opened a second database)");
@@ -344,16 +344,16 @@ test_probe(TaskApp *app)
     /* The database file vanishes under the open handle (the folder went to
      * the trash).  The probe must say so and must NOT put a file back. */
     char moved[1200];
-    snprintf(moved, sizeof moved, "%s.moved", app->db->path);
-    check(rename(app->db->path, moved) == 0, "probe: (moved the database file away)");
+    snprintf(moved, sizeof moved, "%s.moved", shared_db_file(app->db->shared));
+    check(rename(shared_db_file(app->db->shared), moved) == 0, "probe: (moved the database file away)");
     seen_t gone = run_probe(app, true);
     health = task_db_health(app->db);
     check(gone.calls == 1 && gone.current && gone.size == -1 && gone.sha256[0] == '\0',
           "probe: a vanished file has no size and no digest");
     check(health != NULL && !health->ok && !health->ran && health->detail != NULL,
           "probe: ... and the check did not complete, with a reason");
-    check(!exists(app->db->path), "probe: ... and no file was created in its place");
-    check(rename(moved, app->db->path) == 0, "probe: (moved it back)");
+    check(!exists(shared_db_file(app->db->shared)), "probe: ... and no file was created in its place");
+    check(rename(moved, shared_db_file(app->db->shared)) == 0, "probe: (moved it back)");
 }
 
 /*

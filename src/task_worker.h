@@ -75,8 +75,6 @@ typedef enum {
  *                      Borrowed, and owned by whoever declared it.
  *   run              — start one pass (main thread).
  *   ready            — may a pass run right now?  NULL means always.
- *   on_arm           — run just after the master switch passes and BEFORE
- *                      the timer is installed.  NULL for nothing.
  * ------------------------------------------------------------------------- */
 typedef struct {
     const gchar      *id;
@@ -88,7 +86,6 @@ typedef struct {
     guint            *timer;
     void            (*run)(TaskApp *app, const gchar *db_path);
     gboolean        (*ready)(TaskApp *app);
-    void            (*on_arm)(TaskApp *app);
 } TaskWorkerDef;
 
 /* ---------------------------------------------------------------------------

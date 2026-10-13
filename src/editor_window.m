@@ -1086,7 +1086,7 @@ show_task:(const Task *)task
     [self show_date:task->due in:self.due_field];
     {
         int due_min = task->due_time >= 0 && task->due_time <= 23 * 60 + 59
-            ? task->due_time : TASK_DUE_TIME_DEFAULT;
+            ? task->due_time : SHARED_DB_TASK_DUE_TIME_DEFAULT;
         NSDateComponents *comps = [[NSDateComponents alloc] init];
         comps.hour   = due_min / 60;
         comps.minute = due_min % 60;
@@ -1108,7 +1108,7 @@ show_task:(const Task *)task
                   in:self.every_field stepper:self.every_stepper];
     [self.unit_popup selectItemAtIndex:repeats ? (NSInteger)task->recur_unit : TASK_RECUR_DAY];
     [self show_date:task->recur_start in:self.recur_start_field];
-    task_edit_time_format(task->recur_time, TASK_RECUR_TIME_DEFAULT, clock);
+    task_edit_time_format(task->recur_time, SHARED_DB_TASK_RECUR_TIME_DEFAULT, clock);
     show_text(self.recur_time_field, @(clock), YES);
     [self show_lead:task->recur_lead];
     self.seen_every = repeats ? task->recur_interval : 0;

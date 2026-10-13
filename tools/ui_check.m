@@ -759,7 +759,8 @@ secondary_windows(NSWindow *library)
 
 /*
  * check_open_database — File > Open Database File..., from the picked path
- * onwards: a switch, the default question, the refusals, and back.  The
+ * onwards: a switch, the refusals (an old Tasks database among them), no
+ * default question while CAMBIO_SHARED_DB names the file, and back.  The
  * live data directory is a FAKE one inside the sandbox ($XDG_DATA_HOME).
  *
  * Inputs:
@@ -770,10 +771,11 @@ check_open_database(TaskApp *app)
 {
     NSFileManager *files   = NSFileManager.defaultManager;
     NSString      *sandbox = tasks_string(getenv(TASK_DATA_DIR_ENV));
-    NSString      *home    = tasks_string(app->db->path);
+    NSString      *home    = tasks_string(shared_db_file(app->db->shared));
     NSString      *folder  = [sandbox stringByAppendingPathComponent:@"ui-check"];
-    NSString      *other   = [folder stringByAppendingPathComponent:@TASK_DB_FILENAME];
+    NSString      *other   = [folder stringByAppendingPathComponent:@"other.db"];
     NSString      *junk    = [folder stringByAppendingPathComponent:@"junk.db"];
+    NSString      *old     = [folder stringByAppendingPathComponent:@"tasks.db"];
     NSString      *live    = [folder stringByAppendingPathComponent:@"xdg/tasks/tasks.db"];
 
     /* A second database holding one task; a file that is not a database. */
@@ -783,6 +785,11 @@ check_open_database(TaskApp *app)
     task_db_task_create(db, task_db_list_create(db, "Elsewhere", ""), 0, "The only task");
     task_db_close(db);
     [@"not a database" writeToFile:junk atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    sqlite3 *sq = NULL;
+    sqlite3_open(old.fileSystemRepresentation, &sq);
+    sqlite3_exec(sq, "CREATE TABLE tasks (id INTEGER PRIMARY KEY); PRAGMA user_version = 14",
+                 NULL, NULL, NULL);
+    sqlite3_close(sq);
 
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
@@ -793,32 +800,35 @@ check_open_database(TaskApp *app)
 
         [library open_database:junk];
         check_spin(0.3);
-        check(window.attachedSheet != nil && [tasks_string(app->db->path) isEqualToString:home],
+        check(window.attachedSheet != nil && [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
               "open database: a file that is not a database is refused with an alert");
         check(secondary_windows(window) == 1, "open database: ... and the editors stay open");
+        end_sheet(window, NSAlertFirstButtonReturn);
+
+        [library open_database:old];
+        check_spin(0.3);
+        check(find_text(window.attachedSheet.contentView, @"not a shared database") != nil &&
+              [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
+              "open database: an old Tasks database is refused in the shared module's words");
         end_sheet(window, NSAlertFirstButtonReturn);
 
         setenv("XDG_DATA_HOME", [folder stringByAppendingPathComponent:@"xdg"].fileSystemRepresentation, 1);
         [library open_database:live];
         check_spin(0.3);
         check(find_text(window.attachedSheet.contentView, @"refused") != nil &&
-              [tasks_string(app->db->path) isEqualToString:home],
+              [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
               "open database: a path in the live data directory shows the core's refusal");
         end_sheet(window, NSAlertFirstButtonReturn);
         unsetenv("XDG_DATA_HOME");
 
         [library open_database:other];
         check_spin(0.3);
-        check([tasks_string(app->db->path) isEqualToString:other] && secondary_windows(window) == 0,
+        check([tasks_string(shared_db_file(app->db->shared)) isEqualToString:other] && secondary_windows(window) == 0,
               "open database: a sound database is switched to, the editors closed first");
         check(find_text(window.contentView, @"All Tasks - 1 task") != nil,
               "open database: ... and the panes show its tasks");
-        check(find_text(window.attachedSheet.contentView, @"default database") != nil,
-              "open database: ... and a tasks.db is offered as the default");
-        end_sheet(window, NSAlertSecondButtonReturn);
-        gchar *db_dir = task_config_get(TASK_CFG_DB_DIR);
-        check(db_dir == NULL, "open database: declining leaves the default alone");
-        g_free(db_dir);
+        check(window.attachedSheet == nil,
+              "open database: ... and no default is offered while CAMBIO_SHARED_DB names the file");
 
         [library open_database:other];
         check_spin(0.3);
@@ -827,7 +837,7 @@ check_open_database(TaskApp *app)
 
         [library open_database:home];
         check_spin(0.3);
-        check([tasks_string(app->db->path) isEqualToString:home] && window.attachedSheet == nil,
+        check([tasks_string(shared_db_file(app->db->shared)) isEqualToString:home] && window.attachedSheet == nil,
               "open database: back to the default database, with no question to ask");
         [library close];
     }
@@ -1332,7 +1342,7 @@ check_task_list(TaskApp *app, NSString *dir)
                                       "line when the window is made narrow, as notes often are."
                                     : "",
                 .due = i % 4 == 0 ? 0 : today + (i % 9 - 4) * 86400,
-                .due_time = TASK_DUE_TIME_DEFAULT,
+                .due_time = SHARED_DB_TASK_DUE_TIME_DEFAULT,
                 .status = i % 5 == 0 ? TASK_STATUS_DONE : TASK_STATUS_NEW,
                 .completed_at = i % 5 == 0 ? today : 0,
             };
@@ -2070,7 +2080,6 @@ check_day_planner_calendar(TaskApp *app, NSString *dir)
     task_day_bounds(0, &lo, &hi);
     gint64 base = lo + (gint64)CLAMP((time(NULL) - lo) / 3600, tasks_look_day_planner_start_h + 1,
                                      tasks_look_day_planner_end_h - 4) * 3600;
-    gcal_store_init(app->db);
     GPtrArray      *cals = g_ptr_array_new();
     gcal_calendar_t work = { "work@ui-check", "Work", "#0b8043", TRUE, TRUE };
     g_ptr_array_add(cals, &work);
@@ -2170,8 +2179,11 @@ main(int argc, const char *argv[])
 {
     @autoreleasepool {
         const char *sandbox = getenv(TASK_DATA_DIR_ENV);
-        if (argc < 2 || sandbox == NULL || sandbox[0] == '\0') {
-            fprintf(stderr, "ui_check: run `make ui-check` (it sets %s)\n", TASK_DATA_DIR_ENV);
+        const char *shared  = getenv(SHARED_DB_ENV_VAR);
+        if (argc < 2 || sandbox == NULL || sandbox[0] != '/' ||
+            !check_inside(shared, sandbox)) {
+            fprintf(stderr, "ui_check: run `make ui-check` (it sets %s and %s)\n",
+                    TASK_DATA_DIR_ENV, SHARED_DB_ENV_VAR);
             return 2;
         }
         NSString *dir = @(argv[1]);
@@ -2195,9 +2207,10 @@ main(int argc, const char *argv[])
         }
         task_core_views_init();
         TaskApp *app  = task_app_new();
-        gchar   *path = task_db_default_path();
-        app->db = g_file_test(path, G_FILE_TEST_EXISTS) ? task_db_open(path, NULL) : NULL;
-        g_free(path);
+        char    *path = shared_db_path(NULL);
+        app->db = path != NULL && g_file_test(path, G_FILE_TEST_EXISTS)
+            ? task_db_open(path, NULL) : NULL;
+        free(path);
         if (app->db == NULL) {
             fprintf(stderr, "ui_check: no sandbox database; run `make seed` first\n");
             return 2;

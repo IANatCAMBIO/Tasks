@@ -1,9 +1,10 @@
 /* ===========================================================================
  * gcal_store.h — the Google Calendar sync's own tables
  *
- * An integration owns its side tables (db.h), so these are created and
- * read here, not in db.c's schema block.  They are created on first use
- * (gcal_store_init) and stay in the file when the sync is switched off:
+ * An integration owns its side tables (db.h), so these are read and
+ * written here, not in db.c.  They are part of the shared schema
+ * (shared_db.h creates them with every new file) and stay in the file when
+ * the sync is switched off:
  *
  *   gcal_calendar  id (Google's calendar id), summary, color ("#rrggbb"),
  *                  writable, is_primary — the account's calendar list,
@@ -62,17 +63,6 @@ typedef struct {
 void gcal_calendar_free(gcal_calendar_t *c);
 void gcal_event_free(gcal_event_t *e);
 void gcal_binding_free(gcal_binding_t *b);
-
-/*
- * gcal_store_init — create the tables when missing.
- *
- * Inputs:
- *   db — the connection
- *
- * Output:
- *   TRUE when they exist.
- */
-gboolean gcal_store_init(TaskDatabase *db);
 
 /*
  * gcal_store_calendars — the stored calendar list, primary first, then

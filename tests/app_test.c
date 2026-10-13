@@ -266,7 +266,7 @@ test_recurrence_timer(TaskApp *app)
     task_db_task_recur_set_next(app->db, id, now + 1);
 
     task_recur_init(app);
-    task_worker_arm_all(app, app->db->path);     /* runs one pass, arms the timer */
+    task_worker_arm_all(app, shared_db_file(app->db->shared));     /* runs one pass, arms the timer */
 
     t = task_db_task_get(app->db, id);
     check(t->status == TASK_STATUS_DONE, "recurrence: not yet due at arming");

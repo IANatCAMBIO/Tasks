@@ -138,7 +138,7 @@ probe_finish(void *data)
      * file at job->path; they belong on the plate only while that is still
      * the file the app has open. */
     task_health_probe_t probe = {
-        .current = db != NULL && strcmp(db->path, job->path) == 0,
+        .current = db != NULL && strcmp(shared_db_file(db->shared), job->path) == 0,
         .size    = job->size,
         .sha256  = job->sha256,
     };
@@ -179,7 +179,7 @@ void
 task_health_probe_start(TaskApp *app, bool check, task_health_done_fn done, void *user_data)
 {
     probe_job_t *job  = calloc(1, sizeof *job);
-    char        *path = strdup(app->db->path);
+    char        *path = strdup(shared_db_file(app->db->shared));
 
     if (job == NULL || path == NULL) {
         /* Out of memory: still answer, as "nothing could be read". */

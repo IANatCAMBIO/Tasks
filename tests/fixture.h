@@ -1,7 +1,9 @@
 /*
  * fixture.h — a throwaway application context for the tests that need a
  * database: a fresh sandbox directory, the config loaded from it, the
- * built-in views registered, and an empty database opened through the core.
+ * built-in views registered, and an empty shared database in it
+ * (CAMBIO_SHARED_DB, which check_scratch_dir points there) opened through
+ * the core.
  */
 
 #ifndef TESTS_FIXTURE_H
@@ -34,9 +36,9 @@ fixture_open(void)
     task_core_views_init();
 
     TaskApp *app  = task_app_new();
-    gchar   *path = task_db_default_path();
-    app->db = task_db_open(path, NULL);
-    g_free(path);
+    char    *path = shared_db_path(NULL);
+    app->db = path != NULL ? task_db_open(path, NULL) : NULL;
+    free(path);
     if (app->db == NULL) {
         fprintf(stderr, "fixture: cannot open a database in %s\n", scratch);
         exit(2);

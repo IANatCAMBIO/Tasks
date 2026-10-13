@@ -170,7 +170,7 @@ bool task_edit_lead_follow(int *seen_every, int *seen_unit, const task_edit_form
  * a task about to be saved.  Each field falls back to the value the task
  * already holds when its text is partial or invalid, with ONE exception
  * carried from the GTK build: a schedule time that cannot be read becomes
- * TASK_RECUR_TIME_DEFAULT, not the stored time.  recur_next is NOT
+ * SHARED_DB_TASK_RECUR_TIME_DEFAULT, not the stored time.  recur_next is NOT
  * touched: it is the editor's bookkeeping (task_edit_reseed).
  *
  * Inputs:

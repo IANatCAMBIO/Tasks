@@ -143,7 +143,7 @@ task_recur_lead_default(TaskRecurUnit unit, gint interval)
     /* /120 is "half, in minutes" (seconds / 2 / 60) in one division.  It
      * FLOORS, which is what a one-minute repeat wants: half of it is 30
      * seconds, the column stores minutes, and 0 is the honest answer.     */
-    gint64 cap = MIN((gint64)TASK_RECUR_LEAD_DEFAULT, period / 120);
+    gint64 cap = MIN((gint64)SHARED_DB_TASK_RECUR_LEAD_DEFAULT, period / 120);
 
     /* Then DOWN to a whole number of the largest of those that fits.  Half
      * a week is 3.5 days, which the editor can only render as 84 hours;
@@ -615,7 +615,7 @@ task_recur_pass(TaskApp *app)
         gint64 pending = next;       /* the occurrence still ahead of us    */
         if (recur_catch_up(t, next, nowts + lead, &fire, &after)) {
             pending = after;
-            gint due_min = TASK_DUE_TIME_DEFAULT;
+            gint due_min = SHARED_DB_TASK_DUE_TIME_DEFAULT;
             gint64 due   = recur_due_of(fire, &due_min);
             /* TWO independent halves, and either may be a no-op — the same
              * division the Kanban drop makes.  A completed task must be
@@ -727,7 +727,6 @@ static const TaskWorkerDef recur_worker = {
     .timer            = &recur_timer,
     .run              = recur_run,
     .ready            = NULL,
-    .on_arm           = NULL,
 };
 
 /* task_recur_init() — see recur.h.                                         */

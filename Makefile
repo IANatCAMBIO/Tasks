@@ -211,7 +211,7 @@ build:
 # variables reach it and its log output stays in this terminal.  The
 # sandbox is seeded first if it has no database yet.
 run: all
-	@[ -f "$(DEV_DATA)/tasks.db" ] || $(MAKE) seed
+	@[ -f "$(DEV_SHARED_DB)" ] || $(MAKE) seed
 	$(SANDBOX_ENV) $(MACOS)/$(APP)
 
 # The seed tool writes a realistic test database through the core API.
@@ -265,7 +265,7 @@ $(UI_CHECK_BIN): tools/ui_check.m tests/check.h $(UI_CHECK_OBJS) $(APP_ICON) Mak
 	$(CC) -o $@ build/ui_check.o $(UI_CHECK_OBJS) $(LDFLAGS)
 
 ui-check: $(UI_CHECK_BIN)
-	@[ -f "$(DEV_DATA)/tasks.db" ] || $(MAKE) seed
+	@[ -f "$(DEV_SHARED_DB)" ] || $(MAKE) seed
 	$(SANDBOX_ENV) $(UI_CHECK_BIN) "$(CURDIR)/dev/snapshots"
 
 # ── Install ──────────────────────────────────────────────────────────────

@@ -10,9 +10,10 @@
  * app's live data directory (task_paths.h) — leaves the app exactly as it
  * was, with nothing to put back.
  *
- * The one protection against opening the wrong file is the LOCATION fence
- * in task_paths.h.  Any sound SQLite file outside it can be opened, and
- * opening it creates this app's tables in it (task_db_open).
+ * Only a stamped shared database (shared_db.h) can be opened: an old
+ * tasks.db, a notes.db or any other SQLite file is refused untouched by the
+ * shared module, and the refusal is its own words.  "Make Default" writes
+ * the per-user pointer file both apps follow (shared_db_set_default_path).
  *
  * Plain C; strings returned here are malloc'd and freed with free().
  * MAIN THREAD ONLY (it changes the TaskApp and reads the config).
@@ -72,22 +73,33 @@ task_switch_check_t task_switch_check(const TaskApp *app, const char *path, char
 bool task_switch_database(TaskApp *app, const char *path, char **why);
 
 /*
- * task_switch_default_dir — the folder to store as TASK_CFG_DB_DIR so that
- * the database at `path` is the one opened at every launch.
- *
- * The setting names a FOLDER, and the file opened in it is always
- * TASK_DB_FILENAME: a database under any other name cannot be the default,
- * and recording its folder would open (or create) a different file there
- * next time.
+ * task_switch_can_be_default — whether "Make Default" applies to the
+ * database at `path`.  Not while $CAMBIO_SHARED_DB fixes the file for this
+ * run (a development sandbox: the pointer file is per-user, and the
+ * variable outranks it anyway), and not when `path` already is the file
+ * opened at launch.
  *
  * Inputs:
  *   path — absolute path of a database file
  *
  * Output:
- *   new string (free it): the folder holding `path`.  NULL when the file
- *   is not named TASK_DB_FILENAME, or is already the database the config
- *   opens at launch (there is nothing to change).
+ *   true when making it the default would change something.
  */
-char *task_switch_default_dir(const char *path);
+bool task_switch_can_be_default(const char *path);
+
+/*
+ * task_switch_set_default — make the database at `path` the one both apps
+ * open from now on (shared_db_set_default_path).  Refused while
+ * $CAMBIO_SHARED_DB is set, for the reason task_switch_can_be_default
+ * gives.
+ *
+ * Inputs:
+ *   path — absolute path of a database file, already opened successfully
+ *   why  — receives the reason on failure (free it), otherwise NULL
+ *
+ * Output:
+ *   true when the pointer file now names `path`.
+ */
+bool task_switch_set_default(const char *path, char **why);
 
 #endif /* TASK_SWITCH_H */

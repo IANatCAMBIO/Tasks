@@ -7,8 +7,6 @@
 #include <glib/gstdio.h>             /* g_unlink, g_stat                    */
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mount.h>               /* statfs, MNT_LOCAL                   */
-#include <sys/param.h>
 #include <time.h>
 
 /* ---------------------------------------------------------------------------
@@ -19,7 +17,7 @@ static gboolean
 exec(TaskDatabase *db, const gchar *sql)
 {
     gchar *msg = NULL;               /* sqlite's error text                 */
-    if (sqlite3_exec(db->sq, sql, NULL, NULL, &msg) != SQLITE_OK) {
+    if (sqlite3_exec(shared_db_handle(db->shared), sql, NULL, NULL, &msg) != SQLITE_OK) {
         g_warning("db: %s: %s", sql, msg != NULL ? msg : "?");
         sqlite3_free(msg);
         return FALSE;
@@ -27,22 +25,31 @@ exec(TaskDatabase *db, const gchar *sql)
     return TRUE;
 }
 
-/* task_db_transaction_begin() — see db.h.                                   */
+/* task_db_transaction_begin() — see db.h.  The shared module's BEGIN
+ * IMMEDIATE; a failure is logged.                                           */
 gboolean
 task_db_transaction_begin(TaskDatabase *db)
 {
-    return exec(db, "BEGIN IMMEDIATE");
+    char *why = NULL;
+    if (shared_db_begin(db->shared, &why) != 0) {
+        g_warning("db: BEGIN: %s", why != NULL ? why : "?");
+        free(why);
+        return FALSE;
+    }
+    return TRUE;
 }
 
-/* task_db_transaction_end() — see db.h.                                     */
+/* task_db_transaction_end() — see db.h.  shared_db_commit rolls back by
+ * itself when the COMMIT fails; a failure is logged.                        */
 void
 task_db_transaction_end(TaskDatabase *db, gboolean ok)
 {
-    if (ok) {
-        if (!exec(db, "COMMIT"))
-            exec(db, "ROLLBACK");
-    } else {
-        exec(db, "ROLLBACK");
+    char *why = NULL;
+    if (!ok) {
+        shared_db_rollback(db->shared);
+    } else if (shared_db_commit(db->shared, &why) != 0) {
+        g_warning("db: COMMIT: %s", why != NULL ? why : "?");
+        free(why);
     }
 }
 
@@ -63,25 +70,6 @@ exec_txn(TaskDatabase *db, const gchar *sql)
 }
 
 /* ---------------------------------------------------------------------------
- * volume_is_local() — whether a path lies on a local volume (a disk of
- * this machine), as against a network mount.  A file that does not exist
- * yet is judged by its folder.
- * ------------------------------------------------------------------------- */
-static gboolean
-volume_is_local(const gchar *path)
-{
-    struct statfs sf;
-    if (statfs(path, &sf) != 0) {
-        gchar *dir = g_path_get_dirname(path);
-        int    rc  = statfs(dir, &sf);
-        g_free(dir);
-        if (rc != 0)
-            return FALSE;
-    }
-    return (sf.f_flags & MNT_LOCAL) != 0;
-}
-
-/* ---------------------------------------------------------------------------
  * step_done() — run a prepared WRITE statement to completion, logging
  * sqlite's message when it fails (SQLITE_BUSY against the sync worker,
  * constraint violations, I/O errors) — silent write loss is the one
@@ -97,11 +85,11 @@ step_done(TaskDatabase *db, sqlite3_stmt *st, const gchar *ctx)
 {
     if (st == NULL) {
         g_warning("db: %s: prepare failed: %s", ctx,
-                  sqlite3_errmsg(db->sq));
+                  sqlite3_errmsg(shared_db_handle(db->shared)));
         return FALSE;
     }
     if (sqlite3_step(st) != SQLITE_DONE) {
-        g_warning("db: %s: %s", ctx, sqlite3_errmsg(db->sq));
+        g_warning("db: %s: %s", ctx, sqlite3_errmsg(shared_db_handle(db->shared)));
         return FALSE;
     }
     return TRUE;
@@ -237,173 +225,88 @@ task_ptr_array_free_attachments(GPtrArray *a)
 }
 
 /*
- * task_db_default_path — the standard db location (see db.h).
- */
-gchar *
-task_db_default_path(void)
-{
-    char *dir = task_data_dir_ensure();
-    if (dir == NULL) return NULL;
-
-    gchar *path = g_build_filename(dir, TASK_DB_FILENAME, NULL);
-    free(dir);
-    return path;
-}
-
-/* task_db_resolve_path() — the file to open (see db.h).                    */
-gchar *
-task_db_resolve_path(const gchar *dir)
-{
-    if (dir != NULL && *dir != '\0')
-        return g_build_filename(dir, TASK_DB_FILENAME, NULL);
-    return task_db_default_path();     /* also creates the directory        */
-}
-
-/* ---------------------------------------------------------------------------
- * db_check_pragmas() — run PRAGMA integrity_check then PRAGMA
- * foreign_key_check on `sq`, honoring BOTH exec return codes.
+ * db_check — run the shared module's full check (shared_db_check:
+ * integrity_check, foreign_key_check, the stamps, WAL and the cross-table
+ * invariants) on one connection and turn the findings into a verdict.
  *
- * The ONE spelling of "is this database structurally sound?".  Three
- * callers want that answer about different connections — task_db_verify_file
- * about a file nothing has open, task_db_health_check about the live one,
- * and through the latter the startup check — and the rule they must all
- * follow is the same: a PRAGMA that never RAN collects no rows, which is
- * indistinguishable from a clean result if you only look at the collector.
- * Reporting "verified" when nothing was checked is the one answer this must
- * never give — it is what a caller is about to delete the original on.
+ * The ONE spelling of "is this database sound?" for the three callers that
+ * ask it about different connections: task_db_verify_file about a file
+ * nothing has open, task_db_health_check about the open one, and through
+ * the latter the startup check.  "Ran" is kept apart from "passed": a
+ * check that could not run reports nothing, which must never read as a
+ * clean result.
+ *
+ * A file nothing has open may rest in another journal mode (a VACUUM INTO
+ * backup is not WAL): opening it read-write switches it to WAL, so that
+ * finding is not held against it unless `want_wal` is set.
  *
  * Inputs:
- *   sq     — an open connection, must not be NULL
- *   ran    — optional out: TRUE when both PRAGMAs actually executed
- *   detail — optional out: sqlite's own words on failure (g_free), NULL on
- *            success
+ *   sdb      — an open connection (read-only or read-write), not NULL
+ *   want_wal — TRUE for the open read-write connection, which must be WAL
+ *   ran      — optional out: TRUE when the check actually executed
+ *   detail   — optional out: the findings or why the check could not
+ *              run, one per line (g_free), NULL on success
  *
  * Output:
- *   TRUE only when both RAN and both came back clean.
- * ------------------------------------------------------------------------- */
-static int
-verify_collect(void *data, int argc, char **argv, char **cols)
-{
-    (void)cols;
-    GString *out = data;
-    for (int i = 0; i < argc; i++)
-        if (argv[i] != NULL && g_strcmp0(argv[i], "ok") != 0) {
-            if (out->len > 0)
-                g_string_append_c(out, '\n');
-            g_string_append(out, argv[i]);
-        }
-    return 0;
-}
-
-/* fk_collect() — foreign_key_check rows (table, rowid, parent, fkid) as
- * readable lines.  Its own collector because those four columns are a
- * RECORD rather than a message: verify_collect would spill each field onto
- * a line of its own and lose which table the row belongs to.              */
-static int
-fk_collect(void *data, int argc, char **argv, char **cols)
-{
-    (void)cols;
-    GString *out = data;
-    if (argc >= 3 && argv[0] != NULL) {
-        if (out->len > 0)
-            g_string_append_c(out, '\n');
-        g_string_append_printf(out, "  %s (row %s) \xe2\x86\x92 %s",
-                               argv[0],
-                               argv[1] != NULL ? argv[1] : "?",
-                               argv[2] != NULL ? argv[2] : "?");
-    }
-    return 0;
-}
-
+ *   TRUE only when the check ran and found nothing.
+ */
 static gboolean
-db_check_pragmas(sqlite3 *sq, gboolean *ran, gchar **detail)
+db_check(shared_db *sdb, gboolean want_wal, gboolean *ran, gchar **detail)
 {
+    shared_db_findings found;
+    char              *why = NULL;
+    int                rc  = shared_db_check(sdb, 1, &found, &why);
+
     if (detail != NULL)
         *detail = NULL;
-
-    /* Two GStrings, because what a check REPORTED and why a check STOPPED
-     * are the two different answers this function has to keep apart.     */
-    GString  *found = g_string_new(NULL);   /* the checks' own findings   */
-    GString  *errs  = g_string_new(NULL);   /* why one gave up            */
-    gboolean  broke = FALSE;                /* an exec returned an error  */
-    gchar    *msg   = NULL;                 /* sqlite's exec message      */
-
-    if (sqlite3_exec(sq, "PRAGMA integrity_check", verify_collect, found,
-                     &msg) != SQLITE_OK) {
-        broke = TRUE;
-        g_string_append_printf(errs, "integrity_check stopped: %s",
-                               msg != NULL ? msg : "?");
-    }
-    sqlite3_free(msg);
-    msg = NULL;
-
-    /* Skipped once the first check has errored: over pages sqlite could
-     * not read, this reports the same damage in a second vocabulary.    */
-    GString *fk = g_string_new(NULL);
-    if (!broke && sqlite3_exec(sq, "PRAGMA foreign_key_check", fk_collect,
-                               fk, &msg) != SQLITE_OK) {
-        broke = TRUE;
-        g_string_append_printf(errs, "foreign_key_check stopped: %s",
-                               msg != NULL ? msg : "?");
-    }
-    sqlite3_free(msg);
-    if (fk->len > 0) {
-        if (found->len > 0)
-            g_string_append_c(found, '\n');
-        g_string_append(found, "Foreign key violations:\n");
-        g_string_append(found, fk->str);
-    }
-    g_string_free(fk, TRUE);
-
-    /* The verdict, decided ONCE at the end.
-     *
-     * A CORRUPT file makes integrity_check do both things at once: it
-     * reports the damage it found and THEN returns an error, having given
-     * up on the page that caused it.  So the error code alone cannot mean
-     * "did not run" — what means that is coming back having learned
-     * NOTHING, which is the locked or unreadable file this distinction
-     * exists for.  Deciding per-exec reported real corruption as "the
-     * check did not complete", which sends someone looking for a lock
-     * that was never the problem.                                       */
-    gboolean any  = found->len > 0;         /* we learned something       */
-    gboolean done = !broke || any;
-    gboolean ok   = !broke && !any;
-
-    if (!ok && detail != NULL) {
-        if (errs->len > 0) {
-            if (found->len > 0)
-                g_string_append_c(found, '\n');
-            g_string_append(found, errs->str);
-        }
-        *detail = g_strdup(found->str);
-    }
     if (ran != NULL)
-        *ran = done;
-    g_string_free(found, TRUE);
-    g_string_free(errs, TRUE);
+        *ran = rc == 0;
+    if (rc != 0) {
+        if (detail != NULL)
+            *detail = g_strdup_printf("the check did not complete: %s",
+                                      why != NULL ? why : "?");
+        free(why);
+        shared_db_findings_free(&found);
+        return FALSE;
+    }
+    GString *text = g_string_new(NULL);
+    for (size_t i = 0; i < found.count; i++) {
+        if (!want_wal && found.items[i].kind == SHARED_DB_FINDING_JOURNAL_MODE)
+            continue;
+        if (text->len > 0)
+            g_string_append_c(text, '\n');
+        g_string_append(text, found.items[i].message);
+    }
+    gboolean ok = text->len == 0;
+    if (!ok && detail != NULL)
+        *detail = g_strdup(text->str);
+    g_string_free(text, TRUE);
+    shared_db_findings_free(&found);
     return ok;
 }
 
 /* What every entry point that takes a path says when that path is inside
- * the GTK app's live data directory (task_paths.h).  This fork is
- * experimental: it refuses to read or write there, whoever asks.          */
+ * the GTK app's live data directory (task_paths.h).  This app refuses to
+ * read or write there, whoever asks.                                       */
 #define LIVE_DATA_REFUSAL \
     "refused: %s is inside the live Tasks data directory, which this " \
-    "experimental build never opens"
+    "app never opens"
 
 /* ---------------------------------------------------------------------------
- * verify_file() — the checks on a file nothing has open, over a separate
- * read-only connection: the body shared by task_db_verify_file and
- * task_db_health_check_file, which differ only in what they report.
+ * verify_file() — the check on a file nothing has open, over a separate
+ * read-only connection (shared_db_open_readonly, which also refuses a file
+ * that is not a stamped shared database): the body shared by
+ * task_db_verify_file and task_db_health_check_file, which differ only in
+ * what they report.
  *
  * Inputs:
  *   path   — the database file
- *   ran    — optional out: TRUE when both PRAGMAs actually executed; FALSE
+ *   ran    — optional out: TRUE when the check actually executed; FALSE
  *            when the file was refused or could not be opened
  *   detail — optional out: what went wrong (g_free), NULL when sound
  *
  * Output:
- *   TRUE only when both checks ran and both passed.
+ *   TRUE only when the check ran and passed.
  * ------------------------------------------------------------------------- */
 static gboolean
 verify_file(const gchar *path, gboolean *ran, gchar **detail)
@@ -417,21 +320,16 @@ verify_file(const gchar *path, gboolean *ran, gchar **detail)
             *detail = g_strdup_printf(LIVE_DATA_REFUSAL, path);
         return FALSE;
     }
-    gchar   *uri = g_strdup_printf("file:%s?mode=ro", path);
-    sqlite3 *sq  = NULL;
-    if (sqlite3_open_v2(uri, &sq, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
-                        NULL) != SQLITE_OK) {
+    char      *why = NULL;
+    shared_db *sdb = shared_db_open_readonly(path, &why);
+    if (sdb == NULL) {
         if (detail != NULL)
-            *detail = g_strdup_printf("cannot open %s: %s", path,
-                sq != NULL ? sqlite3_errmsg(sq) : "?");
-        sqlite3_close(sq);
-        g_free(uri);
+            *detail = g_strdup(why != NULL ? why : "the file cannot be opened");
+        free(why);
         return FALSE;
     }
-    g_free(uri);
-
-    gboolean ok = db_check_pragmas(sq, ran, detail);
-    sqlite3_close(sq);
+    gboolean ok = db_check(sdb, FALSE, ran, detail);
+    shared_db_close(sdb);
     return ok;
 }
 
@@ -487,7 +385,7 @@ task_db_health_check(TaskDatabase *db)
 {
     TaskDbHealth verdict = { 0 };
 
-    verdict.ok   = db_check_pragmas(db->sq, &verdict.ran, &verdict.detail);
+    verdict.ok   = db_check(db->shared, TRUE, &verdict.ran, &verdict.detail);
     verdict.when = g_get_real_time() / G_USEC_PER_SEC;
     task_db_health_record(db, &verdict);
     return db->health.ok;
@@ -530,7 +428,7 @@ task_db_copy_file(TaskDatabase *db, const gchar *dest, gchar **err)
     }
     gchar *q   = sqlite3_mprintf("VACUUM INTO %Q", dest);
     gchar *msg = NULL;
-    gboolean ok = (sqlite3_exec(db->sq, q, NULL, NULL, &msg) == SQLITE_OK);
+    gboolean ok = (sqlite3_exec(shared_db_handle(db->shared), q, NULL, NULL, &msg) == SQLITE_OK);
     if (!ok && err != NULL)
         *err = g_strdup(msg != NULL ? msg : "?");
     sqlite3_free(msg);
@@ -539,7 +437,10 @@ task_db_copy_file(TaskDatabase *db, const gchar *dest, gchar **err)
 }
 
 /* ---------------------------------------------------------------------------
- * task_db_open() — open, and create the schema in a new file (see db.h).
+ * task_db_open() — open a connection to the shared file (see db.h).  The
+ * schema, the stamps, the refusal of any other file, WAL and the pragmas
+ * are the shared module's (shared_db.h); this adds only the fence round
+ * the GTK app's live data.
  * ------------------------------------------------------------------------- */
 TaskDatabase *
 task_db_open(const gchar *path, GError **err)
@@ -549,157 +450,16 @@ task_db_open(const gchar *path, GError **err)
                     LIVE_DATA_REFUSAL, path);
         return NULL;
     }
-    sqlite3 *sq = NULL;
-    if (sqlite3_open(path, &sq) != SQLITE_OK) {
-        g_set_error(err, g_quark_from_static_string("task-db"), 1,
-                    "cannot open %s: %s", path,
-                    sq != NULL ? sqlite3_errmsg(sq) : "?");
-        if (sq != NULL)
-            sqlite3_close(sq);
+    char      *why    = NULL;
+    shared_db *shared = shared_db_open(path, &why);
+    if (shared == NULL) {
+        g_set_error(err, g_quark_from_static_string("task-db"), 1, "%s",
+                    why != NULL ? why : "the database cannot be opened");
+        free(why);
         return NULL;
     }
     TaskDatabase *db = g_new0(TaskDatabase, 1);
-    db->sq   = sq;
-    db->path = g_strdup(path);
-
-    sqlite3_busy_timeout(sq, 5000);  /* GUI + sync worker share the file    */
-
-    /* The file's schema version, read BEFORE anything is written: this
-     * build opens a file at TASK_DB_SCHEMA_VERSION, or a new one (0), and
-     * refuses every other.  There are no migrations — the one database in
-     * use was converted to the current schema, and an older or newer file
-     * is left exactly as it was found rather than half-changed.            */
-    sqlite3_stmt *vst = NULL;
-    gint uv = -1;
-    if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
-        == SQLITE_OK && sqlite3_step(vst) == SQLITE_ROW)
-        uv = sqlite3_column_int(vst, 0);
-    sqlite3_finalize(vst);
-    if (uv != 0 && uv != TASK_DB_SCHEMA_VERSION) {
-        g_set_error(err, g_quark_from_static_string("task-db"), 3,
-                    uv < 0 ? "%s is not a database this app can read"
-                           : "%s is at schema version %d; this build opens "
-                             "only version " G_STRINGIFY(TASK_DB_SCHEMA_VERSION)
-                             " files",
-                    path, uv);
-        task_db_close(db);
-        return NULL;
-    }
-    exec(db, "PRAGMA foreign_keys = ON");
-
-    /* Write-ahead logging on a local disk: a reader (the hourly VACUUM INTO
-     * of the backup, the integrity probe) then no longer blocks the main
-     * thread's writes, which under the rollback journal waited out the
-     * busy timeout and then failed.  NORMAL synchronous is WAL's durable
-     * setting short of a power cut.  Not on a network mount, where the
-     * shared memory WAL needs does not work; and the journal is folded back
-     * into the file when the last connection closes, so a database at rest
-     * is one file either way.                                              */
-    if (volume_is_local(path)) {
-        exec(db, "PRAGMA journal_mode = WAL");
-        exec(db, "PRAGMA synchronous = NORMAL");
-    }
-
-    /* The schema, in full.  CREATE IF NOT EXISTS keeps reopen cheap, and
-     * every column is declared HERE, so a new file is complete the moment
-     * this block has run.  list_groups comes first: lists.group_id
-     * references it.                                                       */
-    exec(db,
-        "CREATE TABLE IF NOT EXISTS list_groups ("
-        "  id       INTEGER PRIMARY KEY,"
-        "  name     TEXT    NOT NULL DEFAULT '',"
-        "  position INTEGER NOT NULL DEFAULT 0)");
-    exec(db,
-        "CREATE TABLE IF NOT EXISTS lists ("
-        "  id         INTEGER PRIMARY KEY,"
-        "  name       TEXT    NOT NULL DEFAULT '',"
-        "  emoji      TEXT    NOT NULL DEFAULT '',"
-        "  position   INTEGER NOT NULL DEFAULT 0,"
-        "  group_id   INTEGER REFERENCES list_groups(id),"
-        "  updated_at INTEGER NOT NULL DEFAULT 0,"
-        "  deleted    INTEGER NOT NULL DEFAULT 0)");
-    /* The recurrence and due-time DEFAULTs come from the macros rather than
-     * from literals: one spelling of what an untouched row means.          */
-    {
-        gchar *tasks_sql = g_strdup_printf(
-            "CREATE TABLE IF NOT EXISTS tasks ("
-            "  id           INTEGER PRIMARY KEY,"
-            "  list_id      INTEGER NOT NULL REFERENCES lists(id),"
-            "  parent_id    INTEGER REFERENCES tasks(id),"
-            "  title        TEXT    NOT NULL DEFAULT '',"
-            "  notes        TEXT    NOT NULL DEFAULT '',"
-            "  due          INTEGER NOT NULL DEFAULT 0,"
-            "  status       INTEGER NOT NULL DEFAULT 0,"
-            "  pinned       INTEGER NOT NULL DEFAULT 0,"
-            "  priority     INTEGER NOT NULL DEFAULT 0,"
-            "  position     INTEGER NOT NULL DEFAULT 0,"
-            "  updated_at   INTEGER NOT NULL DEFAULT 0,"
-            "  deleted      INTEGER NOT NULL DEFAULT 0,"
-            "  completed_at INTEGER NOT NULL DEFAULT 0,"
-            /* The recurrence schedule (recur.h).                       */
-            "  recur_interval INTEGER NOT NULL DEFAULT 0,"
-            "  recur_unit     INTEGER NOT NULL DEFAULT 0,"
-            "  recur_time     INTEGER NOT NULL DEFAULT %d,"
-            "  recur_lead     INTEGER NOT NULL DEFAULT %d,"
-            "  recur_next     INTEGER NOT NULL DEFAULT 0,"
-            "  recur_start    INTEGER NOT NULL DEFAULT 0,"
-            /* The due date's time of day: a due date nobody has timed
-             * by hand means TASK_DUE_TIME_DEFAULT.                      */
-            "  due_time            INTEGER NOT NULL DEFAULT %d,"
-            /* Day planner schedule — LOCAL-ONLY, never synced.        */
-            "  scheduled_start    INTEGER NOT NULL DEFAULT 0,"
-            "  scheduled_duration INTEGER NOT NULL DEFAULT 60)",
-            TASK_RECUR_TIME_DEFAULT, TASK_RECUR_LEAD_DEFAULT,
-            TASK_DUE_TIME_DEFAULT);
-        exec(db, tasks_sql);
-        g_free(tasks_sql);
-    }
-    exec(db,
-        "CREATE TABLE IF NOT EXISTS attachments ("
-        "  id         INTEGER PRIMARY KEY,"
-        "  task_id    INTEGER NOT NULL REFERENCES tasks(id)"
-        "                     ON DELETE CASCADE,"
-        "  path       TEXT    NOT NULL,"
-        "  added_at   INTEGER NOT NULL DEFAULT 0)");
-    exec(db,
-        "CREATE TABLE IF NOT EXISTS sync_state ("
-        "  key   TEXT PRIMARY KEY,"
-        "  value TEXT)");
-    /* NO integration-owned tables here.  A side table belongs to whatever
-     * owns the integration (the calendar sync's: gcal_store.h).          */
-    exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_list "
-             "ON tasks(list_id, parent_id, position)");
-    /* The task pane's one subtask query, and the Due views: both are
-     * whole-table scans without these — idx_tasks_list leads on list_id,
-     * which neither has.                                                   */
-    exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_parent "
-             "ON tasks(parent_id) WHERE parent_id IS NOT NULL");
-    exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due)");
-    /* The day planner and the notification worker read a day's sessions
-     * by this range.                                                       */
-    exec(db, "CREATE INDEX IF NOT EXISTS idx_tasks_scheduled "
-             "ON tasks(scheduled_start)");
-
-    if (uv == 0) {
-        /* A new file: stamp it, then READ IT BACK.  A PRAGMA that reports
-         * success without taking effect leaves the file unstamped, and the
-         * next open would treat it as new again — harmless, but silent,
-         * which the error discipline forbids.  Only a new file is stamped:
-         * re-writing an unchanged user_version still writes page 1, which
-         * moves the file's modification time on every open and defeats
-         * the backup's "unchanged, skip" check (backup.c).                 */
-        exec(db, "PRAGMA user_version = " G_STRINGIFY(TASK_DB_SCHEMA_VERSION));
-        gint stamped = -1;
-        vst = NULL;
-        if (sqlite3_prepare_v2(sq, "PRAGMA user_version", -1, &vst, NULL)
-            == SQLITE_OK && sqlite3_step(vst) == SQLITE_ROW)
-            stamped = sqlite3_column_int(vst, 0);
-        sqlite3_finalize(vst);
-        if (stamped != TASK_DB_SCHEMA_VERSION)
-            g_warning("db: %s reports schema version %d after being stamped %d "
-                      "— the version stamp did not stick", path, stamped,
-                      TASK_DB_SCHEMA_VERSION);
-    }
+    db->shared = shared;
     return db;
 }
 
@@ -709,8 +469,7 @@ task_db_close(TaskDatabase *db)
 {
     if (db == NULL)
         return;
-    sqlite3_close(db->sq);
-    g_free(db->path);
+    shared_db_close(db->shared);
     g_free(db->health.detail);
     g_free(db);
 }
@@ -755,7 +514,7 @@ task_db_lists(TaskDatabase *db, gboolean include_deleted)
     gboolean custom = FALSE;
     {
         sqlite3_stmt *cs = NULL;
-        if (sqlite3_prepare_v2(db->sq,
+        if (sqlite3_prepare_v2(shared_db_handle(db->shared),
                 "SELECT 1 FROM sync_state WHERE key='lists_custom_order'",
                 -1, &cs, NULL) == SQLITE_OK)
             custom = (sqlite3_step(cs) == SQLITE_ROW);
@@ -766,7 +525,7 @@ task_db_lists(TaskDatabase *db, gboolean include_deleted)
         include_deleted ? "" : " WHERE deleted = 0",
         custom ? "position, lower(name)" : "lower(name)");
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK)
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK)
         while (sqlite3_step(st) == SQLITE_ROW)
             g_ptr_array_add(out, read_list(st));
     else
@@ -804,7 +563,7 @@ task_db_list_get(TaskDatabase *db, gint64 id)
 {
     sqlite3_stmt *st = NULL;
     TaskList *l = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "SELECT " LIST_COLS " FROM lists WHERE id = ?", -1,
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(st, 1, id);
@@ -823,7 +582,7 @@ task_db_list_create(TaskDatabase *db, const gchar *name, const gchar *emoji)
 {
     sqlite3_stmt *st = NULL;
     gint64 id = 0;                   /* the new rowid                       */
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "INSERT INTO lists(name, emoji, position, updated_at) "
             "VALUES(?, ?, "
             "(SELECT COALESCE(MAX(position), 0) + 1 FROM lists), ?)", -1,
@@ -833,7 +592,7 @@ task_db_list_create(TaskDatabase *db, const gchar *name, const gchar *emoji)
                           SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, now());
         if (step_done(db, st, "list create"))
-            id = sqlite3_last_insert_rowid(db->sq);
+            id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
     } else {
         step_done(db, NULL, "list create");
     }
@@ -847,7 +606,7 @@ task_db_list_update(TaskDatabase *db, gint64 id, const gchar *name,
                     const gchar *emoji)
 {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "UPDATE lists SET name = ?, emoji = ?, updated_at = ? "
             "WHERE id = ?", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
@@ -915,7 +674,7 @@ task_db_groups(TaskDatabase *db)
         "SELECT " GROUP_COLS " FROM list_groups "
         "ORDER BY position, lower(name)";
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK)
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK)
         while (sqlite3_step(st) == SQLITE_ROW)
             g_ptr_array_add(out, read_group(st));
     sqlite3_finalize(st);
@@ -928,7 +687,7 @@ task_db_group_get(TaskDatabase *db, gint64 id)
 {
     sqlite3_stmt *st = NULL;
     TaskGroup    *g  = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "SELECT " GROUP_COLS " FROM list_groups WHERE id = ?", -1,
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(st, 1, id);
@@ -945,12 +704,12 @@ task_db_group_create(TaskDatabase *db, const gchar *name)
 {
     sqlite3_stmt *st = NULL;
     gint64 id = 0;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "INSERT INTO list_groups(name) VALUES(?)", -1, &st, NULL)
             == SQLITE_OK) {
         sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
         if (step_done(db, st, "group create"))
-            id = sqlite3_last_insert_rowid(db->sq);
+            id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
     } else {
         step_done(db, NULL, "group create");
     }
@@ -975,7 +734,7 @@ void
 task_db_group_rename(TaskDatabase *db, gint64 id, const gchar *name)
 {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "UPDATE list_groups SET name = ? WHERE id = ?", -1, &st, NULL)
             == SQLITE_OK) {
         sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
@@ -1056,11 +815,12 @@ read_task(sqlite3_stmt *st)
     {
         gint m = sqlite3_column_int(st, 19);
         t->due_time = (m >= 0 && m <= 23 * 60 + 59) ? m
-                                                    : TASK_DUE_TIME_DEFAULT;
+                                                    : SHARED_DB_TASK_DUE_TIME_DEFAULT;
     }
     t->scheduled_start    = sqlite3_column_int64(st, 20);
     t->scheduled_duration = sqlite3_column_int(st, 21);
-    if (t->scheduled_duration <= 0) t->scheduled_duration = 60;
+    if (t->scheduled_duration <= 0)
+        t->scheduled_duration = SHARED_DB_TASK_SCHEDULED_DURATION_DEFAULT;
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
     return t;
@@ -1081,7 +841,7 @@ task_query(TaskDatabase *db, const gchar *sql, gint nbind, gint64 a, gint64 b)
 {
     GPtrArray *out = g_ptr_array_new();
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK) {
         if (nbind >= 1) sqlite3_bind_int64(st, 1, a);
         if (nbind >= 2) sqlite3_bind_int64(st, 2, b);
         while (sqlite3_step(st) == SQLITE_ROW)
@@ -1157,7 +917,7 @@ task_db_has_pinned(TaskDatabase *db)
                        "              WHERE pinned = 1 AND deleted = 0)";
     gboolean has = FALSE;
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) == SQLITE_OK &&
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK &&
         sqlite3_step(st) == SQLITE_ROW)
         has = sqlite3_column_int(st, 0) != 0;
     sqlite3_finalize(st);
@@ -1239,7 +999,7 @@ task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
     }
     sqlite3_stmt *st = NULL;
     gint64 id = 0;                   /* the new rowid                       */
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "INSERT INTO tasks(list_id, parent_id, title, position, "
             "updated_at, due_time) VALUES(?, ?, ?, (SELECT "
             "COALESCE(MAX(position), 0) + 1 FROM tasks WHERE list_id = ?1 "
@@ -1255,9 +1015,9 @@ task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
         /* Bound, not left to the column DEFAULT: a file created under an
          * older default keeps that DEFAULT forever (SQLite cannot alter
          * one), so only the macro is a reliable source.                  */
-        sqlite3_bind_int(st, 5, TASK_DUE_TIME_DEFAULT);
+        sqlite3_bind_int(st, 5, SHARED_DB_TASK_DUE_TIME_DEFAULT);
         if (step_done(db, st, "task create"))
-            id = sqlite3_last_insert_rowid(db->sq);
+            id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
     } else {
         step_done(db, NULL, "task create");
     }
@@ -1295,7 +1055,7 @@ static void
 parent_started(TaskDatabase *db, gint64 child_id)
 {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "UPDATE tasks SET status = ?1, updated_at = ?2 "
             "WHERE id = (SELECT parent_id FROM tasks WHERE id = ?3) "
             "AND status = ?4 AND deleted = 0", -1, &st, NULL) == SQLITE_OK) {
@@ -1333,7 +1093,7 @@ task_db_task_update(TaskDatabase *db, const Task *t)
      * recur_next between edits goes through task_db_task_recur_set_next
      * instead, which stamps nothing.                                       */
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "UPDATE tasks SET title = ?1, notes = ?2, due = ?3, "
             "completed_at = CASE WHEN ?4 = 2 AND status <> 2 THEN ?6 "
             "                    ELSE completed_at END, "
@@ -1390,7 +1150,7 @@ void
 task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status)
 {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "UPDATE tasks SET completed_at = CASE "
             "                    WHEN ?1 = 2 AND status <> 2 THEN ?2 "
             "                    ELSE completed_at END, "
@@ -1451,7 +1211,8 @@ task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
     gchar *sql = g_strdup_printf(
         "UPDATE tasks SET scheduled_start = %lld, scheduled_duration = %d "
         "WHERE id = %lld",
-        (long long)start_unix, duration_min > 0 ? duration_min : 60,
+        (long long)start_unix,
+        duration_min > 0 ? duration_min : SHARED_DB_TASK_SCHEDULED_DURATION_DEFAULT,
         (long long)id);
     exec(db, sql);
     g_free(sql);
@@ -1523,7 +1284,7 @@ task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
                          gint due_time, gint64 next)
 {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "UPDATE tasks SET due = ?1, due_time = ?5, "
             "status       = CASE WHEN status = 2 THEN 0 ELSE status END, "
             "recur_next = ?2, updated_at = ?3 WHERE id = ?4", -1,
@@ -1548,7 +1309,7 @@ void
 task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next)
 {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "UPDATE tasks SET recur_next = ?1 WHERE id = ?2", -1,
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(st, 1, next);
@@ -1596,7 +1357,7 @@ task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction)
     g_ptr_array_index(subs, target) = tmp;
 
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, "UPDATE tasks SET position = ? WHERE id = ?",
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared), "UPDATE tasks SET position = ? WHERE id = ?",
                            -1, &st, NULL) != SQLITE_OK) {
         step_done(db, NULL, "subtask_move prepare");
     } else if (task_db_transaction_begin(db)) {
@@ -1653,7 +1414,7 @@ task_db_tasks_delete_done(TaskDatabase *db, gint64 list_id)
     sqlite3_free(sql);
     /* The changes of the last UPDATE: the parents.  Zero after a rollback
      * too, since the rollback is not a write of its own. */
-    return (guint)MAX(sqlite3_changes(db->sq), 0);
+    return (guint)MAX(sqlite3_changes(shared_db_handle(db->shared)), 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1664,7 +1425,7 @@ task_db_attachments(TaskDatabase *db, gint64 task_id)
 {
     GPtrArray *out = g_ptr_array_new();
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "SELECT id, task_id, path FROM attachments WHERE task_id = ? "
             "ORDER BY added_at, id", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(st, 1, task_id);
@@ -1687,14 +1448,14 @@ task_db_attachment_add(TaskDatabase *db, gint64 task_id, const gchar *path)
 {
     sqlite3_stmt *st = NULL;
     gint64 id = 0;                   /* the new rowid                       */
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "INSERT INTO attachments(task_id, path, added_at) "
             "VALUES(?, ?, ?)", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(st, 1, task_id);
         sqlite3_bind_text(st, 2, path, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, now());
         if (step_done(db, st, "attachment add"))
-            id = sqlite3_last_insert_rowid(db->sq);
+            id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
     } else {
         step_done(db, NULL, "attachment add");
     }
@@ -1718,7 +1479,7 @@ task_db_attachment_counts(TaskDatabase *db)
 {
     GHashTable *map = g_hash_table_new(g_direct_hash, g_direct_equal);
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq,
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "SELECT task_id, COUNT(*) FROM attachments GROUP BY task_id",
             -1, &st, NULL) == SQLITE_OK)
         while (sqlite3_step(st) == SQLITE_ROW)
@@ -1745,7 +1506,7 @@ task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists)
             continue;
         *q[i].out = 0;
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(db->sq, q[i].sql, -1, &st, NULL)
+        if (sqlite3_prepare_v2(shared_db_handle(db->shared), q[i].sql, -1, &st, NULL)
                 == SQLITE_OK &&
             sqlite3_step(st) == SQLITE_ROW)
             *q[i].out = sqlite3_column_int(st, 0);

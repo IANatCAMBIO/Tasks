@@ -1509,7 +1509,8 @@ reload
         item.task_id    = t->id;
         item.title      = (*t->title != '\0') ? tasks_string(t->title) : @"Untitled";
         item.start_unix = t->scheduled_start;
-        item.duration   = t->scheduled_duration > 0 ? t->scheduled_duration : 60;
+        item.duration   = t->scheduled_duration > 0 ? t->scheduled_duration
+                                                    : SHARED_DB_TASK_SCHEDULED_DURATION_DEFAULT;
         item.status     = t->status;
         [self.items addObject:item];
         [present addObject:@(t->id)];

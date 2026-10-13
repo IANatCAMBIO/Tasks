@@ -24,7 +24,6 @@ static const struct {
     kind_t      kind;
     const char *def;
 } registry[] = {
-    { TASK_CFG_DB_DIR,              kind_text, NULL  },
     { TASK_CFG_BACKUP_ENABLED,      kind_bool, "0"   },
     { TASK_CFG_BACKUP_DIR,          kind_text, NULL  },
     { TASK_CFG_BACKUP_INTERVAL_MIN, kind_int,  "60"  },

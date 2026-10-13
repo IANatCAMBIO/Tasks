@@ -166,12 +166,9 @@ api_checks(void)
 static void
 store_checks(TaskDatabase *db)
 {
-    check(!gcal_store_dirty(db), "store: before init nothing is dirty and nothing fails");
     GPtrArray *none = gcal_store_bindings(db);
-    check(none->len == 0, "store: before init there are no bindings");
+    check(none->len == 0, "store: a new file has no bindings");
     g_ptr_array_free(none, TRUE);
-
-    check(gcal_store_init(db) && gcal_store_init(db), "store: init is repeatable");
     check(!gcal_store_dirty(db), "store: an empty planner is clean");
 
     gint64 list = task_db_list_create(db, "Work", NULL);

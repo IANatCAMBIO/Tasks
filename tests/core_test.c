@@ -332,8 +332,8 @@ file_version(sqlite3 *sq)
 }
 
 /*
- * test_db_fresh_schema — a new database file opens (the full schema is created) and
- * closes.
+ * test_db_fresh_schema — a new database file opens (the shared module
+ * creates the full schema and stamps it) and closes.
  */
 static void
 test_db_fresh_schema(void)
@@ -346,7 +346,7 @@ test_db_fresh_schema(void)
     TaskDatabase *db = task_db_open(path, &err);
     g_assert_no_error(err);
     g_assert_nonnull(db);
-    g_assert_cmpint(file_version(db->sq), ==, TASK_DB_SCHEMA_VERSION);
+    g_assert_cmpint(file_version(shared_db_handle(db->shared)), ==, SHARED_DB_SCHEMA_VERSION);
 
     task_db_close(db);
 
@@ -357,9 +357,10 @@ test_db_fresh_schema(void)
 }
 
 /*
- * test_db_other_version_refused — a file at any schema version but the
- * current one is refused, and left exactly as it was: not stamped, given
- * no tables, its journal mode unchanged.
+ * test_db_other_version_refused — an old Tasks database (schema v14, no
+ * application_id) is refused with the shared module's words, and left
+ * exactly as it was: not stamped, given no tables, its journal mode
+ * unchanged.
  */
 static void
 test_db_other_version_refused(void)
@@ -371,18 +372,18 @@ test_db_other_version_refused(void)
 
     g_assert_cmpint(sqlite3_open(path, &sq), ==, SQLITE_OK);
     g_assert_cmpint(sqlite3_exec(sq, "CREATE TABLE tasks (id INTEGER PRIMARY KEY);"
-                                     "PRAGMA user_version = 12", NULL, NULL, NULL),
+                                     "PRAGMA user_version = 14", NULL, NULL, NULL),
                     ==, SQLITE_OK);
     sqlite3_close(sq);
 
     TaskDatabase *db = task_db_open(path, &err);
     g_assert_null(db);
     g_assert_nonnull(err);
-    g_assert_nonnull(strstr(err->message, "schema version 12"));
+    g_assert_nonnull(strstr(err->message, "is not a shared database"));
     g_clear_error(&err);
 
     g_assert_cmpint(sqlite3_open(path, &sq), ==, SQLITE_OK);
-    g_assert_cmpint(file_version(sq), ==, 12);
+    g_assert_cmpint(file_version(sq), ==, 14);
     sqlite3_stmt *st = NULL;
     g_assert_cmpint(sqlite3_prepare_v2(sq, "SELECT count(*) FROM sqlite_master",
                                        -1, &st, NULL), ==, SQLITE_OK);
@@ -443,7 +444,7 @@ test_db_create_read_task(void)
 
 /*
  * test_db_create_due_time_default — a new task's due time is
- * TASK_DUE_TIME_DEFAULT even in a file whose tasks table was created under
+ * SHARED_DB_TASK_DUE_TIME_DEFAULT even in a file whose tasks table was created under
  * an older default: SQLite cannot alter a column DEFAULT, so the file's
  * stale one (08:00 here) must not be what a new task gets.
  */
@@ -465,7 +466,7 @@ test_db_create_due_time_default(void)
         "UPDATE sqlite_master SET sql = replace(sql, 'due_time            "
         "INTEGER NOT NULL DEFAULT %d', 'due_time            INTEGER NOT NULL "
         "DEFAULT 480') WHERE name = 'tasks';"
-        "PRAGMA writable_schema = OFF", TASK_DUE_TIME_DEFAULT);
+        "PRAGMA writable_schema = OFF", SHARED_DB_TASK_DUE_TIME_DEFAULT);
     g_assert_cmpint(sqlite3_open(path, &sq), ==, SQLITE_OK);
     g_assert_cmpint(sqlite3_exec(sq, old_default, NULL, NULL, NULL), ==, SQLITE_OK);
     g_assert_cmpint(sqlite3_changes(sq), ==, 1);
@@ -479,7 +480,7 @@ test_db_create_due_time_default(void)
 
     Task *t = task_db_task_get(db, task_id);
     g_assert_nonnull(t);
-    g_assert_cmpint(t->due_time, ==, TASK_DUE_TIME_DEFAULT);
+    g_assert_cmpint(t->due_time, ==, SHARED_DB_TASK_DUE_TIME_DEFAULT);
     task_free(t);
 
     task_db_close(db);

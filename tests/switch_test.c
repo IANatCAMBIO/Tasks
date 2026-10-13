@@ -1,7 +1,8 @@
 /*
  * switch_test.c — changing the open database (src/task_switch.h): what is
- * refused and leaves the app untouched, what a switch does, and which
- * files can be made the default.
+ * refused and leaves the app untouched (an old Tasks database included),
+ * what a switch does, and that the default cannot be changed while
+ * CAMBIO_SHARED_DB names the file.
  *
  * The live data directory is a FAKE one — $XDG_DATA_HOME pointed into the
  * sandbox — as in config_test.c.
@@ -84,15 +85,31 @@ test_refusals(TaskApp *app, const char *scratch)
     char          path[1200];
     char         *why = NULL;
 
-    check(task_switch_check(app, app->db->path, &why) == task_switch_already_open && why == NULL,
+    check(task_switch_check(app, shared_db_file(app->db->shared), &why) == task_switch_already_open && why == NULL,
           "check: the open database is already open");
-    check(!task_switch_database(app, app->db->path, &why) && why == NULL && app->db == before,
+    check(!task_switch_database(app, shared_db_file(app->db->shared), &why) && why == NULL && app->db == before,
           "switch: to the open database is a no-op");
 
     snprintf(path, sizeof path, "%s/notes.db", scratch);
     write_text(path, "this is not a database\n");
     check(task_switch_check(app, path, &why) == task_switch_refused && why != NULL,
           "check: a file that is not a database is refused, with a reason");
+    free(why);
+    check(!task_switch_database(app, path, &why) && why != NULL && app->db == before,
+          "switch: ... and the open database is untouched");
+    free(why);
+
+    /* An old Tasks database (schema v14, no shared stamps): refused in the
+     * shared module's words and left untouched. */
+    snprintf(path, sizeof path, "%s/tasks.db", scratch);
+    sqlite3 *sq = NULL;
+    sqlite3_open(path, &sq);
+    sqlite3_exec(sq, "CREATE TABLE tasks (id INTEGER PRIMARY KEY);"
+                     "PRAGMA user_version = 14", NULL, NULL, NULL);
+    sqlite3_close(sq);
+    check(task_switch_check(app, path, &why) == task_switch_refused && why != NULL &&
+          strstr(why, "not a shared database") != NULL,
+          "check: an old Tasks database is refused in the shared module's words");
     free(why);
     check(!task_switch_database(app, path, &why) && why != NULL && app->db == before,
           "switch: ... and the open database is untouched");
@@ -126,7 +143,7 @@ test_refusals(TaskApp *app, const char *scratch)
 }
 
 /*
- * test_switch — a real switch, and the default-folder rule.
+ * test_switch — a real switch, and the default rule under the sandbox.
  *
  * Inputs:
  *   app     — the context, its database the fixture's empty one
@@ -138,35 +155,26 @@ test_switch(TaskApp *app, const char *scratch)
     char  first[1200], dir[1100], path[1200];
     char *why = NULL;
 
-    snprintf(first, sizeof first, "%s", app->db->path);
+    snprintf(first, sizeof first, "%s", shared_db_file(app->db->shared));
     snprintf(dir, sizeof dir, "%s/elsewhere", scratch);
     mkdir(dir, 0755);
 
-    /* Under another name: it can be opened, but cannot be the default. */
     snprintf(path, sizeof path, "%s/work.db", dir);
     make_database(path);
     check(task_switch_check(app, path, &why) == task_switch_can_open && why == NULL,
           "check: a sound database elsewhere can be opened");
     check(task_switch_database(app, path, &why) && why == NULL &&
-          strcmp(app->db->path, path) == 0 && list_count(app) == 1,
+          strcmp(shared_db_file(app->db->shared), path) == 0 && list_count(app) == 1,
           "switch: the app's database is now the one picked");
-    check(task_switch_default_dir(path) == NULL,
-          "default: a file not named tasks.db cannot be the default");
 
-    /* Named tasks.db: its folder is what the setting would hold. */
-    snprintf(path, sizeof path, "%s/%s", dir, TASK_DB_FILENAME);
-    make_database(path);
-    char *folder = task_switch_default_dir(path);
-    check(folder != NULL && strcmp(folder, dir) == 0,
-          "default: a tasks.db elsewhere offers its folder");
-    free(folder);
-
-    task_config_set(TASK_CFG_DB_DIR, dir);
-    check(task_switch_default_dir(path) == NULL,
-          "default: the database the config already opens offers nothing");
-    task_config_set(TASK_CFG_DB_DIR, NULL);
-    check(task_switch_default_dir(first) == NULL,
-          "default: nor does the one in the data directory when no folder is set");
+    /* CAMBIO_SHARED_DB names the file for this run (the tests always set
+     * it), so the per-user pointer file must not be written. */
+    check(!task_switch_can_be_default(path),
+          "default: not offered while CAMBIO_SHARED_DB names the database");
+    check(!task_switch_set_default(path, &why) && why != NULL &&
+          strstr(why, SHARED_DB_ENV_VAR) != NULL,
+          "default: refused while CAMBIO_SHARED_DB names the database, saying why");
+    free(why);
 
     check(task_switch_database(app, first, &why) && list_count(app) == 0,
           "switch: and back again");

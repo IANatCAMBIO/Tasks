@@ -31,9 +31,7 @@
  * Every fixed key, with its type and default.  "bool" is "1"/"0".  A key
  * with no default reads as NULL / FALSE / 0 until it is written. */
 
-/* Database */
-#define TASK_CFG_DB_DIR              "db_dir"              /* dir holding tasks.db; none = data dir.
-                                                            * Written only by File > Open Database File */
+/* Database backups */
 #define TASK_CFG_BACKUP_ENABLED      "backup_enabled"      /* bool, 0 */
 #define TASK_CFG_BACKUP_DIR          "backup_dir"          /* dir; none = <data dir>/backups */
 #define TASK_CFG_BACKUP_INTERVAL_MIN "backup_interval_min" /* int minutes, 60; 0 = manual only */

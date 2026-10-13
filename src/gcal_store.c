@@ -10,9 +10,9 @@
 #define ACCOUNT_KEY "gcal_account"
 
 /*
- * prepare — compile one statement.  A missing table (the sync never ran
- * against this file) is an ordinary state, so failures are not logged:
- * every reader then returns nothing.
+ * prepare — compile one statement.  Failures are not logged: every reader
+ * then returns nothing (the tables are the shared schema's, so a failure
+ * here means a damaged file, which the health check reports).
  *
  * Inputs:
  *   db  — the connection
@@ -25,7 +25,7 @@ static sqlite3_stmt *
 prepare(TaskDatabase *db, const gchar *sql)
 {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db->sq, sql, -1, &st, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) != SQLITE_OK) {
         sqlite3_finalize(st);
         return NULL;
     }
@@ -46,7 +46,7 @@ static gboolean
 run(TaskDatabase *db, const gchar *sql)
 {
     gchar *msg = NULL;
-    if (sqlite3_exec(db->sq, sql, NULL, NULL, &msg) != SQLITE_OK) {
+    if (sqlite3_exec(shared_db_handle(db->shared), sql, NULL, NULL, &msg) != SQLITE_OK) {
         g_warning("gcal_store: %s: %s", sql, msg != NULL ? msg : "?");
         sqlite3_free(msg);
         return FALSE;
@@ -118,38 +118,6 @@ gcal_binding_free(gcal_binding_t *b)
     g_free(b->event_id);
     g_free(b->pushed_title);
     g_free(b);
-}
-
-/*
- * gcal_store_init — create the tables when missing.
- * Documented in gcal_store.h.
- */
-gboolean
-gcal_store_init(TaskDatabase *db)
-{
-    return run(db,
-        "CREATE TABLE IF NOT EXISTS gcal_calendar ("
-        "  id         TEXT PRIMARY KEY,"
-        "  summary    TEXT    NOT NULL DEFAULT '',"
-        "  color      TEXT    NOT NULL DEFAULT '',"
-        "  writable   INTEGER NOT NULL DEFAULT 0,"
-        "  is_primary INTEGER NOT NULL DEFAULT 0);"
-        "CREATE TABLE IF NOT EXISTS gcal_event ("
-        "  calendar_id TEXT    NOT NULL,"
-        "  event_id    TEXT    NOT NULL,"
-        "  title       TEXT    NOT NULL DEFAULT '',"
-        "  start       INTEGER NOT NULL,"
-        "  end         INTEGER NOT NULL,"
-        "  all_day     INTEGER NOT NULL DEFAULT 0,"
-        "  PRIMARY KEY (calendar_id, event_id));"
-        "CREATE INDEX IF NOT EXISTS idx_gcal_event_start ON gcal_event(start);"
-        "CREATE TABLE IF NOT EXISTS gcal_task ("
-        "  task_id         INTEGER PRIMARY KEY,"
-        "  calendar_id     TEXT    NOT NULL,"
-        "  event_id        TEXT    NOT NULL,"
-        "  pushed_start    INTEGER NOT NULL,"
-        "  pushed_duration INTEGER NOT NULL,"
-        "  pushed_title    TEXT    NOT NULL DEFAULT '')");
 }
 
 /*
@@ -339,7 +307,7 @@ gcal_store_bind(TaskDatabase *db, const gcal_binding_t *b)
     bind_text(st, 6, b->pushed_title);
     if (sqlite3_step(st) != SQLITE_DONE)
         g_warning("gcal_store: binding task %lld: %s", (long long)b->task_id,
-                  sqlite3_errmsg(db->sq));
+                  sqlite3_errmsg(shared_db_handle(db->shared)));
     sqlite3_finalize(st);
 }
 
@@ -397,11 +365,12 @@ gcal_store_reschedule(TaskDatabase *db, gint64 task_id, gint64 expect_start,
         " WHERE id = ? AND scheduled_start = ? AND scheduled_duration = ?");
     if (st == NULL) return FALSE;
     sqlite3_bind_int64(st, 1, start);
-    sqlite3_bind_int(st, 2, duration > 0 ? duration : 60);
+    sqlite3_bind_int(st, 2, duration > 0 ? duration
+                                       : SHARED_DB_TASK_SCHEDULED_DURATION_DEFAULT);
     sqlite3_bind_int64(st, 3, task_id);
     sqlite3_bind_int64(st, 4, expect_start);
     sqlite3_bind_int(st, 5, expect_dur);
-    gboolean ok = sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(db->sq) > 0;
+    gboolean ok = sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(shared_db_handle(db->shared)) > 0;
     sqlite3_finalize(st);
     return ok;
 }

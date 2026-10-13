@@ -1248,7 +1248,7 @@ refresh_facts
     gint n_tasks = 0;
     gint n_lists = 0;
 
-    self.path_label.stringValue = tasks_string(db->path);
+    self.path_label.stringValue = tasks_string(shared_db_file(db->shared));
 
     task_db_totals(db, &n_tasks, &n_lists);
     self.data_label.stringValue =
@@ -1402,7 +1402,7 @@ copy_sha:(id)sender
 - (void)
 copy_path:(id)sender
 {
-    copy_to_pasteboard(tasks_string(self.app->db->path));
+    copy_to_pasteboard(tasks_string(shared_db_file(self.app->db->shared)));
     task_app_status(self.app, "Database path copied to the clipboard");
 }
 
@@ -1471,7 +1471,7 @@ refresh_backup
     self.backup_button.enabled    = on;
 
     gchar    *dir    = task_backup_dir();
-    NSString *db_dir = [tasks_string(self.app->db->path) stringByDeletingLastPathComponent];
+    NSString *db_dir = [tasks_string(shared_db_file(self.app->db->shared)) stringByDeletingLastPathComponent];
     self.folder_label.stringValue =
         [NSString stringWithFormat:@"Backing up to %@", tasks_string(dir)];
     self.fate_label.hidden = !task_path_shares_fate(dir, db_dir.fileSystemRepresentation);
@@ -1490,7 +1490,7 @@ refresh_backup
 toggle_backup:(NSButton *)sender
 {
     task_config_set_bool(TASK_CFG_BACKUP_ENABLED, sender.state == NSControlStateValueOn);
-    task_backup_auto_start(self.app, self.app->db->path);
+    task_backup_auto_start(self.app, shared_db_file(self.app->db->shared));
     [self refresh_backup];
 }
 
@@ -1512,7 +1512,7 @@ interval_changed:(NSControl *)sender
      * restart the wait for the next pass. */
     if (minutes == task_config_get_int(TASK_CFG_BACKUP_INTERVAL_MIN)) return;
     task_config_set_int(TASK_CFG_BACKUP_INTERVAL_MIN, (gint)minutes);
-    task_backup_auto_start(self.app, self.app->db->path);
+    task_backup_auto_start(self.app, shared_db_file(self.app->db->shared));
 }
 
 /*
@@ -1575,7 +1575,7 @@ use_backup_folder:(NSString *)path
 
     task_config_set(TASK_CFG_BACKUP_DIR, path.fileSystemRepresentation);
     if (task_backup_ready(&reason)) {
-        task_backup_auto_start(self.app, self.app->db->path);
+        task_backup_auto_start(self.app, shared_db_file(self.app->db->shared));
         [self refresh_backup];
         [self fit_window];
     } else {
@@ -1606,7 +1606,7 @@ back_up_now:(id)sender
         return;
     }
     [self show_backup_status:@"Backing up…"];
-    task_backup_start(self.app, self.app->db->path, on_backup_done, NULL);
+    task_backup_start(self.app, shared_db_file(self.app->db->shared), on_backup_done, NULL);
 }
 
 /*

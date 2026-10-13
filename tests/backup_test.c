@@ -79,7 +79,7 @@ run_backup(TaskApp *app)
 {
     seen_t seen = { 0 };
 
-    task_backup_start(app, app->db->path, on_done, &seen);
+    task_backup_start(app, shared_db_file(app->db->shared), on_done, &seen);
     for (int i = 0; i < 200 && seen.calls == 0; i++) check_spin(0.05);
     return seen;
 }
@@ -237,12 +237,12 @@ test_destination(TaskApp *app)
     task_config_set_bool(TASK_CFG_BACKUP_ENABLED, FALSE);
     seen_t seen = { 0 };
     last_status[0] = '\0';
-    task_backup_start(app, app->db->path, on_done, &seen);
+    task_backup_start(app, shared_db_file(app->db->shared), on_done, &seen);
     check(seen.calls == 1 && !seen.ok && strstr(seen.message, "switched off") != NULL,
           "start: a pass with backups off reports why, before returning");
     check(strstr(last_status, "switched off") != NULL, "start: ... in the status bar too");
     check(!app->backup_running && count_backups(path) == 0, "start: ... and nothing is written");
-    task_backup_start(app, app->db->path, NULL, NULL);
+    task_backup_start(app, shared_db_file(app->db->shared), NULL, NULL);
     check(1, "start: the completion callback is optional");
 
     task_config_set(TASK_CFG_BACKUP_DIR, NULL);
@@ -309,13 +309,13 @@ test_pass(TaskApp *app)
 
     last_status[0] = '\0';
     seen_t seen = { 0 };
-    task_backup_start(app, app->db->path, on_done, &seen);
+    task_backup_start(app, shared_db_file(app->db->shared), on_done, &seen);
     check(app->backup_running && seen.calls == 0,
           "pass: it runs in the background (not finished when start returns)");
 
     /* A second start while one is in flight is dropped without a callback. */
     seen_t second = { 0 };
-    task_backup_start(app, app->db->path, on_done, &second);
+    task_backup_start(app, shared_db_file(app->db->shared), on_done, &second);
     for (int i = 0; i < 200 && seen.calls == 0; i++) check_spin(0.05);
     check_spin(0.1);
     check(seen.calls == 1 && seen.ok, "pass: it completes and reports success once");
@@ -509,32 +509,32 @@ test_timer(TaskApp *app)
 
     task_config_set_bool(TASK_CFG_BACKUP_ENABLED, TRUE);
     task_config_set(TASK_CFG_BACKUP_INTERVAL_MIN, NULL);
-    task_backup_auto_start(app, app->db->path);
+    task_backup_auto_start(app, shared_db_file(app->db->shared));
     guint first = app->backup_timer;
     check(first != 0, "timer: enabled with the default interval arms a timer");
 
-    task_backup_auto_start(app, app->db->path);
+    task_backup_auto_start(app, shared_db_file(app->db->shared));
     check(app->backup_timer != 0 && app->backup_timer != first,
           "timer: re-arming replaces the timer rather than adding one");
 
     task_config_set_int(TASK_CFG_BACKUP_INTERVAL_MIN, 0);
-    task_backup_auto_start(app, app->db->path);
+    task_backup_auto_start(app, shared_db_file(app->db->shared));
     check(app->backup_timer == 0, "timer: interval 0 is manual only: no timer");
 
     task_config_set_int(TASK_CFG_BACKUP_INTERVAL_MIN, -30);
-    task_backup_auto_start(app, app->db->path);
+    task_backup_auto_start(app, shared_db_file(app->db->shared));
     check(app->backup_timer == 0, "timer: a negative interval is manual only too");
 
     task_config_set_int(TASK_CFG_BACKUP_INTERVAL_MIN, 15);
-    task_backup_auto_start(app, app->db->path);
+    task_backup_auto_start(app, shared_db_file(app->db->shared));
     check(app->backup_timer != 0, "timer: a new interval arms it again");
 
     task_config_set_bool(TASK_CFG_BACKUP_ENABLED, FALSE);
-    task_backup_auto_start(app, app->db->path);
+    task_backup_auto_start(app, shared_db_file(app->db->shared));
     check(app->backup_timer == 0, "timer: switching backups off removes the timer");
 
     task_config_set_bool(TASK_CFG_BACKUP_ENABLED, TRUE);
-    task_backup_auto_start(app, app->db->path);
+    task_backup_auto_start(app, shared_db_file(app->db->shared));
     check_spin(0.3);
     check(count_backups(dir) == 0 && !app->backup_running,
           "timer: arming does not run a pass of its own");

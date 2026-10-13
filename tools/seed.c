@@ -6,9 +6,10 @@
  * priority and attachments.
  *
  * Run through `make seed`, which empties the sandbox first and sets
- * TASKS_DATA_DIR.  The tool refuses to run without that variable and
- * refuses to touch a database that already exists, so it can never write
- * into the per-user data directory or over real data.
+ * TASKS_DATA_DIR and CAMBIO_SHARED_DB.  The tool refuses to run without
+ * both variables and refuses to touch a database that already exists, so
+ * it can never write into the per-user data directory, the per-user
+ * shared database or over real data.
  *
  * Output: exit status 0 on success, 1 on any refusal or failure.
  */
@@ -249,8 +250,10 @@ int
 main(void)
 {
     const char *sandbox = getenv(TASK_DATA_DIR_ENV);
-    if (sandbox == NULL || sandbox[0] == '\0') {
-        fprintf(stderr, "seed: %s is not set; run `make seed`\n", TASK_DATA_DIR_ENV);
+    const char *shared  = getenv(SHARED_DB_ENV_VAR);
+    if (sandbox == NULL || sandbox[0] == '\0' || shared == NULL || shared[0] == '\0') {
+        fprintf(stderr, "seed: %s and %s must both be set; run `make seed`\n",
+                TASK_DATA_DIR_ENV, SHARED_DB_ENV_VAR);
         return 1;
     }
     if (!task_config_init()) {
@@ -258,8 +261,8 @@ main(void)
         return 1;
     }
 
-    gchar *path = task_db_default_path();
-    if (g_file_test(path, G_FILE_TEST_EXISTS)) {
+    char *path = shared_db_path(NULL);
+    if (path == NULL || g_file_test(path, G_FILE_TEST_EXISTS)) {
         fprintf(stderr, "seed: %s already exists; refusing to write into it\n", path);
         return 1;
     }
@@ -312,7 +315,7 @@ main(void)
            COUNT(seed_groups), path);
 
     for (int i = 0; i < 3; i++) g_free(attachments[i]);
-    g_free(path);
+    free(path);
     task_app_free(app);
     task_config_close();
     return 0;

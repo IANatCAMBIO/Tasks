@@ -1599,7 +1599,7 @@ report_database_health
 {
     if (task_db_health_check(self.app->db)) {
         task_app_status(self.app, "DB at %s loaded, integrity check passed",
-                        self.app->db->path);
+                        shared_db_file(self.app->db->shared));
         return;
     }
     const TaskDbHealth *health = task_db_health(self.app->db);
@@ -1613,9 +1613,9 @@ report_database_health
 
 /*
  * offer_default_database: — after a database was opened by hand, ask
- * whether it should be the one opened at every launch.  Nothing is asked
- * when it cannot be (task_switch_default_dir says which files can).
- * Declining leaves it open for this session only.
+ * whether both apps should open it at every launch.  Nothing is asked when
+ * it cannot be (task_switch_can_be_default says when).  Declining leaves
+ * it open for this session only.
  *
  * Inputs:
  *   path — the database just opened
@@ -1623,25 +1623,29 @@ report_database_health
 - (void)
 offer_default_database:(NSString *)path
 {
-    char *dir = task_switch_default_dir(path.fileSystemRepresentation);
-    if (dir == NULL) return;
-    NSString *folder = tasks_string(dir);
-    free(dir);
+    if (!task_switch_can_be_default(path.fileSystemRepresentation)) return;
 
     __weak TasksLibraryWindow *ws = self;
     tasks_ui_confirm(self.window, @"Make this the default database?",
                      [NSString stringWithFormat:
-                         @"%@\n\n" @TASKS_APP_NAME @" will open it at every launch.  "
-                         @"Cancel keeps it open for this session only.", path],
+                         @"%@\n\nNotes and " @TASKS_APP_NAME @" will open it at every launch.  "
+                         @"Cancel keeps it open in " @TASKS_APP_NAME @" for this session only.",
+                         path],
                      @"Make Default", NO, ^(BOOL confirmed) {
         TasksLibraryWindow *s = ws;
         if (!s || s.is_shut_down || !confirmed) return;
         /* Only if it is still the open database: another may have been
          * opened while the question was up. */
-        if (strcmp(s.app->db->path, path.fileSystemRepresentation) != 0) return;
-        task_config_set(TASK_CFG_DB_DIR, folder.fileSystemRepresentation);
-        task_app_status(s.app, "Default database folder set to %s",
-                        folder.fileSystemRepresentation);
+        const char *file = path.fileSystemRepresentation;
+        if (strcmp(shared_db_file(s.app->db->shared), file) != 0) return;
+        char *why = NULL;
+        if (task_switch_set_default(file, &why)) {
+            task_app_status(s.app, "Default database set to %s", file);
+        } else {
+            tasks_ui_notice(s.window, @"Could not make it the default",
+                            tasks_string(why), nil);
+        }
+        free(why);
     });
 }
 
@@ -1688,7 +1692,7 @@ open_database:(NSString *)path
 pick_database
 {
     __weak TasksLibraryWindow *ws = self;
-    tasks_ui_pick_path(self.window, TasksPickFile, @"Choose a Tasks database to open.",
+    tasks_ui_pick_path(self.window, TasksPickFile, @"Choose a shared Notes and Tasks database to open.",
                        @"Open", @[@"db"], nil, ^(NSString *path) {
         if (!path) return;
         /* On the next pass: the panel's sheet is still coming down, and

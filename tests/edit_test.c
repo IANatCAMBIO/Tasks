@@ -226,7 +226,7 @@ test_lead_units(void)
     check(count == 49 && unit == TASK_RECUR_HOUR, "lead split: 49 hours is not 2 days");
     task_edit_lead_split(4320, &count, &unit);
     check(count == 3 && unit == TASK_RECUR_DAY, "lead split: 3 days");
-    task_edit_lead_split(TASK_RECUR_LEAD_DEFAULT, &count, &unit);
+    task_edit_lead_split(SHARED_DB_TASK_RECUR_LEAD_DEFAULT, &count, &unit);
     check(count == 1 && unit == TASK_RECUR_WEEK, "lead split: the one-week default");
     task_edit_lead_split(20160, &count, &unit);
     check(count == 2 && unit == TASK_RECUR_WEEK, "lead split: 2 weeks");
@@ -272,7 +272,7 @@ test_lead_follow(void)
     /* Every 1 week -> every 4 weeks: the default is capped at one week. */
     form.every = 4;
     check(task_edit_lead_follow(&seen_every, &seen_unit, &form, &lead) &&
-          lead == TASK_RECUR_LEAD_DEFAULT,
+          lead == SHARED_DB_TASK_RECUR_LEAD_DEFAULT,
           "follow: ... and to the one-week ceiling for a long period");
     task_edit_lead_split(lead, &form.lead_count, &form.lead_unit);
 
@@ -363,7 +363,7 @@ test_apply(void)
     /* The one exception: an unreadable schedule time is the default. */
     form.recur_time_text = "9:";
     task_edit_apply(&form, &t);
-    check(t.recur_time == TASK_RECUR_TIME_DEFAULT,
+    check(t.recur_time == SHARED_DB_TASK_RECUR_TIME_DEFAULT,
           "apply: an unreadable schedule time becomes the default time");
 
     /* Empty date fields clear; an empty time does not. */

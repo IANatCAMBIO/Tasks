@@ -235,7 +235,7 @@ task_due_instant(gint64 due, gint due_time)
 {
     if (due == 0) return 0;
     if (due_time < 0 || due_time > 23 * 60 + 59) {
-        due_time = TASK_DUE_TIME_DEFAULT;
+        due_time = SHARED_DB_TASK_DUE_TIME_DEFAULT;
     }
     return task_day_at_minute(due, due_time);
 }
@@ -248,7 +248,7 @@ gchar *
 task_due_format_at(gint64 due, gint due_time)
 {
     gchar *date = task_due_format(due);
-    if (due == 0 || due_time == TASK_DUE_TIME_DEFAULT) return date;
+    if (due == 0 || due_time == SHARED_DB_TASK_DUE_TIME_DEFAULT) return date;
 
     gchar *clock = task_clock_format(due_time);
     gchar *out   = g_strdup_printf("%s %s", date, clock);

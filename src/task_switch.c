@@ -4,7 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "task_config.h"
+#include "shared_db.h"
 #include "task_paths.h"
 #include "task_worker.h"
 
@@ -40,7 +40,7 @@ task_switch_check(const TaskApp *app, const char *path, char **why)
     *why = NULL;
     /* The fence is asked first: a path it refuses is not even stat'ed, and
      * task_db_verify_file below answers for it with the refusal text. */
-    if (!task_path_is_live_data(path) && same_file(path, app->db->path)) {
+    if (!task_path_is_live_data(path) && same_file(path, shared_db_file(app->db->shared))) {
         return task_switch_already_open;
     }
     if (task_db_verify_file(path, &detail)) return task_switch_can_open;
@@ -70,28 +70,51 @@ task_switch_database(TaskApp *app, const char *path, char **why)
     /* The new database is open: only now does the old one go. */
     task_db_close(app->db);
     app->db = next;
-    task_worker_arm_all(app, next->path);
+    task_worker_arm_all(app, shared_db_file(next->shared));
     return true;
 }
 
 /*
- * task_switch_default_dir — the folder that makes `path` the default.
+ * env_fixes_file — whether $CAMBIO_SHARED_DB names the file for this run.
+ *
+ * Output:
+ *   true when the variable is set and not empty.
+ */
+static bool
+env_fixes_file(void)
+{
+    const char *env = getenv(SHARED_DB_ENV_VAR);
+
+    return env != NULL && env[0] != '\0';
+}
+
+/*
+ * task_switch_can_be_default — whether Make Default applies to `path`.
  * Inputs/output are documented in task_switch.h.
  */
-char *
-task_switch_default_dir(const char *path)
+bool
+task_switch_can_be_default(const char *path)
 {
-    const char *slash = strrchr(path, '/');
+    if (env_fixes_file()) return false;
 
-    if (slash == NULL || strcmp(slash + 1, TASK_DB_FILENAME) != 0) return NULL;
+    char *current    = shared_db_path(NULL);
+    bool  is_default = current != NULL && same_file(path, current);
+    free(current);
+    return !is_default;
+}
 
-    gchar *dir     = task_config_get(TASK_CFG_DB_DIR);
-    gchar *current = task_db_resolve_path(dir);
-    bool   is_default = current != NULL && same_file(path, current);
-    g_free(current);
-    g_free(dir);
-    if (is_default) return NULL;
-
-    /* "/tasks.db" lives in "/", which the cut below would leave empty. */
-    return slash == path ? strdup("/") : strndup(path, (size_t)(slash - path));
+/*
+ * task_switch_set_default — point both apps at `path` from now on.
+ * Inputs/output are documented in task_switch.h.
+ */
+bool
+task_switch_set_default(const char *path, char **why)
+{
+    *why = NULL;
+    if (env_fixes_file()) {
+        *why = strdup("$" SHARED_DB_ENV_VAR " names the database for this run, "
+                      "so the default cannot be changed");
+        return false;
+    }
+    return shared_db_set_default_path(path, why) == 0;
 }

@@ -130,9 +130,6 @@ task_worker_arm(TaskApp *app, const TaskWorkerDef *def, const gchar *db_path)
     if (def->enabled_key != NULL && !task_config_get_bool(def->enabled_key))
         return;                      /* switched off: no timer, no pass     */
 
-    if (def->on_arm != NULL)
-        def->on_arm(app);
-
     gint minutes = interval_minutes(def);
     if (minutes > 0) {
         Tick *t = g_new0(Tick, 1);

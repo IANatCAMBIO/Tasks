@@ -1,10 +1,11 @@
 /* ===========================================================================
  * db.h — SQLite storage for Tasks
  *
- * Schema (PRAGMA user_version = 14 — see TASK_DB_SCHEMA_VERSION).  Every
- * column is declared in task_db_open's CREATE block.  A new file gets the
- * whole schema; a file at any other version is refused — there are no
- * migrations.
+ * The database is the ONE file Notes and Tasks share.  Its schema, its
+ * stamps (application_id + user_version), the refusal of every other
+ * file (an old tasks.db included), WAL, the busy timeout and where the file
+ * lives all belong to the shared module (shared_db.h); task_db_open is a
+ * connection to it, and this module is Tasks' queries over Tasks' tables:
  *
  *   list_groups  id, name, position              (local-only)
  *   lists        id, name, emoji, position, group_id (FK → list_groups.id;
@@ -24,8 +25,10 @@
  *
  * NOTHING belonging to a particular INTEGRATION is here.  An integration
  * keeps its per-row state in its own SIDE TABLE keyed by row id: the
- * Google Calendar sync's gcal_* tables are described, and created, in
- * gcal_store.h.
+ * Google Calendar sync's gcal_* tables are described in gcal_store.h.
+ * A task a Notes action item IS has a note_task row naming it (the shared
+ * schema); Tasks reads that link (task_db_task_note) and never purges such
+ * a task.
  *
  * Deletion is a SOFT flag (`deleted` = tombstone): a tombstoned row is
  * hidden everywhere until it is purged.  Every mutation of a task's own
@@ -38,17 +41,8 @@
 #include <glib.h>
 #include <sqlite3.h>
 
-/* The database's file name inside whichever directory holds it (the data
- * directory of task_paths.h, or the configured db_dir).                   */
-#define TASK_DB_FILENAME "tasks.db"
+#include "shared_db.h"
 
-/* The schema version this build writes, and the only one it opens.       */
-#define TASK_DB_SCHEMA_VERSION 14
-
-/* ---------------------------------------------------------------------------
- * TaskDatabase — one open connection.  A connection must not cross threads:
- * the sync worker opens its own on the same path (task_db_open).
- * ------------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------------
  * TaskDbHealth — the outcome of one health pass over a database.
  *
@@ -67,9 +61,14 @@ typedef struct {
     gchar    *detail;                /* what went wrong, or NULL (owned)    */
 } TaskDbHealth;
 
+/* ---------------------------------------------------------------------------
+ * TaskDatabase — one open connection.  A connection must not cross threads:
+ * the sync worker opens its own on the same path (task_db_open).  The
+ * SQLite handle is shared_db_handle(db->shared), the path
+ * shared_db_file(db->shared).
+ * ------------------------------------------------------------------------- */
 typedef struct {
-    sqlite3 *sq;
-    gchar   *path;                   /* absolute file path (owned)          */
+    shared_db *shared;               /* the connection (owned)              */
     /* The last health pass over this file, held IN MEMORY for the life of
      * the connection and deliberately never written down — see
      * task_db_health_check.                                               */
@@ -137,33 +136,13 @@ typedef enum {
 /* Number of values, for the editor's combo and bounds checks.              */
 #define TASK_RECUR_N_UNITS 6
 
-/* The time of day a recurrence is anchored at, in minutes past local
- * midnight: 08:00.  With recur_start it is the whole "starting Monday at
- * 9:00 AM" — the DAY is recur_start, the o'clock is this.  For the dated
- * units it is also the time every occurrence lands on (recur_step
- * re-applies it); for the minute and hour units it PHASE-LOCKS the stride
- * instead, so "starting at 09:00, every 3 hours" means 9, 12, 3 rather
- * than three hours from whenever the task was saved.  One meaning, both
- * halves of the unit range.                                                */
-#define TASK_RECUR_TIME_DEFAULT (8 * 60)
-
-/* The time of day a DUE DATE means, in minutes past local midnight
- * (tasks.due_time).  Every due date has one — task creation writes
- * this macro, and the column DEFAULT covers rows added by an ALTER — so
- * there is no "timed or not" flag to keep honest.  It is a separate macro
- * from TASK_RECUR_TIME_DEFAULT rather than a shared one: the two mean
- * different things and need not agree.                                    */
-#define TASK_DUE_TIME_DEFAULT (17 * 60)
-
-/* How long BEFORE an occurrence a completed task is reset to New, in
- * minutes: ONE WEEK.  It is a CEILING rather than a flat default —
- * task_recur_lead_default takes the lesser of this and half the repeat
- * period, so a weekly task gets 3.5 days and an hourly one 30 minutes
- * instead of a week that means nothing to either.  recur.c clamps the
- * stored value to shorter than the period as well
- * (task_recur_lead_seconds), which is the backstop for a lead typed by
- * hand; half a period can never reach it.                                  */
-#define TASK_RECUR_LEAD_DEFAULT (7 * 24 * 60)
+/* The column defaults a task starts with — the time of day a recurrence
+ * is anchored at, the time a due date means, the recurrence lead's ceiling
+ * and a planner session's length — are SHARED_DB_TASK_*_DEFAULT
+ * (shared_db.h), one definition for both apps and the schema.  The recur
+ * time PHASE-LOCKS the minute and hour units ("starting at 09:00, every 3
+ * hours" means 9, 12, 3); the lead is a CEILING, task_recur_lead_default
+ * takes the lesser of it and half the repeat period.                       */
 
 /* One task list.  Strings are owned by the struct.                         */
 typedef struct {
@@ -203,7 +182,7 @@ typedef struct {
                                       * against it                          */
     gint      due_time;              /* the time of day that date means,
                                       * minutes past local midnight,
-                                      * default TASK_DUE_TIME_DEFAULT       */
+                                      * default SHARED_DB_TASK_DUE_TIME_DEFAULT      */
     TaskStatus status;             /* New / In Progress / Done — DONE is
                                       * what every "is it complete?" test
                                       * asks for                            */
@@ -243,7 +222,7 @@ typedef struct {
 
     /* Day planner schedule — LOCAL-ONLY (never synced).                     */
     gint64    scheduled_start;       /* unix seconds; 0 = not scheduled       */
-    gint      scheduled_duration;    /* working session length in minutes; 60  */
+    gint      scheduled_duration;    /* working session length in minutes      */
 } Task;
 
 /* One file attachment on a task.                                           */
@@ -257,33 +236,29 @@ void task_list_free(TaskList *l);
 void task_free(Task *t);
 
 /* ---------------------------------------------------------------------------
- * task_db_open() — open the database at `path`, creating the schema in a
- * new file.  Returns the handle, or NULL with `err` set — also for a file
- * at any schema version but TASK_DB_SCHEMA_VERSION, which is refused
- * untouched.
+ * task_db_open() — open a connection to the shared database at `path`
+ * (shared_db_open: a missing or empty file gets the shared schema; any file
+ * that is not a stamped shared database — an old tasks.db, a Notes
+ * notes.db — is refused untouched, as is one on a network volume or in a
+ * cloud-synced folder).  The path to open is shared_db_path().  Returns
+ * the handle, or NULL with `err` set to the module's own words.
  *
  * A path inside the GTK app's live data directory (task_paths.h) is
  * REFUSED, as it is by task_db_verify_file, task_db_file_sha256 and
- * task_db_copy_file: this experimental build never reads or writes there.
+ * task_db_copy_file: this app never reads or writes there.
  * ------------------------------------------------------------------------- */
 TaskDatabase *task_db_open(const gchar *path, GError **err);
 
 /* task_db_close() — close the connection and free the handle.  NULL-safe.  */
 void task_db_close(TaskDatabase *db);
 
-/* task_db_default_path() — "<data dir>/tasks.db": the database's default
- * location, in the ONE directory this app keeps its per-user state in
- * (task_data_dir, task_paths.h — the ini lives there too).  Creates the
- * directory.  Returns a new string (g_free it), or NULL when the data
- * directory cannot be determined or created.                              */
-gchar *task_db_default_path(void);
-
 /* ---------------------------------------------------------------------------
  * task_db_verify_file() — is the database at `path` structurally sound?
  *
- * Runs PRAGMA integrity_check (and foreign_key_check) on a SEPARATE
+ * Runs the shared module's full check (shared_db_check: integrity_check,
+ * foreign_key_check, stamps, WAL, cross-table invariants) on a SEPARATE
  * read-only connection, so it says nothing about whatever is open
- * elsewhere.  Returns TRUE only when both actually RAN and both passed;
+ * elsewhere; a file that is not a stamped shared database is refused.  Returns TRUE only when both actually RAN and both passed;
  * `detail` (optional, g_free) receives sqlite's own words on failure.
  *
  * This exists because "sqlite3_open succeeded" proves nothing: SQLite
@@ -296,7 +271,7 @@ gboolean task_db_verify_file(const gchar *path, gchar **detail);
 /* ---------------------------------------------------------------------------
  * task_db_health_check() — verify the OPEN database and remember the result.
  *
- * Runs the same two PRAGMAs task_db_verify_file runs, against this
+ * Runs the same check task_db_verify_file runs, against this
  * connection, and stores what it found on the connection so a later
  * reader (the Settings window) can say WHEN the answer was true.
  * Returns TRUE when the database is sound.
@@ -371,17 +346,6 @@ gchar *task_db_file_sha256(const gchar *path);
  * on success; on failure *err (optional, g_free) gets sqlite's message.
  * ------------------------------------------------------------------------- */
 gboolean task_db_copy_file(TaskDatabase *db, const gchar *dest, gchar **err);
-
-/* ---------------------------------------------------------------------------
- * task_db_resolve_path() — the database file to open.
- *
- *   dir — the configured db_dir, or NULL/"" for the default location.
- *
- * Returns a new string (g_free): the path task_db_open should be handed.
- * The single answer to "which file", so no caller has to remember that
- * the default location is not simply a directory join.
- * ------------------------------------------------------------------------- */
-gchar *task_db_resolve_path(const gchar *dir);
 
 /* --------------------------------- lists --------------------------------- */
 

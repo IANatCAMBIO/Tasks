@@ -262,7 +262,6 @@ static const TaskWorkerDef notif_worker = {
     &notif_timer_id,                /* timer        */
     notify_run,                     /* run          */
     NULL,                           /* ready        */
-    NULL,                           /* on_arm       */
 };
 
 /*

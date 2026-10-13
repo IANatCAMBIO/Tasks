@@ -235,7 +235,7 @@ schedule_read(const task_edit_form_t *form, Task *t)
 {
     t->recur_interval = form_every(form);
     t->recur_unit     = form_unit(form);
-    t->recur_time     = task_edit_time_parse(form->recur_time_text, TASK_RECUR_TIME_DEFAULT);
+    t->recur_time     = task_edit_time_parse(form->recur_time_text, SHARED_DB_TASK_RECUR_TIME_DEFAULT);
     t->recur_start    = task_edit_date_parse(form->recur_start_text, t->recur_start);
     t->recur_lead     = task_edit_lead_minutes(form->lead_count, form->lead_unit);
 }

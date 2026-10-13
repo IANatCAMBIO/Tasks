@@ -513,7 +513,6 @@ static const TaskWorkerDef backup_worker = {
     .timer            = NULL,
     .run              = backup_run,
     .ready            = NULL,
-    .on_arm           = NULL,
 };
 
 static TaskWorkerDef backup_worker_live;

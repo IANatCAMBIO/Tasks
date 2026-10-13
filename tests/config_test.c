@@ -230,7 +230,6 @@ test_fence_enforced(const char *scratch)
     setenv(TASK_DATA_DIR_ENV, live, 1);
     check(task_data_dir_ensure() == NULL, "enforced: the live directory is refused as data dir");
     check(!task_config_init(), "enforced: config refuses to load from it");
-    check(task_db_default_path() == NULL, "enforced: no default database path inside it");
 
     /* ... reached by a ".." detour through a directory that does not exist
      * (and must not be created on the way). */
@@ -321,7 +320,6 @@ test_config(const char *scratch)
 {
     char dir[1024];
     char ini[1100];
-    char db[1100];
     struct stat sb;
 
     check(task_config_get(TASK_CFG_SHOW_COMPLETED) == NULL,
@@ -329,7 +327,6 @@ test_config(const char *scratch)
 
     snprintf(dir, sizeof dir, "%s/cfg/nested", scratch);
     snprintf(ini, sizeof ini, "%s/tasks.ini", dir);
-    snprintf(db, sizeof db, "%s/tasks.db", dir);
     setenv(TASK_DATA_DIR_ENV, dir, 1);
 
     check(task_config_init(), "config: init succeeds in the override directory");
@@ -338,14 +335,12 @@ test_config(const char *scratch)
     check(strcmp(task_config_path(), ini) == 0,
           "config: the ini lives in the override directory");
 
-    gchar *dbp = task_db_default_path();
-    check(dbp != NULL && strcmp(dbp, db) == 0,
-          "config: the override redirects the database too");
-    g_free(dbp);
-    dbp = task_db_resolve_path(NULL);
-    check(dbp != NULL && strcmp(dbp, db) == 0,
-          "config: an unset db_dir resolves to the data directory");
-    g_free(dbp);
+    /* The database is not in the data directory: it is the shared file,
+     * which CAMBIO_SHARED_DB names (shared_db_path). */
+    char *dbp = shared_db_path(NULL);
+    check(dbp != NULL && strcmp(dbp, getenv(SHARED_DB_ENV_VAR)) == 0,
+          "config: the shared database is the one CAMBIO_SHARED_DB names");
+    free(dbp);
 
     /* Registry defaults, with no file on disk. */
     check(stat(ini, &sb) != 0, "config: nothing is written until a value changes");
@@ -358,7 +353,7 @@ test_config(const char *scratch)
     check(task_config_get_int(TASK_CFG_WIN_W) == 980 &&
           task_config_get_int(TASK_CFG_WIN_H) == 640,
           "config: window size defaults to 980 x 640");
-    check(task_config_get(TASK_CFG_DB_DIR) == NULL, "config: a key with no default reads NULL");
+    check(task_config_get(TASK_CFG_LIST_SORT) == NULL, "config: a key with no default reads NULL");
     check(task_config_get_int(TASK_CFG_SIDEBAR_WIDTH) == 0,
           "config: an int with no default reads 0");
     check(!task_config_get_bool("no_such_key"), "config: an unknown bool reads FALSE");
@@ -386,11 +381,6 @@ test_config(const char *scratch)
     check(task_config_get_bool(TASK_CFG_SHOW_COMPLETED), "config: a removed key reads as its default");
     task_config_set(TASK_CFG_WIN_W, "");
     check(task_config_get_int(TASK_CFG_WIN_W) == 980, "config: an empty value reads as the default");
-
-    /* A configured db_dir names the directory; the file name is fixed. */
-    dbp = task_db_resolve_path("/some/where");
-    check(strcmp(dbp, "/some/where/tasks.db") == 0, "config: db_dir resolves to <dir>/tasks.db");
-    g_free(dbp);
 
     task_config_close();
 }

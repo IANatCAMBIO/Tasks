@@ -234,15 +234,17 @@
  * File > Open Database File... does with the file the user picked).
  *
  * The file is checked first, read-only (task_switch.h): one that is
- * damaged, is not a database, or lies inside the GTK app's live data
- * directory is refused with an alert giving the core's reason, and nothing
- * changes — the editors stay open and the old database stays in use.
+ * damaged, is not a stamped shared database (an old tasks.db), or lies
+ * inside the GTK app's live data directory is refused with an alert giving
+ * the core's reason, and nothing changes — the editors stay open and the
+ * old database stays in use.
  * Otherwise the editors are closed (flushing their saves into the OLD
  * database), the databases are swapped, the workers re-armed, every pane
  * refreshed on the default selection, and the new database's health
- * reported.  If the file can be the default (it is named tasks.db and is
- * not the default already) the user is then asked whether to open it at
- * every launch; declining keeps it for this session only.
+ * reported.  If the file can be the default (task_switch_can_be_default:
+ * not the default already, and CAMBIO_SHARED_DB unset) the user is then
+ * asked whether both apps should open it at every launch; declining keeps
+ * it for this session only.
  *
  * Inputs:
  *   path — absolute path of the database file

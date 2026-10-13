@@ -418,7 +418,6 @@ pass_run(void *data)
         task_loop_main_async(pass_done, job);
         return;
     }
-    gcal_store_init(db);
 
     GPtrArray *cals = NULL;
     if (gcal_api_calendars(token, &cals, &err) != GCAL_OK) {
@@ -498,7 +497,7 @@ pass_start(gboolean manual)
     task_day_bounds(GCAL_SYNC_AHEAD_DAYS, &ignore, &hi);
 
     pass_job_t *job = g_new0(pass_job_t, 1);
-    job->db_path    = g_strdup(live_app->db->path);
+    job->db_path    = g_strdup(shared_db_file(live_app->db->shared));
     job->push_pref  = task_config_get(TASK_CFG_GCAL_PUSH_CALENDAR);
     gchar *show     = task_config_get(TASK_CFG_GCAL_SHOW_CALENDARS);
     job->show_pref  = show != NULL ? g_strsplit(show, ",", -1) : NULL;
@@ -679,19 +678,6 @@ worker_ready(TaskApp *app)
     return app->db != NULL && task_oauth_authenticated();
 }
 
-/*
- * worker_on_arm — the sync was switched on, or the database changed:
- * make sure the main connection has the tables the planner reads.
- *
- * Inputs:
- *   app — the application context
- */
-static void
-worker_on_arm(TaskApp *app)
-{
-    if (app->db != NULL) gcal_store_init(app->db);
-}
-
 static const TaskWorkerDef gcal_worker = {
     .id           = "gcal",
     .sort         = 10,                 /* after the recurrence pass (sort 0),
@@ -703,7 +689,6 @@ static const TaskWorkerDef gcal_worker = {
     .timer        = &worker_timer,
     .run          = worker_run,
     .ready        = worker_ready,
-    .on_arm       = worker_on_arm,
 };
 
 /*
@@ -714,7 +699,7 @@ void
 gcal_sync_settings_changed(void)
 {
     if (live_app == NULL || live_app->db == NULL) return;
-    task_worker_arm(live_app, &gcal_worker, live_app->db->path);
+    task_worker_arm(live_app, &gcal_worker, shared_db_file(live_app->db->shared));
     notify_tasks();
 }
 
