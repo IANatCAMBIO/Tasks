@@ -1,13 +1,13 @@
 #import "ui_util.h"
 #import "look.h"
+#import "tool_panel.h"
 
 #include "task_config.h"
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
-/* The bundled artwork that is the app's icon, and its size in an alert. */
+/* The bundled artwork that is the app's icon. */
 static NSString * const app_icon_name = @"document";
-static const CGFloat alert_icon_size  = 64.0;
 
 /* The app icon is rendered at this many pixels per point: sharp on a Retina
  * display, and still small on a 1x one. */
@@ -258,76 +258,30 @@ mouseDown:(NSEvent *)event
 /* ── Dialogs ────────────────────────────────────────────────────────── */
 
 /*
- * new_alert — an NSAlert showing the app's own icon (see tasks_app_icon).
- *
- * Inputs:
- *   title   — the headline
- *   message — the detail, or nil
- *
- * Output:
- *   new NSAlert.
- */
-static NSAlert *
-new_alert(NSString *title, NSString *message)
-{
-    NSAlert *alert        = [[NSAlert alloc] init];
-    NSImage *icon         = tasks_app_icon(alert_icon_size);
-    if (icon) alert.icon  = icon;
-    alert.messageText     = title;
-    alert.informativeText = message ?: @"";
-    return alert;
-}
-
-/*
- * present_alert — show an alert as a sheet on a window, or app-modal when
- * there is none, and hand the response to a block.
- *
- * Inputs:
- *   alert   — the configured alert
- *   parent  — window for the sheet, or nil
- *   handler — receives the response; not nil
- */
-static void
-present_alert(NSAlert *alert, NSWindow *parent, void (^handler)(NSModalResponse response))
-{
-    if (parent) {
-        [alert beginSheetModalForWindow:parent completionHandler:handler];
-    } else {
-        handler([alert runModal]);
-    }
-}
-
-/*
- * tasks_ui_notice — an OK alert.
+ * tasks_ui_notice — an OK tool panel.
  * Inputs are documented in ui_util.h.
  */
 void
 tasks_ui_notice(NSWindow *parent, NSString *title, NSString *message, void (^done)(void))
 {
-    present_alert(new_alert(title, message), parent, ^(NSModalResponse response) {
+    tasks_tool_panel_show(parent, title, message, @"info.circle.fill", @[@"OK"], NO,
+                          ^(NSInteger index) {
         if (done) done();
     });
 }
 
 /*
- * tasks_ui_confirm — an action / Cancel alert.
+ * tasks_ui_confirm — an action / Cancel tool panel.
  * Inputs are documented in ui_util.h.
  */
 void
 tasks_ui_confirm(NSWindow *parent, NSString *title, NSString *message, NSString *action,
                  BOOL destructive, void (^done)(BOOL confirmed))
 {
-    NSAlert  *alert  = new_alert(title, message);
-    NSButton *act    = [alert addButtonWithTitle:action];
-    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];
-
-    cancel.keyEquivalent = @"\e";
-    if (destructive) {
-        alert.alertStyle          = NSAlertStyleWarning;
-        act.hasDestructiveAction  = YES;
-    }
-    present_alert(alert, parent, ^(NSModalResponse response) {
-        done(response == NSAlertFirstButtonReturn);
+    tasks_tool_panel_show(parent, title, message,
+                          destructive ? @"exclamationmark.triangle.fill" : @"questionmark.circle.fill",
+                          @[action, @"Cancel"], destructive, ^(NSInteger index) {
+        done(index == 0);
     });
 }
 

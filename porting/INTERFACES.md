@@ -343,7 +343,13 @@ constant there rather than a literal in your file.
 `tasks_icon`, `tasks_app_icon`, `tasks_image_view`, `tasks_ui_notice`,
 `tasks_ui_confirm`, `tasks_ui_pick_path`, `tasks_ui_place_lower_right`,
 `tasks_ui_sheet`.  Every dialog takes a completion
-block; with a parent window it is a sheet and the call returns at once.
+block and the call returns at once.  **No system alerts:** a notice or a
+question is a tool panel (`tool_panel.h`) — a floating utility window with
+the blue hero strip — never `NSAlert`, an alert sheet or `runModal`.
+`tasks_ui_notice` and `tasks_ui_confirm` are built on it; in a tool panel
+Escape and the close box are no answer (Cancel), never the default
+button.  `tasks_ui_sheet` (New List and the other small forms) is still a
+sheet, and the file chooser is the system's (`NSOpenPanel`).
 Every table is a `TasksTable` (or a subclass of it), which selects a
 clicked row on mouse-down.
 
@@ -369,6 +375,7 @@ read it for the problems below first.
 | editor controllers | the editor module's registry, keyed by task id | `windowWillClose:` removes the entry |
 | Settings controller | one module-level `static` | `windowWillClose:` sets it to nil |
 | sheets | AppKit, while up | when ended |
+| tool panels | `tool_panel.m`'s set of live panels | `windowWillClose:` |
 
 `NSWindow.windowController` and `NSWindow.delegate` do not retain.  A window
 controller nobody owns is freed under its window: put it in a registry or a
@@ -619,6 +626,8 @@ flags as a side effect.
   task's title; Settings is "Settings".  No "Tasks - " prefix.
 - Dialog buttons are named for their action ("Delete", "Create"), with
   Cancel; destructive ones use `tasks_ui_confirm(…, destructive:YES)`.
+- No system alerts (owner decision, 2026-10-13): every message or question
+  is a tool panel (§8).
 - No GTK workarounds: no custom tooltips, double-click timers, select-on-press
   helpers, or classic-scrollbar forcing.
 
@@ -696,10 +705,12 @@ screenshots the running app where that permission exists.
   files are converted by `migrate_shared` (`../shared_data/migrate/`).  The
   location fence round the GTK app's live data stays.
 - **First-run Welcome screen (owner decision).**  When no database is found
-  at launch, a modal Welcome alert offers two choices: "Open Existing
-  Database…" (runs a synchronous NSOpenPanel; the file chosen becomes the
-  default for both apps) or "Create New Database" (task_db_open creates the
-  shared file at `shared_db_path()`).  This prevents users
+  at launch, a Welcome tool panel offers "Open Existing Database…" (an
+  NSOpenPanel; the file chosen becomes the default for both apps; Cancel
+  comes back to the question), "Create New Database" (task_db_open creates
+  the shared file at `shared_db_path()`) and Quit, which Escape and the
+  close box also mean.  The launch carries on from the answer
+  (`finish_launch_at:choice:`).  This prevents users
   with an existing GTK database from being silently given a second, empty
   one.
 - Not swept: comments inside the carried core files (`db.c`, `recur.c`,

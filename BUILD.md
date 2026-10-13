@@ -203,6 +203,8 @@ src/
   commands.[hm]        the command table (menus, toolbar, validation)
   look.[hm]            sizes, timings, colours
   ui_util.[hm]         icons, image views, the shared table view, dialogs
+  tool_panel.[hm]      the app's own dialog (never a system alert) and its blue hero strip
+  hotkey.[hm]          Quick Task's system-wide shortcut
   row_text.[hm]        the renderer of a task row's text
   lists_bar.[hm]       lists bar: views, groups and lists, their sheets
   task_list.[hm]       task list          (stub)

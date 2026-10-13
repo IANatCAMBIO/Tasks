@@ -172,31 +172,35 @@ NSImageView *tasks_image_view(NSImage *image, CGFloat size);
 /* ── Dialogs ────────────────────────────────────────────────────────── */
 
 /*
- * tasks_ui_notice — tell the user something, with an OK button.
+ * tasks_ui_notice — tell the user something, with an OK button, in a tool
+ * panel (tool_panel.h) — never a system alert.  Returns at once.
  *
  * Inputs:
- *   parent  — window to attach the sheet to; nil shows an app-modal alert
+ *   parent  — window to centre the panel over; nil centres it on the screen
  *   title   — the headline: a plain statement ("Could not open the database")
  *   message — the detail; may be nil
- *   done    — called when it is dismissed; may be nil
+ *   done    — called when it is closed, by OK, Escape or the close box;
+ *             may be nil
  */
 void tasks_ui_notice(NSWindow *parent, NSString *title, NSString *message,
                      void (^done)(void));
 
 /*
- * tasks_ui_confirm — ask before doing something.  The first button performs
- * the action and is named for it ("Delete", "Clear"); the second is Cancel,
- * which Escape also chooses.
+ * tasks_ui_confirm — ask before doing something, in a tool panel
+ * (tool_panel.h) — never a system alert.  Returns at once.  The default
+ * button performs the action and is named for it ("Delete", "Clear"); the
+ * other is Cancel.  Escape and the close box count as Cancel.
  *
  * Inputs:
- *   parent      — window to attach the sheet to; nil for app-modal
+ *   parent      — window to centre the panel over; nil centres it on the
+ *                 screen
  *   title       — the question ("Delete 3 tasks?")
  *   message     — the consequence; may be nil
  *   action      — the action button's title
- *   destructive — YES for an action that cannot be undone: the alert takes
- *                 the warning style and the button the destructive look
+ *   destructive — YES for an action that cannot be undone: a warning
+ *                 symbol, and the button takes the destructive look
  *   done        — called with YES when the action button was chosen, NO for
- *                 Cancel or Escape
+ *                 Cancel, Escape or the close box
  */
 void tasks_ui_confirm(NSWindow *parent, NSString *title, NSString *message,
                       NSString *action, BOOL destructive, void (^done)(BOOL confirmed));

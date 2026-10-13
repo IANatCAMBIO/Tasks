@@ -101,6 +101,26 @@ static const CGFloat tasks_look_form_margin      = 16.0;   /* window edge to for
 static const CGFloat tasks_look_form_spacing     = 6.0;    /* between form rows   */
 static const CGFloat tasks_look_section_gap      = 18.0;   /* between sections    */
 
+/* ── Tool panels and the blue hero strip (tool_panel.h) ─────────────── */
+
+static const CGFloat tasks_look_hero_h           = 43.0;   /* the strip           */
+static const CGFloat tasks_look_hero_pad         = 16.0;   /* left and right inset */
+static const CGFloat tasks_look_hero_gap         = 3.0;    /* title to subtitle   */
+static const CGFloat tasks_look_hero_icon        = 22.0;   /* its symbol          */
+static const CGFloat tasks_look_hero_icon_gap    = 10.0;   /* symbol to the text  */
+static const CGFloat tasks_look_hero_font        = 11.0;   /* title (bold), subtitle */
+static const CGFloat tasks_look_tool_min_w       = 340.0;
+static const CGFloat tasks_look_tool_pad         = 16.0;   /* around the message  */
+static const CGFloat tasks_look_tool_bar_h       = 40.0;   /* the button bar      */
+static const CGFloat tasks_look_tool_btn_h       = 25.0;
+static const CGFloat tasks_look_tool_btn_w       = 83.0;   /* narrowest button    */
+static const CGFloat tasks_look_tool_btn_gap     = 8.0;
+static const CGFloat tasks_look_tool_btn_margin  = 12.0;   /* to the window edge  */
+static const CGFloat tasks_look_tool_btn_pad     = 24.0;   /* a long title to its
+                                                             * button's edges     */
+static const CGFloat tasks_look_tool_msg_w       = 388.0;  /* wrapped message     */
+static const CGFloat tasks_look_tool_msg_max_h   = 240.0;  /* taller ones scroll  */
+
 /* ── Day planner ────────────────────────────────────────────────────── */
 
 static const CGFloat    tasks_look_day_planner_w           = 320.0;  /* default panel width      */
@@ -136,6 +156,8 @@ typedef NS_ENUM(NSInteger, TasksColor) {
                                      * is controlAccentColor               */
     TasksColorCardShadow,
     TasksColorBadge,                /* count on a multi-card drag ghost    */
+    TasksColorHero,                 /* the hero strip's fill (white text)  */
+    TasksColorHeroSubtitle,         /* the hero's second line              */
     TasksColorCount
 };
 

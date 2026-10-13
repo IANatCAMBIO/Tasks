@@ -35,6 +35,8 @@ static const color_spec_t color_specs[TasksColorCount] = {
     [TasksColorCardSelected]      = { color_accent, { 0.0, 0.0, 0.0, 0.16 },       { 0.0, 0.0, 0.0, 0.0 } },
     [TasksColorCardShadow]        = { color_fixed,  { 0.0, 0.0, 0.0, 0.38 },       { 0.0, 0.0, 0.0, 0.60 } },
     [TasksColorBadge]             = { color_fixed,  { 0.184, 0.365, 0.753, 0.95 }, { 0.184, 0.365, 0.753, 0.95 } },
+    [TasksColorHero]              = { color_fixed,  { 0.000, 0.447, 0.776, 1.00 }, { 0.000, 0.447, 0.776, 1.00 } },
+    [TasksColorHeroSubtitle]      = { color_fixed,  { 0.880, 0.880, 0.880, 1.00 }, { 0.880, 0.880, 0.880, 1.00 } },
 };
 
 /*

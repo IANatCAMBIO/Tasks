@@ -301,6 +301,59 @@ snapshot_windows(TaskApp *app, NSString *dir)
 }
 
 /*
+ * tool_panel — the tool panel on screen (tool_panel.h), the app's own
+ * dialog where a system alert would otherwise be.
+ *
+ * Output:
+ *   its window, or nil when none is showing.
+ */
+static NSWindow *
+tool_panel(void)
+{
+    for (NSWindow *window in NSApp.windows) {
+        if (window.visible && [window isKindOfClass:NSClassFromString(@"TasksToolWindow")]) {
+            return window;
+        }
+    }
+    return nil;
+}
+
+/*
+ * button_tagged — the first button under a view with a given tag.
+ *
+ * Inputs:
+ *   root — the view to search
+ *   tag  — the wanted tag
+ *
+ * Output:
+ *   the button, or nil.
+ */
+static NSButton *
+button_tagged(NSView *root, NSInteger tag)
+{
+    if ([root isKindOfClass:NSButton.class] && root.tag == tag) return (NSButton *)root;
+    for (NSView *child in root.subviews) {
+        NSButton *found = button_tagged(child, tag);
+        if (found) return found;
+    }
+    return nil;
+}
+
+/*
+ * answer_panel — click one of the open tool panel's buttons, as the user
+ * would, and let it close.
+ *
+ * Inputs:
+ *   index — the button: 0 is the default (the rightmost), 1 the next
+ */
+static void
+answer_panel(NSInteger index)
+{
+    [button_tagged(tool_panel().contentView, index) performClick:nil];
+    check_spin(0.3);
+}
+
+/*
  * check_utilities — the shared helpers every package builds on: the icon
  * loader, the image-view factory and the custom sheet.
  *
@@ -352,6 +405,31 @@ check_utilities(TaskApp *app)
     }
     check_spin(0.2);
     check(weak_sheet == nil, "utilities: the sheet is released when it ends");
+
+    /* Questions and notices are tool panels, never system alerts: Return's
+     * button answers, Escape is no answer (Cancel for a confirmation), and
+     * each completion runs once and the panel goes away. */
+    __block int answers = 0, confirmed = -1;
+    tasks_ui_confirm(nil, @"Delete 3 tasks?", @"You cannot undo this action.", @"Delete", YES,
+                     ^(BOOL ok) { answers++; confirmed = ok; });
+    check_spin(0.2);
+    check(tool_panel() != nil &&
+          [button_tagged(tool_panel().contentView, 0).title isEqualToString:@"Delete"] &&
+          button_tagged(tool_panel().contentView, 0).hasDestructiveAction,
+          "utilities: a confirmation is a tool panel, its action button destructive");
+    [tool_panel() cancelOperation:nil];
+    check_spin(0.2);
+    check(tool_panel() == nil && answers == 1 && confirmed == 0,
+          "utilities: Escape closes a confirmation as Cancel, once");
+    tasks_ui_confirm(nil, @"Clear?", nil, @"Clear", NO, ^(BOOL ok) { answers++; confirmed = ok; });
+    check_spin(0.2);
+    answer_panel(0);
+    check(tool_panel() == nil && answers == 2 && confirmed == 1,
+          "utilities: the action button confirms");
+    tasks_ui_notice(nil, @"Saved", nil, ^{ answers++; });
+    check_spin(0.2);
+    answer_panel(0);
+    check(tool_panel() == nil && answers == 3, "utilities: OK closes a notice and runs its block");
 }
 
 /*
@@ -776,22 +854,8 @@ check_status_message(TaskApp *app)
 }
 
 /*
- * end_sheet — dismiss the sheet on a window as one of its buttons would.
- *
- * Inputs:
- *   window   — the window
- *   response — the button's response code
- */
-static void
-end_sheet(NSWindow *window, NSModalResponse response)
-{
-    [window endSheet:window.attachedSheet returnCode:response];
-    check_spin(0.3);
-}
-
-/*
- * secondary_windows — how many windows are open besides the library window
- * and any sheet: the task editors and Settings.
+ * secondary_windows — how many windows are open besides the library window,
+ * any sheet and a tool panel: the task editors and Settings.
  *
  * Inputs:
  *   library — the library window
@@ -805,7 +869,9 @@ secondary_windows(NSWindow *library)
     NSUInteger count = 0;
 
     for (NSWindow *window in NSApp.windows) {
-        if (window != library && window.visible && !window.sheet) count++;
+        if (window != library && window.visible && !window.sheet && window != tool_panel()) {
+            count++;
+        }
     }
     return count;
 }
@@ -854,25 +920,25 @@ check_open_database(TaskApp *app)
 
         [library open_database:junk];
         check_spin(0.3);
-        check(window.attachedSheet != nil && [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
-              "open database: a file that is not a database is refused with an alert");
+        check(tool_panel() != nil && [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
+              "open database: a file that is not a database is refused in a tool panel");
         check(secondary_windows(window) == 1, "open database: ... and the editors stay open");
-        end_sheet(window, NSAlertFirstButtonReturn);
+        answer_panel(0);
 
         [library open_database:old];
         check_spin(0.3);
-        check(find_text(window.attachedSheet.contentView, @"not a shared database") != nil &&
+        check(find_text(tool_panel().contentView, @"not a shared database") != nil &&
               [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
               "open database: an old Tasks database is refused in the shared module's words");
-        end_sheet(window, NSAlertFirstButtonReturn);
+        answer_panel(0);
 
         setenv("XDG_DATA_HOME", [folder stringByAppendingPathComponent:@"xdg"].fileSystemRepresentation, 1);
         [library open_database:live];
         check_spin(0.3);
-        check(find_text(window.attachedSheet.contentView, @"refused") != nil &&
+        check(find_text(tool_panel().contentView, @"refused") != nil &&
               [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
               "open database: a path in the live data directory shows the core's refusal");
-        end_sheet(window, NSAlertFirstButtonReturn);
+        answer_panel(0);
         unsetenv("XDG_DATA_HOME");
 
         [library open_database:other];
@@ -881,21 +947,21 @@ check_open_database(TaskApp *app)
               "open database: a sound database is switched to, the editors closed first");
         check(find_text(window.contentView, @"All Tasks - 1 task") != nil,
               "open database: ... and the panes show its tasks");
-        check(find_text(window.attachedSheet.contentView, @"Make this the default database?") != nil,
+        check(find_text(tool_panel().contentView, @"Make this the default database?") != nil,
               "open database: ... and it is offered as the default");
-        end_sheet(window, NSAlertFirstButtonReturn);
-        check(find_text(window.attachedSheet.contentView, @"not changed from a sandboxed run") != nil,
+        answer_panel(0);
+        check(find_text(tool_panel().contentView, @"not changed from a sandboxed run") != nil,
               "open database: ... Make Default shows the shared module's refusal while CAMBIO_SHARED_DB is set");
-        end_sheet(window, NSAlertFirstButtonReturn);
+        answer_panel(0);
 
         [library open_database:other];
         check_spin(0.3);
-        check(window.attachedSheet == nil && find_text(window.contentView, @"already open") != nil,
+        check(tool_panel() == nil && find_text(window.contentView, @"already open") != nil,
               "open database: the open database again only says so");
 
         [library open_database:home];
         check_spin(0.3);
-        check([tasks_string(shared_db_file(app->db->shared)) isEqualToString:home] && window.attachedSheet == nil,
+        check([tasks_string(shared_db_file(app->db->shared)) isEqualToString:home] && tool_panel() == nil,
               "open database: back to the default database, with no question to ask");
         [library close];
     }
@@ -1357,8 +1423,7 @@ check_lists_bar(TaskApp *app, NSString *dir)
          * confirmation; the list's saved orders go with it. */
         [library perform_command:TasksCommandDeleteGroup param:@(check_group)];
         check_spin(0.3);
-        [window endSheet:window.attachedSheet returnCode:NSAlertFirstButtonReturn];
-        check_spin(0.3);
+        answer_panel(0);
         check(group_named(@"Check Renamed") == 0 && button_of(@"Check Renamed") == nil,
               "lists bar: Remove Group removes the group and its button");
 
@@ -1369,8 +1434,7 @@ check_lists_bar(TaskApp *app, NSString *dir)
         task_order_save(TASK_CFG_FAMILY_MANUAL, list_sel, (int64_t[]){ 1, 2 }, 2);
         [library perform_command:TasksCommandDeleteList param:nil];
         check_spin(0.3);
-        [window endSheet:window.attachedSheet returnCode:NSAlertFirstButtonReturn];
-        check_spin(0.3);
+        answer_panel(0);
         gchar *saved_order = task_config_get(order_key.UTF8String);
         check(list_named(@"Check List") == 0 && saved_order == NULL,
               "lists bar: Delete List deletes the list and drops its saved orders");
@@ -2139,6 +2203,26 @@ check_editor_window(TaskApp *app, NSString *dir)
             check_spin(0.2);
             check(count_in(fallback) == in_fallback, "quick task: Cancel deletes the task");
 
+            /* With no default list, Quick Task says so in a tool panel and
+             * creates nothing; OK opens Settings, where one is chosen. */
+            task_config_set(TASK_CFG_DEFAULT_LIST, NULL);
+            [library perform_command:TasksCommandQuickTask param:nil];
+            check_spin(0.2);
+            NSWindow *panel = tool_panel();
+            check(panel != nil && find_text(panel.contentView, @"Choose a default list first") != nil &&
+                  count_in(fallback) == in_fallback,
+                  "quick task: with no default list it says so in a tool panel and creates nothing");
+            check(snapshot(panel, dir, @"tool-panel"), "snapshot: a tool panel");
+            answer_panel(0);
+            NSWindow *settings = nil;
+            for (NSWindow *w in NSApp.windows) {
+                if (w.visible && [w.title isEqualToString:@"Settings"]) settings = w;
+            }
+            check(settings != nil, "quick task: ... and OK opens Settings");
+            [settings close];
+            check_spin(0.2);
+            task_config_set_int(TASK_CFG_DEFAULT_LIST, (gint)fallback);
+
             [library select:task_sel_default()];
             check([library state_of_command:TasksCommandNewTask].enabled,
                   "new task: enabled in All Tasks");
@@ -2238,10 +2322,9 @@ check_editor_window(TaskApp *app, NSString *dir)
 
             [editor_win performClose:nil];
             check_spin(0.3);
-            check(editor_win.visible && editor_win.attachedSheet != nil,
+            check(editor_win.visible && tool_panel() != nil,
                   "editor: ... closing is refused with a notice while it cannot be saved");
-            if (editor_win.attachedSheet) [editor_win endSheet:editor_win.attachedSheet];
-            check_spin(0.2);
+            answer_panel(0);
 
             shared_db_rollback(holder->shared);
             task_db_close(holder);
@@ -2611,11 +2694,10 @@ check_settings(TaskApp *app, NSString *dir)
         check_spin(0.3);
         char *kept = NULL;
         shared_settings_get(app->db->shared, SHARED_SETTING_BACKUP_DIR, &kept, NULL);
-        check(g_strcmp0(kept, seeded_dir) == 0 && window.attachedSheet != nil,
+        check(g_strcmp0(kept, seeded_dir) == 0 && tool_panel() != nil,
               "settings: a backup folder inside live data is refused with a notice, not kept");
         free(kept);
-        if (window.attachedSheet) [window endSheet:window.attachedSheet];
-        check_spin(0.3);
+        answer_panel(0);
         unsetenv("XDG_DATA_HOME");
 
         /* A folder away from the database: kept, no warning, backed up to. */

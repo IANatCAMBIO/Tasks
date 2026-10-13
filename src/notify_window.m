@@ -15,6 +15,7 @@
 
 #import "notify_window.h"
 #import "editor_window.h"
+#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "db.h"
@@ -25,7 +26,6 @@ static const CGFloat win_w         = 389.0;
 static const CGFloat win_h         = 186.0;
 static const CGFloat win_min_w     = 243.0;
 static const CGFloat win_min_h     = 154.0;
-static const CGFloat hero_h        = 43.0;
 static const CGFloat btn_bar_h     = 31.0;
 static const CGFloat btn_h         = 25.0;
 static const CGFloat btn_w         = 83.0;   /* tighter than the combo button's own size */
@@ -33,11 +33,8 @@ static const CGFloat btn_gap       = 8.0;
 static const CGFloat btn_margin    = 12.0;
 static const CGFloat row_h         = 27.0;
 static const CGFloat icon_size     = 14.0;
-static const CGFloat hero_icon_sz  = 22.0;
 static const CGFloat text_size     = 11.0;  /* every label and button title */
-static const CGFloat hero_h_pad    = 16.0;  /* horizontal inset in hero */
 static const NSInteger snooze_default_mins = 10;
-static const CGFloat hero_v_pad    = 3.0;   /* title to subtitle */
 
 /* ── Data model ──────────────────────────────────────────────────────── */
 
@@ -64,27 +61,6 @@ initWithTaskId:(int64_t)task_id title:(NSString *)title subtitle:(NSString *)sub
 
 @end
 
-/* ── Hero view ───────────────────────────────────────────────────────── */
-
-/*
- * TasksHeroView — solid accent-blue background drawn behind the hero labels.
- */
-@interface TasksHeroView : NSView
-@end
-
-@implementation TasksHeroView
-
-- (BOOL)isOpaque { return YES; }
-
-- (void)drawRect:(NSRect)dirtyRect
-{
-    (void)dirtyRect;
-    [[NSColor colorWithSRGBRed:0.0 green:0.447 blue:0.776 alpha:1.0] setFill];
-    NSRectFill(self.bounds);
-}
-
-@end
-
 /* ── Window controller ───────────────────────────────────────────────── */
 
 @interface TasksReminderWindowController
@@ -93,9 +69,7 @@ initWithTaskId:(int64_t)task_id title:(NSString *)title subtitle:(NSString *)sub
 @property (nonatomic, assign) TaskApp *app;   /* borrowed; outlives the window */
 @property (nonatomic, strong) NSMutableArray<TasksReminderItem *> *items;
 @property (nonatomic, strong) NSTableView   *table;
-@property (nonatomic, strong) NSTextField   *hero_title;
-@property (nonatomic, strong) NSTextField   *hero_subtitle;
-@property (nonatomic, strong) NSImageView   *hero_icon;
+@property (nonatomic, strong) TasksHero     *hero;   /* the selected reminder */
 @property (nonatomic, assign) BOOL           refresh_pending;  /* a show_items is queued */
 
 + (instancetype)shared;
@@ -154,70 +128,12 @@ init_window
     NSView *cv = panel.contentView;
 
     /* ── Hero area ───────────────────────────────────────────────────── */
-    TasksHeroView *hero = [[TasksHeroView alloc] init];
-    hero.translatesAutoresizingMaskIntoConstraints = NO;
-    [cv addSubview:hero];
-
-    /* Hero icon */
-    _hero_icon = [[NSImageView alloc] init];
-    NSImage *sym = [NSImage imageWithSystemSymbolName:@"checklist.checked"
-                                accessibilityDescription:nil];
-    if (!sym)
-        sym = [NSImage imageWithSystemSymbolName:@"checkmark.circle.fill"
-                            accessibilityDescription:nil];
-    if (sym) {
-        NSImageSymbolConfiguration *cfg =
-            [NSImageSymbolConfiguration
-                configurationWithPointSize:hero_icon_sz
-                                    weight:NSFontWeightMedium];
-        _hero_icon.image = [sym imageWithSymbolConfiguration:cfg];
-    }
-    _hero_icon.contentTintColor = NSColor.whiteColor;
-    _hero_icon.translatesAutoresizingMaskIntoConstraints = NO;
-    [hero addSubview:_hero_icon];
-
-    /* Hero title */
-    _hero_title = [NSTextField labelWithString:@""];
-    _hero_title.font                  = [NSFont boldSystemFontOfSize:text_size];
-    _hero_title.textColor             = NSColor.whiteColor;
-    _hero_title.lineBreakMode         = NSLineBreakByTruncatingTail;
-    _hero_title.maximumNumberOfLines  = 1;
-    _hero_title.translatesAutoresizingMaskIntoConstraints = NO;
-    [hero addSubview:_hero_title];
-
-    /* Hero subtitle */
-    _hero_subtitle = [NSTextField labelWithString:@""];
-    _hero_subtitle.font                  = [NSFont systemFontOfSize:text_size];
-    _hero_subtitle.textColor             = [NSColor colorWithWhite:0.88 alpha:1.0];
-    _hero_subtitle.lineBreakMode         = NSLineBreakByTruncatingTail;
-    _hero_subtitle.maximumNumberOfLines  = 1;
-    _hero_subtitle.translatesAutoresizingMaskIntoConstraints = NO;
-    [hero addSubview:_hero_subtitle];
-
-    /* Hero layout */
+    _hero = [[TasksHero alloc] init_with_symbol:@"checklist.checked"];
+    [cv addSubview:_hero];
     [NSLayoutConstraint activateConstraints:@[
-        [hero.topAnchor    constraintEqualToAnchor:cv.topAnchor],
-        [hero.leadingAnchor  constraintEqualToAnchor:cv.leadingAnchor],
-        [hero.trailingAnchor constraintEqualToAnchor:cv.trailingAnchor],
-        [hero.heightAnchor   constraintEqualToConstant:hero_h],
-
-        [_hero_icon.leadingAnchor  constraintEqualToAnchor:hero.leadingAnchor
-                                                  constant:hero_h_pad],
-        [_hero_icon.centerYAnchor  constraintEqualToAnchor:hero.centerYAnchor],
-        [_hero_icon.widthAnchor    constraintEqualToConstant:hero_icon_sz],
-        [_hero_icon.heightAnchor   constraintEqualToConstant:hero_icon_sz],
-
-        [_hero_title.leadingAnchor  constraintEqualToAnchor:_hero_icon.trailingAnchor
-                                                   constant:10.0],
-        [_hero_title.trailingAnchor constraintEqualToAnchor:hero.trailingAnchor
-                                                   constant:-hero_h_pad],
-        [_hero_title.bottomAnchor   constraintEqualToAnchor:hero.centerYAnchor
-                                                   constant:-hero_v_pad / 2.0],
-
-        [_hero_subtitle.leadingAnchor  constraintEqualToAnchor:_hero_title.leadingAnchor],
-        [_hero_subtitle.trailingAnchor constraintEqualToAnchor:_hero_title.trailingAnchor],
-        [_hero_subtitle.topAnchor      constraintEqualToAnchor:hero.centerYAnchor
-                                                     constant:hero_v_pad / 2.0],
+        [_hero.topAnchor      constraintEqualToAnchor:cv.topAnchor],
+        [_hero.leadingAnchor  constraintEqualToAnchor:cv.leadingAnchor],
+        [_hero.trailingAnchor constraintEqualToAnchor:cv.trailingAnchor],
     ]];
 
     /* ── Button bar ──────────────────────────────────────────────────── */
@@ -290,7 +206,7 @@ init_window
     [cv addSubview:scroll];
 
     [NSLayoutConstraint activateConstraints:@[
-        [scroll.topAnchor    constraintEqualToAnchor:hero.bottomAnchor],
+        [scroll.topAnchor    constraintEqualToAnchor:_hero.bottomAnchor],
         [scroll.leadingAnchor  constraintEqualToAnchor:cv.leadingAnchor],
         [scroll.trailingAnchor constraintEqualToAnchor:cv.trailingAnchor],
         [scroll.bottomAnchor   constraintEqualToAnchor:sep.topAnchor],
@@ -456,13 +372,11 @@ update_hero
 {
     NSInteger row = _table.selectedRow;
     if (row < 0 || row >= (NSInteger)_items.count) {
-        _hero_title.stringValue    = @"";
-        _hero_subtitle.stringValue = @"";
+        [_hero set_title:@"" subtitle:nil];
         return;
     }
     TasksReminderItem *item = _items[(NSUInteger)row];
-    _hero_title.stringValue    = item.title;
-    _hero_subtitle.stringValue = item.subtitle;
+    [_hero set_title:item.title subtitle:item.subtitle];
 }
 
 /*
