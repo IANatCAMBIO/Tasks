@@ -33,13 +33,28 @@ VERSION := $(strip $(shell cat VERSION))
 
 # ── Sandbox data ─────────────────────────────────────────────────────────
 # `make run`, `make seed`, `make test` and `make ui-check` ALWAYS point the
-# app at these directories through TASKS_DATA_DIR (src/task_paths.h), so no
-# development run ever uses the per-user data directory.  dev/ is
-# gitignored.
+# app at these directories through TASKS_DATA_DIR (src/task_paths.h) — the
+# ini, attachments and the Google client file — and at a shared database
+# file inside them through CAMBIO_SHARED_DB (shared_db.h), so no
+# development run ever uses the per-user data directory or the per-user
+# shared database.  dev/ is gitignored.
 # `override`: these feed `rm -rf` below, so a value given on the command
 # line or in the environment must not be able to replace them.
-override DEV_DATA  = $(CURDIR)/dev/data
-override TEST_DATA = $(CURDIR)/dev/test-data
+override DEV_DATA      = $(CURDIR)/dev/data
+override TEST_DATA     = $(CURDIR)/dev/test-data
+override DEV_SHARED_DB = $(DEV_DATA)/shared_data.db
+# The environment of every development run: both variables, always.
+SANDBOX_ENV = TASKS_DATA_DIR="$(DEV_DATA)" CAMBIO_SHARED_DB="$(DEV_SHARED_DB)"
+
+# ── The shared database module ───────────────────────────────────────────
+# Notes and Tasks share one SQLite file; the module that owns its schema,
+# its location and its backups lives in the shared_data repository beside
+# this one and is compiled into the core from source.
+SHARED_DATA_DIR ?= $(CURDIR)/../shared_data
+SHARED_SRC       = $(SHARED_DATA_DIR)/src/shared_db.c
+ifeq ($(wildcard $(SHARED_SRC)),)
+$(error $(SHARED_SRC) not found: check out shared_data beside this repository or set SHARED_DATA_DIR)
+endif
 
 # ── Dependencies ─────────────────────────────────────────────────────────
 # GLib (core utilities, kept for this phase) and SQLite, both from MacPorts
@@ -96,7 +111,8 @@ DEFS     = -DTASKS_APP_NAME='"$(APP_NAME)"' \
            -DTASKS_BUNDLE_ID='"$(BUNDLE_ID)"' \
            -DTASKS_DATA_DIR_NAME='"$(DATA_DIR_NAME)"'
 COMMON   = -O2 -Wall -Wextra -Werror=unguarded-availability \
-           -mmacosx-version-min=$(DEPLOY_TARGET) -I src -MMD -MP $(DEFS) $(PKG_CFLAGS)
+           -mmacosx-version-min=$(DEPLOY_TARGET) -I src -I $(SHARED_DATA_DIR)/src \
+           -MMD -MP $(DEFS) $(PKG_CFLAGS)
 # The core is plain C11 and builds with every -Wextra warning on.
 CFLAGS   = -std=c11 $(COMMON)
 # Objective-C: ARC.  -Wno-unused-parameter because the parameters left
@@ -131,10 +147,10 @@ build/oauth.o: CFLAGS += $(if $(GOOGLE_CLIENT_ID),-DTASK_GOOGLE_CLIENT_ID='"$(GO
 
 # Every src/*.c is the toolkit-free core; every src/*.m is the AppKit
 # layer.  A .c and a .m must not share a base name (both would build to
-# the same object).
+# the same object).  The shared database module joins the core.
 CORE_SRCS = $(wildcard src/*.c)
 UI_SRCS   = $(wildcard src/*.m)
-CORE_OBJS = $(patsubst src/%.c,build/%.o,$(CORE_SRCS))
+CORE_OBJS = $(patsubst src/%.c,build/%.o,$(CORE_SRCS)) build/shared_db.o
 UI_OBJS   = $(patsubst src/%.m,build/%.o,$(UI_SRCS))
 OBJS      = $(CORE_OBJS) $(UI_OBJS)
 
@@ -182,18 +198,21 @@ build/%.o: src/%.c Makefile | build
 build/%.o: src/%.m Makefile | build
 	$(CC) $(OBJCFLAGS) -c -o $@ $<
 
+build/shared_db.o: $(SHARED_SRC) Makefile | build
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 -include $(OBJS:.o=.d)
 
 build:
 	@mkdir -p build
 
 # ── Sandbox run ──────────────────────────────────────────────────────────
-# The binary is run directly (not through `open`) so that TASKS_DATA_DIR
-# reaches it and its log output stays in this terminal.  The sandbox is
-# seeded first if it has no database yet.
+# The binary is run directly (not through `open`) so that the sandbox
+# variables reach it and its log output stays in this terminal.  The
+# sandbox is seeded first if it has no database yet.
 run: all
 	@[ -f "$(DEV_DATA)/tasks.db" ] || $(MAKE) seed
-	TASKS_DATA_DIR="$(DEV_DATA)" $(MACOS)/$(APP)
+	$(SANDBOX_ENV) $(MACOS)/$(APP)
 
 # The seed tool writes a realistic test database through the core API.
 # `make seed` always starts from an empty sandbox, so the result is the
@@ -204,13 +223,15 @@ build/seed: tools/seed.c $(CORE_OBJS) Makefile | build
 
 seed: build/seed
 	@rm -rf "$(DEV_DATA)" && mkdir -p "$(DEV_DATA)"
-	TASKS_DATA_DIR="$(DEV_DATA)" build/seed
+	$(SANDBOX_ENV) build/seed
 
 # ── Tests ────────────────────────────────────────────────────────────────
 # tests/*_test.c, each linked against the core objects only — no AppKit —
 # and run with TASKS_DATA_DIR set to a scratch directory that is emptied
-# first; every file a test creates is inside it.  CoreFoundation (in
-# SYS_LIBS) also serves the run loop the main-loop tests spin.
+# first and CAMBIO_SHARED_DB to a file inside it; every file a test
+# creates is inside it (each test then points both at a scratch folder of
+# its own, tests/check.h).  CoreFoundation (in SYS_LIBS) also serves the
+# run loop the main-loop tests spin.
 TEST_SRCS = $(wildcard tests/*_test.c)
 TEST_BINS = $(patsubst tests/%.c,build/%,$(TEST_SRCS))
 
@@ -221,7 +242,8 @@ build/%_test: tests/%_test.c tests/check.h tests/fixture.h $(CORE_OBJS) Makefile
 test: $(TEST_BINS)
 	@rm -rf "$(TEST_DATA)" && mkdir -p "$(TEST_DATA)"
 	@for t in $(TEST_BINS); do \
-	    echo "== $$t"; TASKS_DATA_DIR="$(TEST_DATA)" ./$$t || exit 1; \
+	    echo "== $$t"; TASKS_DATA_DIR="$(TEST_DATA)" \
+	        CAMBIO_SHARED_DB="$(TEST_DATA)/shared_data.db" ./$$t || exit 1; \
 	done
 	@echo "all tests passed"
 
@@ -244,7 +266,7 @@ $(UI_CHECK_BIN): tools/ui_check.m tests/check.h $(UI_CHECK_OBJS) $(APP_ICON) Mak
 
 ui-check: $(UI_CHECK_BIN)
 	@[ -f "$(DEV_DATA)/tasks.db" ] || $(MAKE) seed
-	TASKS_DATA_DIR="$(DEV_DATA)" $(UI_CHECK_BIN) "$(CURDIR)/dev/snapshots"
+	$(SANDBOX_ENV) $(UI_CHECK_BIN) "$(CURDIR)/dev/snapshots"
 
 # ── Install ──────────────────────────────────────────────────────────────
 # Per-user install: no sudo needed.  Whatever Tasks.app is already in
