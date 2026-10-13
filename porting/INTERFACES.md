@@ -97,7 +97,7 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 | `recur` | recurrence arithmetic and the deadline-armed pass |
 | `backup` | backups through the shared module, on a background job; policy in `shared_settings` |
 | `task_worker` | the scheduler the recurrence pass and the backup are registered with |
-| `task_view`, `core_views` | the registry of sidebar views (Favorites, All Tasks, 3-Day Forecast) |
+| `task_view`, `core_views` | the registry of sidebar views (Favorites, All Tasks, 3-Day Forecast, Action Items) |
 | `task_ops` | move-to-list, clear-completed |
 | `task_rows` | what a task row SAYS, as toolkit-neutral data |
 | `task_pane` | the sidebar selection type; collects a selection's rows + status line |
@@ -244,7 +244,7 @@ row has gone.  Selecting a GROUP shows the aggregated tasks of its lists.
   `TASK_CONTEXT_SEPARATOR`) is made.  `Task.context` is the
   `action_items_ctx.context` of the task's note (its folder's name), read
   with every task row by `TASK_COLS`; "" for anything else.  The rows
-  (`task_row_describe`: list, Kanban, 3-Day Forecast) and the search
+  (`task_row_describe`: list, Kanban, 3-Day Forecast, Action Items) and the search
   (`task_search_matches`) take the setting from `TaskRowCtx.note_context`;
   the AppKit labels (day planner blocks, reminders, the subtask editor's
   parent line) use `tasks_title_string` (ui_util.h).  Display only: never

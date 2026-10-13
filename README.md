@@ -129,13 +129,20 @@ so and the lists show what is really stored; an editor keeps the change,
 saves it again with the next change or on closing, and will not close while
 it cannot.
 
+The built-in views come first in the bar: Favorites (only while something
+is starred), All Tasks, 3-Day Forecast and Action Items.  Action Items lists
+every live task written in a note, whichever list it is filed in now, and is
+shown only while there is one: it appears by itself when Notes writes the
+first and goes when the last is deleted.  Completed items follow
+show/hide completed, as in every view.
+
 A task written as an action item in a note shows "From note: …" in its
 editor.  Its title, completion and due date stay in step with the note's
 line; deleting it here makes Notes drop the item mark from the line.
 Settings → Appearance → **Show the note's context before Notes action
 items' titles** (on by default) shows the name of the note's folder before
 such an item's title wherever tasks are listed — the list, the Kanban, the
-3-Day Forecast, the day planner, reminders — and the search matches it: an
+3-Day Forecast, Action Items, the day planner, reminders — and the search matches it: an
 item in a note in "Captain's Log" reads "Captain's Log - lock down my diet
 RE keto".  It is display only: the stored title, the note's line, the
 editor's title field and Google Calendar keep the plain title.  A title that

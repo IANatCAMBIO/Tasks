@@ -1049,10 +1049,11 @@ keep_status(TaskApp *app, const gchar *message, gpointer data)
  * check_lists_bar — drive the lists bar through what a user does with it,
  * without a pointer: the selection rules, the list and group sheets (ended
  * as their buttons would end them), the context menus, Move to Group and
- * Remove from Group, and the confirmations of Remove Group and Delete
- * List.
+ * Remove from Group, the confirmations of Remove Group and Delete List,
+ * and the Action Items view appearing and disappearing with Notes' items.
  *
- * It creates a group and a list in the sandbox and removes both again.
+ * It creates a group and a list in the sandbox and removes both again; the
+ * Notes action items it deletes are restored as they were.
  *
  * Inputs:
  *   app — the application context
@@ -1391,6 +1392,61 @@ check_lists_bar(TaskApp *app, NSString *dir)
               lit().length > 0,
               "lists bar: the selection falls back to the first list");
         task_db_list_purge(app->db, check_list);
+
+        /* The Action Items view: its button follows the 3-Day Forecast's
+         * while the seed has Notes-born tasks, and selecting it lists them.
+         * Deleting them all in Tasks (the light task event) removes the
+         * button and moves the selection off it; Notes bringing them back
+         * (another connection's commit, as when Notes writes the first
+         * one) restores it.  Their rows are put back as they were. */
+        NSString *items_label    = tasks_string(task_view_find("action_items")->label);
+        NSString *forecast_label = tasks_string(task_view_find("forecast")->label);
+        NSMutableArray<NSString *> *titles = [NSMutableArray array];
+        for (NSButton *button in buttons()) [titles addObject:button.title];
+        NSUInteger at_forecast = [titles indexOfObject:forecast_label];
+        check(at_forecast != NSNotFound && at_forecast + 1 < titles.count &&
+              [titles[at_forecast + 1] isEqualToString:items_label],
+              "lists bar: Action Items follows the 3-Day Forecast while Notes items exist");
+
+        GPtrArray *items = task_db_tasks_action_items(app->db);
+        check(items->len > 0, "lists bar: (the seed has Notes action items)");
+        [button_of(items_label) performClick:nil];
+        check_spin(0.3);
+        BOOL all_shown = library.selection.kind == task_sel_view &&
+                         library.selection.id == task_view_index_of(task_view_find("action_items"));
+        for (guint i = 0; i < items->len; i++) {
+            const Task *t = g_ptr_array_index(items, i);
+            all_shown = all_shown && find_drawn(window.contentView, tasks_string(t->title));
+        }
+        check(all_shown && [lit() isEqualToString:items_label],
+              "lists bar: selecting Action Items lists every Notes-born task");
+        check(snapshot(window, dir, @"lists-bar-action-items"), "lists bar: snapshot, Action Items");
+
+        for (guint i = 0; i < items->len; i++) {
+            task_db_task_delete(app->db, ((const Task *)g_ptr_array_index(items, i))->id);
+        }
+        task_app_notify_tasks(app);
+        check_spin(0.3);
+        check(button_of(items_label) == nil && library.selection.kind == task_sel_view &&
+              ![lit() isEqualToString:items_label],
+              "lists bar: with none left, Action Items is hidden and the selection moves off it");
+
+        TaskDatabase *notes_app = task_db_open_existing(shared_db_file(app->db->shared), NULL);
+        sqlite3      *sq        = notes_app != NULL ? shared_db_handle(notes_app->shared) : NULL;
+        for (guint i = 0; i < items->len; i++) {
+            const Task *t   = g_ptr_array_index(items, i);
+            char       *sql = sqlite3_mprintf("UPDATE tasks SET deleted = 0, updated_at = %lld"
+                                              " WHERE id = %lld",
+                                              (long long)t->updated_at, (long long)t->id);
+            sqlite3_exec(sq, sql, NULL, NULL, NULL);
+            sqlite3_free(sql);
+        }
+        task_db_close(notes_app);
+        task_app_check_outside(app);
+        check_spin(0.3);
+        check(button_of(items_label) != nil,
+              "lists bar: Action Items comes back when Notes' items do");
+        task_ptr_array_free_tasks(items);
 
         [library close];
     }

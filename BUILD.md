@@ -183,7 +183,7 @@ src/
   task_worker.[ch]     scheduler for the recurrence pass and the backup poll
   task_switch.[ch]     File > Open Database File, Make Default
   task_view.[ch]       registry of sidebar views
-  core_views.[ch]      the three built-in views
+  core_views.[ch]      the four built-in views
   task_ops.[ch]        move-to-list, clear-completed
   task_rows.[ch]       toolkit-neutral description of a task row
   task_pane.[ch]       sidebar selection type; collects a selection's rows

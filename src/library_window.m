@@ -62,9 +62,9 @@ static NSString * const search_tooltip       =
 @property (nonatomic, assign) guint listen_tasks;
 @property (nonatomic, assign) guint listen_notes;
 @property (nonatomic, assign) guint listen_status;
-/* Whether the sidebar had a Favorites row at its last rebuild: the light
- * task event rebuilds the sidebar only when that changes. */
-@property (nonatomic, assign) BOOL had_pinned;
+/* Which views had a sidebar row at its last rebuild (task_view_shown_mask):
+ * the light task event rebuilds the sidebar only when that changes. */
+@property (nonatomic, assign) guint64 shown_views;
 @property (nonatomic, assign) BOOL is_shut_down;
 
 /* Declared here because the C listeners below call it before its
@@ -91,9 +91,10 @@ on_app_changed(TaskApp *app, gpointer data)
 
 /*
  * on_app_tasks — the app's light event: the task pane, the day planner and
- * the reminders' titles.  One exception: a favourite flag can add or
- * remove the sidebar's Favorites row, so the sidebar is rebuilt when that
- * row's existence changed.
+ * the reminders' titles.  One exception: a task change can add or remove
+ * a view's row (a favourite flag the Favorites row, the last Notes action
+ * item deleted the Action Items row), so the sidebar is rebuilt when the
+ * set of shown views changed.
  *
  * Inputs:
  *   app  — the application context
@@ -104,7 +105,7 @@ on_app_tasks(TaskApp *app, gpointer data)
 {
     TasksLibraryWindow *window = (__bridge TasksLibraryWindow *)data;
 
-    if ((BOOL)task_db_has_pinned(app->db) != window.had_pinned) [window refresh_sidebar];
+    if (task_view_shown_mask(app) != window.shown_views) [window refresh_sidebar];
     [window refresh_tasks];
     if (!window.day_planner.hidden) [window.day_planner reload];
     tasks_notify_retitle();
@@ -899,7 +900,7 @@ refresh_sidebar
     if (self.is_shut_down) return;
 
     [self.lists_bar reload];
-    self.had_pinned = task_db_has_pinned(self.app->db);
+    self.shown_views = task_view_shown_mask(self.app);
 }
 
 /*

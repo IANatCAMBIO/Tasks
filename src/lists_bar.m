@@ -814,7 +814,7 @@ reload
 
     for (guint i = 0; i < task_view_count(); i++) {
         const TaskView *view = task_view_nth(i);
-        if (view->visible != NULL && !view->visible(app, view->user_data)) continue;
+        if (!task_view_shown(view, app)) continue;
 
         rows[n_rows++] = (task_sel_t){ task_sel_view, (int64_t)i };
         [self add_button:tasks_string(view->label) sel:rows[n_rows - 1] at:&x
