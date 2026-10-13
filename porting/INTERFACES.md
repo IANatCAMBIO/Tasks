@@ -527,9 +527,8 @@ delete the task).  After a subtask tick, resync the parent's status control.
 Owns: `settings_window.[hm]`.  Reference: `settings_window.c`.
 Appearance, the Database plate, backups (map §3.9).  After a change that
 alters rows call `task_app_notify_tasks`.  The backup settings are the
-shared database's (`backup.h`: `task_backup_setting` /
-`task_backup_set_setting` / `task_backup_set_dir`), which Notes follows
-too; the poll reads them afresh, so nothing is re-armed.  The Kanban shadow needs no call into the board:
+shared database's (`shared_backup_policy_get` / `shared_settings_set`, and
+`task_backup_set_dir` for the folder), which Notes follows too; the poll reads them afresh, so nothing is re-armed.  The Kanban shadow needs no call into the board:
 the board re-reads `TASK_CFG_KANBAN_SHADOW` on every `show_rows:`.
 Lift into the core: `dir_shares_fate`, `health_stamp`
 (`settings_window.c:120–136, 206–225`).

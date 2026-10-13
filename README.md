@@ -118,19 +118,28 @@ Both apps open the same file and follow the same `location` pointer, which
 file must be on a local disk and not inside iCloud Drive, Dropbox or
 another synced folder: the app refuses to open it there.  Only a shared
 database can be opened; an old Tasks `tasks.db` or a Notes `notes.db` is
-refused untouched, and is brought across with the shared module's migration
-tool instead.  Changes made by Notes (or by a script) appear within a
-second, and an edit never overwrites a field you did not change.
+refused untouched (as is an empty file: the shared module creates a missing
+database complete, in one step), and is brought across with the shared
+module's migration tool instead.  Changes Notes (or a script) makes to the
+tasks appear within a second, keeping the selection and the scroll; a change
+to notes alone refreshes nothing.  An edit never overwrites a field you did
+not change, even one you were in the middle of editing.  When a change cannot
+be saved because another app held the file for too long, the status bar says
+so and the lists show what is really stored; an editor keeps the change,
+saves it again with the next change or on closing, and will not close while
+it cannot.
 
 A task written as an action item in a note shows "From note: …" in its
 editor.  Its title, completion and due date stay in step with the note's
 line; deleting it here makes Notes drop the item mark from the line.
 
 **Backups** are on by default: every hour a verified copy of the shared
-database is written to `backups/` (or a folder chosen in Settings), keeping
-the newest 48.  Notes and Tasks share these settings, and whichever app is
-running makes the backup when it is due.  **Back Up Now** in Settings makes
-one at once.
+database is written to `backups/` in the database file's own folder (or a
+folder chosen in Settings), named `shared_data-YYYYMMDD-HHMMSSZ.db` in UTC
+and keeping the newest 48.  Notes and Tasks share these settings, and
+whichever app is running makes the backup when it is due.  **Back Up Now**
+in Settings makes one at once; Settings also shows why the last backup
+failed, if it did.
 
 **Tasks' own settings** stay in Tasks' folder (attachments are links to
 files wherever they are, and are not copied):
@@ -156,16 +165,18 @@ database code refuses any path inside it.
 
 Settings are changed in the app and stored in `tasks.ini` (group `[tasks]`,
 written by the app; comments are not preserved), apart from the backup
-settings, which live in the shared database so that Notes follows them too.  The Settings window is not
-ported yet, so for now the few settings that have a control are the View-menu
-toggles.  Every key and its default is listed in `src/task_config.h`.
+settings, which live in the shared database so that Notes follows them too.
+The Settings window (⌘,) holds the appearance options, the database's health
+and fingerprint, the backups, notifications and Google Calendar; the View
+menu holds the rest.  Every key and its default is listed in
+`src/task_config.h`.
 
 ## Keyboard shortcuts
 
 | Shortcut | Action |
 |---|---|
 | ⌘N | New Task (in the selected list) |
-| ⇧⌘N | New List… *(not ported yet)* |
+| ⇧⌘N | New List… |
 | ⌘I | Info… — open the task editor |
 | ⌘⌫ | Delete the selected task(s) |
 | ⌘F | Find — search the selected view |

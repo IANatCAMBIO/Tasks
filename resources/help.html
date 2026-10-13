@@ -52,11 +52,29 @@ search, since the search field is hidden.  View &gt; Full Controls puts
 the window back as it was, with the sidebar showing.</p>
 
 <h2>Opening another database</h2>
-<p>File &gt; Open Database File… switches to another database file.  The
-file is checked before anything changes; a file that is damaged or is not a
-database is refused.  A database named <code>tasks.db</code> can then be
-made the default, opened at every launch; one with any other name stays
-open for the session only.</p>
+<p>Notes and Tasks keep their data in one shared database file, so a task
+changed in one app appears in the other within a second.  File &gt; Open
+Database File… switches to another shared database file.  The file is
+checked before anything changes: a file that is damaged, empty, or is not a
+shared Notes and Tasks database (an old <code>tasks.db</code> included) is
+refused and left as it is, and so is one inside iCloud Drive, Dropbox or
+another synced folder.  You are then asked whether to <b>Make Default</b>:
+both Notes and Tasks open the default database at every launch.  Cancel
+keeps it open in Tasks for this session only.</p>
+
+<h2>Backups</h2>
+<p>Backups are on by default: every hour a checked copy of the database is
+written, keeping the newest 48.  Settings sets how often, how many are kept
+and the folder they go to; by default it is a <code>backups</code> folder
+beside the database file.  Notes and Tasks share these settings, and
+whichever app is running makes the backup.  Each backup is named for the
+moment it was made, in UTC (<code>shared_data-20261012-140500Z.db</code>).
+<b>Back Up Now</b> makes one at once; if the last backup failed, Settings
+says why.</p>
+<p>If another app holds the database for too long and a change cannot be
+saved, Tasks says so in the status bar.  A task editor keeps your changes
+and saves them again with the next change or when it closes; it will not
+close while they cannot be saved.</p>
 
 <h2>Google Calendar</h2>
 <p>The day planner can be kept in step with your Google Calendar.  Turn it
@@ -95,10 +113,11 @@ sign-in is kept in the macOS keychain; <b>Sign Out</b> removes it.</p>
 </table>
 
 <h2>Where the data is kept</h2>
-<p>The database (<code>tasks.db</code>), the settings
-(<code>tasks.ini</code>) and the backups are in
-<code>~/Library/Application Support/Tasks/</code>, unless a
-different default database was chosen with Open Database File….</p>
+<p>The shared database (<code>shared_data.db</code>) and its backups are in
+<code>~/Library/Application Support/camb.io/</code>, unless a different
+default database was chosen with Open Database File… (its backups then go
+beside it).  Tasks' own settings (<code>tasks.ini</code>) are in
+<code>~/Library/Application Support/Tasks/</code>.</p>
 
 </body>
 </html>

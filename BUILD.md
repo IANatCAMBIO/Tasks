@@ -153,9 +153,9 @@ The programs, all linked against the core only (no AppKit), include:
 | `core_test` | the GTK app's cases: search, recurrence arithmetic, opening the shared database and refusing an old v14 file (GLib `g_test`) |
 | `loop_test` | the main-loop service: one-shot and repeating timers, cancellation, background hand-back |
 | `config_test` | the data-folder policy and override, the fence round the GTK app's data, config defaults and write-through |
-| `shared_test` | the shared database: the column-diff update (two connections change different fields and both survive) and its stamping rules; Notes action items (the note lookup, the tombstone, the purge Tasks refuses) |
-| `backup_test` | backups through the shared module: the policy in `shared_settings`, refused destinations, Back Up Now, retention, the periodic poll |
-| `switch_test` | Open Database File: refusals (an old `tasks.db` among them), a switch, Make Default under the sandbox |
+| `shared_test` | the shared database: the column-diff update (two connections change different fields and both survive) and its stamping rules; Notes action items (the note lookup, the tombstone, the purge Tasks refuses); refreshing only on a change to Tasks' data (`change_rev`), never on its own writes; writes failing, and then succeeding, while a second process (this test re-run with `--hold`) holds the write lock past the busy timeout — this test takes about 20 s |
+| `backup_test` | backups through the shared module: refused destinations (Tasks' live-data fence and the module's folder checks), Back Up Now and its UTC file name, retention, the periodic poll |
+| `switch_test` | Open Database File: refusals (an old `tasks.db` and an empty file among them, left untouched), a switch, Make Default under the sandbox |
 | `rows_test` | the row description (lines, emphasis, notes preview) and the pane collection (filters, status line) |
 | `order_test` | saved orders: key spelling, the permutation, dropping keys |
 | `app_test` | the event bus, the outside-change watch (`data_version`), due-date urgency, the recurrence pass waking on a main-loop timer |
