@@ -1,5 +1,7 @@
 #import <Cocoa/Cocoa.h>
 
+#include "db.h"
+
 /*
  * ui_util — small AppKit helpers shared by every window, so each exists
  * exactly once: the icons, correctly framed image views, the table view
@@ -34,6 +36,23 @@
  *   shows; @"" for NULL.  Never nil.
  */
 NSString *tasks_string(const char *text);
+
+/*
+ * tasks_title_string — the text a label, block or reminder shows for a
+ * task: task_display_title (db.h) under the note_context_titles setting,
+ * so a Notes action item reads "<context> - <title>" when that is on.  The
+ * AppKit layer's one route to it; the rows of the list and the Kanban get
+ * the same text from task_rows.  Never for an EDITABLE field: those show
+ * the plain title, which is what is saved.
+ *
+ * Inputs:
+ *   task     — the task, not NULL
+ *   untitled — what to show when the title is empty
+ *
+ * Output:
+ *   the string; never nil.
+ */
+NSString *tasks_title_string(const Task *task, NSString *untitled);
 
 /* ── Images ─────────────────────────────────────────────────────────── */
 

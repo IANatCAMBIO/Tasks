@@ -533,6 +533,36 @@ find_text(NSView *root, NSString *text)
 }
 
 /*
+ * find_drawn — whether a view tree draws a string as row text.  The task
+ * list's cells and the Kanban's cards draw their text themselves
+ * (task_list.m, kanban.m), not through a text field: each keeps it in its
+ * `text` property, which this reads.
+ *
+ * Inputs:
+ *   root — where to look
+ *   want — what some view's drawn text must contain
+ *
+ * Output:
+ *   YES when a view under root draws it.
+ */
+static BOOL
+find_drawn(NSView *root, NSString *want)
+{
+    NSMutableArray<NSView *> *todo = [NSMutableArray arrayWithObject:root];
+    while (todo.count > 0) {
+        NSView *view = todo.lastObject;
+        [todo removeLastObject];
+        if ([view respondsToSelector:NSSelectorFromString(@"text")]) {
+            id text = [view valueForKey:@"text"];
+            if ([text isKindOfClass:NSAttributedString.class] &&
+                [((NSAttributedString *)text).string containsString:want]) return YES;
+        }
+        [todo addObjectsFromArray:view.subviews];
+    }
+    return NO;
+}
+
+/*
  * find_button — the first button in a view tree with a given title.
  *
  * Inputs:
@@ -1599,23 +1629,7 @@ check_task_list(TaskApp *app, NSString *dir)
         task_db_close(other);
         check(task_app_check_outside(app), "list: (an outside change is noticed)");
         settle(0);
-        /* The row text is drawn by its cell (task_list.m), not a text field:
-         * read the cell's `text`. */
-        BOOL (^drawn)(NSView *, NSString *) = ^BOOL(NSView *root, NSString *want) {
-            NSMutableArray<NSView *> *todo = [NSMutableArray arrayWithObject:root];
-            while (todo.count > 0) {
-                NSView *view = todo.lastObject;
-                [todo removeLastObject];
-                if ([view respondsToSelector:NSSelectorFromString(@"text")]) {
-                    id text = [view valueForKey:@"text"];
-                    if ([text isKindOfClass:NSAttributedString.class] &&
-                        [((NSAttributedString *)text).string containsString:want]) return YES;
-                }
-                [todo addObjectsFromArray:view.subviews];
-            }
-            return NO;
-        };
-        check(drawn(table, @"Renamed in another app") &&
+        check(find_drawn(table, @"Renamed in another app") &&
               [[list selected_task_ids] isEqualToArray:kept] &&
               NSEqualPoints(table.enclosingScrollView.contentView.bounds.origin, origin),
               "list: an outside change shows up, keeping the selection and the scroll");
@@ -2201,6 +2215,139 @@ check_editor_window(TaskApp *app, NSString *dir)
 
 
 /*
+ * check_note_context — the Settings box that shows a Notes action item's
+ * note context before its title.  A throwaway action item is written the
+ * way Notes writes one (a folder, a note in it, a note_task row) on Notes'
+ * own connection.  Off, the list shows the plain title; the box turns it
+ * on, and the list and the Kanban show "<folder> - <title>" at once while
+ * the editor's title field keeps the plain title (it is what is saved); a
+ * folder renamed in Notes renames the prefix at the next poll; off again,
+ * the title is plain.  Everything it wrote is removed, and the setting and
+ * the pane put back.
+ *
+ * Inputs:
+ *   app — the application context
+ *   dir — the snapshot folder
+ */
+static void
+check_note_context(TaskApp *app, NSString *dir)
+{
+    NSString *const title_text = @"Draft the keto meal plan";
+    NSString *const box_title  = @"Show the note\u2019s context before Notes action items\u2019 titles";
+    gboolean        was_on     = task_config_get_bool(TASK_CFG_NOTE_CONTEXT);
+
+    task_config_set_bool(TASK_CFG_NOTE_CONTEXT, FALSE);
+    @autoreleasepool {
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        if (lists->len == 0) {
+            task_ptr_array_free_lists(lists);
+            check(NO, "context: (the seed has a list)");
+            return;
+        }
+        gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+        task_ptr_array_free_lists(lists);
+        gint64 id = task_db_task_create(app->db, list_id, 0, title_text.UTF8String);
+
+        TaskDatabase *notes_app = task_db_open_existing(shared_db_file(app->db->shared), NULL);
+        sqlite3      *sq        = notes_app != NULL ? shared_db_handle(notes_app->shared) : NULL;
+        char         *sql       = sqlite3_mprintf(
+            "INSERT INTO folders (name) VALUES ('Ui Check Log');"
+            "INSERT INTO notes (folder_id, title, created_at, updated_at)"
+            "  VALUES (last_insert_rowid(), 'Ui check note', 0, 0);"
+            "INSERT INTO note_task (task_id, note_id, ord, seen_title)"
+            "  VALUES (%lld, last_insert_rowid(), 0, %Q);"
+            "UPDATE action_uid_seq SET next = (SELECT max(uid) + 1 FROM note_task);",
+            (long long)id, title_text.UTF8String);
+        check(sqlite3_exec(sq, sql, NULL, NULL, NULL) == SQLITE_OK,
+              "context: (a Notes action item in a folder is written)");
+        sqlite3_free(sql);
+        task_app_check_outside(app);
+
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        NSWindow           *window  = library.window;
+        BOOL                was_kanban = library.kanban_on;
+        [library showWindow:nil];
+        if (was_kanban) [library perform_command:TasksCommandTogglePane param:nil];
+        [library select:(task_sel_t){ task_sel_list, list_id }];
+        check_spin(0.3);
+
+        NSString *prefixed = [@"Ui Check Log" TASK_CONTEXT_SEPARATOR stringByAppendingString:title_text];
+        check(find_drawn(window.contentView, title_text) &&
+              !find_drawn(window.contentView, prefixed),
+              "context: off (the default), the list shows the plain title");
+
+        tasks_settings_window_open(app);
+        check_spin(0.2);
+        NSWindow *settings = nil;
+        for (NSWindow *open in NSApp.windows) {
+            if (open.visible && [open.title isEqualToString:@"Settings"]) settings = open;
+        }
+        NSButton *box = find_button(settings.contentView, box_title);
+        check(box != nil && box.state == NSControlStateValueOff,
+              "context: Settings has the box, off by default");
+        [box performClick:nil];
+        check_spin(0.3);
+        check(task_config_get_bool(TASK_CFG_NOTE_CONTEXT) &&
+              find_drawn(window.contentView, prefixed),
+              "context: ticking it shows the folder before the title in the list at once");
+        check(snapshot(window, dir, @"list-note-context"), "context: snapshot, list");
+
+        [library perform_command:TasksCommandTogglePane param:nil];
+        check_spin(0.3);
+        check(library.kanban_on && find_drawn(window.contentView, prefixed),
+              "context: ... and on the Kanban card");
+        [library perform_command:TasksCommandTogglePane param:nil];
+        check_spin(0.2);
+
+        tasks_editor_open(app, id);
+        check_spin(0.2);
+        NSWindow *editor_win = nil;
+        for (NSWindow *w in NSApp.windows) {
+            if (w.visible && [w.title isEqualToString:title_text]) editor_win = w;
+        }
+        NSTextField *field = find_text(editor_win.contentView, title_text);
+        check(field != nil && field.editable && [field.stringValue isEqualToString:title_text],
+              "context: the editor's title field keeps the plain title");
+        tasks_editor_close(id);
+        check_spin(0.1);
+        Task *stored = task_db_task_get(app->db, id);
+        check(stored != NULL && strcmp(stored->title, title_text.UTF8String) == 0,
+              "context: the stored title is never prefixed");
+        task_free(stored);
+
+        sqlite3_exec(sq, "UPDATE folders SET name = 'Ui Check Journal' WHERE name = 'Ui Check Log'",
+                     NULL, NULL, NULL);
+        task_app_check_outside(app);
+        check_spin(0.3);
+        check(find_drawn(window.contentView,
+                         [@"Ui Check Journal" TASK_CONTEXT_SEPARATOR stringByAppendingString:title_text]),
+              "context: a folder renamed in Notes renames the prefix at the next poll");
+
+        [box performClick:nil];
+        check_spin(0.3);
+        check(!task_config_get_bool(TASK_CFG_NOTE_CONTEXT) &&
+              find_drawn(window.contentView, title_text) &&
+              !find_drawn(window.contentView, @"Ui Check Journal" TASK_CONTEXT_SEPARATOR),
+              "context: unticking it shows the plain title again");
+
+        [settings performClose:nil];
+        if (was_kanban) [library perform_command:TasksCommandTogglePane param:nil];
+        [library close];
+        check_spin(0.1);
+
+        sql = sqlite3_mprintf("DELETE FROM note_task WHERE task_id = %lld;"
+                              "DELETE FROM notes WHERE title = 'Ui check note';"
+                              "DELETE FROM folders WHERE name = 'Ui Check Journal';",
+                              (long long)id);
+        sqlite3_exec(sq, sql, NULL, NULL, NULL);
+        sqlite3_free(sql);
+        task_db_close(notes_app);
+        task_app_check_outside(app);
+    }
+    task_config_set_bool(TASK_CFG_NOTE_CONTEXT, was_on);
+}
+
+/*
  * policy — one backup-policy value as the shared module applies it
  * (shared_backup_policy_get), as the Settings window shows it.
  *
@@ -2293,6 +2440,7 @@ check_settings(TaskApp *app, NSString *dir)
             @"Show task titles in bold":                         @TASK_CFG_BOLD_TITLES,
             @"Show drop shadows on Kanban cards":                @TASK_CFG_KANBAN_SHADOW,
             @"Count only business days (Mon\u2013Fri) in the 3-Day Forecast": @TASK_CFG_FORECAST_BUSINESS_DAYS,
+            @"Show the note\u2019s context before Notes action items\u2019 titles": @TASK_CFG_NOTE_CONTEXT,
         };
         BOOL boxes_write = YES;
         for (NSString *title in boxes) {
@@ -2610,6 +2758,7 @@ main(int argc, const char *argv[])
         check_kanban(app, dir);
         check_editor_window(app, dir);
         check_settings(app, dir);
+        check_note_context(app, dir);
         check_day_planner_calendar(app, dir);
         check_memory_and_ownership(app);
 

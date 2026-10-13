@@ -4,6 +4,7 @@
 #import "kanban.h"
 #import "look.h"
 #import "lists_bar.h"
+#import "notify_window.h"
 #import "task_list.h"
 #import "ui_util.h"
 
@@ -89,9 +90,10 @@ on_app_changed(TaskApp *app, gpointer data)
 }
 
 /*
- * on_app_tasks — the app's light event: the task pane only.  One exception:
- * a favourite flag can add or remove the sidebar's Favorites row, so the
- * sidebar is rebuilt when that row's existence changed.
+ * on_app_tasks — the app's light event: the task pane, the day planner and
+ * the reminders' titles.  One exception: a favourite flag can add or
+ * remove the sidebar's Favorites row, so the sidebar is rebuilt when that
+ * row's existence changed.
  *
  * Inputs:
  *   app  — the application context
@@ -105,20 +107,24 @@ on_app_tasks(TaskApp *app, gpointer data)
     if ((BOOL)task_db_has_pinned(app->db) != window.had_pinned) [window refresh_sidebar];
     [window refresh_tasks];
     if (!window.day_planner.hidden) [window.day_planner reload];
+    tasks_notify_retitle();
 }
 
 /*
  * on_app_notes — the app's notes event: Notes' data changed elsewhere, so
- * only the open editors' "From note" lines are re-read.
+ * the open editors' "From note" lines are re-read, and — while titles are
+ * shown with their note context — everything on_app_tasks refreshes, since
+ * a folder renamed in Notes renames that context.
  *
  * Inputs:
- *   app  — the application context (unused)
- *   data — the TasksLibraryWindow, unretained (unused)
+ *   app  — the application context
+ *   data — the TasksLibraryWindow, unretained
  */
 static void
 on_app_notes(TaskApp *app, gpointer data)
 {
     tasks_editor_refresh_sources();
+    if (task_config_get_bool(TASK_CFG_NOTE_CONTEXT)) on_app_tasks(app, data);
 }
 
 /*

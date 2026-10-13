@@ -1,6 +1,8 @@
 #import "ui_util.h"
 #import "look.h"
 
+#include "task_config.h"
+
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 /* The bundled artwork that is the app's icon, and its size in an alert. */
@@ -24,6 +26,20 @@ tasks_string(const char *text)
     return [NSString stringWithUTF8String:text]
         ?: [NSString stringWithCString:text encoding:NSISOLatin1StringEncoding]
         ?: @"";
+}
+
+/*
+ * tasks_title_string — a task's title as shown, the note context included
+ * when the setting asks for it.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSString *
+tasks_title_string(const Task *task, NSString *untitled)
+{
+    gchar    *shown = task_display_title(task, task_config_get_bool(TASK_CFG_NOTE_CONTEXT));
+    NSString *text  = *shown != '\0' ? tasks_string(shown) : untitled;
+    g_free(shown);
+    return text;
 }
 
 /* ── Images ─────────────────────────────────────────────────────────── */

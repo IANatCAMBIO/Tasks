@@ -830,7 +830,7 @@ build_fields:(NSStackView *)form
         Task *parent = task_db_task_get(self.app->db, self.parent_id);
         NSTextField *note = [NSTextField wrappingLabelWithString:[NSString stringWithFormat:
             @"This is a subtask of “%@” — subtasks cannot have their own subtasks.",
-            tasks_string(parent != NULL ? parent->title : "?")]];
+            parent != NULL ? tasks_title_string(parent, @"Untitled Task") : @"?"]];
         note.selectable              = NO;
         note.preferredMaxLayoutWidth = form_w;
         add_row(form, note);

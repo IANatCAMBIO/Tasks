@@ -52,8 +52,9 @@ static const CGFloat   stepper_gap          = 2.0;   /* a field to its stepper *
 /* ── The Appearance options ─────────────────────────────────────────── */
 
 /* One on/off setting: a checkbox that writes a bool key.  All of them
- * change what the task pane draws, and the panes re-read their settings on
- * every refresh, so one action serves the whole table. */
+ * change what the task pane (or the planner and reminders beside it) draws,
+ * and those re-read their settings on every refresh, so one action serves
+ * the whole table. */
 typedef struct {
     NSString * __unsafe_unretained title;
     const char                    *key;      /* a TASK_CFG_* bool key */
@@ -67,6 +68,11 @@ static const option_spec_t appearance_options[] = {
     { @"Count only business days (Mon\u2013Fri) in the 3-Day Forecast",
       TASK_CFG_FORECAST_BUSINESS_DAYS,
       @"On a Friday the forecast runs to Tuesday; past-due tasks are always shown." },
+    { @"Show the note\u2019s context before Notes action items\u2019 titles",
+      TASK_CFG_NOTE_CONTEXT,
+      @"An action item written in a note in the folder \u201CCaptain\u2019s Log\u201D "
+      @"reads \u201CCaptain\u2019s Log - lock down my diet\u201D. Display only: the "
+      @"title itself, and the line in the note, are unchanged." },
 };
 #define APPEARANCE_OPTION_COUNT (sizeof(appearance_options) / sizeof(appearance_options[0]))
 
@@ -1231,7 +1237,9 @@ fit_window
 /*
  * toggle_option: — an Appearance checkbox changed: write its setting and
  * have the task pane redraw.  The panes re-read their settings on every
- * refresh (the Kanban shadow included), so the one event is all it takes.
+ * refresh (the Kanban shadow included), and the same event reloads the
+ * day planner and retitles the reminders (the note-context prefix), so
+ * the one event is all it takes.
  *
  * Inputs:
  *   sender — the checkbox; its tag is its index in appearance_options

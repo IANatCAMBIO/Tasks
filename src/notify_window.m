@@ -101,6 +101,7 @@ initWithTaskId:(int64_t)task_id title:(NSString *)title subtitle:(NSString *)sub
 
 + (instancetype)shared;
 - (void)addItem:(TasksReminderItem *)item;
+- (void)update_hero;
 
 @end
 
@@ -702,4 +703,24 @@ tasks_notify_add(TaskApp *app, int64_t task_id, NSString *title, NSString *subti
     TasksReminderWindowController *controller = [TasksReminderWindowController shared];
     controller.app = app;
     [controller addItem:item];
+}
+
+/*
+ * tasks_notify_retitle — re-read every listed reminder's title.
+ * Documented in notify_window.h.
+ */
+void
+tasks_notify_retitle(void)
+{
+    TasksReminderWindowController *controller = shared_controller;
+    if (controller == nil || controller.app == NULL || controller.app->db == NULL ||
+        controller.items.count == 0) return;
+
+    for (TasksReminderItem *item in controller.items) {
+        Task *task = task_db_task_get(controller.app->db, item.task_id);
+        if (task != NULL) item.title = tasks_title_string(task, @"");
+        task_free(task);
+    }
+    [controller.table reloadData];
+    [controller update_hero];
 }

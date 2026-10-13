@@ -21,3 +21,12 @@
  *   subtitle — the context line (e.g. "Due today", "Starts in 10 minutes at 9:00 AM")
  */
 void tasks_notify_add(TaskApp *app, int64_t task_id, NSString *title, NSString *subtitle);
+
+/*
+ * tasks_notify_retitle — re-read the title of every listed reminder's task
+ * (tasks_title_string), so a rename, or the note-context setting being
+ * turned on or off, shows in the window at once.  A reminder whose task is
+ * gone keeps the title it had.  Does nothing while no reminder has ever
+ * been shown.
+ */
+void tasks_notify_retitle(void);

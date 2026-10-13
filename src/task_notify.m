@@ -94,7 +94,7 @@ mark_sent(gchar *key)
 static void
 fire_notification(TaskApp *app, const Task *task, const gchar *subtitle, const gchar *ident)
 {
-    NSString *ns_title = tasks_string(task->title);
+    NSString *ns_title = tasks_title_string(task, @"");
     NSString *ns_sub   = tasks_string(subtitle);
 
     gchar *mode = task_config_get(TASK_CFG_NOTIF_MODE);
