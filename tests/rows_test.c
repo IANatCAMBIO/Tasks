@@ -379,10 +379,11 @@ test_note_context(TaskApp *app)
     task_sel_t  sel = { task_sel_list, list };
     TaskSearch *q   = task_search_parse("captain");
 
+    task_config_set_bool(TASK_CFG_NOTE_CONTEXT, FALSE);
     task_row_t *row = describe(app, id, FALSE);
     check(strcmp(row->title, "lock down my diet RE keto") == 0 &&
           strcmp(row->lines[0].text, "lock down my diet RE keto") == 0,
-          "context: off by default, the row shows the plain title");
+          "context: turned off, the row shows the plain title");
     task_row_free(row);
     task_pane_content_t *content = task_pane_collect(app, sel, q);
     check(content->rows->count == 0, "context: off, the folder's name does not match");

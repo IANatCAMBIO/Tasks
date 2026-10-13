@@ -133,7 +133,7 @@ A task written as an action item in a note shows "From note: …" in its
 editor.  Its title, completion and due date stay in step with the note's
 line; deleting it here makes Notes drop the item mark from the line.
 Settings → Appearance → **Show the note's context before Notes action
-items' titles** (off by default) shows the name of the note's folder before
+items' titles** (on by default) shows the name of the note's folder before
 such an item's title wherever tasks are listed — the list, the Kanban, the
 3-Day Forecast, the day planner, reminders — and the search matches it: an
 item in a note in "Captain's Log" reads "Captain's Log - lock down my diet

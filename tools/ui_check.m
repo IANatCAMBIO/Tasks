@@ -2274,7 +2274,7 @@ check_note_context(TaskApp *app, NSString *dir)
         NSString *prefixed = [@"Ui Check Log" TASK_CONTEXT_SEPARATOR stringByAppendingString:title_text];
         check(find_drawn(window.contentView, title_text) &&
               !find_drawn(window.contentView, prefixed),
-              "context: off (the default), the list shows the plain title");
+              "context: turned off, the list shows the plain title");
 
         tasks_settings_window_open(app);
         check_spin(0.2);
@@ -2284,7 +2284,7 @@ check_note_context(TaskApp *app, NSString *dir)
         }
         NSButton *box = find_button(settings.contentView, box_title);
         check(box != nil && box.state == NSControlStateValueOff,
-              "context: Settings has the box, off by default");
+              "context: Settings has the box, showing the setting off");
         [box performClick:nil];
         check_spin(0.3);
         check(task_config_get_bool(TASK_CFG_NOTE_CONTEXT) &&
