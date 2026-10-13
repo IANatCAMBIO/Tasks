@@ -62,12 +62,12 @@ count_of(const task_row_t *row, task_row_line_kind_t kind)
 static void
 set_notes(TaskApp *app, gint64 id, const char *notes)
 {
-    Task *t = task_db_task_get(app->db, id);
+    Task *before = task_db_task_get(app->db, id);
+    Task  after  = *before;
 
-    g_free(t->notes);
-    t->notes = g_strdup(notes);
-    task_db_task_update(app->db, t);
-    task_free(t);
+    after.notes = (gchar *)notes;
+    task_db_task_update(app->db, before, &after);
+    task_free(before);
 }
 
 /*

@@ -219,8 +219,9 @@ due_task(TaskApp *app, gint64 list, const char *title, gint64 due)
 {
     gint64 id = task_db_task_create(app->db, list, 0, title);
     Task  *t  = task_db_task_get(app->db, id);
-    t->due = due;
-    task_db_task_update(app->db, t);
+    Task   after = *t;
+    after.due = due;
+    task_db_task_update(app->db, t, &after);
     task_free(t);
     return id;
 }
@@ -304,12 +305,13 @@ test_recurrence_timer(TaskApp *app)
     gint64 id   = task_db_task_create(app->db, list, 0, "Every minute");
     gint64 now  = (gint64)time(NULL);
 
-    Task *t = task_db_task_get(app->db, id);
-    t->status         = TASK_STATUS_DONE;
-    t->recur_interval = 1;
-    t->recur_unit     = TASK_RECUR_MINUTE;
-    t->recur_lead     = 0;
-    task_db_task_update(app->db, t);
+    Task *t     = task_db_task_get(app->db, id);
+    Task  after = *t;
+    after.status         = TASK_STATUS_DONE;
+    after.recur_interval = 1;
+    after.recur_unit     = TASK_RECUR_MINUTE;
+    after.recur_lead     = 0;
+    task_db_task_update(app->db, t, &after);
     task_free(t);
     task_db_task_recur_set_next(app->db, id, now + 1);
 

@@ -212,7 +212,8 @@ seed_one(TaskApp *app, const seed_task_t *spec, gint64 list_id,
     gint64 id = task_db_task_create(app->db, list_id, parent_id, spec->title);
     if (id == 0) return 0;
 
-    Task *t = task_db_task_get(app->db, id);
+    Task *before = task_db_task_get(app->db, id);
+    Task *t      = task_dup(before);
     g_free(t->notes);
     t->notes = g_strdup(spec->notes);
     if (spec->due_in_days != NO_DUE) {
@@ -228,7 +229,8 @@ seed_one(TaskApp *app, const seed_task_t *spec, gint64 list_id,
                                                     spec->recur_interval);
     }
     t->status = spec->status;
-    task_db_task_update(app->db, t);
+    task_db_task_update(app->db, before, t);
+    task_free(before);
     task_free(t);
 
     if (spec->pinned) task_db_task_set_pinned(app->db, id, TRUE);

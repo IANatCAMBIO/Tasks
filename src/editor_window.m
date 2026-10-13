@@ -581,7 +581,9 @@ becomeFirstResponder
 /* Saving. */
 @property (nonatomic, assign) BOOL       save_pending;          /* a debounced save is due  */
 @property (nonatomic, assign) NSUInteger save_id;               /* supersedes queued saves  */
-@property (nonatomic, assign) TaskStatus status_saved;          /* to notice a status move  */
+@property (nonatomic, assign) Task      *loaded;                /* the row as the controls
+                                                                 * show it: what a save is
+                                                                 * diffed against; owned   */
 @property (nonatomic, assign) BOOL       discarded;             /* Cancel: save nothing more */
 @property (nonatomic, assign) BOOL       is_shut_down;
 
@@ -665,14 +667,15 @@ init_with_app:(TaskApp *)app task:(const Task *)task is_new:(BOOL)is_new
 }
 
 /*
- * dealloc — free the two row lists, which this object alone owns.  Nothing
- * else: teardown is shut_down's job (windowWillClose:).
+ * dealloc — free the two row lists and the loaded row, which this object
+ * alone owns.  Nothing else: teardown is shut_down's job (windowWillClose:).
  */
 - (void)
 dealloc
 {
     task_ptr_array_free_tasks(_subtasks);
     task_ptr_array_free_attachments(_attachments);
+    task_free(_loaded);
 }
 
 /*
@@ -1067,9 +1070,10 @@ reload
 }
 
 /*
- * show_task: — put a stored task into the controls.  Text is rewritten only
- * where it differs, so a cursor does not jump; a date, time or count field
- * that is being edited is left alone.
+ * show_task: — put a stored task into the controls, and remember it as the
+ * loaded row every save is diffed against.  Text is rewritten only where
+ * it differs, so a cursor does not jump; a date, time or count field that
+ * is being edited is left alone.
  *
  * Inputs:
  *   task — the task as stored (borrowed)
@@ -1077,7 +1081,11 @@ reload
 - (void)
 show_task:(const Task *)task
 {
-    char clock[TASK_EDIT_TIME_LEN];
+    char  clock[TASK_EDIT_TIME_LEN];
+    Task *loaded = task_dup(task);
+
+    task_free(self.loaded);
+    self.loaded = loaded;
 
     show_text(self.title_field, tasks_string(task->title), NO);
     [self show_status:task->status];
@@ -1122,9 +1130,8 @@ show_task:(const Task *)task
 }
 
 /*
- * show_status: — select a status in the pop-up and remember it as the
- * saved one.  Setting a pop-up's selection sends no action, so this saves
- * nothing.
+ * show_status: — select a status in the pop-up.  Setting a pop-up's
+ * selection sends no action, so this saves nothing.
  *
  * Inputs:
  *   status — the stored status; out of range shows New
@@ -1135,7 +1142,6 @@ show_status:(TaskStatus)status
     BOOL known = status >= 0 && status < TASK_STATUS_N_VALUES;
 
     [self.status_popup selectItemAtIndex:known ? (NSInteger)status : TASK_STATUS_NEW];
-    self.status_saved = status;
 }
 
 /*
@@ -1251,27 +1257,28 @@ form
 }
 
 /*
- * save_now — write every editable field to the task's row, now, and tell
- * the app its tasks changed.  Any queued debounced save is superseded.
- * Half-typed dates and times keep the stored value (task_edit_apply).
+ * save_now — write the fields the user has changed, now, and tell the app
+ * its tasks changed.  Any queued debounced save is superseded.
  *
- * Does nothing once the editor is closed or its new task was cancelled, or
- * when the task has gone from the database.
+ * The controls are read over a copy of the LOADED row and only the columns
+ * that differ from it are written (task_db_task_update), so a field the
+ * user did not touch is never written back — a change another app made to
+ * it meanwhile survives, and arrives at the next refresh.  Half-typed dates
+ * and times keep the loaded value (task_edit_apply), so they write nothing
+ * either.  Afterwards the loaded row is what the controls show.
+ *
+ * Does nothing once the editor is closed or its new task was cancelled.
  */
 - (void)
 save_now
 {
     self.save_pending = NO;
     self.save_id++;
-    if (self.is_shut_down || self.discarded) return;
+    if (self.is_shut_down || self.discarded || self.loaded == NULL) return;
 
-    Task *stored = task_db_task_get(self.app->db, self.task_id);
-    if (stored == NULL) return;
-
-    /* A copy of the row with the controls' values over it.  The two
-     * strings are lent to it for the update, not given: `stored` still
-     * owns its own, and frees them. */
-    Task             edited = *stored;
+    /* A copy of the loaded row with the controls' values over it.  The two
+     * strings are lent to it for the update, not given. */
+    Task             edited = *self.loaded;
     task_edit_form_t form   = [self form];
     NSInteger        status = self.status_popup.indexOfSelectedItem;
 
@@ -1284,18 +1291,25 @@ save_now
     task_edit_apply(&form, &edited);
     edited.recur_next = self.recur_next;
 
-    task_db_task_update(self.app->db, &edited);
+    if (task_db_task_update(self.app->db, self.loaded, &edited) <= 0) return;
+
     /* A schedule that now fires sooner has to wake the recurrence pass. */
     task_recur_wake_by(self.app, edited.recur_next > 0
         ? edited.recur_next - task_recur_lead_seconds(&edited) : 0);
-    task_free(stored);
+
+    BOOL  status_moved = edited.status != self.loaded->status;
+    Task *saved        = task_dup(&edited);
+    task_free(self.loaded);
+    self.loaded = saved;
 
     /* Moving into or out of Done changes the completion line; the stamp is
      * the database's, so read it back. */
-    if (edited.status != self.status_saved) {
-        self.status_saved = edited.status;
+    if (status_moved) {
         Task *fresh = task_db_task_get(self.app->db, self.task_id);
-        if (fresh != NULL) [self show_completed:fresh];
+        if (fresh != NULL) {
+            self.loaded->completed_at = fresh->completed_at;
+            [self show_completed:fresh];
+        }
         task_free(fresh);
     }
     task_app_notify_tasks(self.app);
@@ -1345,17 +1359,21 @@ flag_changed:(id)sender
 }
 
 /*
- * resync_status — show the status the database now holds.  Called when
- * something other than the pop-up moved it (completing a subtask promotes
- * a New parent to In Progress); without it the next save would write the
- * pop-up's stale status back.
+ * resync_status — show the status the database now holds, and take it as
+ * the loaded one.  Called when something other than the pop-up moved it
+ * (completing a subtask promotes a New parent to In Progress), so the pop-up
+ * agrees with the row and the next save does not see a change to write.
  */
 - (void)
 resync_status
 {
     Task *task = task_db_task_get(self.app->db, self.task_id);
 
-    if (task != NULL) [self show_status:task->status];
+    if (task != NULL && self.loaded != NULL) {
+        [self show_status:task->status];
+        self.loaded->status       = task->status;
+        self.loaded->completed_at = task->completed_at;
+    }
     task_free(task);
 }
 
@@ -1811,12 +1829,11 @@ save_subtask_title:(NSTextField *)field
     Task   *stored     = task_db_task_get(self.app->db, subtask_id);
     if (stored == NULL) return;
 
-    const char *title = field.stringValue.UTF8String;
-    if (strcmp(stored->title, title) != 0) {
-        /* The title is lent to the copy for the update (see save_now). */
-        Task edited  = *stored;
-        edited.title = (char *)title;
-        task_db_task_update(self.app->db, &edited);
+    /* The title is lent to the copy for the update (see save_now); only the
+     * title column is written, and only when it changed. */
+    Task edited  = *stored;
+    edited.title = (char *)field.stringValue.UTF8String;
+    if (task_db_task_update(self.app->db, stored, &edited) > 0) {
         [self reload_subtasks];
         task_app_notify_tasks(self.app);
     }
@@ -2560,15 +2577,17 @@ tasks_editor_close(int64_t task_id)
 }
 
 /*
- * tasks_editor_refresh_all — reload every open editor that has no unsaved
- * edit; close those whose task has gone.
+ * tasks_editor_refresh_all — reload every open editor; close those whose
+ * task has gone.  An editor with an unsaved edit saves it first: the save
+ * writes only the fields the user changed, so the reload then shows those
+ * as typed and every other field as the database now has it.
  */
 void
 tasks_editor_refresh_all(void)
 {
     /* A copy: closing an editor removes it from the registry. */
     for (TasksEditorWindow *editor in editors().allValues) {
-        if (editor.save_pending) continue;
+        if (editor.save_pending) [editor save_now];
         if (![editor reload]) [editor close];
     }
 }

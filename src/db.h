@@ -416,10 +416,31 @@ GPtrArray *task_db_tasks_in_list_all(TaskDatabase *db, gint64 list_id);
 gint64 task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
                            const gchar *title);
 
-/* Write the editable fields (title/notes/due/status/pinned/priority, and
- * the whole recurrence schedule) from `t` back to its row and stamp
- * updated_at.                                                              */
-void task_db_task_update(TaskDatabase *db, const Task *t);
+/* ---------------------------------------------------------------------------
+ * task_db_task_update() — write the EDITABLE fields in which `after`
+ * differs from `before`, and no others: one UPDATE naming only those
+ * columns.  `before` is the row as the caller loaded it (the editor keeps
+ * it from the moment it showed the task); a field the caller did not
+ * change is never written, so a change another app or connection made to
+ * it in the meantime survives.  Nothing differing writes nothing.
+ *
+ * The editable fields: title, notes, due, due_time, status, pinned,
+ * priority and the recurrence schedule (recur_interval, recur_unit,
+ * recur_time, recur_lead, recur_next, recur_start).  updated_at is stamped
+ * only when a SYNCED field is among them (title, notes, due, due_time,
+ * status), never for the local-only ones (pinned, priority, the
+ * schedule).  completed_at is stamped when status ENTERS Done (the CASE
+ * reads the stored row), and a parent moves from New to In Progress when
+ * a subtask enters Done.
+ *
+ * Returns 1 when a change was written, 0 when nothing differed (nothing
+ * is written), -1 when the write failed (logged).
+ * ------------------------------------------------------------------------- */
+gint task_db_task_update(TaskDatabase *db, const Task *before, const Task *after);
+
+/* task_dup() — a deep copy of a task (its strings copied too).  Free with
+ * task_free.                                                               */
+Task *task_dup(const Task *t);
 
 /* Field setters used by the list-view toggles.  `status` is the
  * successor of a SYNCED field, so EVERY change to it stamps updated_at

@@ -6,7 +6,9 @@
  * property of the task plus its subtasks, attachments and recurrence.
  *
  * Saves are write-through with a 600 ms debounce on text; closing a window
- * flushes its pending save.  Every save fires the app's task event
+ * flushes its pending save.  A save writes only the fields that differ
+ * from the row as the editor loaded it (task_db_task_update), so it never
+ * overwrites what another app changed in a field the user left alone.  Every save fires the app's task event
  * (task_app_notify_tasks), which is how the library window hears of it.
  *
  * The module owns its windows: a registry keyed by task id, one editor per
@@ -51,9 +53,12 @@ void tasks_editor_close(int64_t task_id);
 
 /*
  * tasks_editor_refresh_all — reload every open editor from the database
- * (the library window changed something).  An editor with a pending
- * unsaved edit is skipped; text is rewritten only where it differs, so a
- * cursor never jumps; an editor whose task has gone closes itself.
+ * (the library window, another app or a background thread changed
+ * something).  An editor with a pending unsaved edit saves it first — only
+ * the fields the user changed are written — so the user's unsaved fields
+ * win and every other field takes the database's value.  Text is
+ * rewritten only where it differs, so a cursor never jumps; an editor
+ * whose task has gone closes itself.
  */
 void tasks_editor_refresh_all(void);
 

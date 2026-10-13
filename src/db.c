@@ -5,6 +5,7 @@
 #include "db.h"
 #include "task_paths.h"
 #include <glib/gstdio.h>             /* g_unlink, g_stat                    */
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -133,6 +134,17 @@ task_free(Task *t)
     g_free(t->title);
     g_free(t->notes);
     g_free(t);
+}
+
+/* task_dup() — a deep copy of a task (see db.h).                         */
+Task *
+task_dup(const Task *t)
+{
+    Task *copy  = g_new(Task, 1);
+    *copy       = *t;
+    copy->title = g_strdup(t->title != NULL ? t->title : "");
+    copy->notes = g_strdup(t->notes != NULL ? t->notes : "");
+    return copy;
 }
 
 /* task_status_label() — the user-facing status name (see db.h).  The
@@ -1049,67 +1061,157 @@ parent_started(TaskDatabase *db, gint64 child_id)
     sqlite3_finalize(st);
 }
 
-/* ---------------------------------------------------------------------------
- * task_db_task_update() — write the editable fields back (see db.h).
- * ------------------------------------------------------------------------- */
-void
-task_db_task_update(TaskDatabase *db, const Task *t)
+/*
+ * The editable columns task_db_task_update compares and writes: the
+ * column, how its value is held in a Task, where, and whether a change to
+ * it is a change to a SYNCED field (stamps updated_at).  One table, so the
+ * comparison, the SET list and the binding cannot disagree.
+ */
+typedef enum {
+    EDIT_TEXT,                      /* gchar *                             */
+    EDIT_INT,                       /* gint, or an enum stored as one      */
+    EDIT_BOOL,                      /* gboolean, written 0 / 1             */
+    EDIT_INT64                      /* gint64                              */
+} edit_kind_t;
+
+static const struct {
+    const char  *column;
+    edit_kind_t  kind;
+    size_t       offset;
+    gboolean     synced;
+} edit_columns[] = {
+    { "title",          EDIT_TEXT,  offsetof(Task, title),          TRUE  },
+    { "notes",          EDIT_TEXT,  offsetof(Task, notes),          TRUE  },
+    { "due",            EDIT_INT64, offsetof(Task, due),            TRUE  },
+    { "due_time",       EDIT_INT,   offsetof(Task, due_time),       TRUE  },
+    { "status",         EDIT_INT,   offsetof(Task, status),         TRUE  },
+    { "pinned",         EDIT_BOOL,  offsetof(Task, pinned),         FALSE },
+    { "priority",       EDIT_BOOL,  offsetof(Task, priority),       FALSE },
+    { "recur_interval", EDIT_INT,   offsetof(Task, recur_interval), FALSE },
+    { "recur_unit",     EDIT_INT,   offsetof(Task, recur_unit),     FALSE },
+    { "recur_time",     EDIT_INT,   offsetof(Task, recur_time),     FALSE },
+    { "recur_lead",     EDIT_INT,   offsetof(Task, recur_lead),     FALSE },
+    { "recur_next",     EDIT_INT64, offsetof(Task, recur_next),     FALSE },
+    { "recur_start",    EDIT_INT64, offsetof(Task, recur_start),    FALSE },
+};
+
+/*
+ * edit_differs — whether one editable column differs between two tasks.
+ *
+ * Inputs:
+ *   i      — index into edit_columns
+ *   before — the row as loaded
+ *   after  — the row as edited
+ *
+ * Output:
+ *   TRUE when the values differ (texts by content; NULL reads as "").
+ */
+static gboolean
+edit_differs(size_t i, const Task *before, const Task *after)
 {
-    /* completed_at is stamped when the row ENTERS Done (the CASE reads
-     * the OLD row values, gotcha 8) and is otherwise left exactly as it
-     * is — leaving Done does NOT clear it.  It answers "when was this
-     * last completed?", which stays a fact about the task after someone
-     * reopens it, and a New → Done → In Progress → Done round trip
-     * re-stamps only on the way back in.  updated_at is stamped
-     * unconditionally here — this path
-     * also writes title/notes/due, which Google does want.
-     *
-     * The recurrence schedule rides along because it is EDITED in the same
-     * place (the editor's Advanced block) and saved by the same debounce.
-     * It is local-only, so it does not by itself justify the bump — but
-     * this statement is never the only thing being written, so there is no
-     * "recurrence alone" path here to dirty a row needlessly.  Advancing
-     * recur_next between edits goes through task_db_task_recur_set_next
-     * instead, which stamps nothing.                                       */
+    const char *a = (const char *)before + edit_columns[i].offset;
+    const char *b = (const char *)after + edit_columns[i].offset;
+
+    switch (edit_columns[i].kind) {
+    case EDIT_TEXT: {
+        const gchar *x = *(const gchar * const *)a, *y = *(const gchar * const *)b;
+        return g_strcmp0(x != NULL ? x : "", y != NULL ? y : "") != 0;
+    }
+    case EDIT_INT:   return *(const gint *)a != *(const gint *)b;
+    case EDIT_BOOL:  return (*(const gboolean *)a != 0) != (*(const gboolean *)b != 0);
+    case EDIT_INT64: return *(const gint64 *)a != *(const gint64 *)b;
+    }
+    return FALSE;
+}
+
+/*
+ * edit_bind — bind one editable column's value from a task.
+ *
+ * Inputs:
+ *   st    — the statement
+ *   param — the 1-based parameter index
+ *   i     — index into edit_columns
+ *   t     — the task to read the value from
+ */
+static void
+edit_bind(sqlite3_stmt *st, int param, size_t i, const Task *t)
+{
+    const char *field = (const char *)t + edit_columns[i].offset;
+
+    switch (edit_columns[i].kind) {
+    case EDIT_TEXT: {
+        const gchar *text = *(const gchar * const *)field;
+        sqlite3_bind_text(st, param, text != NULL ? text : "", -1, SQLITE_TRANSIENT);
+        break;
+    }
+    case EDIT_INT:   sqlite3_bind_int(st, param, *(const gint *)field);          break;
+    case EDIT_BOOL:  sqlite3_bind_int(st, param, *(const gboolean *)field != 0); break;
+    case EDIT_INT64: sqlite3_bind_int64(st, param, *(const gint64 *)field);      break;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * task_db_task_update() — write only the changed editable columns (see
+ * db.h).  Parameter ?1 is the id, ?2 the stamp; the changed columns follow
+ * from ?3 in table order.  completed_at is stamped when the row ENTERS
+ * Done (the CASE reads the OLD row) and is otherwise left as it is —
+ * leaving Done does not clear it: it answers "when was this last
+ * completed?", which stays a fact after someone reopens the task.
+ * ------------------------------------------------------------------------- */
+gint
+task_db_task_update(TaskDatabase *db, const Task *before, const Task *after)
+{
+    GString  *sql     = g_string_new("UPDATE tasks SET ");
+    gboolean  changed = FALSE;
+    gboolean  synced  = FALSE;
+    int       param   = 3;
+
+    for (size_t i = 0; i < G_N_ELEMENTS(edit_columns); i++) {
+        if (!edit_differs(i, before, after))
+            continue;
+        if (changed)
+            g_string_append(sql, ", ");
+        if (strcmp(edit_columns[i].column, "status") == 0)
+            g_string_append_printf(sql,
+                "completed_at = CASE WHEN ?%d = %d AND status <> %d THEN ?2 "
+                "ELSE completed_at END, ",
+                param, (int)TASK_STATUS_DONE, (int)TASK_STATUS_DONE);
+        g_string_append_printf(sql, "%s = ?%d", edit_columns[i].column, param++);
+        changed = TRUE;
+        synced  = synced || edit_columns[i].synced;
+    }
+    if (!changed) {
+        g_string_free(sql, TRUE);
+        return 0;
+    }
+    if (synced)
+        g_string_append(sql, ", updated_at = ?2");
+    g_string_append(sql, " WHERE id = ?1");
+
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "UPDATE tasks SET title = ?1, notes = ?2, due = ?3, "
-            "completed_at = CASE WHEN ?4 = 2 AND status <> 2 THEN ?6 "
-            "                    ELSE completed_at END, "
-            "status = ?4, pinned = ?5, updated_at = ?6, priority = ?8, "
-            "recur_interval = ?9, recur_unit = ?10, recur_time = ?11, "
-            "recur_lead = ?12, recur_next = ?13, recur_start = ?14, "
-            "due_time = ?15 "
-            "WHERE id = ?7", -1,
-            &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, t->title, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 2, t->notes, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 3, t->due);
-        sqlite3_bind_int(st, 4, (gint)t->status);
-        sqlite3_bind_int(st, 5, t->pinned ? 1 : 0);
-        sqlite3_bind_int64(st, 6, now());
-        sqlite3_bind_int64(st, 7, t->id);
-        sqlite3_bind_int(st, 8, t->priority ? 1 : 0);
-        sqlite3_bind_int(st,  9, t->recur_interval);
-        sqlite3_bind_int(st, 10, (gint)t->recur_unit);
-        sqlite3_bind_int(st, 11, t->recur_time);
-        sqlite3_bind_int(st, 12, t->recur_lead);
-        sqlite3_bind_int64(st, 13, t->recur_next);
-        sqlite3_bind_int64(st, 14, t->recur_start);
-        sqlite3_bind_int(st, 15, t->due_time);
-        step_done(db, st, "task update");
+    gboolean      ok = FALSE;
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql->str, -1, &st, NULL)
+        == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, after->id);
+        sqlite3_bind_int64(st, 2, now());
+        param = 3;
+        for (size_t i = 0; i < G_N_ELEMENTS(edit_columns); i++)
+            if (edit_differs(i, before, after))
+                edit_bind(st, param++, i, after);
+        ok = step_done(db, st, "task update");
     } else {
         step_done(db, NULL, "task update");
     }
     sqlite3_finalize(st);
-    if (t->status == TASK_STATUS_DONE)
-        parent_started(db, t->id);
+    g_string_free(sql, TRUE);
+    if (ok && after->status == TASK_STATUS_DONE && before->status != TASK_STATUS_DONE)
+        parent_started(db, after->id);
+    return ok ? 1 : -1;
 }
-
 
 /* ---------------------------------------------------------------------------
  * task_db_task_set_status() — write the status, stamping completed_at on
- * the way into Done (see db.h).  Same CASE as task_db_task_update, so
+ * the way into Done (see db.h).  The same rule as task_db_task_update, so
  * both paths agree: entering Done stamps, and every other move leaves the
  * stamp alone — including leaving Done.  It reads the OLD row (gotcha 8).
  *

@@ -1861,6 +1861,54 @@ check_editor_window(TaskApp *app)
         task_ptr_array_free_lists(lists);
     }
 
+    /* An outside change while the editor has an unsaved edit: the typed
+     * title wins, the field changed elsewhere takes the outside value, and
+     * neither write is lost.  The "outside" writer is a second connection,
+     * as Notes would be; the library window is what hears of the change. */
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        [library showWindow:nil];
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        if (lists->len > 0) {
+            gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+            gint64 id      = task_db_task_create(app->db, list_id, 0, "merge-test");
+
+            tasks_editor_open(app, id);
+            check_spin(0.05);
+            NSWindow *editor_win = nil;
+            for (NSWindow *w in NSApp.windows) {
+                if (w.visible && [w.title isEqualToString:@"merge-test"]) editor_win = w;
+            }
+            NSTextField *title = (NSTextField *)find_text(editor_win.contentView, @"merge-test");
+            title.stringValue = @"typed here";
+            [NSNotificationCenter.defaultCenter
+                postNotificationName:NSControlTextDidChangeNotification object:title];
+
+            TaskDatabase *other = task_db_open(shared_db_file(app->db->shared), NULL);
+            Task         *seen  = task_db_task_get(other, id);
+            Task          moved = *seen;
+            moved.priority = TRUE;
+            moved.notes    = "written elsewhere";
+            task_db_task_update(other, seen, &moved);
+            task_free(seen);
+            task_db_close(other);
+
+            check(task_app_check_outside(app), "editor: (an outside change is noticed)");
+            Task *now = task_db_task_get(app->db, id);
+            check(now != NULL && strcmp(now->title, "typed here") == 0 && now->priority &&
+                  strcmp(now->notes, "written elsewhere") == 0,
+                  "editor: an outside change keeps the unsaved title and the outside fields");
+            task_free(now);
+            check(find_text(editor_win.contentView, @"typed here") != nil,
+                  "editor: ... and the editor still shows what was typed");
+            tasks_editor_close(id);
+            check_spin(0.1);
+            task_db_task_delete(app->db, id);
+        }
+        task_ptr_array_free_lists(lists);
+        [library close];
+    }
+
     tasks_editor_close_all();
     check_spin(0.1);
 }
