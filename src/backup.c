@@ -100,7 +100,7 @@ backup_thread(void *data)
     BackupJob *job  = data;
     GError    *gerr = NULL;
 
-    TaskDatabase *db = task_db_open(job->db_path, &gerr);
+    TaskDatabase *db = task_db_open_existing(job->db_path, &gerr);
     if (db == NULL) {
         job->message = g_strdup_printf("Backup failed: %s",
                                        gerr != NULL ? gerr->message : "?");

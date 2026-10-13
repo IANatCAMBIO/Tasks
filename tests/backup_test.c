@@ -319,6 +319,42 @@ test_poll(TaskApp *app)
 }
 
 /*
+ * test_moved_aside — the backup worker's own connection never creates the
+ * database: with the file moved aside (as a restore or rollback does) a
+ * pass fails, saying the file does not exist, and leaves nothing at its
+ * path.  The file is then put back.
+ *
+ * Inputs:
+ *   app — the fixture
+ */
+static void
+test_moved_aside(TaskApp *app)
+{
+    char dir[1200];
+    char aside[1200];
+
+    use_folder(app, "aside", dir, sizeof dir);
+    const char *path = shared_db_file(app->db->shared);
+    snprintf(aside, sizeof aside, "%s.aside", path);
+    /* An empty -wal is what a missing file may be created beside: without
+     * the open-existing rule the worker would make a new database here. */
+    check(sqlite3_exec(shared_db_handle(app->db->shared), "PRAGMA wal_checkpoint(TRUNCATE)",
+                       NULL, NULL, NULL) == SQLITE_OK &&
+          rename(path, aside) == 0, "aside: (the log emptied, the database moved aside)");
+
+    seen_t seen = { 0 };
+    task_backup_start(app, on_done, &seen);
+    wait_idle(app);
+    struct stat st;
+    check(seen.calls == 1 && !seen.ok && strstr(seen.message, "does not exist") != NULL,
+          "aside: the backup fails, saying the file does not exist");
+    check(stat(path, &st) != 0, "aside: no new database is created at the path");
+    check(count_backups(dir) == 0, "aside: and no backup is written");
+
+    check(rename(aside, path) == 0, "aside: (the database is put back)");
+}
+
+/*
  * main — run the backup tests.
  *
  * Output:
@@ -333,6 +369,7 @@ main(void)
     test_destination(app);
     test_back_up_now(app);
     test_poll(app);
+    test_moved_aside(app);
 
     task_app_unlisten(app, sid);
     fixture_close(app);

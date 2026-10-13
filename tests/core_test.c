@@ -10,6 +10,7 @@
  */
 #include <glib.h>
 #include <glib/gstdio.h>
+#include <string.h>
 #include "db.h"
 #include "search.h"
 #include "recur.h"
@@ -357,6 +358,38 @@ test_db_fresh_schema(void)
 }
 
 /*
+ * test_db_open_existing — task_db_open_existing refuses a missing file,
+ * in words that say so, and creates nothing; once task_db_open has made
+ * the file it opens it.
+ */
+static void
+test_db_open_existing(void)
+{
+    GError *err    = NULL;
+    gchar  *tmpdir = scratch_dir();
+    gchar  *path   = g_build_filename(tmpdir, "existing.db", NULL);
+
+    g_assert_null(task_db_open_existing(path, &err));
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(err->message, "does not exist"));
+    g_clear_error(&err);
+    g_assert_false(g_file_test(path, G_FILE_TEST_EXISTS));
+
+    task_db_close(task_db_open(path, &err));
+    g_assert_no_error(err);
+    TaskDatabase *db = task_db_open_existing(path, &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(db);
+    g_assert_cmpint(task_db_list_create(db, "Written", ""), >, 0);
+    task_db_close(db);
+
+    g_remove(path);
+    g_remove(tmpdir);
+    g_free(path);
+    g_free(tmpdir);
+}
+
+/*
  * test_db_other_version_refused — an old Tasks database (schema v14, no
  * application_id) is refused with the shared module's words, and left
  * exactly as it was: not stamped, given no tables, its journal mode
@@ -545,6 +578,7 @@ main(int argc, char **argv)
 
     /* Database */
     g_test_add_func("/db/fresh_schema",             test_db_fresh_schema);
+    g_test_add_func("/db/open_existing",            test_db_open_existing);
     g_test_add_func("/db/other_version_refused", test_db_other_version_refused);
     g_test_add_func("/db/create_read_task",         test_db_create_read_task);
     g_test_add_func("/db/create_due_time_default",  test_db_create_due_time_default);

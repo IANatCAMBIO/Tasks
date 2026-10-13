@@ -111,7 +111,10 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
   `TaskApp`, its database connection, `task_config`, `task_dates` (its
   timezone cache), every AppKit object.
 - A SQLite connection never crosses threads.  Background work that needs the
-  database opens its own (`task_db_open`), as the backup does.  Its commits
+  database opens its own with `task_db_open_existing`, as the backup and
+  the gcal sync do: only the main connection, at launch or "Create New
+  Database", may create the file (`task_db_open`), so a worker never makes
+  an empty database where the user moved the real one aside.  Its commits
   bump `data_version` for the main connection, so they reach the windows
   through the outside-change watch (§4) like any other app's.
 - Background C work: `task_loop_background(fn, ctx)`; it hands its result back

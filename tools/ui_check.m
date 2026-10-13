@@ -996,6 +996,25 @@ check_memory_and_ownership(TaskApp *app)
           "ownership: no event listener is left subscribed");
 }
 
+/* The latest status-bar message keep_status heard. */
+static char ui_status[512];
+
+/*
+ * keep_status — a status listener: keep the latest message in ui_status.
+ *
+ * Inputs:
+ *   app     — the context (unused)
+ *   message — the message (borrowed)
+ *   data    — unused
+ */
+static void
+keep_status(TaskApp *app, const gchar *message, gpointer data)
+{
+    (void)app;
+    (void)data;
+    snprintf(ui_status, sizeof ui_status, "%s", message);
+}
+
 /*
  * check_lists_bar — drive the lists bar through what a user does with it,
  * without a pointer: the selection rules, the list and group sheets (ended
@@ -1186,6 +1205,23 @@ check_lists_bar(TaskApp *app, NSString *dir)
         [library perform_command:TasksCommandEditList param:nil];
         check(accept_sheet(@[@"", @"Check List"]) && [lit() isEqualToString:@"Check List"],
               "lists bar: ... and the button follows the name");
+
+        /* A write that cannot be saved (another writer holds the file past
+         * the busy timeout) says so in the status bar, and the bar shows
+         * what the database holds.  The holder is a second connection in
+         * a write transaction. */
+        guint         sid    = task_app_listen_status(app, keep_status, NULL);
+        TaskDatabase *holder = task_db_open_existing(shared_db_file(app->db->shared), NULL);
+        check(holder != NULL && shared_db_begin(holder->shared, NULL) == 0,
+              "lists bar: (another writer holds the file)");
+        ui_status[0] = '\0';
+        [library perform_command:TasksCommandEditList param:nil];
+        check(accept_sheet(@[@"", @"Check Unsaved"]) && strstr(ui_status, "was not saved") != NULL &&
+              list_named(@"Check Unsaved") == 0 && [lit() isEqualToString:@"Check List"],
+              "lists bar: a rename that cannot be saved says so, and the bar keeps the stored name");
+        if (holder != NULL) shared_db_rollback(holder->shared);
+        task_db_close(holder);
+        task_app_unlisten(app, sid);
 
         /* Move to Group, the context menus of a group and of a list,
          * Remove from Group. */

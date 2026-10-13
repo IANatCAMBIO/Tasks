@@ -63,7 +63,7 @@ typedef struct {
 
 /* ---------------------------------------------------------------------------
  * TaskDatabase — one open connection.  A connection must not cross threads:
- * the sync worker opens its own on the same path (task_db_open).  The
+ * the sync worker opens its own on the same path (task_db_open_existing).  The
  * SQLite handle is shared_db_handle(db->shared), the path
  * shared_db_file(db->shared).
  * ------------------------------------------------------------------------- */
@@ -244,7 +244,8 @@ void task_free(Task *t);
 
 /* ---------------------------------------------------------------------------
  * task_db_open() — open a connection to the shared database at `path`
- * (shared_db_open: a missing file is created complete, in one step; any
+ * (shared_db_open: a missing file is created complete, in one step — so
+ * only the main connection, at launch or Create New, uses it; any
  * file that is not a stamped shared database — an empty one, an old
  * tasks.db, a Notes notes.db — is refused untouched, as is one on a
  * network volume or in a cloud-synced folder).  Nothing in Tasks creates
@@ -256,6 +257,16 @@ void task_free(Task *t);
  * app never reads or writes there.
  * ------------------------------------------------------------------------- */
 TaskDatabase *task_db_open(const gchar *path, GError **err);
+
+/* ---------------------------------------------------------------------------
+ * task_db_open_existing() — task_db_open for every connection but the main
+ * one opened at launch / Create New: the backup and gcal sync workers and
+ * File > Open Database File….  It never creates a file
+ * (shared_db_open_existing): a database the user moved aside — during a
+ * restore or a rollback — is reported missing instead of being silently
+ * replaced by an empty one.  Inputs and output as task_db_open.
+ * ------------------------------------------------------------------------- */
+TaskDatabase *task_db_open_existing(const gchar *path, GError **err);
 
 /* task_db_close() — close the connection and free the handle.  NULL-safe.  */
 void task_db_close(TaskDatabase *db);

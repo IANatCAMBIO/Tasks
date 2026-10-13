@@ -454,13 +454,22 @@ task_db_health(TaskDatabase *db)
 }
 
 /* ---------------------------------------------------------------------------
- * task_db_open() — open a connection to the shared file (see db.h).  The
+ * open_task_db() — the body of task_db_open and task_db_open_existing.  The
  * schema, the stamps, the refusal of any other file, WAL and the pragmas
  * are the shared module's (shared_db.h); this adds only the fence round
  * the GTK app's live data.
+ *
+ * Inputs:
+ *   path   — the database file.
+ *   create — TRUE: a missing file is created (shared_db_open); FALSE: it is
+ *            refused (shared_db_open_existing).
+ *   err    — optional error out-param, set to the module's own words.
+ *
+ * Output:
+ *   the handle, or NULL with `err` set.
  * ------------------------------------------------------------------------- */
-TaskDatabase *
-task_db_open(const gchar *path, GError **err)
+static TaskDatabase *
+open_task_db(const gchar *path, gboolean create, GError **err)
 {
     if (task_path_is_live_data(path)) {
         g_set_error(err, g_quark_from_static_string("task-db"), 2,
@@ -468,7 +477,8 @@ task_db_open(const gchar *path, GError **err)
         return NULL;
     }
     char      *why    = NULL;
-    shared_db *shared = shared_db_open(path, &why);
+    shared_db *shared = create ? shared_db_open(path, &why)
+                               : shared_db_open_existing(path, &why);
     if (shared == NULL) {
         g_set_error(err, g_quark_from_static_string("task-db"), 1, "%s",
                     why != NULL ? why : "the database cannot be opened");
@@ -483,6 +493,20 @@ task_db_open(const gchar *path, GError **err)
     if (shared_db_rev(shared, SHARED_DB_REV_TASKS, &db->tasks_rev, NULL) != 0)
         db->tasks_rev = -1;
     return db;
+}
+
+/* task_db_open() — see db.h.                                               */
+TaskDatabase *
+task_db_open(const gchar *path, GError **err)
+{
+    return open_task_db(path, TRUE, err);
+}
+
+/* task_db_open_existing() — see db.h.                                      */
+TaskDatabase *
+task_db_open_existing(const gchar *path, GError **err)
+{
+    return open_task_db(path, FALSE, err);
 }
 
 /* task_db_outside_change() — see db.h.                                     */

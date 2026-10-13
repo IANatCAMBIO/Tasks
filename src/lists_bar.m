@@ -1260,8 +1260,8 @@ drop_list:(int64_t)list_id at:(NSPoint)point
                                    order:&order group:&group before:&before
                                     rule:&rule frame:&frame];
     if (allowed) {
-        int64_t own_group = bar_order_group_at(&order, bar_order_index_of(&order, list_id));
-        if (group != own_group) task_db_list_set_group(db, list_id, group);
+        int64_t  own_group = bar_order_group_at(&order, bar_order_index_of(&order, list_id));
+        gboolean saved     = group == own_group || task_db_list_set_group(db, list_id, group);
 
         /* The order is saved even when the move left it as it was (the
          * last list of a group dropped at the head of the ungrouped ones):
@@ -1270,13 +1270,17 @@ drop_list:(int64_t)list_id at:(NSPoint)point
          * where it was dropped.  The cast: GLib spells the same 64-bit
          * integer as a different C type. */
         task_sidebar_move_list(order.ids, order.n, list_id, before);
-        task_db_lists_reorder(db, (const gint64 *)order.ids, (gsize)order.n);
+        saved = saved && task_db_lists_reorder(db, (const gint64 *)order.ids, (gsize)order.n);
 
         /* The rebuild waits for the next run-loop pass: it replaces the
-         * buttons while one of them may still be handling this drop. */
+         * buttons while one of them may still be handling this drop.  A
+         * failed write is reported there too: its refresh is the rebuild. */
         __weak TasksLibraryWindow *weak_library = library;
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weak_library full_refresh];
+            TasksLibraryWindow *window = weak_library;
+            if (window == nil) return;
+            if (saved) [window full_refresh];
+            else task_app_write_failed(window.app, "The list\xe2\x80\x99s new place");
         });
     }
     bar_order_free(&order);
@@ -1399,7 +1403,10 @@ save_list:(int64_t)list_id name:(NSString *)name emoji:(NSString *)emoji
 
     TaskApp *app = library.app;
     if (list_id != 0) {
-        task_db_list_update(app->db, list_id, name.UTF8String, emoji.UTF8String);
+        if (!task_db_list_update(app->db, list_id, name.UTF8String, emoji.UTF8String)) {
+            task_app_write_failed(app, "The list\xe2\x80\x99s new name");
+            return;
+        }
         [library full_refresh];
         task_app_status(app, "Updated list \xe2\x80\x9c%s\xe2\x80\x9d", name.UTF8String);
         return;
@@ -1407,7 +1414,7 @@ save_list:(int64_t)list_id name:(NSString *)name emoji:(NSString *)emoji
 
     int64_t created = task_db_list_create(app->db, name.UTF8String, emoji.UTF8String);
     if (created == 0) {
-        task_app_status(app, "Could not create the list \xe2\x80\x94 database write failed");
+        task_app_write_failed(app, "The new list");
         return;
     }
     [library select:(task_sel_t){ task_sel_list, created }];
@@ -1471,10 +1478,10 @@ save_group:(int64_t)group_id name:(NSString *)name
     if (!library || self.is_shut_down || name.length == 0) return;
 
     TaskApp *app = library.app;
-    if (group_id != 0) {
-        task_db_group_rename(app->db, group_id, name.UTF8String);
-    } else if (task_db_group_create(app->db, name.UTF8String) == 0) {
-        task_app_status(app, "Failed to create group");
+    if (group_id != 0 ? !task_db_group_rename(app->db, group_id, name.UTF8String)
+                      : task_db_group_create(app->db, name.UTF8String) == 0) {
+        task_app_write_failed(app, group_id != 0 ? "The group\xe2\x80\x99s new name"
+                                                 : "The new group");
         return;
     }
     [library full_refresh];
@@ -1551,7 +1558,10 @@ delete_list:(int64_t)list_id
 
         TaskApp *app = window.app;
         close_editors_of_list(app, list_id);
-        task_db_list_delete(app->db, list_id);
+        if (!task_db_list_delete(app->db, list_id)) {
+            task_app_write_failed(app, "Deleting the list");
+            return;
+        }
         task_order_drop((task_sel_t){ task_sel_list, list_id });
         [window full_refresh];
         task_app_status(app, "Deleted list \xe2\x80\x9c%s\xe2\x80\x9d", name.UTF8String);
@@ -1582,7 +1592,10 @@ delete_group:(int64_t)group_id
         TasksLibraryWindow *window = self.library;
         if (!confirmed || !window || self.is_shut_down) return;
 
-        task_db_group_delete(window.app->db, group_id);
+        if (!task_db_group_delete(window.app->db, group_id)) {
+            task_app_write_failed(window.app, "Removing the group");
+            return;
+        }
         task_order_drop((task_sel_t){ task_sel_group, group_id });
         [window full_refresh];
     });
@@ -1604,7 +1617,10 @@ set_group_of_selected_list:(int64_t)group_id
     int64_t list_id = task_sel_list_id(library.selection);
     if (list_id == 0) return;
 
-    task_db_list_set_group(library.app->db, list_id, group_id);
+    if (!task_db_list_set_group(library.app->db, list_id, group_id)) {
+        task_app_write_failed(library.app, "The list\xe2\x80\x99s group");
+        return;
+    }
     [library full_refresh];
 }
 

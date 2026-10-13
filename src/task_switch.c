@@ -60,7 +60,7 @@ task_switch_database(TaskApp *app, const char *path, char **why)
     if (task_switch_check(app, path, why) != task_switch_can_open) return false;
 
     GError       *err  = NULL;
-    TaskDatabase *next = task_db_open(path, &err);
+    TaskDatabase *next = task_db_open_existing(path, &err);
     if (next == NULL) {
         *why = strdup(err != NULL ? err->message : "the database could not be opened");
         g_clear_error(&err);
