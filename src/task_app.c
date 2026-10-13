@@ -1,4 +1,5 @@
 #include "task_app.h"
+#include "task_loop.h"
 
 /* One entry per subscription.  `fn` is a TaskAppNotifyFn on the
  * changed/tasks lists and a TaskAppStatusFn on the status list. */
@@ -27,6 +28,7 @@ task_app_free(TaskApp *app)
 {
     if (app == NULL) return;
 
+    task_app_watch_stop(app);
     /* A listener still subscribed here outlived its window; not an error. */
     g_slist_free_full(app->changed_l, g_free);
     g_slist_free_full(app->tasks_l, g_free);
@@ -225,4 +227,53 @@ task_app_notify_tasks(TaskApp *app)
 {
     if (app == NULL) return;
     fire(app, app->tasks_l != NULL ? &app->tasks_l : &app->changed_l, NULL);
+}
+
+/*
+ * task_app_check_outside — look for another connection's commits.
+ * Inputs/output are documented in task_app.h.
+ */
+gboolean
+task_app_check_outside(TaskApp *app)
+{
+    if (app == NULL || app->db == NULL) return FALSE;
+    if (shared_db_changed(app->db->shared) != 1) return FALSE;
+
+    task_app_notify_changed(app);
+    return TRUE;
+}
+
+/*
+ * watch_tick — the watch timer's callback.
+ *
+ * Inputs:
+ *   data — the TaskApp
+ */
+static void
+watch_tick(void *data)
+{
+    task_app_check_outside(data);
+}
+
+/*
+ * task_app_watch_start — poll for outside changes on the main loop.
+ * Inputs are documented in task_app.h.
+ */
+void
+task_app_watch_start(TaskApp *app)
+{
+    task_app_watch_stop(app);
+    app->watch_timer = task_loop_timer_every(TASK_APP_WATCH_SECONDS, watch_tick, app, NULL);
+}
+
+/*
+ * task_app_watch_stop — cancel the outside-change watch.
+ * Inputs are documented in task_app.h.
+ */
+void
+task_app_watch_stop(TaskApp *app)
+{
+    if (app == NULL) return;
+    task_loop_timer_cancel(app->watch_timer);
+    app->watch_timer = 0;
 }

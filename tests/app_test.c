@@ -15,7 +15,7 @@
 #include <string.h>
 
 /* What the listeners record. */
-static int   calls[4];
+static int   calls[5];
 static guint ids[4];
 static char  last_message[64];
 
@@ -110,6 +110,54 @@ test_events(TaskApp *app)
     task_app_status(app, "unheard");
     check(strcmp(last_message, "3 tasks") == 0, "events: unsubscribed status listener is silent");
     check(task_app_listen_changed(app, NULL, NULL) == 0, "events: a NULL callback is refused");
+}
+
+/*
+ * test_outside_changes — the watch (task_app_check_outside): another
+ * connection's commit fires the full refresh once; the app's own writes,
+ * and another connection's transaction that writes nothing (the backup
+ * poll's claim check), do not; the timer finds a change by itself.
+ *
+ * Inputs:
+ *   app — the context
+ */
+static void
+test_outside_changes(TaskApp *app)
+{
+    guint id = task_app_listen_changed(app, on_event, GINT_TO_POINTER(4));
+    int   before;
+
+    task_app_check_outside(app);                 /* settle the baseline */
+    before = calls[4];
+    check(!task_app_check_outside(app) && calls[4] == before,
+          "outside: nothing changed, nothing fired");
+
+    task_db_list_create(app->db, "Own write", "");
+    check(!task_app_check_outside(app) && calls[4] == before,
+          "outside: the app's own write is not an outside change");
+
+    TaskDatabase *other = task_db_open(shared_db_file(app->db->shared), NULL);
+    task_db_list_create(other, "Written elsewhere", "");
+    check(task_app_check_outside(app) && calls[4] == before + 1,
+          "outside: another connection's commit fires the full refresh");
+    check(!task_app_check_outside(app) && calls[4] == before + 1,
+          "outside: ... once");
+
+    shared_db_begin(other->shared, NULL);
+    shared_db_commit(other->shared, NULL);
+    check(!task_app_check_outside(app),
+          "outside: a transaction that writes nothing is not a change");
+
+    task_app_watch_start(app);
+    check(app->watch_timer != 0, "outside: the watch is armed");
+    task_db_list_create(other, "Seen by the timer", "");
+    for (int i = 0; i < 40 && calls[4] == before + 1; i++) check_spin(0.05);
+    check(calls[4] == before + 2, "outside: the watch finds a change by itself");
+    task_app_watch_stop(app);
+    check(app->watch_timer == 0, "outside: the watch stops");
+
+    task_db_close(other);
+    task_app_unlisten(app, id);
 }
 
 /*
@@ -301,6 +349,7 @@ main(void)
     TaskApp *app = fixture_open();
 
     test_events(app);
+    test_outside_changes(app);
     test_urgency();
     test_forecast_span();
     test_forecast_view(app);

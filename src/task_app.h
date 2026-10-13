@@ -34,9 +34,11 @@
  *                    they can never change the sidebar.
  *   status_l       — listeners for a one-line event message.
  *   listener_next  — the next subscription id.
- *   backup_running — TRUE while the rotating backup's worker (backup.h) is
- *                    in flight; blocks a second concurrent pass.
+ *   backup_running — TRUE while the backup's worker (backup.h) is in
+ *                    flight; blocks a second concurrent pass.
  *   backup_timer   — the backup's periodic task_loop timer id, or 0.
+ *   watch_timer    — the outside-change watch's task_loop timer id, or 0
+ *                    (task_app_watch_start).
  */
 typedef struct TaskApp {
     TaskDatabase *db;
@@ -46,7 +48,11 @@ typedef struct TaskApp {
     guint         listener_next;
     gboolean      backup_running;
     guint         backup_timer;
+    guint         watch_timer;
 } TaskApp;
+
+/* How often the outside-change watch asks the database, in seconds.        */
+#define TASK_APP_WATCH_SECONDS 1.0
 
 /*
  * task_app_new — allocate an empty context (no database, no listeners).
@@ -57,9 +63,10 @@ typedef struct TaskApp {
 TaskApp *task_app_new(void);
 
 /*
- * task_app_free — close the database, drop any listener still subscribed
- * and free the context.  The backup timer must already be cancelled (the
- * caller disarms the workers first; see task_worker_disarm_all).
+ * task_app_free — stop the outside-change watch, close the database, drop
+ * any listener still subscribed and free the context.  The backup timer
+ * must already be cancelled (the caller disarms the workers first; see
+ * task_worker_disarm_all).
  *
  * Inputs:
  *   app — the context, or NULL (ignored)
@@ -94,6 +101,40 @@ void task_app_notify_changed(TaskApp *app);
  *   app — the context; NULL is ignored
  */
 void task_app_notify_tasks(TaskApp *app);
+
+/*
+ * task_app_check_outside — has the database been changed by ANOTHER
+ * connection since the last look (Notes, a script, this app's own
+ * background threads — shared_db_changed on the main connection)?  When
+ * it has, fire the FULL refresh event, so every pane and editor re-reads
+ * it.  This connection's own writes never count, so the app's ordinary
+ * edits cause no second refresh.
+ *
+ * Inputs:
+ *   app — the context; NULL or no database open is a no-op
+ *
+ * Output:
+ *   TRUE when a change was found (and the event fired).
+ */
+gboolean task_app_check_outside(TaskApp *app);
+
+/*
+ * task_app_watch_start — check for outside changes every
+ * TASK_APP_WATCH_SECONDS on the main loop (task_app_check_outside).  The
+ * app also checks when it becomes active.  Restarting replaces the timer.
+ *
+ * Inputs:
+ *   app — the context
+ */
+void task_app_watch_start(TaskApp *app);
+
+/*
+ * task_app_watch_stop — cancel the watch.  Safe when it is not running.
+ *
+ * Inputs:
+ *   app — the context; NULL is ignored
+ */
+void task_app_watch_stop(TaskApp *app);
 
 /* Listener signatures: a notify listener, and a status listener that also
  * receives the message (borrowed; copy it to keep it). */

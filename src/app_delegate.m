@@ -296,6 +296,7 @@ applicationDidFinishLaunching:(NSNotification *)note
     /* The workers and the health check come AFTER the window: what they
      * report lands in its status bar and its sheets. */
     task_worker_arm_all(self.app, shared_db_file(self.app->db->shared));
+    task_app_watch_start(self.app);
     [self.library report_database_health];
     if (for_session_only) {
         task_app_status(self.app, "%s is open for this session only",
@@ -307,6 +308,20 @@ applicationDidFinishLaunching:(NSNotification *)note
     NSLog(@"[launch] config %@, database %@: %d tasks in %d lists",
           tasks_string(task_config_path()), tasks_string(shared_db_file(self.app->db->shared)),
           n_tasks, n_lists);
+}
+
+/*
+ * applicationDidBecomeActive: — the user has come back to the app, perhaps
+ * from Notes: look for outside changes now rather than at the next tick of
+ * the watch.
+ *
+ * Inputs:
+ *   note — NSApplicationDidBecomeActiveNotification (unused)
+ */
+- (void)
+applicationDidBecomeActive:(NSNotification *)note
+{
+    if (self.library != nil) task_app_check_outside(self.app);
 }
 
 /*
@@ -360,6 +375,7 @@ applicationWillTerminate:(NSNotification *)note
     if (self.app == NULL) return;
 
     [NSNotificationCenter.defaultCenter removeObserver:self];
+    task_app_watch_stop(self.app);
     [self.library shut_down];
     self.library = nil;
     task_worker_disarm_all();
