@@ -2,7 +2,7 @@
  * rows_test.c — the toolkit-neutral row description (src/task_rows.h) and
  * the pane collection built on it (src/task_pane.h): which lines a task
  * gets, their emphasis, the notes-preview rules, the completed filter, the
- * search filter and the status line.
+ * search filter, the status line and the note-context title prefix.
  */
 
 #include "fixture.h"
@@ -353,6 +353,56 @@ test_collect(TaskApp *app)
 }
 
 /*
+ * test_note_context — the note-context setting: off (the default), a
+ * Notes action item's row shows its plain title; on, the row's title, its
+ * title line (the list and the Kanban card) and the search all use
+ * "<folder> - <title>".
+ *
+ * Inputs:
+ *   app — the context
+ */
+static void
+test_note_context(TaskApp *app)
+{
+    gint64 list = task_db_list_create(app->db, "Notes items", NULL);
+    gint64 id   = task_db_task_create(app->db, list, 0, "lock down my diet RE keto");
+    char  *sql  = sqlite3_mprintf(
+        "INSERT INTO folders (name) VALUES ('Captain''s Log');"
+        "INSERT INTO notes (folder_id, title, created_at, updated_at)"
+        " VALUES (last_insert_rowid(), 'Log', 0, 0);"
+        "INSERT INTO note_task (task_id, note_id, ord) VALUES (%lld, last_insert_rowid(), 0);"
+        "UPDATE action_uid_seq SET next = (SELECT max(uid) + 1 FROM note_task);",
+        (long long)id);
+    sqlite3_exec(shared_db_handle(app->db->shared), sql, NULL, NULL, NULL);
+    sqlite3_free(sql);
+
+    task_sel_t  sel = { task_sel_list, list };
+    TaskSearch *q   = task_search_parse("captain");
+
+    task_row_t *row = describe(app, id, FALSE);
+    check(strcmp(row->title, "lock down my diet RE keto") == 0 &&
+          strcmp(row->lines[0].text, "lock down my diet RE keto") == 0,
+          "context: off by default, the row shows the plain title");
+    task_row_free(row);
+    task_pane_content_t *content = task_pane_collect(app, sel, q);
+    check(content->rows->count == 0, "context: off, the folder's name does not match");
+    task_pane_content_free(content);
+
+    task_config_set_bool(TASK_CFG_NOTE_CONTEXT, TRUE);
+    row = describe(app, id, FALSE);
+    check(strcmp(row->title, "Captain's Log - lock down my diet RE keto") == 0 &&
+          strcmp(row->lines[0].text, row->title) == 0,
+          "context: on, the row and its title line show it before the title");
+    task_row_free(row);
+    content = task_pane_collect(app, sel, q);
+    check(content->rows->count == 1 && content->rows->rows[0]->id == id,
+          "context: on, a search for the folder's name finds the item");
+    task_pane_content_free(content);
+    task_config_set_bool(TASK_CFG_NOTE_CONTEXT, FALSE);
+    task_search_free(q);
+}
+
+/*
  * main — run the row and pane tests.
  *
  * Output:
@@ -368,6 +418,7 @@ main(void)
     test_notes_line(app, list);
     test_detail_lines(app, list);
     test_collect(app);
+    test_note_context(app);
     fixture_close(app);
     return check_result();
 }

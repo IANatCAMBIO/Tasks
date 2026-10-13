@@ -2,8 +2,9 @@
  * shared_test.c — Tasks on the shared database: the column-diff update
  * (task_db_task_update) that keeps two writers from losing each other's
  * changes, and its stamping rules; and Notes action items (a note_task row
- * names the task) — the editor's note lookup, ordinary deletion, and the
- * purge Tasks refuses; which outside changes refresh the app (a change to
+ * names the task) — the editor's note lookup, the note context every read
+ * carries (action_items_ctx), ordinary deletion, and the purge Tasks
+ * refuses; which outside changes refresh the app (a change to
  * Tasks' data refreshes, one to Notes' data re-reads only the editors'
  * note lines, its own writes never count, and an outside commit landing
  * right after its own is not lost); tombstones with subtasks; and writes
@@ -208,6 +209,92 @@ row_int(TaskApp *app, const char *sql)
     }
     sqlite3_finalize(st);
     return n;
+}
+
+/*
+ * context_of — the note context a fresh read of a task carries.
+ *
+ * Inputs:
+ *   app     — the fixture
+ *   task_id — the task
+ *
+ * Output:
+ *   new string (g_free): Task.context, or NULL when the task is gone.
+ */
+static gchar *
+context_of(TaskApp *app, gint64 task_id)
+{
+    Task  *t   = task_db_task_get(app->db, task_id);
+    gchar *ctx = t != NULL ? g_strdup(t->context) : NULL;
+    task_free(t);
+    return ctx;
+}
+
+/*
+ * test_note_context — every task read carries its note context: the
+ * folder of the note it was written in (action_items_ctx.context), ""
+ * for a note at the top level and for a task not born in Notes, and the
+ * folder's new name once Notes renames it.  List loads carry it too.
+ *
+ * Inputs:
+ *   app — the fixture
+ */
+static void
+test_note_context(TaskApp *app)
+{
+    gint64 list   = task_db_list_create(app->db, "Context", "");
+    gint64 filed  = task_db_task_create(app->db, list, 0, "lock down my diet RE keto");
+    gint64 loose  = task_db_task_create(app->db, list, 0, "Top-level note item");
+    gint64 plain  = task_db_task_create(app->db, list, 0, "Typed in Tasks");
+    char  *sql    = sqlite3_mprintf(
+        "INSERT INTO folders (name) VALUES ('Captain''s Log');"
+        "INSERT INTO notes (folder_id, title, created_at, updated_at)"
+        " VALUES (last_insert_rowid(), 'Log', 0, 0);"
+        "INSERT INTO note_task (task_id, note_id, ord) VALUES (%lld, last_insert_rowid(), 0);"
+        "UPDATE action_uid_seq SET next = (SELECT max(uid) + 1 FROM note_task);",
+        (long long)filed);
+    sqlite3_exec(shared_db_handle(app->db->shared), sql, NULL, NULL, NULL);
+    sqlite3_free(sql);
+    link_to_note(app, loose, "Loose note");
+
+    gchar *ctx = context_of(app, filed);
+    check(ctx != NULL && strcmp(ctx, "Captain's Log") == 0,
+          "context: a note in a folder gives its items the folder's name");
+    g_free(ctx);
+    ctx = context_of(app, loose);
+    check(ctx != NULL && *ctx == '\0', "context: a note at the top level gives none");
+    g_free(ctx);
+    ctx = context_of(app, plain);
+    check(ctx != NULL && *ctx == '\0', "context: a task not born in Notes has none");
+    g_free(ctx);
+
+    GPtrArray *rows  = task_db_tasks_toplevel(app->db, list);
+    guint      with  = 0;               /* rows carrying any context      */
+    gboolean   right = FALSE;           /* the filed one carries its own  */
+    for (guint i = 0; i < rows->len; i++) {
+        const Task *t = g_ptr_array_index(rows, i);
+        if (*t->context != '\0') with++;
+        if (t->id == filed) right = strcmp(t->context, "Captain's Log") == 0;
+    }
+    check(rows->len == 3 && with == 1 && right,
+          "context: a list load carries it on each row, and only on those");
+    task_ptr_array_free_tasks(rows);
+
+    Task  *t     = task_db_task_get(app->db, filed);
+    gchar *shown = t != NULL ? task_display_title(t, TRUE) : NULL;
+    check(shown != NULL && strcmp(shown, "Captain's Log - lock down my diet RE keto") == 0 &&
+          strcmp(t->title, "lock down my diet RE keto") == 0,
+          "context: shown before the title, the stored title untouched");
+    g_free(shown);
+    task_free(t);
+
+    sqlite3_exec(shared_db_handle(app->db->shared),
+                 "UPDATE folders SET name = 'Ship''s Log' WHERE name = 'Captain''s Log'",
+                 NULL, NULL, NULL);
+    ctx = context_of(app, filed);
+    check(ctx != NULL && strcmp(ctx, "Ship's Log") == 0,
+          "context: a folder renamed in Notes is reflected at the next read");
+    g_free(ctx);
 }
 
 /*
@@ -609,6 +696,7 @@ main(int argc, char **argv)
     test_no_lost_update(app);
     test_stamps(app);
     test_note_items(app);
+    test_note_context(app);
     test_refresh_rev(app);
     test_tombstones(app);
     test_busy(app, argv[0]);

@@ -238,6 +238,7 @@ task_free(Task *t)
         return;
     g_free(t->title);
     g_free(t->notes);
+    g_free(t->context);
     g_free(t);
 }
 
@@ -249,7 +250,51 @@ task_dup(const Task *t)
     *copy       = *t;
     copy->title = g_strdup(t->title != NULL ? t->title : "");
     copy->notes = g_strdup(t->notes != NULL ? t->notes : "");
+    copy->context = g_strdup(t->context != NULL ? t->context : "");
     return copy;
+}
+
+/*
+ * title_has_context — does a title already begin with its note context?
+ * That is: the context, compared with Unicode case folding, then optional
+ * spaces, then a '-' or ':' separator.
+ *
+ * Inputs:
+ *   title   — the task's title, not NULL
+ *   context — the note context, not NULL and not empty
+ *
+ * Output:
+ *   TRUE when the title already carries the context.
+ */
+static gboolean
+title_has_context(const gchar *title, const gchar *context)
+{
+    gchar   *ft  = g_utf8_casefold(title, -1);
+    gchar   *fc  = g_utf8_casefold(context, -1);
+    gboolean has = FALSE;
+
+    if (g_str_has_prefix(ft, fc)) {
+        const gchar *p = ft + strlen(fc);
+        while (*p == ' ')
+            p++;
+        has = *p == '-' || *p == ':';
+    }
+    g_free(ft);
+    g_free(fc);
+    return has;
+}
+
+/* task_display_title() — the title a task is shown with (see db.h).        */
+gchar *
+task_display_title(const Task *t, gboolean with_context)
+{
+    const gchar *title   = t->title != NULL ? t->title : "";
+    const gchar *context = t->context != NULL ? t->context : "";
+
+    if (!with_context || *context == '\0' || *title == '\0' ||
+        title_has_context(title, context))
+        return g_strdup(title);
+    return g_strconcat(context, TASK_CONTEXT_SEPARATOR, title, NULL);
 }
 
 /* task_status_label() — the user-facing status name (see db.h).  The
@@ -954,7 +999,18 @@ task_db_list_set_group(TaskDatabase *db, gint64 list_id, gint64 group_id)
                   "completed_at, priority, "\
                   "recur_interval, recur_unit, recur_time, recur_lead, "\
                   "recur_next, recur_start, due_time, "\
-                  "scheduled_start, scheduled_duration"
+                  "scheduled_start, scheduled_duration, " \
+                  TASK_CONTEXT_COL
+/* The note context (Task.context), from the shared schema's
+ * action_items_ctx view — its ONE definition — found through the task's
+ * note_task row (note_task.task_id is UNIQUE, uid is the view's key).  A
+ * correlated subquery rather than a join, so it rides along in every
+ * existing "FROM tasks" statement: one statement per load, an index probe
+ * per row, and NULL ("" once read) for any task Notes did not write.      */
+#define TASK_CONTEXT_COL \
+                  "(SELECT c.context FROM action_items_ctx c " \
+                  " WHERE c.uid = (SELECT nt.uid FROM note_task nt " \
+                  "                WHERE nt.task_id = tasks.id))"
 #define TASK_COLS       TASK_COLS_WITH("notes")
 /* The same shape with the notes left out (an empty string in their
  * place), for a query whose rows are read for their titles alone: the
@@ -1005,8 +1061,10 @@ read_task(sqlite3_stmt *st)
     t->scheduled_duration = sqlite3_column_int(st, 21);
     if (t->scheduled_duration <= 0)
         t->scheduled_duration = SHARED_DB_TASK_SCHEDULED_DURATION_DEFAULT;
+    t->context = column_text_dup(st, 22);
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
+    if (t->context == NULL) t->context = g_strdup("");
     return t;
 }
 

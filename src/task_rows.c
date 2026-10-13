@@ -200,11 +200,12 @@ notes_preview(const gchar *notes)
  *   list_name — the owning list's name, or NULL when the view IS that list
  *   att_count — the task's attachment count
  *   subs      — the task's visible subtasks (GPtrArray of Task*), or NULL
- *   bold      — the bold_task_titles setting
+ *   ctx       — the refresh's context: the bold_task_titles setting, and
+ *               the note_context_titles one for the subtask lines
  */
 static void
 lines_build(task_row_t *row, const Task *t, const gchar *list_name,
-            gint att_count, GPtrArray *subs, gboolean bold)
+            gint att_count, GPtrArray *subs, const TaskRowCtx *ctx)
 {
     task_row_line_t *title = line_add(row, task_row_line_title,
         text_printf("%s%s%s",
@@ -212,7 +213,7 @@ lines_build(task_row_t *row, const Task *t, const gchar *list_name,
                     t->priority ? "\xf0\x9f\x9a\xa8  " : "",
                     t->pinned ? "\xe2\xad\x90\xef\xb8\x8f  " : ""),
         text_printf("%s", row->title), TASK_ROW_ALPHA_FULL);
-    title->bold   = bold;
+    title->bold   = ctx->bold;
     title->strike = t->status == TASK_STATUS_DONE;
 
     if (list_name != NULL) {
@@ -237,14 +238,15 @@ lines_build(task_row_t *row, const Task *t, const gchar *list_name,
 
     guint nsubs = subs != NULL ? subs->len : 0;
     for (guint i = 0; i < MIN(nsubs, (guint)TASK_ROW_MAX_SUBTASKS); i++) {
-        const Task *sub  = g_ptr_array_index(subs, i);
-        gboolean    done = sub->status == TASK_STATUS_DONE;
+        const Task *sub   = g_ptr_array_index(subs, i);
+        gboolean    done  = sub->status == TASK_STATUS_DONE;
+        gchar      *shown = task_display_title(sub, ctx->note_context);
         line_add(row, task_row_line_subtask,
                  text_printf("%s", done ? "\xe2\x98\x91 " : "\xe2\x98\x90 "),
-                 text_valid(*sub->title != '\0' ? sub->title
-                                                : UNTITLED_SUBTASK),
+                 text_valid(*shown != '\0' ? shown : UNTITLED_SUBTASK),
                  done ? TASK_ROW_ALPHA_SUB_DONE : TASK_ROW_ALPHA_FULL)
             ->strike = done;
+        g_free(shown);
     }
     if (nsubs > TASK_ROW_MAX_SUBTASKS) {
         guint more = nsubs - TASK_ROW_MAX_SUBTASKS;
@@ -296,6 +298,7 @@ task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx, gboolean virtual_view)
     }
     ctx->bold      = task_config_get_bool(TASK_CFG_BOLD_TITLES);
     ctx->show_done = task_config_get_bool(TASK_CFG_SHOW_COMPLETED);
+    ctx->note_context = task_config_get_bool(TASK_CFG_NOTE_CONTEXT);
 }
 
 /*
@@ -336,7 +339,9 @@ task_row_describe(const Task *t, const TaskRowCtx *ctx)
 
     row->id     = t->id;
     row->status = t->status;
-    row->title  = text_valid(*t->title != '\0' ? t->title : UNTITLED_TASK);
+    gchar *shown = task_display_title(t, ctx->note_context);
+    row->title  = text_valid(*shown != '\0' ? shown : UNTITLED_TASK);
+    g_free(shown);
 
     const gchar *list_name = ctx->list_names != NULL
         ? g_hash_table_lookup(ctx->list_names, GINT_TO_POINTER(t->list_id))
@@ -344,7 +349,7 @@ task_row_describe(const Task *t, const TaskRowCtx *ctx)
     gint att_count = GPOINTER_TO_INT(
         g_hash_table_lookup(ctx->att_counts, GINT_TO_POINTER(t->id)));
     lines_build(row, t, list_name, att_count, task_row_ctx_subtasks(ctx, t),
-                ctx->bold);
+                ctx);
 
     /* The due cell carries its time of day only when that is not the 17:00
      * default (task_due_format_at).  due_instant is the sort key, since

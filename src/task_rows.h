@@ -89,8 +89,10 @@ typedef struct {
  *
  *   id             — task id (never 0)
  *   status         — the tri-state; "done" is status == TASK_STATUS_DONE
- *   title          — plain title ("Untitled Task" when empty): the Task
- *                    column's sort key and what status messages quote
+ *   title          — the title as shown (task_display_title: the note
+ *                    context before it when that setting is on;
+ *                    "Untitled Task" when empty): the Task column's sort
+ *                    key and what status messages quote
  *   lines          — the tall cell, `line_count` lines, title first
  *   due, due_time  — as stored (local midnight; minutes past it)
  *   due_instant    — task_due_instant(due, due_time): the Due sort key
@@ -137,6 +139,7 @@ typedef struct {
     GHashTable *list_names;         /* list id -> name; NULL in list views */
     gboolean    bold;               /* the bold_task_titles setting       */
     gboolean    show_done;          /* the show_completed setting         */
+    gboolean    note_context;       /* the note_context_titles setting    */
 } TaskRowCtx;
 
 /*

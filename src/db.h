@@ -233,6 +233,14 @@ typedef struct {
     /* Day planner schedule — LOCAL-ONLY (never synced).                     */
     gint64    scheduled_start;       /* unix seconds; 0 = not scheduled       */
     gint      scheduled_duration;    /* working session length in minutes      */
+
+    /* The NOTE CONTEXT of a Notes action item: the `context` column of the
+     * shared schema's action_items_ctx view (the name of the folder its
+     * note is in), read with the row by every task query.  "" for a task
+     * not born in Notes, for a note at the top level, and for a tombstone
+     * (the view leaves those out).  READ-ONLY and display-only: no write
+     * names it, and task_display_title is the only reader.                */
+    gchar    *context;
 } Task;
 
 /* One file attachment on a task.                                           */
@@ -498,6 +506,32 @@ gint task_db_task_update(TaskDatabase *db, const Task *before, const Task *after
 /* task_dup() — a deep copy of a task (its strings copied too).  Free with
  * task_free.                                                               */
 Task *task_dup(const Task *t);
+
+/* The separator between a note context and the title it is shown before:
+ * "Captain's Log - lock down my diet RE keto".                            */
+#define TASK_CONTEXT_SEPARATOR " - "
+
+/* ---------------------------------------------------------------------------
+ * task_display_title() — the title a task is SHOWN with: the one helper
+ * every row, card, block and label that names a task goes through.
+ *
+ * With `with_context` (the TASK_CFG_NOTE_CONTEXT setting) and a non-empty
+ * t->context, the title is "<context> - <title>" — unless the title
+ * already starts with the context (compared case-insensitively, Unicode
+ * case folding) followed by optional spaces and a '-' or ':', as items
+ * written before the option existed often do ("Quad - Ian to draw it" in
+ * folder "Quad").  An empty title stays empty, so the caller's own
+ * "Untitled" fallback still applies.
+ *
+ * DISPLAY ONLY: the result is never written back to tasks.title (it would
+ * reach the note's '!' line) nor pushed to Google Calendar.
+ *
+ *   t            — the task, not NULL; a NULL title or context reads as "".
+ *   with_context — whether the note context is shown at all.
+ *
+ * Returns a new string (g_free), never NULL.
+ * ------------------------------------------------------------------------- */
+gchar *task_display_title(const Task *t, gboolean with_context);
 
 /* Field setters used by the list-view toggles.  `status` is the
  * successor of a SYNCED field, so EVERY change to it stamps updated_at

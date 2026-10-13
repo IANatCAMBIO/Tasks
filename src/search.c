@@ -117,15 +117,19 @@ task_search_free(TaskSearch *q)
 }
 
 gboolean
-task_search_matches(const TaskSearch *q, const Task *t, GPtrArray *subs)
+task_search_matches(const TaskSearch *q, const Task *t, GPtrArray *subs,
+                    gboolean with_context)
 {
     if (q == NULL)
         return TRUE;                 /* no filter: everything matches       */
 
     /* Build the searched text as ONE string, fields separated by newlines
      * so a quoted phrase cannot match across the seam between a title and
-     * the notes below it.  Only subtask TITLES join it (search.h).         */
-    GString *hay = g_string_new(t->title != NULL ? t->title : "");
+     * the notes below it.  Only subtask TITLES join it, and every title
+     * is the one shown (search.h).                                        */
+    gchar   *shown = task_display_title(t, with_context);
+    GString *hay   = g_string_new(shown);
+    g_free(shown);
     if (t->notes != NULL && *t->notes != '\0') {
         g_string_append_c(hay, '\n');
         g_string_append(hay, t->notes);
@@ -134,8 +138,10 @@ task_search_matches(const TaskSearch *q, const Task *t, GPtrArray *subs)
         const Task *s = g_ptr_array_index(subs, i);
         if (s->title == NULL || *s->title == '\0')
             continue;
+        gchar *sub_shown = task_display_title(s, with_context);
         g_string_append_c(hay, '\n');
-        g_string_append(hay, s->title);
+        g_string_append(hay, sub_shown);
+        g_free(sub_shown);
     }
 
     /* Folded ONCE per task, against needles the parse already folded.      */

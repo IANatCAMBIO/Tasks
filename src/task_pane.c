@@ -97,7 +97,8 @@ task_pane_collect(TaskApp *app, task_sel_t sel, const TaskSearch *search)
         for (guint i = 0; i < tasks->len; i++) {
             Task *t = g_ptr_array_index(tasks, i);
             if (task_search_matches(search, t,
-                                    task_row_ctx_subtasks(&ctx, t))) {
+                                    task_row_ctx_subtasks(&ctx, t),
+                                    ctx.note_context)) {
                 g_ptr_array_add(filtered, t);
             }
         }
