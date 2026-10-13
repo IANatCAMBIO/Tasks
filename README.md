@@ -132,6 +132,16 @@ it cannot.
 A task written as an action item in a note shows "From note: …" in its
 editor.  Its title, completion and due date stay in step with the note's
 line; deleting it here makes Notes drop the item mark from the line.
+Settings → Appearance → **Show the note's context before Notes action
+items' titles** (off by default) shows the name of the note's folder before
+such an item's title wherever tasks are listed — the list, the Kanban, the
+3-Day Forecast, the day planner, reminders — and the search matches it: an
+item in a note in "Captain's Log" reads "Captain's Log - lock down my diet
+RE keto".  It is display only: the stored title, the note's line, the
+editor's title field and Google Calendar keep the plain title.  A title that
+already starts with the folder's name and a "-" or ":" is left as it is; a
+note at the top level gives no context.  While it is on, a folder renamed
+in Notes renames the prefix within a second.
 
 **Backups** are on by default: every hour a verified copy of the shared
 database is written to `backups/` in the database file's own folder (or a
@@ -167,7 +177,8 @@ database code refuses any path inside it.
 Settings are changed in the app and stored in `tasks.ini` (group `[tasks]`,
 written by the app; comments are not preserved), apart from the backup
 settings, which live in the shared database so that Notes follows them too.
-The Settings window (⌘,) holds the appearance options, the database's health
+The Settings window (⌘,) holds the appearance options (bold titles, Kanban
+shadows, business-day forecast, the note-context title prefix), the database's health
 and fingerprint, the backups, notifications and Google Calendar; the View
 menu holds the rest.  Every key and its default is listed in
 `src/task_config.h`.

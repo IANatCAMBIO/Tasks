@@ -140,7 +140,7 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 |---|---|---|
 | `task_app_notify_changed` | structure changed: refresh sidebar + task pane + open editors | list/group commands, the recurrence pass |
 | `task_app_notify_tasks` | tasks changed, sidebar cannot have: task pane only | editor saves, subtask/attachment edits, Settings changes that alter what rows show |
-| the notes event (`task_app_listen_notes`) | Notes' data changed elsewhere: re-read open editors' "From note" lines | `task_app_check_outside` only |
+| the notes event (`task_app_listen_notes`) | Notes' data changed elsewhere: re-read open editors' "From note" lines; while `TASK_CFG_NOTE_CONTEXT` is on, also everything the tasks event refreshes (a renamed folder renames the prefix) | `task_app_check_outside` only |
 | `task_app_status(app, fmt, …)` | a one-line message for the status bar | anyone |
 
 **Outside changes.**  The database is shared with Notes (and with scripts).
@@ -239,6 +239,17 @@ row has gone.  Selecting a GROUP shows the aggregated tasks of its lists.
   it.  The list uses `TasksRowLayoutWrap`, the cards `TasksRowLayoutTruncate`.
 - **Neither pane formats row text itself.**  If the look of a row must change,
   change `row_text.m` (shell package) so both panes change together.
+- **Titles go through `task_display_title(task, with_context)` (db.h)** —
+  the ONE place the note-context prefix ("<context> - <title>",
+  `TASK_CONTEXT_SEPARATOR`) is made.  `Task.context` is the
+  `action_items_ctx.context` of the task's note (its folder's name), read
+  with every task row by `TASK_COLS`; "" for anything else.  The rows
+  (`task_row_describe`: list, Kanban, 3-Day Forecast) and the search
+  (`task_search_matches`) take the setting from `TaskRowCtx.note_context`;
+  the AppKit labels (day planner blocks, reminders, the subtask editor's
+  parent line) use `tasks_title_string` (ui_util.h).  Display only: never
+  for an editable field, never written to `tasks.title`, never pushed to
+  Google Calendar (the sync pushes `t->title`).
 - Dimming is alpha on the base colour, never a fixed grey.  Pass
   `emphasized:YES` for a selected row in a key window.
 - To update one row in place (the checkbox): re-fetch the task, build a
@@ -532,8 +543,10 @@ delete the task).  After a subtask tick, resync the parent's status control.
 ### WP6 — Settings
 
 Owns: `settings_window.[hm]`.  Reference: `settings_window.c`.
-Appearance, the Database plate, backups (map §3.9).  After a change that
-alters rows call `task_app_notify_tasks`.  The backup settings are the
+Appearance (bold titles, Kanban shadows, the business-day forecast, the
+note-context title prefix), the Database plate, backups (map §3.9).  After
+a change that alters rows call `task_app_notify_tasks` — it also reloads
+the day planner and retitles the reminders (`tasks_notify_retitle`).  The backup settings are the
 shared database's (`shared_backup_policy_get` / `shared_settings_set`, and
 `task_backup_set_dir` for the folder), which Notes follows too; the poll reads them afresh, so nothing is re-armed.  The Kanban shadow needs no call into the board:
 the board re-reads `TASK_CFG_KANBAN_SHADOW` on every `show_rows:`.
@@ -626,7 +639,7 @@ flags as a side effect.
 ```sh
 make clean && make      # zero warnings
 make test               # core tests
-make seed               # fresh sandbox database (42 tasks, 8 lists, 2 groups)
+make seed               # fresh sandbox database (45 tasks, 8 lists, 2 groups; 3 Notes items)
 make ui-check           # snapshots in dev/snapshots, ownership + memory checks
 make run                # the app, against dev/data
 ```

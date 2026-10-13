@@ -27,8 +27,9 @@
  * keeps its per-row state in its own SIDE TABLE keyed by row id: the
  * Google Calendar sync's gcal_* tables are described in gcal_store.h.
  * A task a Notes action item IS has a note_task row naming it (the shared
- * schema); Tasks reads that link (task_db_task_note) and never purges such
- * a task.
+ * schema); Tasks reads that link (task_db_task_note, and Task.context — the
+ * note's folder, from the action_items_ctx view) and never purges such a
+ * task.
  *
  * Deletion is a SOFT flag (`deleted` = tombstone): a tombstoned row is
  * hidden everywhere until it is purged.  Every mutation of a task's own

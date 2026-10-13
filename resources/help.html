@@ -34,7 +34,9 @@ or a group has no one list to put it in.</p>
 <h2>Searching</h2>
 <p>The search field narrows the selected view; it does not search the whole
 database.  It looks in each task's title, its notes and the titles of its
-subtasks, ignoring case.</p>
+subtasks, ignoring case.  It searches titles as they are shown, so with the
+note's context shown before action items' titles (below), searching for a
+Notes folder's name finds the items written in it.</p>
 <table>
 <tr><td><code>bank letter</code></td><td>tasks containing both words</td></tr>
 <tr><td><code>"bank letter"</code></td><td>tasks containing that phrase</td></tr>
@@ -43,6 +45,21 @@ subtasks, ignoring case.</p>
 <p>Press Escape in the field to clear the search.  While a search is active
 tasks cannot be dragged into a manual order, because the hidden tasks
 would lose their places.</p>
+
+<h2>Action items from Notes</h2>
+<p>A line marked as an action item in a note is a task here too.  Its
+editor says which note it came from, and its title, completion and due date
+stay in step with the line in the note.</p>
+<p>Settings &gt; Appearance &gt; <b>Show the note’s context before Notes
+action items’ titles</b> shows the name of the folder the note is in before
+the item's title, wherever the task is listed: the list, the Kanban board,
+the 3-Day Forecast, the day planner and reminders.  An item written in a
+note in the folder “Captain’s Log” then reads “Captain’s Log - lock down my
+diet RE keto”.  This only changes what is shown: the title you edit, the
+line in the note and what goes to Google Calendar stay as they are.  A
+title that already starts with the folder's name and a “-” or “:” is shown
+as it is, and an item from a note at the top level (not in a folder) has no
+context to show.  The option is off until you turn it on.</p>
 
 <h2>Compact Controls</h2>
 <p>View &gt; Compact Controls shrinks the window to a small size it
