@@ -3,7 +3,8 @@
  * backups go (by default `backups` beside the open database file, never
  * the per-user folder) and what is refused (the live data — Tasks' own
  * refusal — and the module's folder checks), Back Up Now on the background
- * job and the UTC name it writes, the retention the module applies, and
+ * job and the UTC name it writes, the retention the module applies (and
+ * how a copy whose pruning failed is reported), and
  * the periodic poll that makes a backup only when the shared policy says
  * one is due.  The policy's defaults and ranges are the module's
  * (shared_backup_policy_get) and are tested there.
@@ -18,6 +19,7 @@
 #include "task_worker.h"
 
 #include <dirent.h>
+#include <glib/gstdio.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -273,6 +275,54 @@ test_back_up_now(TaskApp *app)
 }
 
 /*
+ * test_prune_failed — the copy is made but an old backup cannot be removed
+ * (a folder squats on an old backup's name): Back Up Now reports failure
+ * naming BOTH the new file and the pruning error, and the module records
+ * the new backup's time as well as the error.
+ *
+ * Inputs:
+ *   app — the fixture
+ */
+static void
+test_prune_failed(TaskApp *app)
+{
+    char dir[1200];
+    char squat[1400];
+    char inner[1500];
+
+    use_folder(app, "prune", dir, sizeof dir);
+    snprintf(squat, sizeof squat, "%s/" SHARED_DB_BACKUP_PREFIX "20000101-000000Z.db", dir);
+    snprintf(inner, sizeof inner, "%s/keep", squat);
+    FILE *f = NULL;
+    check(g_mkdir(squat, 0700) == 0 && (f = fopen(inner, "w")) != NULL,
+          "prune: (an old backup's name is a non-empty folder)");
+    if (f != NULL) fclose(f);
+    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_KEEP, "1", NULL);
+    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_LAST_AT, NULL, NULL);
+
+    seen_t seen = { 0 };
+    task_backup_start(app, on_done, &seen);
+    wait_idle(app);
+    check(seen.calls == 1 && !seen.ok, "prune: the pass reports failure");
+    check(strstr(seen.message, "/" SHARED_DB_BACKUP_PREFIX) != NULL &&
+          strstr(seen.message, "removing old backups failed") != NULL &&
+          strcmp(last_status, seen.message) == 0,
+          "prune: ... naming the new file and the pruning failure, in the status bar too");
+
+    int64_t last_at = 0;
+    char   *error   = NULL;
+    shared_backup_policy_get(app->db->shared, SHARED_SETTING_BACKUP_LAST_AT, &last_at, NULL);
+    shared_settings_get(app->db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, &error, NULL);
+    check(last_at > 0 && error != NULL && error[0] != '\0',
+          "prune: the last backup's time and the error are both recorded");
+    free(error);
+
+    g_remove(inner);
+    g_rmdir(squat);
+    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_KEEP, NULL, NULL);
+}
+
+/*
  * test_poll — the periodic worker: armed at the fixed poll period, it makes
  * a backup at once when one is due, then none until the interval passes;
  * switched off or at interval 0 it makes none.
@@ -368,6 +418,7 @@ main(void)
 
     test_destination(app);
     test_back_up_now(app);
+    test_prune_failed(app);
     test_poll(app);
     test_moved_aside(app);
 

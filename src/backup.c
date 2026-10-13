@@ -89,7 +89,8 @@ backup_finish(void *data)
  * backup_thread — one pass, on its own connection: shared_db_backup for
  * Back Up Now, shared_db_backup_if_due for the periodic poll.  The module
  * reserves a new file, copies with VACUUM INTO, verifies the copy and only
- * then prunes; it records the outcome in shared_settings.
+ * then prunes; it records the outcome in shared_settings.  A pass that
+ * made its copy but failed to prune reports failure with both facts.
  *
  * Inputs:
  *   data — the BackupJob
@@ -115,11 +116,15 @@ backup_thread(void *data)
         : (shared_db_backup(db->shared, &made, &why) == 0 ? 1 : -1);
     task_db_close(db);
 
+    /* A failure with a backup made is a copy whose pruning then failed:
+     * the module's words name the new file AND the failure.              */
     job->ok = rc >= 0;
     if (rc > 0) {
         const char *slash = made != NULL ? strrchr(made, '/') : NULL;
         job->message = g_strdup_printf("Backed up to %s",
                                        slash != NULL ? slash + 1 : "?");
+    } else if (rc < 0 && made != NULL && why != NULL) {
+        job->message = g_strdup_printf("%c%s", g_ascii_toupper(why[0]), why + 1);
     } else if (rc < 0) {
         job->message = g_strdup_printf("Backup failed: %s",
                                        why != NULL ? why : "?");

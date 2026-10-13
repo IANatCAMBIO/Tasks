@@ -1910,7 +1910,8 @@ send_escape(NSWindow *win)
  * check_editor_window — exercise editor semantics: dedup open, cancel-on-new
  * deletes the task, refresh-all closes an editor whose task is gone, an
  * outside change merged under an unsaved edit, and the "From note" line of
- * a Notes action item (snapshot editor-note-item).
+ * a Notes action item (snapshot editor-note-item), which follows a rename
+ * made in Notes.
  *
  * Inputs:
  *   app — the application context
@@ -2127,13 +2128,18 @@ check_editor_window(TaskApp *app, NSString *dir)
     /* A Notes action item: a note_task row links the task to a note, as
      * Notes writes it.  The editor names the note; a plain task has no
      * such line.  The rows are removed again (dropping the link tombstones
-     * the throwaway task, as the shared schema's trigger does). */
-    {
+     * the throwaway task, as the shared schema's trigger does).  The
+     * library window is what hears of a rename made in Notes. */
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        [library showWindow:nil];
         GPtrArray *lists = task_db_lists(app->db, FALSE);
         if (lists->len > 0) {
             gint64   list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
             gint64   id      = task_db_task_create(app->db, list_id, 0, "Call the vendor back");
-            sqlite3 *sq      = shared_db_handle(app->db->shared);
+            /* Notes' own connection: its writes are outside changes. */
+            TaskDatabase *notes_app = task_db_open_existing(shared_db_file(app->db->shared), NULL);
+            sqlite3 *sq      = notes_app != NULL ? shared_db_handle(notes_app->shared) : NULL;
             char    *sql     = sqlite3_mprintf(
                 "INSERT INTO notes (title, created_at, updated_at) "
                 "  VALUES ('Weekly sync', 0, 0);"
@@ -2142,6 +2148,7 @@ check_editor_window(TaskApp *app, NSString *dir)
                 (long long)id);
             sqlite3_exec(sq, sql, NULL, NULL, NULL);
             sqlite3_free(sql);
+            task_app_check_outside(app);
 
             tasks_editor_open(app, id);
             check_spin(0.2);
@@ -2154,6 +2161,14 @@ check_editor_window(TaskApp *app, NSString *dir)
                   [source.stringValue containsString:@"Weekly sync"],
                   "editor: a Notes action item names the note it was written in");
             check(snapshot(editor_win, dir, @"editor-note-item"), "editor: snapshot, note item");
+
+            /* Notes renames the note: only Notes' data changes, and the
+             * open editor's line follows at the next poll. */
+            sqlite3_exec(sq, "UPDATE notes SET title = 'Monthly sync' WHERE title = 'Weekly sync'",
+                         NULL, NULL, NULL);
+            check(task_app_check_outside(app) == TASK_DB_CHANGED_NOTES &&
+                  [source.stringValue containsString:@"Monthly sync"],
+                  "editor: a note renamed in Notes renames the line at the next poll");
             tasks_editor_close(id);
             check_spin(0.1);
 
@@ -2170,12 +2185,14 @@ check_editor_window(TaskApp *app, NSString *dir)
             check_spin(0.1);
 
             sql = sqlite3_mprintf("DELETE FROM note_task WHERE task_id = %lld;"
-                                  "DELETE FROM notes WHERE title = 'Weekly sync';",
+                                  "DELETE FROM notes WHERE title = 'Monthly sync';",
                                   (long long)id);
             sqlite3_exec(sq, sql, NULL, NULL, NULL);
             sqlite3_free(sql);
+            task_db_close(notes_app);
         }
         task_ptr_array_free_lists(lists);
+        [library close];
     }
 
     tasks_editor_close_all();
@@ -2361,20 +2378,23 @@ check_settings(TaskApp *app, NSString *dir)
         check(snapshot(window, dir, @"settings-backups"), "settings: snapshot, backups on");
 
         /* The last failure the module recorded is shown, and a backup that
-         * then succeeds (the module removes the record) takes it away. */
+         * then succeeds (the module removes the record) takes it away; the
+         * time of the last backup is shown beside it. */
         SEL refresh = NSSelectorFromString(@"refresh_backup");
         shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_LAST_ERROR,
                             "the disk was full", NULL);
         [NSApp sendAction:refresh to:window.delegate from:nil];
-        check(label(@"Last backup failed: the disk was full") != nil,
+        check(label(@"The last backup pass failed: the disk was full") != nil,
               "settings: the last backup's failure (backup_last_error) is shown");
         [button(@"Back Up Now") performClick:nil];
         for (int i = 0; i < 100 && (app->backup_running ||
-                                    label(@"Last backup failed") != nil); i++) {
+                                    label(@"The last backup pass failed") != nil); i++) {
             check_spin(0.05);
         }
-        check(label(@"Last backup failed") == nil,
+        check(label(@"The last backup pass failed") == nil,
               "settings: ... until a backup succeeds");
+        check(label(@"Last backup: ") != nil,
+              "settings: when the last backup was made (backup_last_at) is shown");
 
         /* Put the settings back, then close with a probe still in flight. */
         shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_DIR, seeded_dir, NULL);

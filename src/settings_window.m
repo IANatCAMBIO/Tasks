@@ -360,6 +360,9 @@ isFlipped
 @property (nonatomic, strong) NSTextField *folder_label; /* "Backing up to <folder>"      */
 @property (nonatomic, strong) NSTextField *fate_label;   /* the "alongside the database"
                                                           * warning; hidden otherwise     */
+@property (nonatomic, strong) NSTextField *last_label;   /* backup_last_at: when the last
+                                                          * backup was made; hidden before
+                                                          * the first                     */
 @property (nonatomic, strong) NSTextField *error_label;  /* backup_last_error: why the last
                                                           * backup failed; hidden when it
                                                           * did not                       */
@@ -691,8 +694,10 @@ schedule_row
 /*
  * backup_rows — the Backups section: the master switch, the schedule it
  * turns on, where the copies land (with the warning when that is beside
- * the database), why the last backup failed when it did, the two buttons that answer that line, and the outcome of
- * the last Back Up Now.
+ * the database), when the last backup was made and why the last pass
+ * failed when it did (both can show: a copy made whose pruning failed),
+ * the two buttons that answer those lines, and the outcome of the last
+ * Back Up Now.
  *
  * Output:
  *   the section's rows, heading first.
@@ -715,6 +720,7 @@ backup_rows
     self.folder_label  = wrapping_label(dim, text_w);
     self.fate_label    = wrapping_label(dim, text_w);
     self.backup_status = wrapping_label(dim, text_w);
+    self.last_label    = wrapping_label(dim, text_w);
     self.error_label   = wrapping_label(NSColor.systemRedColor, text_w);
     self.fate_label.stringValue = @"⚠ alongside the database — change it to survive "
                                   @"losing that folder";
@@ -728,7 +734,7 @@ backup_rows
                                             action:@selector(back_up_now:)];
 
     return @[section_label(@"Backups"), self.backup_box, [self schedule_row],
-             self.folder_label, self.fate_label, self.error_label,
+             self.folder_label, self.fate_label, self.last_label, self.error_label,
              button_row(@[self.choose_button, self.backup_button]), self.backup_status];
 }
 
@@ -1452,7 +1458,9 @@ show_number:(NSInteger)value field:(NSTextField *)field stepper:(NSStepper *)ste
 
 /*
  * refresh_backup — show the backup settings: the switch, which controls it
- * leaves usable, and where the copies land.
+ * leaves usable, where the copies land, when the last backup was made and
+ * why the last pass failed — each line on its own, since a copy can be
+ * made by a pass that then failed to prune.
  *
  * The folder line names the RESOLVED folder in every case, from the same
  * call every backup pass asks first (task_backup_dir), so the line cannot
@@ -1486,11 +1494,20 @@ refresh_backup
     free(dir);
     free(why);
 
+    NSInteger last_at = [self policy:SHARED_SETTING_BACKUP_LAST_AT];
+    self.last_label.hidden      = last_at <= 0;
+    self.last_label.stringValue = last_at <= 0 ? @"" :
+        [NSString stringWithFormat:@"Last backup: %@",
+            [NSDateFormatter localizedStringFromDate:
+                [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)last_at]
+                                           dateStyle:NSDateFormatterMediumStyle
+                                           timeStyle:NSDateFormatterShortStyle]];
+
     char *failure = NULL;
     shared_settings_get(self.app->db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, &failure, NULL);
     self.error_label.hidden      = failure == NULL || failure[0] == '\0';
     self.error_label.stringValue = self.error_label.hidden
-        ? @"" : [NSString stringWithFormat:@"Last backup failed: %@", tasks_string(failure)];
+        ? @"" : [NSString stringWithFormat:@"The last backup pass failed: %@", tasks_string(failure)];
     free(failure);
 }
 
@@ -1500,7 +1517,7 @@ refresh_backup
  * its range), so the window shows exactly what the backups obey.
  *
  * Inputs:
- *   key — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN or _KEEP
+ *   key — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN, _KEEP or _LAST_AT
  *
  * Output:
  *   the value (the module's default when it cannot be read).

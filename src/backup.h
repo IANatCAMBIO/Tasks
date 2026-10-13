@@ -84,7 +84,9 @@ gboolean task_backup_set_dir(TaskApp *app, const gchar *dir, char **why);
  * called at once and the reason posted as a status message, when
  * task_backup_dir refuses; ignored (no callback) when a pass is already in
  * flight.  `done` may be NULL.  The outcome is also posted as a status
- * message.
+ * message.  A copy made whose pruning of old backups failed is a failure
+ * (ok FALSE) whose message, the shared module's, names the new file and
+ * the pruning error.
  * ------------------------------------------------------------------------- */
 void task_backup_start(TaskApp *app, TaskBackupDoneFn done, gpointer user_data);
 

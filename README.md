@@ -138,8 +138,9 @@ database is written to `backups/` in the database file's own folder (or a
 folder chosen in Settings), named `shared_data-YYYYMMDD-HHMMSSZ.db` in UTC
 and keeping the newest 48.  Notes and Tasks share these settings, and
 whichever app is running makes the backup when it is due.  **Back Up Now**
-in Settings makes one at once; Settings also shows why the last backup
-failed, if it did.
+in Settings makes one at once; Settings also shows when the last backup was
+made and why the last pass failed, if it did — both when a copy was made
+but old backups could not be removed.
 
 **Tasks' own settings** stay in Tasks' folder (attachments are links to
 files wherever they are, and are not copied):
