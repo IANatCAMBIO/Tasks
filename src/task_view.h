@@ -94,4 +94,22 @@ const TaskView  *task_view_find(const gchar *id);
  * NULL).  The index is what a sidebar selection carries (task_pane.h).    */
 gint             task_view_index_of(const TaskView *v);
 
+/* ---------------------------------------------------------------------------
+ * task_view_shown() — whether a view's row exists right now: its
+ * `visible` answers TRUE, or it has none.
+ *   v   — the view (not NULL)
+ *   app — the context its `visible` reads
+ * ------------------------------------------------------------------------- */
+gboolean         task_view_shown(const TaskView *v, TaskApp *app);
+
+/* ---------------------------------------------------------------------------
+ * task_view_shown_mask() — which views' rows exist right now, as a bit per
+ * registry index (bit i for task_view_nth(i)).  The registry holds a
+ * handful of views; any past the 64th are left out.  A window keeps the
+ * mask of its last sidebar rebuild and rebuilds again when a light task
+ * change moves it (Favorites emptied, the first Notes action item).
+ *   app — the context
+ * ------------------------------------------------------------------------- */
+guint64          task_view_shown_mask(TaskApp *app);
+
 #endif /* TASK_VIEW_H */

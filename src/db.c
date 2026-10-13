@@ -1142,21 +1142,59 @@ task_db_subtasks_all_visible(TaskDatabase *db)
         0, 0, 0);
 }
 
+/* WHERE fragments over `tasks`, each the ONE definition of a view's
+ * membership, shared by the view's query and its "has any" check.  An
+ * action item is a live task Notes wrote (a note_task row names it),
+ * wherever it is filed now; note_task.task_id is UNIQUE, so the IN is an
+ * index probe.                                                             */
+#define PINNED_WHERE      "pinned = 1 AND deleted = 0"
+#define ACTION_ITEM_WHERE "deleted = 0 AND id IN (SELECT task_id FROM note_task)"
+
+/* The order of a view that gathers tasks from several lists: high priority
+ * first, then by list and position.                                        */
+#define CROSS_LIST_ORDER  " ORDER BY priority DESC, list_id, position, id"
+
 /* task_db_tasks_pinned() — the Pinned Tasks meta list.                     */
 GPtrArray *
 task_db_tasks_pinned(TaskDatabase *db)
 {
     return task_query(db,
-        "SELECT " TASK_COLS " FROM tasks WHERE pinned = 1 AND deleted = 0 "
-        "ORDER BY priority DESC, list_id, position, id", 0, 0, 0);
+        "SELECT " TASK_COLS " FROM tasks WHERE " PINNED_WHERE CROSS_LIST_ORDER,
+        0, 0, 0);
 }
 
-/* task_db_has_pinned() — any pinned task exists (see db.h).                */
-gboolean
-task_db_has_pinned(TaskDatabase *db)
+/*
+ * task_db_tasks_action_items — the Action Items view (see db.h).
+ *
+ * Inputs:
+ *   db — the connection
+ *
+ * Output:
+ *   GPtrArray of Task* (possibly empty, never NULL); free with
+ *   task_ptr_array_free_tasks.
+ */
+GPtrArray *
+task_db_tasks_action_items(TaskDatabase *db)
 {
-    const gchar *sql = "SELECT EXISTS(SELECT 1 FROM tasks "
-                       "              WHERE pinned = 1 AND deleted = 0)";
+    return task_query(db,
+        "SELECT " TASK_COLS " FROM tasks WHERE " ACTION_ITEM_WHERE CROSS_LIST_ORDER,
+        0, 0, 0);
+}
+
+/*
+ * any_task — whether any task matches a membership fragment: the shared
+ * body of the views' "has any" checks.
+ *
+ * Inputs:
+ *   db  — the connection
+ *   sql — "SELECT EXISTS(SELECT 1 FROM tasks WHERE <fragment>)"
+ *
+ * Output:
+ *   TRUE when a row matches; FALSE when none does or the query failed.
+ */
+static gboolean
+any_task(TaskDatabase *db, const gchar *sql)
+{
     gboolean has = FALSE;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK &&
@@ -1166,6 +1204,28 @@ task_db_has_pinned(TaskDatabase *db)
     return has;
 }
 
+/* task_db_has_pinned() — any pinned task exists (see db.h).                */
+gboolean
+task_db_has_pinned(TaskDatabase *db)
+{
+    return any_task(db, "SELECT EXISTS(SELECT 1 FROM tasks WHERE " PINNED_WHERE ")");
+}
+
+/*
+ * task_db_has_action_items — any live Notes-born task exists (see db.h).
+ *
+ * Inputs:
+ *   db — the connection
+ *
+ * Output:
+ *   TRUE when one exists.
+ */
+gboolean
+task_db_has_action_items(TaskDatabase *db)
+{
+    return any_task(db, "SELECT EXISTS(SELECT 1 FROM tasks WHERE " ACTION_ITEM_WHERE ")");
+}
+
 /* task_db_tasks_all_visible() — the All Tasks meta list (top-level tasks
  * of every list; their subtasks render inside the rows as usual).          */
 GPtrArray *
@@ -1173,7 +1233,7 @@ task_db_tasks_all_visible(TaskDatabase *db)
 {
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NULL AND "
-        "deleted = 0 ORDER BY priority DESC, list_id, position, id",
+        "deleted = 0" CROSS_LIST_ORDER,
         0, 0, 0);
 }
 
@@ -1187,8 +1247,8 @@ task_db_tasks_in_group(TaskDatabase *db, gint64 group_id)
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NULL AND "
         "deleted = 0 AND list_id IN (SELECT id FROM lists "
-        "                            WHERE group_id = ? AND deleted = 0) "
-        "ORDER BY priority DESC, list_id, position, id",
+        "                            WHERE group_id = ? AND deleted = 0)"
+        CROSS_LIST_ORDER,
         1, group_id, 0);
 }
 

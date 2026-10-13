@@ -456,6 +456,16 @@ GPtrArray *task_db_tasks_pinned(TaskDatabase *db);
  * Favorites row visibility.                                                */
 gboolean task_db_has_pinned(TaskDatabase *db);
 
+/* Every live task Notes wrote — one a note_task row names — of any level
+ * and wherever it is filed now (the "Action Items" view), ordered like
+ * task_db_tasks_pinned.  Done ones are included; the rows layer applies
+ * the show_completed setting as for every view.                           */
+GPtrArray *task_db_tasks_action_items(TaskDatabase *db);
+
+/* TRUE when any live task is a Notes action item.  Drives the sidebar's
+ * Action Items row visibility.                                             */
+gboolean task_db_has_action_items(TaskDatabase *db);
+
 /* Visible top-level tasks across ALL lists (the "All Tasks" meta list),
  * ordered by list then position.                                           */
 GPtrArray *task_db_tasks_all_visible(TaskDatabase *db);

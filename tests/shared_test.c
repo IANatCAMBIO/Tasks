@@ -2,7 +2,8 @@
  * shared_test.c — Tasks on the shared database: the column-diff update
  * (task_db_task_update) that keeps two writers from losing each other's
  * changes, and its stamping rules; and Notes action items (a note_task row
- * names the task) — the editor's note lookup, the note context every read
+ * names the task) — the Action Items view and when it is shown, the
+ * editor's note lookup, the note context every read
  * carries (action_items_ctx), ordinary deletion, and the purge Tasks
  * refuses; which outside changes refresh the app (a change to
  * Tasks' data refreshes, one to Notes' data re-reads only the editors'
@@ -19,6 +20,8 @@
 
 #include "fixture.h"
 #include "gcal_store.h"
+#include "task_pane.h"
+#include "task_view.h"
 
 #include <spawn.h>
 #include <string.h>
@@ -295,6 +298,125 @@ test_note_context(TaskApp *app)
     check(ctx != NULL && strcmp(ctx, "Ship's Log") == 0,
           "context: a folder renamed in Notes is reflected at the next read");
     g_free(ctx);
+}
+
+/*
+ * view_has — whether a view's query returns a task.
+ *
+ * Inputs:
+ *   app — the fixture
+ *   v   — the view
+ *   id  — the task
+ *
+ * Output:
+ *   TRUE when the view's query returns it.
+ */
+static gboolean
+view_has(TaskApp *app, const TaskView *v, gint64 id)
+{
+    GPtrArray *tasks = v->query(app, v->user_data);
+    gboolean   found = FALSE;
+    for (guint i = 0; i < tasks->len && !found; i++) {
+        found = ((const Task *)g_ptr_array_index(tasks, i))->id == id;
+    }
+    task_ptr_array_free_tasks(tasks);
+    return found;
+}
+
+/*
+ * pane_count — how many rows the task pane shows for a view (the
+ * show_completed setting applied).
+ *
+ * Inputs:
+ *   app — the fixture
+ *   v   — the view
+ *
+ * Output:
+ *   the row count.
+ */
+static size_t
+pane_count(TaskApp *app, const TaskView *v)
+{
+    task_sel_t           sel     = { task_sel_view, task_view_index_of(v) };
+    task_pane_content_t *content = task_pane_collect(app, sel, NULL);
+    size_t               n       = content->rows->count;
+    task_pane_content_free(content);
+    return n;
+}
+
+/*
+ * test_action_items_view — the Action Items view: registered right after
+ * the 3-Day Forecast; hidden while no live Notes-born task exists, shown
+ * once one does, hidden again once it is deleted; it gathers every live
+ * Notes-born task from every list (a subtask too) and nothing else; a Done
+ * one is returned and left to the show_completed setting, as in every
+ * view.  Runs on a database without action items.
+ *
+ * Inputs:
+ *   app — the fixture
+ */
+static void
+test_action_items_view(TaskApp *app)
+{
+    const TaskView *v        = task_view_find("action_items");
+    gint            forecast = task_view_index_of(task_view_find("forecast"));
+
+    check(v != NULL && task_view_index_of(v) == forecast + 1 &&
+          strcmp(v->name, SHARED_DB_ACTION_LIST_NAME) == 0 &&
+          strcmp(v->label, SHARED_DB_ACTION_LIST_EMOJI "  " SHARED_DB_ACTION_LIST_NAME) == 0,
+          "action items: the view follows the 3-Day Forecast, named like Notes' list");
+    if (v == NULL) return;
+
+    gint64 work   = task_db_list_create(app->db, "Work items", "");
+    gint64 home   = task_db_list_create(app->db, "Home items", "");
+    gint64 plain  = task_db_task_create(app->db, work, 0, "Typed, not noted");
+    gint64 in_w   = task_db_task_create(app->db, work, 0, "From a meeting note");
+    gint64 in_h   = task_db_task_create(app->db, home, 0, "From a home note");
+    gint64 sub    = task_db_task_create(app->db, work, plain, "A noted subtask");
+    gint64 done   = task_db_task_create(app->db, home, 0, "A finished note item");
+    gint64 gone   = task_db_task_create(app->db, work, 0, "A deleted note item");
+
+    check(!task_view_shown(v, app) && pane_count(app, v) == 0,
+          "action items: hidden while there are none");
+
+    link_to_note(app, in_w, "Meeting");
+    check(task_view_shown(v, app), "action items: shown once there is one");
+    task_db_task_delete(app->db, in_w);
+    check(!task_view_shown(v, app), "action items: hidden again once it is deleted");
+    char sql[128];
+    snprintf(sql, sizeof sql, "UPDATE tasks SET deleted = 0 WHERE id = %lld", (long long)in_w);
+    sqlite3_exec(shared_db_handle(app->db->shared), sql, NULL, NULL, NULL);
+    check(task_view_shown(v, app), "action items: shown again once it is restored");
+
+    link_to_note(app, in_h, "Home");
+    link_to_note(app, sub, "Subtask note");
+    link_to_note(app, done, "Done note");
+    link_to_note(app, gone, "Deleted note");
+    task_db_task_delete(app->db, gone);
+    snprintf(sql, sizeof sql, "UPDATE tasks SET status = %d WHERE id = %lld",
+             SHARED_DB_TASK_STATUS_DONE, (long long)done);
+    sqlite3_exec(shared_db_handle(app->db->shared), sql, NULL, NULL, NULL);
+
+    check(view_has(app, v, in_w) && view_has(app, v, in_h),
+          "action items: Notes-born tasks of two lists are both listed");
+    check(view_has(app, v, sub), "action items: a Notes-born subtask is listed");
+    check(!view_has(app, v, plain), "action items: a task typed in Tasks is not");
+    check(!view_has(app, v, gone), "action items: a deleted one is not");
+    check(view_has(app, v, done), "action items: a Done one is returned to the pane");
+
+    gboolean was = task_config_get_bool(TASK_CFG_SHOW_COMPLETED);
+    task_config_set_bool(TASK_CFG_SHOW_COMPLETED, TRUE);
+    size_t with_done = pane_count(app, v);
+    task_config_set_bool(TASK_CFG_SHOW_COMPLETED, FALSE);
+    size_t open_only = pane_count(app, v);
+    task_config_set_bool(TASK_CFG_SHOW_COMPLETED, was);
+    check(with_done == 4 && open_only == 3,
+          "action items: the pane shows the Done one only with show_completed");
+
+    /* Leave none behind for the tests after this one. */
+    const gint64 born[] = { in_w, in_h, sub, done };
+    for (gsize i = 0; i < G_N_ELEMENTS(born); i++) task_db_task_delete(app->db, born[i]);
+    check(!task_view_shown(v, app), "action items: hidden once all are deleted");
 }
 
 /*
@@ -695,6 +817,7 @@ main(int argc, char **argv)
 
     test_no_lost_update(app);
     test_stamps(app);
+    test_action_items_view(app);
     test_note_items(app);
     test_note_context(app);
     test_refresh_rev(app);
