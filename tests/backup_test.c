@@ -1,8 +1,9 @@
 /*
  * backup_test.c — backups through the shared module (src/backup.h): the
- * policy read from and written to shared_settings, where backups go and
- * what is refused (the live data, and the module's per-user default while
- * CAMBIO_SHARED_DB names a sandbox), Back Up Now on the background job,
+ * policy read from and written to shared_settings, where backups go (by
+ * default `backups` beside the CAMBIO_SHARED_DB file, never the per-user
+ * folder) and what is refused (the live data), Back Up Now on the
+ * background job,
  * the retention the module applies, and the periodic poll that makes a
  * backup only when the shared policy says one is due.
  *
@@ -179,18 +180,15 @@ test_destination(TaskApp *app)
     char *why = NULL;
 
     /* No folder set, and CAMBIO_SHARED_DB names this sandbox's database:
-     * the module's per-user default is refused, with the reason. */
+     * the module's default is `backups` beside that file, never the
+     * per-user folder. */
+    char *env_dir = g_path_get_dirname(getenv(SHARED_DB_ENV_VAR));
+    snprintf(path, sizeof path, "%s/backups", env_dir);
+    g_free(env_dir);
     char *dir = task_backup_dir(app, &why);
-    check(dir == NULL && why != NULL && strstr(why, SHARED_DB_ENV_VAR) != NULL,
-          "destination: the per-user default is refused for a sandbox, saying why");
-    free(why);
-
-    seen_t seen = { 0 };
-    last_status[0] = '\0';
-    task_backup_start(app, on_done, &seen);
-    check(seen.calls == 1 && !seen.ok && strstr(seen.message, SHARED_DB_ENV_VAR) != NULL &&
-          strcmp(last_status, seen.message) == 0 && !app->backup_running,
-          "destination: Back Up Now then reports why at once, in the status bar too");
+    check(dir != NULL && strcmp(dir, path) == 0 && why == NULL,
+          "destination: a sandbox's default is backups/ beside its database");
+    free(dir);
 
     /* Refusals of a chosen folder: nothing is stored. */
     check(!task_backup_set_dir(app, "relative/backups", &why) && why != NULL,
@@ -227,6 +225,13 @@ test_destination(TaskApp *app)
     check(dir == NULL && why != NULL && strstr(why, "live") != NULL,
           "destination: a live folder written by hand is refused when a backup asks");
     free(why);
+
+    seen_t seen = { 0 };
+    last_status[0] = '\0';
+    task_backup_start(app, on_done, &seen);
+    check(seen.calls == 1 && !seen.ok && strstr(seen.message, "live") != NULL &&
+          strcmp(last_status, seen.message) == 0 && !app->backup_running,
+          "destination: Back Up Now then reports why at once, in the status bar too");
     shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_DIR, NULL, NULL);
     unsetenv("XDG_DATA_HOME");
 

@@ -1614,8 +1614,10 @@ report_database_health
 /*
  * offer_default_database: — after a database was opened by hand, ask
  * whether both apps should open it at every launch.  Nothing is asked when
- * it cannot be (task_switch_can_be_default says when).  Declining leaves
- * it open for this session only.
+ * it already is the default (task_switch_can_be_default).  "Make Default"
+ * asks the shared module, and a refusal (a sandboxed run, while
+ * $CAMBIO_SHARED_DB is set) is shown in the module's words.  Declining
+ * leaves it open for this session only.
  *
  * Inputs:
  *   path — the database just opened
@@ -1639,7 +1641,7 @@ offer_default_database:(NSString *)path
         const char *file = path.fileSystemRepresentation;
         if (strcmp(shared_db_file(s.app->db->shared), file) != 0) return;
         char *why = NULL;
-        if (task_switch_set_default(file, &why)) {
+        if (shared_db_set_default_path(file, &why) == 0) {
             task_app_status(s.app, "Default database set to %s", file);
         } else {
             tasks_ui_notice(s.window, @"Could not make it the default",

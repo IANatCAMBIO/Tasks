@@ -246,24 +246,21 @@ task_ptr_array_free_attachments(GPtrArray *a)
  * nothing has open, task_db_health_check about the open one, and through
  * the latter the startup check.  "Ran" is kept apart from "passed": a
  * check that could not run reports nothing, which must never read as a
- * clean result.
- *
- * A file nothing has open may rest in another journal mode (a VACUUM INTO
- * backup is not WAL): opening it read-write switches it to WAL, so that
- * finding is not held against it unless `want_wal` is set.
+ * clean result.  (The module itself holds WAL only against read-write
+ * connections: a file nothing has open, such as a VACUUM INTO backup, may
+ * rest in another journal mode.)
  *
  * Inputs:
- *   sdb      — an open connection (read-only or read-write), not NULL
- *   want_wal — TRUE for the open read-write connection, which must be WAL
- *   ran      — optional out: TRUE when the check actually executed
- *   detail   — optional out: the findings or why the check could not
- *              run, one per line (g_free), NULL on success
+ *   sdb    — an open connection (read-only or read-write), not NULL
+ *   ran    — optional out: TRUE when the check actually executed
+ *   detail — optional out: the findings or why the check could not run,
+ *            one per line (g_free), NULL on success
  *
  * Output:
  *   TRUE only when the check ran and found nothing.
  */
 static gboolean
-db_check(shared_db *sdb, gboolean want_wal, gboolean *ran, gchar **detail)
+db_check(shared_db *sdb, gboolean *ran, gchar **detail)
 {
     shared_db_findings found;
     char              *why = NULL;
@@ -283,8 +280,6 @@ db_check(shared_db *sdb, gboolean want_wal, gboolean *ran, gchar **detail)
     }
     GString *text = g_string_new(NULL);
     for (size_t i = 0; i < found.count; i++) {
-        if (!want_wal && found.items[i].kind == SHARED_DB_FINDING_JOURNAL_MODE)
-            continue;
         if (text->len > 0)
             g_string_append_c(text, '\n');
         g_string_append(text, found.items[i].message);
@@ -340,7 +335,7 @@ verify_file(const gchar *path, gboolean *ran, gchar **detail)
         free(why);
         return FALSE;
     }
-    gboolean ok = db_check(sdb, FALSE, ran, detail);
+    gboolean ok = db_check(sdb, ran, detail);
     shared_db_close(sdb);
     return ok;
 }
@@ -397,7 +392,7 @@ task_db_health_check(TaskDatabase *db)
 {
     TaskDbHealth verdict = { 0 };
 
-    verdict.ok   = db_check(db->shared, TRUE, &verdict.ran, &verdict.detail);
+    verdict.ok   = db_check(db->shared, &verdict.ran, &verdict.detail);
     verdict.when = g_get_real_time() / G_USEC_PER_SEC;
     task_db_health_record(db, &verdict);
     return db->health.ok;

@@ -9,7 +9,9 @@
  *
  *   backup_enabled       1|0, default SHARED_BACKUP_ENABLED_DEFAULT.
  *   backup_dir           destination folder; unset = the module's default
- *                        (~/Library/Application Support/camb.io/backups).
+ *                        (`backups` beside the $CAMBIO_SHARED_DB file in a
+ *                        sandboxed run, else ~/Library/Application
+ *                        Support/camb.io/backups).
  *   backup_interval_min  minutes between backups, default
  *                        SHARED_BACKUP_INTERVAL_MIN_DEFAULT; 0 = only when
  *                        "Back Up Now" is pressed.
@@ -20,14 +22,9 @@
  * What this module adds is Tasks' part: the background thread (with its
  * OWN connection — a connection never crosses threads — so a slow
  * destination never blocks the UI), the periodic poll registered with the
- * shared scheduler (task_worker.h), and two refusals the module cannot
- * know about:
- *   - a destination inside the GTK app's live data directory
- *     (task_paths.h);
- *   - the module's DEFAULT destination while $CAMBIO_SHARED_DB names the
- *     database: that is a development or test sandbox, whose backups must
- *     never land in the per-user folder.  Such a run must set backup_dir
- *     (`make seed` does).
+ * shared scheduler (task_worker.h), and the one refusal the module cannot
+ * know about: a destination inside the GTK app's live data directory
+ * (task_paths.h).
  *
  * MAIN THREAD ONLY, apart from the pass's own thread.
  * =========================================================================== */
@@ -75,8 +72,7 @@ void task_backup_set_setting(TaskApp *app, const gchar *key, gint64 value);
 /* ---------------------------------------------------------------------------
  * task_backup_dir() — where backups go: shared_db_backup_dir (the
  * backup_dir setting, else the module's default; created when missing),
- * unless that is refused — a folder inside the GTK app's live data, or the
- * default while $CAMBIO_SHARED_DB is set (see above).
+ * unless that is a folder inside the GTK app's live data (refused).
  *
  * The single answer to "where?": Settings displays it and every pass asks
  * it first, so the label cannot disagree with the behaviour.

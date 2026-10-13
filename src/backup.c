@@ -51,21 +51,6 @@ task_backup_set_setting(TaskApp *app, const gchar *key, gint64 value)
     }
 }
 
-/*
- * env_fixes_database — whether $CAMBIO_SHARED_DB names the database: a
- * development or test sandbox, which must not back up into the per-user
- * default folder.
- *
- * Output:
- *   TRUE when the variable is set and not empty.
- */
-static gboolean
-env_fixes_database(void)
-{
-    const char *env = getenv(SHARED_DB_ENV_VAR);
-    return env != NULL && env[0] != '\0';
-}
-
 /* ---------------------------------------------------------------------------
  * task_backup_dir() — see backup.h.
  * ------------------------------------------------------------------------- */
@@ -87,12 +72,6 @@ task_backup_dir(TaskApp *app, char **why)
     free(chosen);
     if (live)
         return NULL;
-    if (!set && env_fixes_database()) {
-        *why = g_strdup("No backup folder is set, and $" SHARED_DB_ENV_VAR
-                        " names a sandbox database: choose a backup folder "
-                        "for it in Settings");
-        return NULL;
-    }
     return shared_db_backup_dir(app->db->shared, why);
 }
 

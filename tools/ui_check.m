@@ -759,8 +759,9 @@ secondary_windows(NSWindow *library)
 
 /*
  * check_open_database — File > Open Database File..., from the picked path
- * onwards: a switch, the refusals (an old Tasks database among them), no
- * default question while CAMBIO_SHARED_DB names the file, and back.  The
+ * onwards: a switch, the refusals (an old Tasks database among them), the
+ * default question answered "Make Default" and refused in the shared
+ * module's words while CAMBIO_SHARED_DB names the file, and back.  The
  * live data directory is a FAKE one inside the sandbox ($XDG_DATA_HOME).
  *
  * Inputs:
@@ -827,8 +828,12 @@ check_open_database(TaskApp *app)
               "open database: a sound database is switched to, the editors closed first");
         check(find_text(window.contentView, @"All Tasks - 1 task") != nil,
               "open database: ... and the panes show its tasks");
-        check(window.attachedSheet == nil,
-              "open database: ... and no default is offered while CAMBIO_SHARED_DB names the file");
+        check(find_text(window.attachedSheet.contentView, @"Make this the default database?") != nil,
+              "open database: ... and it is offered as the default");
+        end_sheet(window, NSAlertFirstButtonReturn);
+        check(find_text(window.attachedSheet.contentView, @"not changed from a sandboxed run") != nil,
+              "open database: ... Make Default shows the shared module's refusal while CAMBIO_SHARED_DB is set");
+        end_sheet(window, NSAlertFirstButtonReturn);
 
         [library open_database:other];
         check_spin(0.3);

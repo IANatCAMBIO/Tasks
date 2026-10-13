@@ -71,9 +71,9 @@ MacPorts SQLite this app links.  After pulling a new `shared_data`, run
 `TASKS_DATA_DIR` to a folder under `dev/` and `CAMBIO_SHARED_DB` to a
 database file inside it (`dev/data/shared_data.db`; each test its own
 scratch file under `dev/test-data`), so no development run uses the
-per-user data folder or the per-user shared database.  `make seed` also
-points the sandbox database's backups at `dev/data/backups`.  `dev/` is
-gitignored.
+per-user data folder or the per-user shared database.  With no backup
+folder set, the shared module puts a sandbox database's backups in
+`backups/` beside it (`dev/data/backups`).  `dev/` is gitignored.
 
 The build must produce no compiler warnings.  One line of output is not a
 warning: `codesign` prints "replacing existing signature" each time it

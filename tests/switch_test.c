@@ -1,8 +1,8 @@
 /*
  * switch_test.c — changing the open database (src/task_switch.h): what is
  * refused and leaves the app untouched (an old Tasks database included),
- * what a switch does, and that the default cannot be changed while
- * CAMBIO_SHARED_DB names the file.
+ * what a switch does, and that the shared module refuses to change the
+ * default while CAMBIO_SHARED_DB names the file.
  *
  * The live data directory is a FAKE one — $XDG_DATA_HOME pointed into the
  * sandbox — as in config_test.c.
@@ -167,13 +167,15 @@ test_switch(TaskApp *app, const char *scratch)
           strcmp(shared_db_file(app->db->shared), path) == 0 && list_count(app) == 1,
           "switch: the app's database is now the one picked");
 
-    /* CAMBIO_SHARED_DB names the file for this run (the tests always set
-     * it), so the per-user pointer file must not be written. */
-    check(!task_switch_can_be_default(path),
-          "default: not offered while CAMBIO_SHARED_DB names the database");
-    check(!task_switch_set_default(path, &why) && why != NULL &&
+    /* Make Default is offered for a file that is not the default (here
+     * the one CAMBIO_SHARED_DB names), but the shared module refuses it
+     * while the variable is set (the tests always set it), saying why:
+     * the per-user pointer file must not be written. */
+    check(task_switch_can_be_default(path) && !task_switch_can_be_default(first),
+          "default: offered for another file, not for the default itself");
+    check(shared_db_set_default_path(path, &why) != 0 && why != NULL &&
           strstr(why, SHARED_DB_ENV_VAR) != NULL,
-          "default: refused while CAMBIO_SHARED_DB names the database, saying why");
+          "default: the module refuses while CAMBIO_SHARED_DB names the database, saying why");
     free(why);
 
     check(task_switch_database(app, first, &why) && list_count(app) == 0,

@@ -74,10 +74,10 @@ bool task_switch_database(TaskApp *app, const char *path, char **why);
 
 /*
  * task_switch_can_be_default — whether "Make Default" applies to the
- * database at `path`.  Not while $CAMBIO_SHARED_DB fixes the file for this
- * run (a development sandbox: the pointer file is per-user, and the
- * variable outranks it anyway), and not when `path` already is the file
- * opened at launch.
+ * database at `path`: not when it already is the file opened at launch.
+ * Making it the default is the module's shared_db_set_default_path, which
+ * gives its own reason when it refuses (a sandboxed run, while
+ * $CAMBIO_SHARED_DB is set).
  *
  * Inputs:
  *   path — absolute path of a database file
@@ -86,20 +86,5 @@ bool task_switch_database(TaskApp *app, const char *path, char **why);
  *   true when making it the default would change something.
  */
 bool task_switch_can_be_default(const char *path);
-
-/*
- * task_switch_set_default — make the database at `path` the one both apps
- * open from now on (shared_db_set_default_path).  Refused while
- * $CAMBIO_SHARED_DB is set, for the reason task_switch_can_be_default
- * gives.
- *
- * Inputs:
- *   path — absolute path of a database file, already opened successfully
- *   why  — receives the reason on failure (free it), otherwise NULL
- *
- * Output:
- *   true when the pointer file now names `path`.
- */
-bool task_switch_set_default(const char *path, char **why);
 
 #endif /* TASK_SWITCH_H */

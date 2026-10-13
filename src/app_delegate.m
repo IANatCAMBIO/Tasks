@@ -265,11 +265,12 @@ applicationDidFinishLaunching:(NSNotification *)note
     NSString *db_err = [self open_db_at:open_path];
     /* An existing database chosen at the Welcome screen is the one both
      * apps open from now on — or the Welcome screen would be back next
-     * time.  Not while $CAMBIO_SHARED_DB fixes the file (task_switch.h). */
+     * time.  The shared module refuses while $CAMBIO_SHARED_DB fixes the
+     * file; the database is then open for this session only. */
     BOOL made_default = NO;
     if (db_err == nil && choice == TasksWelcomeOpen && task_switch_can_be_default(open_path)) {
         char *why = NULL;
-        made_default = task_switch_set_default(open_path, &why);
+        made_default = shared_db_set_default_path(open_path, &why) == 0;
         if (!made_default) NSLog(@"[launch] cannot make %s the default: %s", open_path, why);
         free(why);
     }

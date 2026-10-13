@@ -75,46 +75,14 @@ task_switch_database(TaskApp *app, const char *path, char **why)
 }
 
 /*
- * env_fixes_file — whether $CAMBIO_SHARED_DB names the file for this run.
- *
- * Output:
- *   true when the variable is set and not empty.
- */
-static bool
-env_fixes_file(void)
-{
-    const char *env = getenv(SHARED_DB_ENV_VAR);
-
-    return env != NULL && env[0] != '\0';
-}
-
-/*
  * task_switch_can_be_default — whether Make Default applies to `path`.
  * Inputs/output are documented in task_switch.h.
  */
 bool
 task_switch_can_be_default(const char *path)
 {
-    if (env_fixes_file()) return false;
-
     char *current    = shared_db_path(NULL);
     bool  is_default = current != NULL && same_file(path, current);
     free(current);
     return !is_default;
-}
-
-/*
- * task_switch_set_default — point both apps at `path` from now on.
- * Inputs/output are documented in task_switch.h.
- */
-bool
-task_switch_set_default(const char *path, char **why)
-{
-    *why = NULL;
-    if (env_fixes_file()) {
-        *why = strdup("$" SHARED_DB_ENV_VAR " names the database for this run, "
-                      "so the default cannot be changed");
-        return false;
-    }
-    return shared_db_set_default_path(path, why) == 0;
 }

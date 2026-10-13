@@ -241,10 +241,11 @@
  * Otherwise the editors are closed (flushing their saves into the OLD
  * database), the databases are swapped, the workers re-armed, every pane
  * refreshed on the default selection, and the new database's health
- * reported.  If the file can be the default (task_switch_can_be_default:
- * not the default already, and CAMBIO_SHARED_DB unset) the user is then
- * asked whether both apps should open it at every launch; declining keeps
- * it for this session only.
+ * reported.  If the file is not the default already
+ * (task_switch_can_be_default) the user is then asked whether both apps
+ * should open it at every launch; declining keeps it for this session
+ * only, and a refusal by the shared module (while CAMBIO_SHARED_DB is set)
+ * is shown in an alert in the module's words.
  *
  * Inputs:
  *   path — absolute path of the database file

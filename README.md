@@ -144,8 +144,9 @@ files wherever they are, and are not copied):
 Setting `TASKS_DATA_DIR` moves Tasks' folder and `CAMBIO_SHARED_DB` names
 the database file; `make run`, `make seed`, `make test` and `make ui-check`
 set both to places under `dev/`.  While `CAMBIO_SHARED_DB` is set, **Make
-Default** is not offered and backups go only to a folder set for that
-database (`make seed` sets `dev/data/backups`).
+Default** is refused with the shared module's reason, and backups go to
+the folder set for that database or, when none is set, to `backups/`
+beside it — never to the per-user folder.
 
 **This app does not share data with the GTK Tasks app** (the `gtk4-testing`
 branch) and cannot open that app's folder (`~/.local/share/tasks`): the

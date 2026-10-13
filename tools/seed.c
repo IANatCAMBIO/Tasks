@@ -277,17 +277,7 @@ main(void)
         return 1;
     }
 
-    /* The sandbox's backups stay in the sandbox: the shared module's default
-     * folder is the per-user one (backup.h). */
     char  *data_dir = task_data_dir();
-    gchar *backups  = g_build_filename(data_dir, "backups", NULL);
-    g_mkdir_with_parents(backups, 0700);
-    if (shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_DIR, backups, NULL) != 0) {
-        fprintf(stderr, "seed: cannot set the backup folder\n");
-        return 1;
-    }
-    g_free(backups);
-
     gchar *attachments[3];
     if (make_attachments(data_dir, attachments) != 0) return 1;
     free(data_dir);
