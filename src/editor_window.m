@@ -1168,8 +1168,9 @@ show_task:(const Task *)task
 
 /*
  * show_source — the line naming the note a Notes action item was written
- * in, hidden for any other task (task_db_task_note).  Read at every load,
- * so a note renamed in Notes shows its new title at the next refresh.
+ * in, hidden for any other task (task_db_task_note).  Read at every load
+ * and by tasks_editor_refresh_sources, so a note renamed in Notes shows its
+ * new title at the next poll.
  */
 - (void)
 show_source
@@ -2734,6 +2735,15 @@ tasks_editor_refresh_all(void)
         if (editor.save_pending && ![editor save_now]) continue;
         if (![editor reload]) [editor close];
     }
+}
+
+/*
+ * tasks_editor_refresh_sources — every open editor's "From note" line.
+ */
+void
+tasks_editor_refresh_sources(void)
+{
+    for (TasksEditorWindow *editor in editors().allValues) [editor show_source];
 }
 
 /*

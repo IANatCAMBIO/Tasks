@@ -2,12 +2,12 @@
  * task_app — the shared application context and its event bus.
  *
  * One TaskApp is created at startup and passed to every part of the
- * program.  It owns the open database and hosts the three events the
+ * program.  It owns the open database and hosts the four events the
  * windows subscribe to.  It holds NO user-interface objects: windows are
  * owned by the AppKit layer (see porting/INTERFACES.md), which is what lets
  * the core, the seed tool and the tests link without AppKit.
  *
- * The three events are lists rather than single hooks because more than one
+ * The four events are lists rather than single hooks because more than one
  * subscriber is normal.  They start empty, and firing an empty list is a
  * no-op — which is what makes every notify safe both before the library
  * window exists and after it has gone.
@@ -32,6 +32,9 @@
  *   tasks_l        — listeners for the LIGHTER event, the task pane only.
  *                    Editor saves and subtask/attachment edits use it —
  *                    they can never change the sidebar.
+ *   notes_l        — listeners for a change to Notes' data made elsewhere
+ *                    (a note renamed): only what Tasks shows of notes —
+ *                    the editors' "From note" lines — is re-read.
  *   status_l       — listeners for a one-line event message.
  *   listener_next  — the next subscription id.
  *   backup_running — TRUE while the backup's worker (backup.h) is in
@@ -44,6 +47,7 @@ typedef struct TaskApp {
     TaskDatabase *db;
     GSList       *changed_l;
     GSList       *tasks_l;
+    GSList       *notes_l;
     GSList       *status_l;
     guint         listener_next;
     gboolean      backup_running;
@@ -119,22 +123,23 @@ void task_app_notify_changed(TaskApp *app);
 void task_app_notify_tasks(TaskApp *app);
 
 /*
- * task_app_check_outside — has Tasks' data been changed by ANOTHER
- * connection since the last look (Notes, a script, this app's own
+ * task_app_check_outside — has Tasks' or Notes' data been changed by
+ * ANOTHER connection since the last look (Notes, a script, this app's own
  * background threads — task_db_outside_change on the main connection)?
- * When it has, fire the FULL refresh event, so every pane and editor
- * re-reads it (each keeps its selection and scroll).  A commit that
- * touched only Notes' data refreshes nothing, and this connection's own
- * writes never count, so the app's ordinary edits cause no second
- * refresh.
+ * When Tasks' data has, fire the FULL refresh event, so every pane and
+ * editor re-reads it (each keeps its selection and scroll).  When only
+ * Notes' data has, fire the notes event, so the editors re-read the titles
+ * of the notes their tasks came from.  A commit that touched only the
+ * shared settings fires nothing, and this connection's own writes never
+ * count, so the app's ordinary edits cause no second refresh.
  *
  * Inputs:
  *   app — the context; NULL or no database open is a no-op
  *
  * Output:
- *   TRUE when a change was found (and the event fired).
+ *   the TASK_DB_CHANGED_* bits found (0: nothing changed, nothing fired).
  */
-gboolean task_app_check_outside(TaskApp *app);
+guint task_app_check_outside(TaskApp *app);
 
 /*
  * task_app_watch_start — check for outside changes every
@@ -161,10 +166,11 @@ typedef void (*TaskAppStatusFn)(TaskApp *app, const gchar *message,
                                 gpointer user_data);
 
 /*
- * task_app_listen_changed / _tasks / _status — subscribe to an event.
+ * task_app_listen_changed / _tasks / _notes / _status — subscribe to an
+ * event.
  *
  * Listeners fire in registration order.  A listener MUST be removed before
- * the thing it refreshes is destroyed; the library window drops its three
+ * the thing it refreshes is destroyed; the library window drops its four
  * BEFORE the editors close, because a closing editor's final save fires
  * the task event.  Removing a listener from inside its own callback is
  * safe; one added during a fire is not called until the next fire.
@@ -181,6 +187,8 @@ typedef void (*TaskAppStatusFn)(TaskApp *app, const gchar *message,
 guint task_app_listen_changed(TaskApp *app, TaskAppNotifyFn fn,
                               gpointer user_data);
 guint task_app_listen_tasks(TaskApp *app, TaskAppNotifyFn fn,
+                            gpointer user_data);
+guint task_app_listen_notes(TaskApp *app, TaskAppNotifyFn fn,
                             gpointer user_data);
 guint task_app_listen_status(TaskApp *app, TaskAppStatusFn fn,
                              gpointer user_data);

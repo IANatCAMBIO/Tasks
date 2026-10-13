@@ -73,13 +73,16 @@ typedef struct {
      * the connection and deliberately never written down — see
      * task_db_health_check.                                               */
     TaskDbHealth health;
-    /* The 'tasks' change revision (shared_db_rev) of the data this
-     * connection's app last loaded or wrote; -1 when unknown.  Kept by
-     * task_db_outside_change and by every commit of this connection.      */
+    /* The change revisions (shared_db_poll) of the data this connection's
+     * app last loaded or wrote: 'tasks' and 'notes'; -1 when unknown.
+     * Kept by task_db_outside_change and by every commit of this
+     * connection.                                                         */
     int64_t      tasks_rev;
-    /* Another connection committed while this one was committing, so that
-     * change is still to be looked at by task_db_outside_change.          */
-    gboolean     outside_pending;
+    int64_t      notes_rev;
+    /* TASK_DB_CHANGED_* bits of a change another connection committed
+     * while this one was committing, still to be reported by
+     * task_db_outside_change.                                             */
+    guint        outside_pending;
 } TaskDatabase;
 
 /* ---------------------------------------------------------------------------
@@ -271,24 +274,31 @@ TaskDatabase *task_db_open_existing(const gchar *path, GError **err);
 /* task_db_close() — close the connection and free the handle.  NULL-safe.  */
 void task_db_close(TaskDatabase *db);
 
+/* What task_db_outside_change found: bits of its result.                   */
+enum {
+    TASK_DB_CHANGED_TASKS = 1 << 0,  /* Tasks' data (SHARED_DB_REV_TASKS)   */
+    TASK_DB_CHANGED_NOTES = 1 << 1   /* Notes' data (SHARED_DB_REV_NOTES)   */
+};
+
 /* ---------------------------------------------------------------------------
  * task_db_outside_change() — has ANOTHER connection (Notes, a script, this
- * app's own worker threads) changed Tasks' data since the last look?
- * Asks shared_db_changed first (cheap), then, only when something was
- * committed, compares the 'tasks' change revision (shared_db_rev,
- * SHARED_DB_REV_TASKS) with the one remembered on `db`: a commit that
- * touched only Notes' tables or the shared settings is not a change to
- * Tasks' data.  This connection's own commits move the remembered
- * revision with them, so they never count.
+ * app's own worker threads) changed Tasks' or Notes' data since the last
+ * look?  One shared_db_poll: nothing to report unless another connection
+ * committed (or a commit of this connection's saw one land, see
+ * own_commit in db.c); then each change revision that differs from the one
+ * remembered on `db` is reported and remembered.  A commit that touched
+ * only the shared settings reports nothing.  This connection's own commits
+ * move the remembered revisions with them, so they never count.
  *
  * Inputs:
  *   db — the app's main connection
  *
  * Output:
- *   TRUE when Tasks' data changed elsewhere (the caller refreshes); FALSE
- *   otherwise.  A revision that cannot be read answers TRUE.
+ *   TASK_DB_CHANGED_* bits, 0 when nothing changed elsewhere.  A poll that
+ *   fails answers TASK_DB_CHANGED_TASKS | TASK_DB_CHANGED_NOTES (refresh
+ *   to be safe).
  * ------------------------------------------------------------------------- */
-gboolean task_db_outside_change(TaskDatabase *db);
+guint task_db_outside_change(TaskDatabase *db);
 
 /* ---------------------------------------------------------------------------
  * task_db_verify_file() — is the database at `path` structurally sound?
@@ -408,8 +418,9 @@ gint64   task_db_list_create(TaskDatabase *db, const gchar *name,
 gboolean task_db_list_update(TaskDatabase *db, gint64 id, const gchar *name,
                              const gchar *emoji);
 
-/* Tombstone the list AND every task in it (they must disappear from the
- * remote side too).                                                        */
+/* Tombstone the list AND every live task in it (they must disappear from
+ * the remote side too), in one transaction; already-deleted tasks keep
+ * their own updated_at (SHARED_DB_SQL_TOMBSTONE_WHERE).                    */
 gboolean task_db_list_delete(TaskDatabase *db, gint64 id);
 
 /* --------------------------------- tasks --------------------------------- */
@@ -476,7 +487,8 @@ gint64 task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
  * status), never for the local-only ones (pinned, priority, the
  * schedule).  completed_at is stamped when status ENTERS Done (the CASE
  * reads the stored row), and a parent moves from New to In Progress when
- * a subtask enters Done.
+ * a subtask enters Done — in the same transaction (the caller's when one
+ * is open), so both rows change or neither does.
  *
  * Returns 1 when a change was written, 0 when nothing differed (nothing
  * is written), -1 when the write failed (logged).
@@ -491,7 +503,11 @@ Task *task_dup(const Task *t);
  * successor of a SYNCED field, so EVERY change to it stamps updated_at
  * and dirties the row — including New ↔ In Progress, which neither
  * Google nor Notes can represent.  `pinned` and `priority` are
- * LOCAL-ONLY and never stamp (see the .c banners).                         */
+ * LOCAL-ONLY and never stamp (see the .c banners).  set_status moves a New
+ * parent to In Progress when a subtask enters Done, in the same
+ * transaction (the caller's when one is open): one busy wait under a held
+ * lock, and FALSE with nothing written when either write fails.  Each
+ * returns TRUE when written.                                               */
 gboolean task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status);
 gboolean task_db_task_set_pinned(TaskDatabase *db, gint64 id, gboolean pinned);
 gboolean task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority);
@@ -535,11 +551,14 @@ gboolean task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
  * Never NULL.                                                             */
 GPtrArray *task_db_tasks_scheduled_for_day(TaskDatabase *db, gint64 lo, gint64 hi);
 
-/* Tombstone the task and its subtasks, in one transaction.                */
+/* Tombstone the task and its live subtasks, in one statement
+ * (SHARED_DB_SQL_TOMBSTONE_WHERE: already-deleted subtasks keep their own
+ * updated_at).                                                             */
 gboolean task_db_task_delete(TaskDatabase *db, gint64 id);
 
 /* Tombstone every completed top-level task of a list and their subtasks,
- * in ONE transaction.  Returns how many top-level tasks went.              */
+ * in ONE statement (SHARED_DB_SQL_TOMBSTONE_WHERE).  Returns how many
+ * top-level tasks went.                                                    */
 guint task_db_tasks_delete_done(TaskDatabase *db, gint64 list_id);
 
 /* A transaction round several writes that belong together (a drop that

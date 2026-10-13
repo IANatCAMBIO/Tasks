@@ -56,9 +56,10 @@ static NSString * const search_tooltip       =
 /* Timer that fires after tasks_look_status_hold to begin the fade; at most
  * one at a time (invalidated when the next message arrives). */
 @property (nonatomic, strong) NSTimer *status_timer;
-/* Subscriptions to the app's three events; 0 once dropped. */
+/* Subscriptions to the app's four events; 0 once dropped. */
 @property (nonatomic, assign) guint listen_changed;
 @property (nonatomic, assign) guint listen_tasks;
+@property (nonatomic, assign) guint listen_notes;
 @property (nonatomic, assign) guint listen_status;
 /* Whether the sidebar had a Favorites row at its last rebuild: the light
  * task event rebuilds the sidebar only when that changes. */
@@ -104,6 +105,20 @@ on_app_tasks(TaskApp *app, gpointer data)
     if ((BOOL)task_db_has_pinned(app->db) != window.had_pinned) [window refresh_sidebar];
     [window refresh_tasks];
     if (!window.day_planner.hidden) [window.day_planner reload];
+}
+
+/*
+ * on_app_notes — the app's notes event: Notes' data changed elsewhere, so
+ * only the open editors' "From note" lines are re-read.
+ *
+ * Inputs:
+ *   app  — the application context (unused)
+ *   data — the TasksLibraryWindow, unretained (unused)
+ */
+static void
+on_app_notes(TaskApp *app, gpointer data)
+{
+    tasks_editor_refresh_sources();
 }
 
 /*
@@ -277,6 +292,7 @@ init_with_app:(TaskApp *)app
 
     self.listen_changed = task_app_listen_changed(app, on_app_changed, (__bridge void *)self);
     self.listen_tasks   = task_app_listen_tasks(app, on_app_tasks, (__bridge void *)self);
+    self.listen_notes   = task_app_listen_notes(app, on_app_notes, (__bridge void *)self);
     self.listen_status  = task_app_listen_status(app, on_app_status, (__bridge void *)self);
 
     [self apply_pane_mode];
@@ -1970,8 +1986,9 @@ shut_down
 
     task_app_unlisten(self.app, self.listen_changed);
     task_app_unlisten(self.app, self.listen_tasks);
+    task_app_unlisten(self.app, self.listen_notes);
     task_app_unlisten(self.app, self.listen_status);
-    self.listen_changed = self.listen_tasks = self.listen_status = 0;
+    self.listen_changed = self.listen_tasks = self.listen_notes = self.listen_status = 0;
     self.status_message_id++;       /* a pending status fade finds nothing to do */
     [self.status_timer invalidate];
     self.status_timer = nil;

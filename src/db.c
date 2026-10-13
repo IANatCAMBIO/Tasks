@@ -11,12 +11,36 @@
 #include <time.h>
 
 /*
- * own_commit — this connection has just committed: bring the Tasks change
- * revision it remembers up to date, so its own writes are never taken for
- * another app's (task_db_outside_change).  When another connection has
- * ALSO committed since the last look (shared_db_changed), the revision is
- * left alone and the change is kept pending instead: re-reading it now
- * would hide that writer's change to Tasks' data.
+ * revs_moved — which remembered change revisions differ from those just
+ * polled, adopting the polled ones.
+ *
+ * Inputs:
+ *   db        — the connection
+ *   rev_tasks — the SHARED_DB_REV_TASKS revision just polled
+ *   rev_notes — the SHARED_DB_REV_NOTES revision just polled
+ *
+ * Output:
+ *   TASK_DB_CHANGED_* bits of the revisions that moved.
+ */
+static guint
+revs_moved(TaskDatabase *db, int64_t rev_tasks, int64_t rev_notes)
+{
+    guint moved = (rev_tasks != db->tasks_rev ? TASK_DB_CHANGED_TASKS : 0) |
+                  (rev_notes != db->notes_rev ? TASK_DB_CHANGED_NOTES : 0);
+    db->tasks_rev = rev_tasks;
+    db->notes_rev = rev_notes;
+    return moved;
+}
+
+/*
+ * own_commit — this connection has just committed: poll again
+ * (shared_db_poll) so its own writes are never taken for another app's
+ * (task_db_outside_change).  When no other connection committed since the
+ * last poll, every revision movement is this connection's own: adopt the
+ * revisions.  When one did, its change cannot be told apart from ours:
+ * every revision that moved is kept pending, so the next
+ * task_db_outside_change reports it.  A failed poll changes nothing: the
+ * module then still reports the outside commit at the next poll.
  *
  * Inputs:
  *   db — the connection, outside any transaction
@@ -24,13 +48,14 @@
 static void
 own_commit(TaskDatabase *db)
 {
-    int64_t rev = 0;
-    if (shared_db_changed(db->shared) != 0 ||
-        shared_db_rev(db->shared, SHARED_DB_REV_TASKS, &rev, NULL) != 0) {
-        db->outside_pending = TRUE;
+    int     changed   = 0;
+    int64_t rev_tasks = 0;
+    int64_t rev_notes = 0;
+    if (shared_db_poll(db->shared, &changed, &rev_tasks, &rev_notes, NULL) != 0)
         return;
-    }
-    db->tasks_rev = rev;
+    guint moved = revs_moved(db, rev_tasks, rev_notes);
+    if (changed)
+        db->outside_pending |= moved;
 }
 
 /* ---------------------------------------------------------------------------
@@ -101,6 +126,43 @@ exec_txn(TaskDatabase *db, const gchar *sql)
     return task_db_transaction_end(db, exec(db, sql));
 }
 
+/*
+ * txn_join — make sure a write transaction is open: BEGIN IMMEDIATE when
+ * none is, else join the caller's.  Pairs with txn_leave.
+ *
+ * Inputs:
+ *   db  — the connection
+ *   own — out: TRUE when this call began the transaction
+ *
+ * Output:
+ *   TRUE when a transaction is open; FALSE when BEGIN failed (logged).
+ */
+static gboolean
+txn_join(TaskDatabase *db, gboolean *own)
+{
+    *own = sqlite3_get_autocommit(shared_db_handle(db->shared)) != 0;
+    return !*own || task_db_transaction_begin(db);
+}
+
+/*
+ * txn_leave — end what txn_join began: commit, or roll back when `ok` is
+ * FALSE.  A joined transaction is left to its owner, who learns of a
+ * failure from the result.
+ *
+ * Inputs:
+ *   db  — the connection
+ *   own — txn_join's `own`
+ *   ok  — whether every write inside succeeded
+ *
+ * Output:
+ *   TRUE when the writes succeeded (and, when owned, committed).
+ */
+static gboolean
+txn_leave(TaskDatabase *db, gboolean own, gboolean ok)
+{
+    return own ? task_db_transaction_end(db, ok) : ok;
+}
+
 /* ---------------------------------------------------------------------------
  * step_done() — run a prepared WRITE statement to completion, logging
  * sqlite's message when it fails (SQLITE_BUSY against the sync worker,
@@ -110,18 +172,23 @@ exec_txn(TaskDatabase *db, const gchar *sql)
  *   st  — the prepared, bound statement, or NULL when the PREPARE
  *         itself failed (also logged); the caller finalizes either way.
  *   ctx — short operation name for the log line.
+ *   sum — for a statement with a RETURNING clause: receives the sum of
+ *         the integer first column of the rows it returned; else NULL.
  * Returns TRUE when the statement completed (and, outside a transaction,
  * committed: own_commit then notes it).
  * ------------------------------------------------------------------------- */
 static gboolean
-step_done(TaskDatabase *db, sqlite3_stmt *st, const gchar *ctx)
+step_done(TaskDatabase *db, sqlite3_stmt *st, const gchar *ctx, gint *sum)
 {
     if (st == NULL) {
         g_warning("db: %s: prepare failed: %s", ctx,
                   sqlite3_errmsg(shared_db_handle(db->shared)));
         return FALSE;
     }
-    if (sqlite3_step(st) != SQLITE_DONE) {
+    int rc;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW)
+        if (sum != NULL) *sum += sqlite3_column_int(st, 0);
+    if (rc != SQLITE_DONE) {
         g_warning("db: %s: %s", ctx, sqlite3_errmsg(shared_db_handle(db->shared)));
         return FALSE;
     }
@@ -487,11 +554,12 @@ open_task_db(const gchar *path, gboolean create, GError **err)
     }
     TaskDatabase *db = g_new0(TaskDatabase, 1);
     db->shared = shared;
-    /* The data as opened is the data the app loads first.  A failed read
+    /* The data as opened is the data the app loads first.  A failed poll
      * leaves -1, which no stored revision equals: the first outside
      * change then refreshes.                                              */
-    if (shared_db_rev(shared, SHARED_DB_REV_TASKS, &db->tasks_rev, NULL) != 0)
-        db->tasks_rev = -1;
+    int changed = 0;
+    if (shared_db_poll(shared, &changed, &db->tasks_rev, &db->notes_rev, NULL) != 0)
+        db->tasks_rev = db->notes_rev = -1;
     return db;
 }
 
@@ -510,21 +578,19 @@ task_db_open_existing(const gchar *path, GError **err)
 }
 
 /* task_db_outside_change() — see db.h.                                     */
-gboolean
+guint
 task_db_outside_change(TaskDatabase *db)
 {
-    int changed = shared_db_changed(db->shared);
-    if (changed == 0 && !db->outside_pending)
-        return FALSE;
-    db->outside_pending = FALSE;
-
-    int64_t rev = 0;
-    if (shared_db_rev(db->shared, SHARED_DB_REV_TASKS, &rev, NULL) != 0)
-        return TRUE;                 /* cannot tell: refresh to be safe     */
-    if (rev == db->tasks_rev)
-        return FALSE;                /* only Notes' data (or settings) moved */
-    db->tasks_rev = rev;
-    return TRUE;
+    int     changed   = 0;
+    int64_t rev_tasks = 0;
+    int64_t rev_notes = 0;
+    if (shared_db_poll(db->shared, &changed, &rev_tasks, &rev_notes, NULL) != 0)
+        return TASK_DB_CHANGED_TASKS | TASK_DB_CHANGED_NOTES;
+    guint found = db->outside_pending;
+    db->outside_pending = 0;
+    if (changed)
+        found |= revs_moved(db, rev_tasks, rev_notes);
+    return found;
 }
 
 /* task_db_close() — close the connection (see db.h).                       */
@@ -593,7 +659,7 @@ task_db_lists(TaskDatabase *db, gboolean include_deleted)
         while (sqlite3_step(st) == SQLITE_ROW)
             g_ptr_array_add(out, read_list(st));
     else
-        step_done(db, NULL, "lists query");
+        step_done(db, NULL, "lists query", NULL);
     sqlite3_finalize(st);
     g_free(sql);
     return out;
@@ -656,10 +722,10 @@ task_db_list_create(TaskDatabase *db, const gchar *name, const gchar *emoji)
         sqlite3_bind_text(st, 2, emoji != NULL ? emoji : "", -1,
                           SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, now());
-        if (step_done(db, st, "list create"))
+        if (step_done(db, st, "list create", NULL))
             id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
     } else {
-        step_done(db, NULL, "list create");
+        step_done(db, NULL, "list create", NULL);
     }
     sqlite3_finalize(st);
     return id;
@@ -680,28 +746,74 @@ task_db_list_update(TaskDatabase *db, gint64 id, const gchar *name,
                           SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, now());
         sqlite3_bind_int64(st, 4, id);
-        ok = step_done(db, st, "list update");
+        ok = step_done(db, st, "list update", NULL);
     } else {
-        step_done(db, NULL, "list update");
+        step_done(db, NULL, "list update", NULL);
     }
     sqlite3_finalize(st);
     return ok;
 }
 
+/*
+ * tombstone_each — tombstone each task `parents` names, with its live
+ * subtasks, in ONE statement: SHARED_DB_SQL_TOMBSTONE_WHERE applied to
+ * every id the subquery yields (already-deleted rows keep their stamp).
+ * The subquery is wrapped in a derived table whose only column is `pid`,
+ * so the fragment's unqualified columns name the row being updated.
+ *
+ * Inputs:
+ *   db      — the connection
+ *   parents — a SELECT of one column named pid; it may use ?2
+ *   owner   — the value bound to ?2
+ *   ctx     — short operation name for the log line
+ *
+ * Output:
+ *   how many top-level tasks (parent_id NULL) were tombstoned, or -1 when
+ *   the statement failed (logged).  Outside a transaction it commits on
+ *   its own (own_commit then notes it).
+ */
+static gint
+tombstone_each(TaskDatabase *db, const gchar *parents, gint64 owner, const gchar *ctx)
+{
+    gchar *sql = g_strconcat(
+        "UPDATE tasks SET deleted = 1, updated_at = ?1 "
+        "  WHERE EXISTS (SELECT 1 FROM (", parents, ") "
+        "                 WHERE " SHARED_DB_SQL_TOMBSTONE_WHERE("pid") ") "
+        "  RETURNING parent_id IS NULL", NULL);
+    sqlite3_stmt *st  = NULL;
+    gint          top = 0;
+    gboolean      ok  = FALSE;
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, now());
+        sqlite3_bind_int64(st, 2, owner);
+        ok = step_done(db, st, ctx, &top);
+    } else {
+        step_done(db, NULL, ctx, NULL);
+    }
+    sqlite3_finalize(st);
+    g_free(sql);
+    return ok ? top : -1;
+}
+
 /* ---------------------------------------------------------------------------
- * task_db_list_delete() — tombstone the list and every task in it.
+ * task_db_list_delete() — tombstone the list and every task in it, in ONE
+ * transaction.
  * ------------------------------------------------------------------------- */
 gboolean
 task_db_list_delete(TaskDatabase *db, gint64 id)
 {
-    gchar *sql = sqlite3_mprintf(
-        "UPDATE tasks SET deleted = 1, updated_at = %lld "
-        "  WHERE list_id = %lld;"
-        "UPDATE lists SET deleted = 1, updated_at = %lld WHERE id = %lld;",
-        (long long)now(), (long long)id, (long long)now(), (long long)id);
-    gboolean ok = exec_txn(db, sql);
-    sqlite3_free(sql);
-    return ok;
+    if (!task_db_transaction_begin(db))
+        return FALSE;
+    gboolean ok = tombstone_each(db, "SELECT id AS pid FROM tasks WHERE list_id = ?2",
+                                 id, "list delete tasks") >= 0;
+    if (ok) {
+        gchar *sql = sqlite3_mprintf(
+            "UPDATE lists SET deleted = 1, updated_at = %lld WHERE id = %lld;",
+            (long long)now(), (long long)id);
+        ok = exec(db, sql);
+        sqlite3_free(sql);
+    }
+    return task_db_transaction_end(db, ok);
 }
 
 /* ---------------------------------------------------------------------------
@@ -776,10 +888,10 @@ task_db_group_create(TaskDatabase *db, const gchar *name)
             "INSERT INTO list_groups(name) VALUES(?)", -1, &st, NULL)
             == SQLITE_OK) {
         sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
-        if (step_done(db, st, "group create"))
+        if (step_done(db, st, "group create", NULL))
             id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
     } else {
-        step_done(db, NULL, "group create");
+        step_done(db, NULL, "group create", NULL);
     }
     sqlite3_finalize(st);
     return id;
@@ -809,9 +921,9 @@ task_db_group_rename(TaskDatabase *db, gint64 id, const gchar *name)
             == SQLITE_OK) {
         sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 2, id);
-        ok = step_done(db, st, "group rename");
+        ok = step_done(db, st, "group rename", NULL);
     } else {
-        step_done(db, NULL, "group rename");
+        step_done(db, NULL, "group rename", NULL);
     }
     sqlite3_finalize(st);
     return ok;
@@ -919,7 +1031,7 @@ task_query(TaskDatabase *db, const gchar *sql, gint nbind, gint64 a, gint64 b)
         while (sqlite3_step(st) == SQLITE_ROW)
             g_ptr_array_add(out, read_task(st));
     } else {
-        step_done(db, NULL, "task query");
+        step_done(db, NULL, "task query", NULL);
     }
     sqlite3_finalize(st);
     return out;
@@ -1087,10 +1199,10 @@ task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
          * shared module alone creates the schema, from
          * SHARED_DB_TASK_DUE_TIME_DEFAULT, so the DEFAULT is that value.  */
         sqlite3_bind_int64(st, 4, now());
-        if (step_done(db, st, "task create"))
+        if (step_done(db, st, "task create", NULL))
             id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
     } else {
-        step_done(db, NULL, "task create");
+        step_done(db, NULL, "task create", NULL);
     }
     sqlite3_finalize(st);
     return id;
@@ -1105,7 +1217,8 @@ task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
  *   child_id — the task that has just become Done
  *
  * Output:
- *   none.  Silent no-op unless there is a parent AND that parent is New:
+ *   TRUE when the statement ran (logged when not).  It changes nothing
+ *   unless there is a parent AND that parent is New:
  *   a top-level task's parent_id is NULL, so `id = (SELECT parent_id …)`
  *   matches no row and no branch is needed; an In Progress parent is
  *   already right; and a DONE parent is deliberately LEFT DONE — ticking
@@ -1116,16 +1229,15 @@ task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
  * can never cascade: the rule fires on Done, and In Progress is not Done,
  * so promoting a parent cannot promote a grandparent.
  *
- * ONE statement, deliberately not wrapped in a transaction with the
- * child's own write: the two rows are written separately, and a crash in
- * between leaves the parent New — exactly what the old behavior was, and
- * the next tick puts it right.  A transaction here would buy nothing that
- * matters and would have to be threaded through four callers.
+ * Callers run it in the SAME transaction as the child's own write
+ * (txn_join), so the two rows change together and a held lock is waited
+ * out once, not once per row.
  */
-static void
+static gboolean
 parent_started(TaskDatabase *db, gint64 child_id)
 {
     sqlite3_stmt *st = NULL;
+    gboolean      ok = FALSE;
     if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "UPDATE tasks SET status = ?1, updated_at = ?2 "
             "WHERE id = (SELECT parent_id FROM tasks WHERE id = ?3) "
@@ -1134,11 +1246,12 @@ parent_started(TaskDatabase *db, gint64 child_id)
         sqlite3_bind_int64(st, 2, now());
         sqlite3_bind_int64(st, 3, child_id);
         sqlite3_bind_int(st, 4, (gint)TASK_STATUS_NEW);
-        step_done(db, st, "parent started");
+        ok = step_done(db, st, "parent started", NULL);
     } else {
-        step_done(db, NULL, "parent started");
+        step_done(db, NULL, "parent started", NULL);
     }
     sqlite3_finalize(st);
+    return ok;
 }
 
 /*
@@ -1269,6 +1382,11 @@ task_db_task_update(TaskDatabase *db, const Task *before, const Task *after)
         g_string_append(sql, ", updated_at = ?2");
     g_string_append(sql, " WHERE id = ?1");
 
+    gboolean      own = FALSE;
+    if (!txn_join(db, &own)) {
+        g_string_free(sql, TRUE);
+        return -1;
+    }
     sqlite3_stmt *st = NULL;
     gboolean      ok = FALSE;
     if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql->str, -1, &st, NULL)
@@ -1279,20 +1397,23 @@ task_db_task_update(TaskDatabase *db, const Task *before, const Task *after)
         for (size_t i = 0; i < G_N_ELEMENTS(edit_columns); i++)
             if (edit_differs(i, before, after))
                 edit_bind(st, param++, i, after);
-        ok = step_done(db, st, "task update");
+        ok = step_done(db, st, "task update", NULL);
     } else {
-        step_done(db, NULL, "task update");
+        step_done(db, NULL, "task update", NULL);
     }
     sqlite3_finalize(st);
     g_string_free(sql, TRUE);
     if (ok && after->status == TASK_STATUS_DONE && before->status != TASK_STATUS_DONE)
-        parent_started(db, after->id);
-    return ok ? 1 : -1;
+        ok = parent_started(db, after->id);
+    return txn_leave(db, own, ok) ? 1 : -1;
 }
 
 /* ---------------------------------------------------------------------------
  * task_db_task_set_status() — write the status, stamping completed_at on
- * the way into Done (see db.h).  The same rule as task_db_task_update, so
+ * the way into Done (see db.h), and move a New parent to In Progress when
+ * a subtask enters Done (parent_started) — both in ONE transaction, the
+ * caller's when one is open (txn_join), so a held lock is waited out once
+ * and a failed status write writes nothing at all.  The same rule as task_db_task_update, so
  * both paths agree: entering Done stamps, and every other move leaves the
  * stamp alone — including leaving Done.  It reads the OLD row (gotcha 8).
  *
@@ -1311,6 +1432,9 @@ task_db_task_update(TaskDatabase *db, const Task *before, const Task *after)
 gboolean
 task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status)
 {
+    gboolean own = FALSE;
+    if (!txn_join(db, &own))
+        return FALSE;
     sqlite3_stmt *st = NULL;
     gboolean      ok = FALSE;
     if (sqlite3_prepare_v2(shared_db_handle(db->shared),
@@ -1322,14 +1446,14 @@ task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status)
         sqlite3_bind_int(st, 1, (gint)status);
         sqlite3_bind_int64(st, 2, now());
         sqlite3_bind_int64(st, 3, id);
-        ok = step_done(db, st, "task set status");
+        ok = step_done(db, st, "task set status", NULL);
     } else {
-        step_done(db, NULL, "task set status");
+        step_done(db, NULL, "task set status", NULL);
     }
     sqlite3_finalize(st);
-    if (status == TASK_STATUS_DONE)
-        parent_started(db, id);
-    return ok;
+    if (ok && status == TASK_STATUS_DONE)
+        ok = parent_started(db, id);
+    return txn_leave(db, own, ok);
 }
 
 /* task_db_task_set_pinned() — toggle the local-only pin (see db.h).
@@ -1462,9 +1586,9 @@ task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
         sqlite3_bind_int64(st, 3, now());
         sqlite3_bind_int64(st, 4, id);
         sqlite3_bind_int(st, 5, due_time);
-        ok = step_done(db, st, "task recur apply");
+        ok = step_done(db, st, "task recur apply", NULL);
     } else {
-        step_done(db, NULL, "task recur apply");
+        step_done(db, NULL, "task recur apply", NULL);
     }
     sqlite3_finalize(st);
     return ok;
@@ -1484,9 +1608,9 @@ task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next)
             &st, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(st, 1, next);
         sqlite3_bind_int64(st, 2, id);
-        ok = step_done(db, st, "task recur set next");
+        ok = step_done(db, st, "task recur set next", NULL);
     } else {
-        step_done(db, NULL, "task recur set next");
+        step_done(db, NULL, "task recur set next", NULL);
     }
     sqlite3_finalize(st);
     return ok;
@@ -1531,7 +1655,7 @@ task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction)
     gboolean      moved = FALSE;
     if (sqlite3_prepare_v2(shared_db_handle(db->shared), "UPDATE tasks SET position = ? WHERE id = ?",
                            -1, &st, NULL) != SQLITE_OK) {
-        step_done(db, NULL, "subtask_move prepare");
+        step_done(db, NULL, "subtask_move prepare", NULL);
     } else if (task_db_transaction_begin(db)) {
         /* One statement, one transaction: a row per sibling, not a
          * journalled write per sibling. */
@@ -1540,7 +1664,7 @@ task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction)
             sqlite3_reset(st);
             sqlite3_bind_int(st, 1, (int)i);
             sqlite3_bind_int64(st, 2, ((Task *)g_ptr_array_index(subs, i))->id);
-            ok = step_done(db, st, "subtask_move");
+            ok = step_done(db, st, "subtask_move", NULL);
         }
         moved = task_db_transaction_end(db, ok);
     }
@@ -1551,43 +1675,26 @@ task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction)
 
 /* ---------------------------------------------------------------------------
  * task_db_task_delete() — tombstone the task and its subtasks, in ONE
- * transaction.
+ * statement.
  * ------------------------------------------------------------------------- */
 gboolean
 task_db_task_delete(TaskDatabase *db, gint64 id)
 {
-    gchar *sql = sqlite3_mprintf(
-        "UPDATE tasks SET deleted = 1, updated_at = %lld "
-        "  WHERE parent_id = %lld;"
-        "UPDATE tasks SET deleted = 1, updated_at = %lld WHERE id = %lld;",
-        (long long)now(), (long long)id, (long long)now(), (long long)id);
-    gboolean ok = exec_txn(db, sql);
-    sqlite3_free(sql);
-    return ok;
+    return tombstone_each(db, "SELECT ?2 AS pid", id, "task delete") >= 0;
 }
 
 /* ---------------------------------------------------------------------------
  * task_db_tasks_delete_done() — tombstone a list's completed top-level
- * tasks and their subtasks, in ONE transaction (see db.h).  The subtasks
- * go first: the second statement is what the first selects them by.
+ * tasks and their subtasks, in ONE statement (see db.h).
  * ------------------------------------------------------------------------- */
 guint
 task_db_tasks_delete_done(TaskDatabase *db, gint64 list_id)
 {
-    long long stamp = (long long)now();
-    gchar *sql = sqlite3_mprintf(
-        "UPDATE tasks SET deleted = 1, updated_at = %lld "
-        "  WHERE deleted = 0 AND parent_id IN "
-        "    (SELECT id FROM tasks WHERE list_id = %lld AND parent_id IS NULL "
-        "       AND status = " DONE_SQL " AND deleted = 0);"
-        "UPDATE tasks SET deleted = 1, updated_at = %lld "
-        "  WHERE list_id = %lld AND parent_id IS NULL AND status = " DONE_SQL " AND deleted = 0;",
-        stamp, (long long)list_id, stamp, (long long)list_id);
-    exec_txn(db, sql);
-    sqlite3_free(sql);
-    /* The changes of the last UPDATE: the parents.  Zero after a rollback
-     * too, since the rollback is not a write of its own. */
-    return (guint)MAX(sqlite3_changes(shared_db_handle(db->shared)), 0);
+    gint top = tombstone_each(db,
+        "SELECT id AS pid FROM tasks WHERE list_id = ?2 AND parent_id IS NULL "
+        "   AND status = " DONE_SQL " AND deleted = 0",
+        list_id, "delete done");
+    return top > 0 ? (guint)top : 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1627,10 +1734,10 @@ task_db_attachment_add(TaskDatabase *db, gint64 task_id, const gchar *path)
         sqlite3_bind_int64(st, 1, task_id);
         sqlite3_bind_text(st, 2, path, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(st, 3, now());
-        if (step_done(db, st, "attachment add"))
+        if (step_done(db, st, "attachment add", NULL))
             id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
     } else {
-        step_done(db, NULL, "attachment add");
+        step_done(db, NULL, "attachment add", NULL);
     }
     sqlite3_finalize(st);
     return id;
@@ -1746,7 +1853,7 @@ purge_unless_linked(TaskDatabase *db, const gchar *members, const gchar *const *
         if (sqlite3_step(st) == SQLITE_ROW)
             linked = sqlite3_column_int(st, 0) != 0;
     } else {
-        step_done(db, NULL, "purge check");
+        step_done(db, NULL, "purge check", NULL);
     }
     sqlite3_finalize(st);
     g_free(ask);
@@ -1756,7 +1863,7 @@ purge_unless_linked(TaskDatabase *db, const gchar *members, const gchar *const *
         st = NULL;
         if (sqlite3_prepare_v2(sq, *sql, -1, &st, NULL) == SQLITE_OK)
             sqlite3_bind_int64(st, 1, id);
-        ok = step_done(db, st, "purge");
+        ok = step_done(db, st, "purge", NULL);
         sqlite3_finalize(st);
     }
     return task_db_transaction_end(db, ok);
@@ -1807,7 +1914,7 @@ task_db_task_note(TaskDatabase *db, gint64 task_id)
         if (sqlite3_step(st) == SQLITE_ROW)
             title = column_text_dup(st, 0);
     } else {
-        step_done(db, NULL, "task note");
+        step_done(db, NULL, "task note", NULL);
     }
     sqlite3_finalize(st);
     return title;

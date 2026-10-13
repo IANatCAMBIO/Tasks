@@ -134,19 +134,23 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 
 ## 4. Events and refresh
 
-`TaskApp` carries three events (`src/task_app.h`):
+`TaskApp` carries four events (`src/task_app.h`):
 
 | Fire | Meaning | Who fires it |
 |---|---|---|
 | `task_app_notify_changed` | structure changed: refresh sidebar + task pane + open editors | list/group commands, the recurrence pass |
 | `task_app_notify_tasks` | tasks changed, sidebar cannot have: task pane only | editor saves, subtask/attachment edits, Settings changes that alter what rows show |
+| the notes event (`task_app_listen_notes`) | Notes' data changed elsewhere: re-read open editors' "From note" lines | `task_app_check_outside` only |
 | `task_app_status(app, fmt, …)` | a one-line message for the status bar | anyone |
 
 **Outside changes.**  The database is shared with Notes (and with scripts).
-`task_app_check_outside` asks `shared_db_changed` on the main connection and
-fires `task_app_notify_changed` when another connection has committed; it
+`task_app_check_outside` calls `shared_db_poll` on the main connection; when
+another connection has committed, it fires `task_app_notify_changed` if the
+tasks revision moved, else the notes event if the notes revision moved.  It
 runs every second (`task_app_watch_start`) and when the app becomes active.
-The main connection's own writes never count.  The refresh keeps selection
+The main connection's own writes never count: after each of its commits it
+polls again and adopts the revisions, unless another connection committed
+too, in which case the moved revisions stay pending for the next check.  The refresh keeps selection
 and scroll where the same tasks remain; an editor with a pending save saves
 it first (only its changed fields) and then reloads.
 
@@ -156,7 +160,7 @@ which `after` differs from `before` (the row as loaded), so another app's
 change to a field the user did not touch survives.  The other writers are
 single-purpose setters (`task_db_task_set_status`, …).
 
-The library window is the listener.  It drops its three subscriptions FIRST
+The library window is the listener.  It drops its four subscriptions FIRST
 when it shuts down, before the editors close, because a closing editor's final
 save fires the task event.
 

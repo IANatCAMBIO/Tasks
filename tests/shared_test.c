@@ -3,10 +3,13 @@
  * (task_db_task_update) that keeps two writers from losing each other's
  * changes, and its stamping rules; and Notes action items (a note_task row
  * names the task) — the editor's note lookup, ordinary deletion, and the
- * purge Tasks refuses; which outside changes refresh the app (only a
- * change to Tasks' data, never its own writes); and writes that fail
- * because another PROCESS holds the file past the busy timeout — they
- * report it, write nothing, and succeed once the file is free.
+ * purge Tasks refuses; which outside changes refresh the app (a change to
+ * Tasks' data refreshes, one to Notes' data re-reads only the editors'
+ * note lines, its own writes never count, and an outside commit landing
+ * right after its own is not lost); tombstones with subtasks; and writes
+ * that fail because another PROCESS holds the file past the busy timeout —
+ * they wait once, report it, write nothing, and succeed once the file is
+ * free.
  *
  * Two connections to one file stand for Tasks and Notes (or two threads):
  * each loads the row, changes a different field and saves; both changes
@@ -183,24 +186,25 @@ link_to_note(TaskApp *app, gint64 task_id, const char *title)
 }
 
 /*
- * count_rows — how many rows a query counts.
+ * row_int — the first column of the first row of a query (a count, or one
+ * value of one row).
  *
  * Inputs:
  *   app — the fixture
- *   sql — a SELECT count(*)
+ *   sql — the query
  *
  * Output:
- *   the count, -1 on error.
+ *   the value, -1 on error or when there is no row.
  */
-static int
-count_rows(TaskApp *app, const char *sql)
+static gint64
+row_int(TaskApp *app, const char *sql)
 {
     sqlite3_stmt *st = NULL;
-    int           n  = -1;
+    gint64        n  = -1;
 
     if (sqlite3_prepare_v2(shared_db_handle(app->db->shared), sql, -1, &st, NULL) == SQLITE_OK &&
         sqlite3_step(st) == SQLITE_ROW) {
-        n = sqlite3_column_int(st, 0);
+        n = sqlite3_column_int64(st, 0);
     }
     sqlite3_finalize(st);
     return n;
@@ -234,7 +238,7 @@ test_note_items(TaskApp *app)
     check(!task_db_task_purge(app->db, born) && task_db_task_get(app->db, born) != NULL,
           "notes: a Notes-born task is never purged");
     check(!task_db_list_purge(app->db, list) && task_db_list_get(app->db, list) != NULL &&
-          count_rows(app, "SELECT count(*) FROM tasks WHERE title = 'Typed in Tasks'") == 1,
+          row_int(app, "SELECT count(*) FROM tasks WHERE title = 'Typed in Tasks'") == 1,
           "notes: nor is its list, and nothing in it is removed");
 
     /* A note-linked SUBTASK protects its parent from a purge as well. */
@@ -251,7 +255,7 @@ test_note_items(TaskApp *app)
     snprintf(sql, sizeof sql,
              "SELECT count(*) FROM note_task WHERE task_id = %lld AND seen_deleted = 0",
              (long long)born);
-    check(gone != NULL && gone->deleted && gone->updated_at > 0 && count_rows(app, sql) == 1,
+    check(gone != NULL && gone->deleted && gone->updated_at > 0 && row_int(app, sql) == 1,
           "notes: deleting it tombstones the task and keeps the link for Notes");
     task_free(gone);
 
@@ -287,10 +291,125 @@ other_exec(TaskApp *app, const char *sql)
 }
 
 /*
- * test_refresh_rev — the app refreshes only when Tasks' data changed
- * elsewhere: a commit to Notes' tables refreshes nothing, its own writes
- * never count, and an outside change that lands while it writes is not
- * hidden by that write.
+ * task_column — one integer column of a task's row, deleted or not.
+ *
+ * Inputs:
+ *   app    — the fixture
+ *   id     — the task
+ *   column — the column name ("deleted", "updated_at", "status")
+ *
+ * Output:
+ *   the value, -1 when the row is missing.
+ */
+static gint64
+task_column(TaskApp *app, gint64 id, const char *column)
+{
+    char sql[160];
+    snprintf(sql, sizeof sql, "SELECT %s FROM tasks WHERE id = %lld", column, (long long)id);
+    return row_int(app, sql);
+}
+
+/*
+ * test_tombstones — deleting a task, a list's completed tasks or a list
+ * tombstones each task with its live subtasks; a subtask already deleted
+ * keeps its own updated_at (SHARED_DB_SQL_TOMBSTONE_WHERE), so an undo can
+ * tell it apart.  A subtask entering Done moves its New parent to In
+ * Progress.
+ *
+ * Inputs:
+ *   app — the fixture
+ */
+static void
+test_tombstones(TaskApp *app)
+{
+    gint64 list = task_db_list_create(app->db, "Tombs", "");
+    gint64 done = task_db_task_create(app->db, list, 0, "Done parent");
+    gint64 kid  = task_db_task_create(app->db, list, done, "Live child");
+    gint64 old  = task_db_task_create(app->db, list, done, "Deleted child");
+    gint64 open = task_db_task_create(app->db, list, 0, "Open parent");
+    gint64 sub  = task_db_task_create(app->db, list, open, "Open child");
+    char   sql[160];
+
+    snprintf(sql, sizeof sql, "UPDATE tasks SET deleted = 1, updated_at = 1 WHERE id = %lld",
+             (long long)old);
+    other_exec(app, sql);
+    check(task_db_task_set_status(app->db, kid, TASK_STATUS_DONE) &&
+          task_column(app, done, "status") == TASK_STATUS_IN_PROGRESS,
+          "tombstone: (a subtask entering Done starts its New parent)");
+    task_db_task_set_status(app->db, done, TASK_STATUS_DONE);
+
+    check(task_db_tasks_delete_done(app->db, list) == 1,
+          "tombstone: deleting done tasks counts the top-level ones");
+    check(task_column(app, done, "deleted") == 1 &&
+          task_column(app, kid, "deleted") == 1,
+          "tombstone: ... and takes their live subtasks");
+    check(task_column(app, old, "updated_at") == 1, "tombstone: ... an already-deleted one keeps its stamp");
+    check(task_column(app, open, "deleted") == 0 &&
+          task_column(app, sub, "deleted") == 0,
+          "tombstone: ... and leaves open tasks alone");
+
+    check(task_db_task_delete(app->db, open) &&
+          task_column(app, open, "deleted") == 1 &&
+          task_column(app, sub, "deleted") == 1,
+          "tombstone: deleting a task takes its subtasks");
+
+    gint64 left = task_db_task_create(app->db, list, 0, "Left");
+    gint64 dead = task_db_task_create(app->db, list, 0, "Dead");
+    snprintf(sql, sizeof sql, "UPDATE tasks SET deleted = 1, updated_at = 1 WHERE id = %lld",
+             (long long)dead);
+    other_exec(app, sql);
+    snprintf(sql, sizeof sql, "SELECT deleted FROM lists WHERE id = %lld", (long long)list);
+    check(task_db_list_delete(app->db, list) && row_int(app, sql) == 1 &&
+          task_column(app, left, "deleted") == 1 && task_column(app, dead, "updated_at") == 1,
+          "tombstone: deleting a list takes its live tasks; a deleted one keeps its stamp");
+}
+
+/* The commit the wal hook makes once, on another connection, the moment
+ * the app's own commit has landed (before own_commit polls).               */
+static char race_sql[256];
+
+/*
+ * commit_right_after — sqlite3_wal_hook callback: runs after a commit of
+ * the app's connection, its write lock already released, and lands another
+ * connection's commit there once (race_sql), then uninstalls itself.
+ *
+ * Inputs:
+ *   app  — the fixture (as the hook's context)
+ *   h, name, pages — unused
+ *
+ * Output:
+ *   SQLITE_OK.
+ */
+static int
+commit_right_after(void *app, sqlite3 *h, const char *name, int pages)
+{
+    (void)name;
+    (void)pages;
+    sqlite3_wal_hook(h, NULL, NULL);   /* (the fixture's file never needs
+                                          its automatic checkpoint)      */
+    other_exec(app, race_sql);
+    return SQLITE_OK;
+}
+
+/*
+ * count_notes_event — a notes-event listener: counts its calls.
+ *
+ * Inputs:
+ *   app  — unused
+ *   data — an int counter
+ */
+static void
+count_notes_event(TaskApp *app, gpointer data)
+{
+    (void)app;
+    (*(int *)data)++;
+}
+
+/*
+ * test_refresh_rev — the app refreshes only what changed elsewhere: a
+ * commit to Notes' tables fires the notes event alone, its own writes
+ * never count, and an outside change that lands just before or just after
+ * its own write is not hidden by that write.
  *
  * Inputs:
  *   app — the fixture
@@ -298,37 +417,63 @@ other_exec(TaskApp *app, const char *sql)
 static void
 test_refresh_rev(TaskApp *app)
 {
-    gint64 id = new_task(app, "Watched");
+    gint64 id    = new_task(app, "Watched");
+    int    notes = 0;
+    guint  sub   = task_app_listen_notes(app, count_notes_event, &notes);
     char   sql[256];
 
     task_app_check_outside(app);                       /* start from quiet */
-    check(!task_app_check_outside(app), "refresh: nothing changed, nothing refreshes");
+    check(task_app_check_outside(app) == 0 && notes == 0,
+          "refresh: nothing changed, nothing refreshes");
 
     other_exec(app, "INSERT INTO notes (title, created_at, updated_at) VALUES ('N', 0, 0)");
-    check(!task_app_check_outside(app), "refresh: a change to Notes' data alone refreshes nothing");
+    check(task_app_check_outside(app) == TASK_DB_CHANGED_NOTES && notes == 1,
+          "refresh: a change to Notes' data alone fires only the notes event");
 
     snprintf(sql, sizeof sql, "UPDATE tasks SET title = 'Elsewhere' WHERE id = %lld",
              (long long)id);
     other_exec(app, sql);
-    check(task_app_check_outside(app), "refresh: a change to Tasks' data refreshes");
-    check(!task_app_check_outside(app), "refresh: ... once");
+    check(task_app_check_outside(app) == TASK_DB_CHANGED_TASKS && notes == 1,
+          "refresh: a change to Tasks' data refreshes");
+    check(task_app_check_outside(app) == 0, "refresh: ... once");
 
     task_db_task_set_pinned(app->db, id, TRUE);
-    check(!task_app_check_outside(app), "refresh: the app's own write does not refresh");
+    check(task_app_check_outside(app) == 0, "refresh: the app's own write does not refresh");
     task_db_task_set_priority(app->db, id, TRUE);
     other_exec(app, "UPDATE notes SET title = 'N2' WHERE title = 'N'");
-    check(!task_app_check_outside(app),
+    check(task_app_check_outside(app) == TASK_DB_CHANGED_NOTES,
           "refresh: ... nor does a later Notes-only change after it");
 
     other_exec(app, sql);                              /* outside, then own */
     task_db_task_set_pinned(app->db, id, FALSE);
-    check(task_app_check_outside(app),
+    check(task_app_check_outside(app) & TASK_DB_CHANGED_TASKS,
           "refresh: an outside change made just before the app's own write still refreshes");
+
+    task_db_task_set_pinned(app->db, id, TRUE);        /* own, then outside */
+    other_exec(app, "UPDATE tasks SET title = 'After' WHERE title = 'Elsewhere'");
+    check(task_app_check_outside(app) == TASK_DB_CHANGED_TASKS,
+          "refresh: an outside change made just after the app's own write refreshes");
+
+    /* The race: another commit lands between the app's COMMIT and the
+     * poll that follows it, so that poll sees both moves at once.         */
+    snprintf(race_sql, sizeof race_sql,
+             "UPDATE tasks SET title = 'Raced' WHERE id = %lld", (long long)id);
+    sqlite3_wal_hook(shared_db_handle(app->db->shared), commit_right_after, app);
+    task_db_task_set_pinned(app->db, id, FALSE);
+    Task *raced = task_db_task_get(app->db, id);
+    check(raced != NULL && strcmp(raced->title, "Raced") == 0,
+          "refresh: (another commit landed right after the app's own)");
+    task_free(raced);
+    check(task_app_check_outside(app) == TASK_DB_CHANGED_TASKS,
+          "refresh: ... and is not lost: the next poll refreshes");
+    check(task_app_check_outside(app) == 0, "refresh: ... once");
+
+    task_app_unlisten(app, sub);
 }
 
 /* How long the holder process keeps the write lock, in seconds: longer
- * than the three writes that each wait out the busy timeout.               */
-#define HOLD_SECONDS 17
+ * than the four writes that each wait out the busy timeout.                */
+#define HOLD_SECONDS 23
 
 /*
  * hold_lock — the holder process (this binary run with --hold): take the
@@ -358,7 +503,8 @@ hold_lock(const char *path, int seconds)
 /*
  * test_busy — another process holds the write lock past the busy timeout:
  * each write reports failure and changes nothing (the editor's column
- * update, a list toggle's setter, the calendar store's transaction); once
+ * update, a list toggle's setter, a subtask's status change with its
+ * parent's, the calendar store's transaction); once
  * the lock is let go the same writes succeed.
  *
  * Inputs:
@@ -368,8 +514,11 @@ hold_lock(const char *path, int seconds)
 static void
 test_busy(TaskApp *app, const char *self)
 {
-    gint64 id = new_task(app, "Busy");
+    gint64 id     = new_task(app, "Busy");
+    Task  *parent = task_db_task_get(app->db, id);
+    gint64 child  = task_db_task_create(app->db, parent->list_id, id, "Busy child");
     int    out[2];
+    task_free(parent);
     pid_t  pid  = 0;
     char   secs[8];
 
@@ -393,6 +542,13 @@ test_busy(TaskApp *app, const char *self)
     check(!pinned && time(NULL) - started >= SHARED_DB_BUSY_TIMEOUT_MS / 1000 - 1,
           "busy: a toggle's write fails after the busy timeout, and says so");
 
+    started = time(NULL);
+    gboolean done = task_db_task_set_status(app->db, child, TASK_STATUS_DONE);
+    time_t   took = time(NULL) - started;
+    check(!done && took >= SHARED_DB_BUSY_TIMEOUT_MS / 1000 - 1 &&
+          took < 2 * (SHARED_DB_BUSY_TIMEOUT_MS / 1000),
+          "busy: a subtask's status change fails after ONE busy wait, and says so");
+
     Task *before = task_db_task_get(app->db, id);
     Task  after  = *before;
     after.title  = "Typed while busy";
@@ -410,9 +566,12 @@ test_busy(TaskApp *app, const char *self)
     check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "busy: (the lock is let go)");
 
     Task *stored = task_db_task_get(app->db, id);
-    check(stored != NULL && !stored->pinned && strcmp(stored->title, "Busy") == 0,
-          "busy: nothing was written meanwhile");
+    Task *kid = task_db_task_get(app->db, child);
+    check(stored != NULL && !stored->pinned && strcmp(stored->title, "Busy") == 0 &&
+          stored->status == TASK_STATUS_NEW && kid != NULL && kid->status == TASK_STATUS_NEW,
+          "busy: nothing was written meanwhile (neither the subtask nor its parent)");
     task_free(stored);
+    task_free(kid);
     GPtrArray *none = gcal_store_calendars(app->db);
     check(none->len == 0, "busy: ... not even part of the calendar list");
     g_ptr_array_free(none, TRUE);
@@ -451,6 +610,7 @@ main(int argc, char **argv)
     test_stamps(app);
     test_note_items(app);
     test_refresh_rev(app);
+    test_tombstones(app);
     test_busy(app, argv[0]);
 
     fixture_close(app);

@@ -102,7 +102,7 @@
 
 /*
  * init_with_app: — build the window (not yet shown), subscribe to the
- * app's three events, and show the default selection's tasks.
+ * app's four events, and show the default selection's tasks.
  *
  * Inputs:
  *   app — the application context, its database open; borrowed, and must

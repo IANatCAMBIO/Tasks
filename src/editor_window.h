@@ -63,6 +63,13 @@ void tasks_editor_close(int64_t task_id);
 void tasks_editor_refresh_all(void);
 
 /*
+ * tasks_editor_refresh_sources — re-read, in every open editor, the title
+ * of the note its task was written in (the "From note" line) and nothing
+ * else: Notes renamed a note, which changes no task.
+ */
+void tasks_editor_refresh_sources(void);
+
+/*
  * tasks_editor_close_all — close every open editor, each flushing its
  * pending save.  Called by the library window as it shuts down, after it
  * has dropped its event listeners.

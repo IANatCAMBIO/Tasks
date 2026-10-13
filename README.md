@@ -122,7 +122,7 @@ refused untouched (as is an empty file: the shared module creates a missing
 database complete, in one step), and is brought across with the shared
 module's migration tool instead.  Changes Notes (or a script) makes to the
 tasks appear within a second, keeping the selection and the scroll; a change
-to notes alone refreshes nothing.  An edit never overwrites a field you did
+to notes alone refreshes only the "From note: …" lines of open editors.  An edit never overwrites a field you did
 not change, even one you were in the middle of editing.  When a change cannot
 be saved because another app held the file for too long, the status bar says
 so and the lists show what is really stored; an editor keeps the change,

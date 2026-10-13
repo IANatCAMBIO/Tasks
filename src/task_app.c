@@ -2,7 +2,7 @@
 #include "task_loop.h"
 
 /* One entry per subscription.  `fn` is a TaskAppNotifyFn on the
- * changed/tasks lists and a TaskAppStatusFn on the status list. */
+ * changed/tasks/notes lists and a TaskAppStatusFn on the status list. */
 typedef struct {
     guint    id;
     gpointer fn;
@@ -32,6 +32,7 @@ task_app_free(TaskApp *app)
     /* A listener still subscribed here outlived its window; not an error. */
     g_slist_free_full(app->changed_l, g_free);
     g_slist_free_full(app->tasks_l, g_free);
+    g_slist_free_full(app->notes_l, g_free);
     g_slist_free_full(app->status_l, g_free);
     task_db_close(app->db);
     g_free(app);
@@ -85,6 +86,17 @@ task_app_listen_tasks(TaskApp *app, TaskAppNotifyFn fn, gpointer user_data)
 }
 
 /*
+ * task_app_listen_notes — subscribe to the notes event.
+ * Inputs/output are documented in task_app.h.
+ */
+guint
+task_app_listen_notes(TaskApp *app, TaskAppNotifyFn fn, gpointer user_data)
+{
+    return listener_add(app, app != NULL ? &app->notes_l : NULL,
+                        (gpointer)fn, user_data);
+}
+
+/*
  * task_app_listen_status — subscribe to status messages.
  * Inputs/output are documented in task_app.h.
  */
@@ -130,6 +142,7 @@ task_app_unlisten(TaskApp *app, guint id)
 
     if (unlisten_from(&app->changed_l, id)) return;
     if (unlisten_from(&app->tasks_l, id)) return;
+    if (unlisten_from(&app->notes_l, id)) return;
     unlisten_from(&app->status_l, id);
 }
 
@@ -245,14 +258,17 @@ task_app_notify_tasks(TaskApp *app)
  * task_app_check_outside — look for another connection's commits.
  * Inputs/output are documented in task_app.h.
  */
-gboolean
+guint
 task_app_check_outside(TaskApp *app)
 {
-    if (app == NULL || app->db == NULL) return FALSE;
-    if (!task_db_outside_change(app->db)) return FALSE;
+    if (app == NULL || app->db == NULL) return 0;
 
-    task_app_notify_changed(app);
-    return TRUE;
+    guint found = task_db_outside_change(app->db);
+    if (found & TASK_DB_CHANGED_TASKS)
+        task_app_notify_changed(app);   /* re-reads the editors' notes too */
+    else if (found & TASK_DB_CHANGED_NOTES)
+        fire(app, &app->notes_l, NULL);
+    return found;
 }
 
 /*
