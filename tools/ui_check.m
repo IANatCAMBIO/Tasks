@@ -1797,13 +1797,16 @@ send_escape(NSWindow *win)
 
 /*
  * check_editor_window — exercise editor semantics: dedup open, cancel-on-new
- * deletes the task, refresh-all closes an editor whose task is gone.
+ * deletes the task, refresh-all closes an editor whose task is gone, an
+ * outside change merged under an unsaved edit, and the "From note" line of
+ * a Notes action item (snapshot editor-note-item).
  *
  * Inputs:
  *   app — the application context
+ *   dir — the snapshot folder
  */
 static void
-check_editor_window(TaskApp *app)
+check_editor_window(TaskApp *app, NSString *dir)
 {
     NSArray<NSNumber *> *ids = first_task_ids(app, 2);
     if (ids.count < 1) { printf("     skipping editor checks (no tasks)\n"); return; }
@@ -1907,6 +1910,60 @@ check_editor_window(TaskApp *app)
         }
         task_ptr_array_free_lists(lists);
         [library close];
+    }
+
+    /* A Notes action item: a note_task row links the task to a note, as
+     * Notes writes it.  The editor names the note; a plain task has no
+     * such line.  The rows are removed again (dropping the link tombstones
+     * the throwaway task, as the shared schema's trigger does). */
+    {
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        if (lists->len > 0) {
+            gint64   list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+            gint64   id      = task_db_task_create(app->db, list_id, 0, "Call the vendor back");
+            sqlite3 *sq      = shared_db_handle(app->db->shared);
+            char    *sql     = sqlite3_mprintf(
+                "INSERT INTO notes (title, created_at, updated_at) "
+                "  VALUES ('Weekly sync', 0, 0);"
+                "INSERT INTO note_task (task_id, note_id, ord, seen_title) "
+                "  VALUES (%lld, last_insert_rowid(), 0, 'Call the vendor back');",
+                (long long)id);
+            sqlite3_exec(sq, sql, NULL, NULL, NULL);
+            sqlite3_free(sql);
+
+            tasks_editor_open(app, id);
+            check_spin(0.2);
+            NSWindow *editor_win = nil;
+            for (NSWindow *w in NSApp.windows) {
+                if (w.visible && [w.title isEqualToString:@"Call the vendor back"]) editor_win = w;
+            }
+            NSTextField *source = find_text(editor_win.contentView, @"From note:");
+            check(source != nil && !source.hiddenOrHasHiddenAncestor &&
+                  [source.stringValue containsString:@"Weekly sync"],
+                  "editor: a Notes action item names the note it was written in");
+            check(snapshot(editor_win, dir, @"editor-note-item"), "editor: snapshot, note item");
+            tasks_editor_close(id);
+            check_spin(0.1);
+
+            gint64 plain = first_task_ids(app, 1).firstObject.longLongValue;
+            tasks_editor_open(app, plain);
+            check_spin(0.2);
+            BOOL shown = NO;
+            for (NSWindow *w in NSApp.windows) {
+                NSTextField *line = w.visible ? find_text(w.contentView, @"From note:") : nil;
+                shown = shown || (line != nil && !line.hiddenOrHasHiddenAncestor);
+            }
+            check(!shown, "editor: a task not born in Notes has no such line");
+            tasks_editor_close(plain);
+            check_spin(0.1);
+
+            sql = sqlite3_mprintf("DELETE FROM note_task WHERE task_id = %lld;"
+                                  "DELETE FROM notes WHERE title = 'Weekly sync';",
+                                  (long long)id);
+            sqlite3_exec(sq, sql, NULL, NULL, NULL);
+            sqlite3_free(sql);
+        }
+        task_ptr_array_free_lists(lists);
     }
 
     tasks_editor_close_all();
@@ -2286,7 +2343,7 @@ main(int argc, const char *argv[])
         check_lists_bar(app, dir);
         check_task_list(app, dir);
         check_kanban(app, dir);
-        check_editor_window(app);
+        check_editor_window(app, dir);
         check_settings(app, dir);
         check_day_planner_calendar(app, dir);
         check_memory_and_ownership(app);

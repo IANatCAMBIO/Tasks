@@ -534,9 +534,24 @@ GHashTable *task_db_attachment_counts(TaskDatabase *db);
  * Either out-pointer may be NULL; a failed query leaves 0.                 */
 void task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists);
 
-/* Physically remove tombstoned/remotely-deleted rows.                      */
-void task_db_list_purge(TaskDatabase *db, gint64 id);   /* + its tasks      */
-void task_db_task_purge(TaskDatabase *db, gint64 id);   /* + its subtasks   */
+/* ---------------------------------------------------------------------------
+ * task_db_list_purge() / task_db_task_purge() — physically remove a list
+ * and its tasks, or a task and its subtasks, in one transaction.  REFUSED,
+ * deleting nothing, when any task they would remove is a Notes action item
+ * (a note_task row names it): Tasks never purges one of those — deleting
+ * such a task is a tombstone (task_db_task_delete), which Notes answers by
+ * unmarking the line.  Returns TRUE when the rows were removed.
+ * ------------------------------------------------------------------------- */
+gboolean task_db_list_purge(TaskDatabase *db, gint64 id);
+gboolean task_db_task_purge(TaskDatabase *db, gint64 id);
+
+/* ---------------------------------------------------------------------------
+ * task_db_task_note() — the title of the note a task was written in, when
+ * it is a Notes action item: a task is Notes-born iff a note_task row
+ * references it.  Returns a new string (g_free; "" for an untitled note),
+ * or NULL when the task was not born in Notes.
+ * ------------------------------------------------------------------------- */
+gchar *task_db_task_note(TaskDatabase *db, gint64 task_id);
 
 /* Free helper for the GPtrArrays above.                                    */
 void task_ptr_array_free_lists(GPtrArray *a);

@@ -532,6 +532,8 @@ becomeFirstResponder
 
 /* The always-visible fields. */
 @property (nonatomic, strong) NSTextField   *title_field;
+@property (nonatomic, strong) NSTextField   *source_label;     /* "From note: …" for an
+                                                                 * action item from Notes */
 @property (nonatomic, strong) NSPopUpButton *status_popup;      /* index is a TaskStatus */
 @property (nonatomic, strong) NSTextField   *due_field;
 @property (nonatomic, strong) NSDatePicker  *due_time_field;
@@ -753,6 +755,14 @@ build_fields:(NSStackView *)form
     self.title_field.delegate           = self;
     self.title_field.usesSingleLineMode = YES;
     add_row(form, self.title_field);
+
+    /* Shown for a Notes action item only (show_task fills it). */
+    self.source_label = note_label(@"");
+    self.source_label.toolTip =
+        @"This task is an action item written in Notes. Its title, completion and due date "
+        @"stay in step with the line in the note.";
+    self.source_label.hidden = YES;
+    add_row(form, self.source_label);
 
     /* Status at the left, the due date and time at the right. */
     NSMutableArray<NSString *> *statuses = [NSMutableArray array];
@@ -1088,6 +1098,7 @@ show_task:(const Task *)task
     self.loaded = loaded;
 
     show_text(self.title_field, tasks_string(task->title), NO);
+    [self show_source];
     [self show_status:task->status];
     self.favorite_check.state = task->pinned ? NSControlStateValueOn : NSControlStateValueOff;
     self.priority_check.state = task->priority ? NSControlStateValueOn : NSControlStateValueOff;
@@ -1127,6 +1138,28 @@ show_task:(const Task *)task
     [self reload_attachments];
     [self refresh_title];
     [self refresh_recurrence];
+}
+
+/*
+ * show_source — the line naming the note a Notes action item was written
+ * in, hidden for any other task (task_db_task_note).  Read at every load,
+ * so a note renamed in Notes shows its new title at the next refresh.
+ */
+- (void)
+show_source
+{
+    gchar    *note   = task_db_task_note(self.app->db, self.task_id);
+    NSString *text   = note == NULL ? @"" :
+        [NSString stringWithFormat:@"From note: \u201C%@\u201D",
+            note[0] != '\0' ? tasks_string(note) : @"Untitled"];
+    BOOL      hidden = note == NULL;
+    g_free(note);
+
+    if ([self.source_label.stringValue isEqualToString:text] &&
+        self.source_label.hidden == hidden) return;
+    self.source_label.stringValue = text;
+    self.source_label.hidden      = hidden;
+    if (self.window.visible) [self refit_animated:NO];
 }
 
 /*

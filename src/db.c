@@ -1618,28 +1618,104 @@ task_db_task_move_list(TaskDatabase *db, gint64 id, gint64 dest_list)
     sqlite3_free(sql);
 }
 
-/* task_db_list_purge() — physically delete a list row + all its tasks'
- * rows (attachments cascade).                                              */
-void
-task_db_list_purge(TaskDatabase *db, gint64 id)
+/*
+ * purge_unless_linked — physically delete rows, in one transaction, unless
+ * a task among them is a Notes action item (a note_task row names it):
+ * Tasks never purges one of those, since the note's line would lose its
+ * task.  The check and the deletes share the transaction, so a link made
+ * between them cannot be lost.
+ *
+ * Inputs:
+ *   db      — the connection
+ *   members — a SELECT of the task ids the purge would remove (one ?1)
+ *   deletes — the DELETE statements (each with ?1 where the id goes)
+ *   id      — the list or task id bound to ?1
+ *
+ * Output:
+ *   TRUE when the rows were deleted; FALSE when a linked task refused the
+ *   purge or a statement failed (nothing is deleted either way).
+ */
+static gboolean
+purge_unless_linked(TaskDatabase *db, const gchar *members, const gchar *const *deletes,
+                    gint64 id)
 {
-    gchar *sql = sqlite3_mprintf(
-        "DELETE FROM tasks WHERE list_id = %lld AND parent_id IS NOT NULL;"
-        "DELETE FROM tasks WHERE list_id = %lld;"
-        "DELETE FROM lists WHERE id = %lld;",
-        (long long)id, (long long)id, (long long)id);
-    exec_txn(db, sql);
-    sqlite3_free(sql);
+    if (!task_db_transaction_begin(db))
+        return FALSE;
+
+    sqlite3      *sq     = shared_db_handle(db->shared);
+    gchar        *ask    = g_strdup_printf("SELECT EXISTS(SELECT 1 FROM note_task "
+                                           "WHERE task_id IN (%s))", members);
+    sqlite3_stmt *st     = NULL;
+    gboolean      linked = TRUE;     /* a failed check refuses the purge   */
+    if (sqlite3_prepare_v2(sq, ask, -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, id);
+        if (sqlite3_step(st) == SQLITE_ROW)
+            linked = sqlite3_column_int(st, 0) != 0;
+    } else {
+        step_done(db, NULL, "purge check");
+    }
+    sqlite3_finalize(st);
+    g_free(ask);
+
+    gboolean ok = !linked;
+    for (const gchar *const *sql = deletes; ok && *sql != NULL; sql++) {
+        st = NULL;
+        if (sqlite3_prepare_v2(sq, *sql, -1, &st, NULL) == SQLITE_OK)
+            sqlite3_bind_int64(st, 1, id);
+        ok = step_done(db, st, "purge");
+        sqlite3_finalize(st);
+    }
+    task_db_transaction_end(db, ok);
+    return ok;
 }
 
-/* task_db_task_purge() — physically delete a task row + its subtasks.      */
-void
+/* task_db_list_purge() — physically delete a list row + all its tasks'
+ * rows (attachments cascade), unless one of them is a Notes action item
+ * (see db.h).                                                               */
+gboolean
+task_db_list_purge(TaskDatabase *db, gint64 id)
+{
+    static const gchar *const deletes[] = {
+        "DELETE FROM tasks WHERE list_id = ?1 AND parent_id IS NOT NULL",
+        "DELETE FROM tasks WHERE list_id = ?1",
+        "DELETE FROM lists WHERE id = ?1",
+        NULL
+    };
+    return purge_unless_linked(db, "SELECT id FROM tasks WHERE list_id = ?1",
+                               deletes, id);
+}
+
+/* task_db_task_purge() — physically delete a task row + its subtasks,
+ * unless one of them is a Notes action item (see db.h).                    */
+gboolean
 task_db_task_purge(TaskDatabase *db, gint64 id)
 {
-    gchar *sql = sqlite3_mprintf(
-        "DELETE FROM tasks WHERE parent_id = %lld;"
-        "DELETE FROM tasks WHERE id = %lld;",
-        (long long)id, (long long)id);
-    exec_txn(db, sql);
-    sqlite3_free(sql);
+    static const gchar *const deletes[] = {
+        "DELETE FROM tasks WHERE parent_id = ?1",
+        "DELETE FROM tasks WHERE id = ?1",
+        NULL
+    };
+    return purge_unless_linked(db, "SELECT id FROM tasks WHERE id = ?1 OR parent_id = ?1",
+                               deletes, id);
+}
+
+/* task_db_task_note() — the title of the note a task was born in (see
+ * db.h).                                                                    */
+gchar *
+task_db_task_note(TaskDatabase *db, gint64 task_id)
+{
+    sqlite3_stmt *st    = NULL;
+    gchar        *title = NULL;
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
+            "SELECT COALESCE(n.title, '') FROM note_task nt "
+            "JOIN notes n ON n.id = nt.note_id WHERE nt.task_id = ?", -1,
+            &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, task_id);
+        if (sqlite3_step(st) == SQLITE_ROW)
+            title = column_text_dup(st, 0);
+    } else {
+        step_done(db, NULL, "task note");
+    }
+    sqlite3_finalize(st);
+    return title;
 }
