@@ -1,4 +1,5 @@
 #include "task_pane.h"
+#include "task_ops.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,29 @@ int64_t
 task_sel_list_id(task_sel_t sel)
 {
     return sel.kind == task_sel_list ? sel.id : 0;
+}
+
+/*
+ * task_sel_takes_new_tasks — whether New Task is offered here.
+ * Inputs/output are documented in task_pane.h.
+ */
+bool
+task_sel_takes_new_tasks(task_sel_t sel)
+{
+    const TaskView *view = task_sel_view_of(sel);
+    return view == NULL || !view->refuses_new_tasks;
+}
+
+/*
+ * task_sel_new_task_list — the selected list, else the default list.
+ * Inputs/output are documented in task_pane.h.
+ */
+int64_t
+task_sel_new_task_list(TaskApp *app, task_sel_t sel)
+{
+    if (!task_sel_takes_new_tasks(sel)) return 0;
+    int64_t list_id = task_sel_list_id(sel);
+    return list_id != 0 ? list_id : task_ops_default_list(app);
 }
 
 /*

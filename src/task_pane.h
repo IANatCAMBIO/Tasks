@@ -63,8 +63,8 @@ task_sel_t task_sel_default(void);
 const TaskView *task_sel_view_of(task_sel_t sel);
 
 /*
- * task_sel_list_id — the selected REAL list.  New Task and Clear Completed
- * need one; a view or a group has no single list to act on.
+ * task_sel_list_id — the selected REAL list.  Clear Completed needs one; a
+ * view or a group has no single list to act on.
  *
  * Inputs:
  *   sel — the selection
@@ -73,6 +73,34 @@ const TaskView *task_sel_view_of(task_sel_t sel);
  *   the list id, or 0 when the selection is not a list.
  */
 int64_t task_sel_list_id(task_sel_t sel);
+
+/*
+ * task_sel_takes_new_tasks — whether New Task is offered for a selection at
+ * all.  Every list, group and view takes one except a view that refuses
+ * them (TaskView.refuses_new_tasks: Action Items, which only Notes fills).
+ *
+ * Inputs:
+ *   sel — the selection
+ *
+ * Output:
+ *   false when New Task must be disabled.
+ */
+bool task_sel_takes_new_tasks(task_sel_t sel);
+
+/*
+ * task_sel_new_task_list — the list New Task creates its task in: the
+ * selected list, or — for a group or a view that takes new tasks — the
+ * default list (task_ops_default_list).
+ *
+ * Inputs:
+ *   app — the context (the default list is checked against its database)
+ *   sel — the selection
+ *
+ * Output:
+ *   the list id, or 0 when there is none: the selection refuses new
+ *   tasks, or it is not a list and no default list is set.
+ */
+int64_t task_sel_new_task_list(TaskApp *app, task_sel_t sel);
 
 /*
  * task_sel_is_virtual — whether the selection gathers tasks from several

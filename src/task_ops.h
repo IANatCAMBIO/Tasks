@@ -13,6 +13,8 @@
 #ifndef TASK_OPS_H
 #define TASK_OPS_H
 
+#include <stdint.h>
+
 #include "task_app.h"
 
 /* ---------------------------------------------------------------------------
@@ -39,5 +41,18 @@ gboolean task_ops_move_to_list(TaskApp *app, gint64 task_id,
  * Returns how many tasks went.
  * ------------------------------------------------------------------------- */
 guint task_ops_clear_completed(TaskApp *app, gint64 list_id);
+
+/* ---------------------------------------------------------------------------
+ * task_ops_default_list() — the default list (Settings: TASK_CFG_DEFAULT_LIST),
+ * where New Task files a task when no list is selected and Quick Task
+ * always does.
+ *
+ * The setting holds a list id; a list that has since been deleted (or a
+ * setting written against another database) counts as no default, so the
+ * caller never creates a task in a list the user cannot see.
+ *
+ * Returns the list id, or 0 when there is no usable default.
+ * ------------------------------------------------------------------------- */
+int64_t task_ops_default_list(TaskApp *app);
 
 #endif /* TASK_OPS_H */

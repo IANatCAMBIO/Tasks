@@ -2,10 +2,12 @@
  * rows_test.c — the toolkit-neutral row description (src/task_rows.h) and
  * the pane collection built on it (src/task_pane.h): which lines a task
  * gets, their emphasis, the notes-preview rules, the completed filter, the
- * search filter, the status line and the note-context title prefix.
+ * search filter, the status line, the note-context title prefix, and where
+ * New Task files its task (the default list, refused in Action Items).
  */
 
 #include "fixture.h"
+#include "task_ops.h"
 #include "task_pane.h"
 #include "task_rows.h"
 
@@ -404,6 +406,49 @@ test_note_context(TaskApp *app)
 }
 
 /*
+ * test_new_task_list — where New Task files a task: the selected list,
+ * else the default list while it exists, never in Action Items.
+ *
+ * Inputs:
+ *   app — the context
+ */
+static void
+test_new_task_list(TaskApp *app)
+{
+    gint64     inbox = task_db_list_create(app->db, "Inbox", NULL);
+    gint64     other = task_db_list_create(app->db, "Other", NULL);
+    task_sel_t lsel  = { task_sel_list, other };
+    task_sel_t all   = task_sel_default();
+    task_sel_t items = { task_sel_view, task_view_index_of(task_view_find("action_items")) };
+    task_sel_t gsel  = { task_sel_group, task_db_group_create(app->db, "Work") };
+
+    check(task_ops_default_list(app) == 0, "default list: none until one is chosen");
+    check(task_sel_new_task_list(app, lsel) == other,
+          "new task: a selected list is used");
+    check(task_sel_new_task_list(app, all) == 0 && task_sel_new_task_list(app, gsel) == 0,
+          "new task: a view or a group with no default list has nowhere to go");
+
+    task_config_set_int(TASK_CFG_DEFAULT_LIST, (gint)inbox);
+    check(task_ops_default_list(app) == inbox, "default list: the chosen list");
+    check(task_sel_new_task_list(app, lsel) == other,
+          "new task: a selected list wins over the default");
+    check(task_sel_new_task_list(app, all) == inbox && task_sel_new_task_list(app, gsel) == inbox,
+          "new task: a view or a group uses the default list");
+
+    check(task_sel_takes_new_tasks(all) && task_sel_takes_new_tasks(lsel) &&
+          task_sel_takes_new_tasks(gsel), "new task: offered for lists, groups, views");
+    check(!task_sel_takes_new_tasks(items) && task_sel_new_task_list(app, items) == 0,
+          "new task: refused in Action Items, default list or not");
+
+    task_db_list_delete(app->db, inbox);
+    check(task_ops_default_list(app) == 0 && task_sel_new_task_list(app, all) == 0,
+          "default list: a deleted list is no default");
+    task_config_set_int(TASK_CFG_DEFAULT_LIST, 999999);
+    check(task_ops_default_list(app) == 0, "default list: an id with no list is no default");
+    task_config_set(TASK_CFG_DEFAULT_LIST, NULL);
+}
+
+/*
  * main — run the row and pane tests.
  *
  * Output:
@@ -420,6 +465,7 @@ main(void)
     test_detail_lines(app, list);
     test_collect(app);
     test_note_context(app);
+    test_new_task_list(app);
     fixture_close(app);
     return check_result();
 }

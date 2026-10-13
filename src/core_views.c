@@ -137,6 +137,7 @@ static const TaskView core_view_action_items = {
     .visible      = action_items_visible,
     .query        = action_items_query,
     .virtual_rows = TRUE,
+    .refuses_new_tasks = TRUE,      /* only Notes writes action items */
 };
 
 void

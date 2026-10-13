@@ -43,6 +43,14 @@
                                                                * title is SHOWN after its note
                                                                * context (task_display_title) */
 
+/* New tasks (Settings window) */
+#define TASK_CFG_DEFAULT_LIST        "default_list_id"         /* int list id; none = no default.
+                                                               * New Task uses it when no list
+                                                               * is selected, Quick Task always
+                                                               * (task_ops_default_list) */
+#define TASK_CFG_QUICK_TASK_HOTKEY   "quick_task_hotkey"       /* bool, 1: Quick Task's shortcut
+                                                               * works from any app (hotkey.h) */
+
 /* Library window state */
 #define TASK_CFG_SHOW_COMPLETED      "show_completed"        /* bool, 1 */
 #define TASK_CFG_KANBAN_VIEW         "kanban_view"           /* bool, 0 */

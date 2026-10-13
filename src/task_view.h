@@ -64,6 +64,12 @@ struct TaskView {
      * only thing saying where the task actually sits).                    */
     gboolean virtual_rows;
 
+    /* Whether New Task is refused while this view is selected, because
+     * something other than the user fills it (Action Items: only Notes
+     * writes those).  FALSE means New Task files the task in the default
+     * list (task_sel_new_task_list).                                      */
+    gboolean refuses_new_tasks;
+
     /* Shown when the user tries to edit or delete this view as though it
      * were a list.  NULL falls back to a generic refusal.                 */
     const gchar *not_a_list;
