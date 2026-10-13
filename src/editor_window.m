@@ -387,6 +387,21 @@ list_section(NSString *title, NSScrollView *scroll, NSArray<NSView *> *buttons)
 }
 
 /*
+ * is_editing — whether a field is being edited (it has the field editor).
+ *
+ * Inputs:
+ *   field — the field
+ *
+ * Output:
+ *   YES while the user is typing in it.
+ */
+static BOOL
+is_editing(NSTextField *field)
+{
+    return field.currentEditor != nil;
+}
+
+/*
  * show_text — put text in a field, only when it differs: rewriting a
  * field's text moves its cursor.
  *
@@ -399,7 +414,7 @@ list_section(NSString *title, NSScrollView *scroll, NSArray<NSView *> *buttons)
 static void
 show_text(NSTextField *field, NSString *text, BOOL keep_editing)
 {
-    if (keep_editing && field.currentEditor != nil) return;
+    if (keep_editing && is_editing(field)) return;
     if (![field.stringValue isEqualToString:text]) field.stringValue = text;
 }
 
@@ -1083,7 +1098,10 @@ reload
  * show_task: — put a stored task into the controls, and remember it as the
  * loaded row every save is diffed against.  Text is rewritten only where
  * it differs, so a cursor does not jump; a date, time or count field that
- * is being edited is left alone.
+ * is being edited is left alone — and so is its column in the loaded row,
+ * which keeps the value the field was showing.  A save then diffs that
+ * field against what it showed, so it writes only what the user typed and
+ * never puts the old value back over an outside change to the column.
  *
  * Inputs:
  *   task — the task as stored (borrowed)
@@ -1091,9 +1109,17 @@ reload
 - (void)
 show_task:(const Task *)task
 {
-    char  clock[TASK_EDIT_TIME_LEN];
-    Task *loaded = task_dup(task);
+    char        clock[TASK_EDIT_TIME_LEN];
+    Task       *loaded = task_dup(task);
+    const Task *before = self.loaded;
 
+    if (before != NULL) {
+        if (is_editing(self.due_field))         loaded->due            = before->due;
+        if (is_editing(self.recur_start_field)) loaded->recur_start    = before->recur_start;
+        if (is_editing(self.recur_time_field))  loaded->recur_time     = before->recur_time;
+        if (is_editing(self.every_field))       loaded->recur_interval = before->recur_interval;
+        if (is_editing(self.lead_field))        loaded->recur_lead     = before->recur_lead;
+    }
     task_free(self.loaded);
     self.loaded = loaded;
 
@@ -1195,8 +1221,9 @@ show_date:(int64_t)date in:(NSTextField *)field
 }
 
 /*
- * show_count:in:stepper: — show a count in its field (unless it is being
- * edited) and its stepper.
+ * show_count:in:stepper: — show a count in its field and its stepper,
+ * unless the field is being edited: then neither changes, since a save
+ * reads the stepper and diffs it against the loaded value show_task: kept.
  *
  * Inputs:
  *   count   — the value
@@ -1207,12 +1234,15 @@ show_date:(int64_t)date in:(NSTextField *)field
 - (void)
 show_count:(int)count in:(NSTextField *)field stepper:(NSStepper *)stepper
 {
+    if (is_editing(field)) return;
     stepper.integerValue = MAX((int)stepper.minValue, MIN((int)stepper.maxValue, count));
     show_text(field, [NSString stringWithFormat:@"%ld", (long)stepper.integerValue], YES);
 }
 
 /*
- * show_lead: — show a lead as a count and the largest unit that divides it.
+ * show_lead: — show a lead as a count and the largest unit that divides it;
+ * nothing changes while the count is being edited (the unit too, since a
+ * save multiplies the two).
  *
  * Inputs:
  *   minutes — the lead in minutes
@@ -1222,6 +1252,7 @@ show_lead:(int)minutes
 {
     int count = 0, unit = 0;
 
+    if (is_editing(self.lead_field)) return;
     task_edit_lead_split(minutes, &count, &unit);
     [self show_count:count in:self.lead_field stepper:self.lead_stepper];
     [self.lead_unit_popup selectItemAtIndex:unit];

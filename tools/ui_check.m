@@ -1987,6 +1987,60 @@ check_editor_window(TaskApp *app, NSString *dir)
         [library close];
     }
 
+    /* A field being edited keeps the text it had when an outside change
+     * arrives, and its column keeps the value that text shows: a later
+     * save (here, Favorite) must not write that old date back over the
+     * outside one. */
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        [library showWindow:nil];
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        if (lists->len > 0) {
+            gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+            gint64 id      = task_db_task_create(app->db, list_id, 0, "focus-test");
+            gint64 nov     = task_due_from_ymd(2026, 11, 1);
+            gint64 dec     = task_due_from_ymd(2026, 12, 25);
+            Task  *stored  = task_db_task_get(app->db, id);
+            Task   dated   = *stored;
+            dated.due      = nov;
+            task_db_task_update(app->db, stored, &dated);
+            task_free(stored);
+
+            tasks_editor_open(app, id);
+            check_spin(0.1);
+            NSWindow *editor_win = nil;
+            for (NSWindow *w in NSApp.windows) {
+                if (w.visible && [w.title isEqualToString:@"focus-test"]) editor_win = w;
+            }
+            NSTextField *due = find_text(editor_win.contentView, @"2026-11-01");
+            [editor_win makeFirstResponder:due];
+            check(due != nil && due.currentEditor != nil, "editor: (the Due field is being edited)");
+
+            TaskDatabase *other = task_db_open(shared_db_file(app->db->shared), NULL);
+            Task         *seen  = task_db_task_get(other, id);
+            Task          moved = *seen;
+            moved.due = dec;
+            task_db_task_update(other, seen, &moved);
+            task_free(seen);
+            task_db_close(other);
+            check(task_app_check_outside(app), "editor: (an outside change to the due date)");
+            check_spin(0.1);
+
+            NSButton *favorite = find_button(editor_win.contentView, @"Favorite");
+            [favorite performClick:nil];
+            check_spin(0.1);
+            Task *now = task_db_task_get(app->db, id);
+            check(now != NULL && now->pinned && now->due == dec,
+                  "editor: a save while the Due field is focused keeps the outside due date");
+            task_free(now);
+            tasks_editor_close(id);
+            check_spin(0.1);
+            task_db_task_delete(app->db, id);
+        }
+        task_ptr_array_free_lists(lists);
+        [library close];
+    }
+
     /* A save that fails because another writer holds the file past the
      * busy timeout loses nothing: the edit stays in the editor, closing
      * is refused with a notice, and once the file is free the close saves
