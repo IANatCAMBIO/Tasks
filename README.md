@@ -1,8 +1,10 @@
 # Tasks
 
 A macOS task manager — lists, tall task rows, a Kanban board, subtasks, due
-dates, recurring tasks, all in one SQLite file — with a native AppKit
-interface.  It began as a port of the GTK4 [Tasks](https://github.com/IANatCAMBIO/Tasks)
+dates, recurring tasks — with a native AppKit interface.  Its tasks live in
+the one SQLite file it shares with the Notes app: an action item written in
+a note is an ordinary task here, and an edit made in either app appears in
+the other.  It began as a port of the GTK4 [Tasks](https://github.com/IANatCAMBIO/Tasks)
 app; the AppKit app is now the project's main line.
 
 ## Branches
@@ -25,7 +27,7 @@ skeletons with placeholder panes.  What works today:
 
 Not yet ported (placeholders): the Kanban board, the task editor, Settings,
 list groups and list editing in the sidebar, sorting and manual order in the
-list, Compact Controls, Open Database File.  The plan and the interfaces the
+list, Compact Controls.  The plan and the interfaces the
 UI is being built against are in [porting/INTERFACES.md](porting/INTERFACES.md).
 
 The code is plain C for the core (with GLib, to be removed in a later phase)
@@ -42,6 +44,9 @@ nibs.
   ```sh
   sudo port install glib2 sqlite3 pkgconf
   ```
+- The `shared_data` repository checked out beside this one
+  (`../shared_data`): the shared database module is compiled in from it
+  (see [BUILD.md](BUILD.md)).
 
 ## Build and try it
 
@@ -53,7 +58,8 @@ make test     # core tests
 ```
 
 `make run` never touches real data: it points the app at `dev/data` inside
-the source tree.
+the source tree, and at a shared database file there
+(`dev/data/shared_data.db`).
 
 ## Install
 
@@ -98,30 +104,58 @@ tasks into the calendar the installed app uses.
 
 ## Where the data lives
 
-Everything the app keeps is in one folder:
+**The tasks** are in the database Notes and Tasks share:
+
+```
+~/Library/Application Support/camb.io/
+    shared_data.db   the shared database (with its -wal and -shm files)
+    location         optional: the path of a database kept elsewhere
+    backups/         backups, by default
+```
+
+Both apps open the same file and follow the same `location` pointer, which
+**File > Open Database File…** writes when you answer **Make Default**.  The
+file must be on a local disk and not inside iCloud Drive, Dropbox or
+another synced folder: the app refuses to open it there.  Only a shared
+database can be opened; an old Tasks `tasks.db` or a Notes `notes.db` is
+refused untouched, and is brought across with the shared module's migration
+tool instead.  Changes made by Notes (or by a script) appear within a
+second, and an edit never overwrites a field you did not change.
+
+A task written as an action item in a note shows "From note: …" in its
+editor.  Its title, completion and due date stay in step with the note's
+line; deleting it here makes Notes drop the item mark from the line.
+
+**Backups** are on by default: every hour a verified copy of the shared
+database is written to `backups/` (or a folder chosen in Settings), keeping
+the newest 48.  Notes and Tasks share these settings, and whichever app is
+running makes the backup when it is due.  **Back Up Now** in Settings makes
+one at once.
+
+**Tasks' own settings** stay in Tasks' folder (attachments are links to
+files wherever they are, and are not copied):
 
 ```
 ~/Library/Application Support/Tasks/
-    tasks.db        the database
-    tasks.ini       the settings
-    backups/        rotating backups, when switched on
+    tasks.ini        the settings
+    client_secret.apps.googleusercontent.com.json   optional Google client
 ```
 
-On first run the folder and an empty database are created.
-
-Setting the environment variable `TASKS_DATA_DIR` to another folder moves all
-of it there; that is what `make run`, `make seed` and `make test` do.
+Setting `TASKS_DATA_DIR` moves Tasks' folder and `CAMBIO_SHARED_DB` names
+the database file; `make run`, `make seed`, `make test` and `make ui-check`
+set both to places under `dev/`.  While `CAMBIO_SHARED_DB` is set, **Make
+Default** is not offered and backups go only to a folder set for that
+database (`make seed` sets `dev/data/backups`).
 
 **This app does not share data with the GTK Tasks app** (the `gtk4-testing`
 branch) and cannot open that app's folder (`~/.local/share/tasks`): the
-database code refuses any path inside it, so the two can never write to the
-same database.  To try this app on a copy of real tasks, copy `tasks.db`
-yourself into another folder and point `TASKS_DATA_DIR` at it.
+database code refuses any path inside it.
 
 ## Configuration
 
 Settings are changed in the app and stored in `tasks.ini` (group `[tasks]`,
-written by the app; comments are not preserved).  The Settings window is not
+written by the app; comments are not preserved), apart from the backup
+settings, which live in the shared database so that Notes follows them too.  The Settings window is not
 ported yet, so for now the few settings that have a control are the View-menu
 toggles.  Every key and its default is listed in `src/task_config.h`.
 

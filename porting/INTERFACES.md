@@ -23,9 +23,9 @@ Read with it:
 1. **Never touch the live data.**  The GTK app's data is in
    `~/.local/share/tasks/`.  Do not open, read, list or write anything there —
    not from code, not from a shell, not "just to look".  The code refuses:
-   `task_db_open`, `task_db_verify_file`, `task_db_file_sha256`,
-   `task_db_copy_file`, the config loader and the backup all reject any path
-   inside it (`src/task_paths.h`), whether it gets there as written, through
+   `task_db_open`, `task_db_verify_file`, `task_db_file_sha256`, the config
+   loader and the backup folder all reject any path inside it
+   (`src/task_paths.h`), whether it gets there as written, through
    `..`, or through a symbolic link.  Do not weaken or bypass the fence; a
    file chooser that lands there must show the refusal, not work around it.
    The fence knows that directory by its LOCATION only: it cannot recognise a
@@ -33,10 +33,12 @@ Read with it:
    user picks (Open Database File…) needs the owner's decision first (§15).
 2. **Every build, run and test uses the sandbox.**  `make run`, `make seed`,
    `make test`, `make ui-check` set `TASKS_DATA_DIR` to a directory under
-   `dev/` (gitignored).  Never run the binary by hand without
-   `TASKS_DATA_DIR` set: a plain launch uses
-   `~/Library/Application Support/TasksAppKit/`, which is the installed app's
-   real data.
+   `dev/` (gitignored) and `CAMBIO_SHARED_DB` to a database file inside it.
+   Never run the binary by hand without BOTH set: a plain launch uses
+   `~/Library/Application Support/Tasks/` and the shared database Notes
+   uses too (`~/Library/Application Support/camb.io/`), which are the
+   installed apps' real data.  The rules of the shared database
+   (`../shared_data/PLAN.md`) apply as well.
 3. **All persisted state goes through `task_config`.**  No `NSUserDefaults`,
    no `frameAutosaveName`, no `restorable` windows: they would write outside
    the data directory and escape the sandbox.
@@ -85,15 +87,15 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 
 | Module | What it is |
 |---|---|
-| `task_paths` | the data directory (`$TASKS_DATA_DIR`, else `~/Library/Application Support/TasksAppKit`) and the fence round the live data |
+| `task_paths` | the data directory for the ini, attachments and Google client file (`$TASKS_DATA_DIR`, else `~/Library/Application Support/Tasks`) and the fence round the live data |
 | `task_config` | the settings: `<data dir>/tasks.ini`, one registry of keys and defaults |
-| `task_app` | `TaskApp` (the open database + the event bus) |
+| `task_app` | `TaskApp` (the open database + the event bus) and the outside-change watch |
 | `task_loop` | timers, main-queue hand-back, background work, on libdispatch |
 | `task_dates` | local-day arithmetic, due-date formats and parsers, `task_due_urgency` |
-| `db` | SQLite schema v12 and all CRUD (unchanged apart from the path policy) |
+| `db` | Tasks' queries over the shared database; the schema, stamps, WAL, path and backups are the shared module's (`shared_db.h`, from `../shared_data`) |
 | `search` | the search box's query language (unchanged) |
 | `recur` | recurrence arithmetic and the deadline-armed pass |
-| `backup` | rotating backups on a background job |
+| `backup` | backups through the shared module, on a background job; policy in `shared_settings` |
 | `task_worker` | the scheduler the recurrence pass and the backup are registered with |
 | `task_view`, `core_views` | the registry of sidebar views (Favorites, All Tasks, 3-Day Forecast) |
 | `task_ops` | move-to-list, clear-completed |
@@ -109,7 +111,9 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
   `TaskApp`, its database connection, `task_config`, `task_dates` (its
   timezone cache), every AppKit object.
 - A SQLite connection never crosses threads.  Background work that needs the
-  database opens its own (`task_db_open`), as the backup does.
+  database opens its own (`task_db_open`), as the backup does.  Its commits
+  bump `data_version` for the main connection, so they reach the windows
+  through the outside-change watch (§4) like any other app's.
 - Background C work: `task_loop_background(fn, ctx)`; it hands its result back
   with `task_loop_main_async(fn, ctx)`.  It must copy every setting it needs
   BEFORE it starts (see `task_backup_start`).
@@ -134,6 +138,20 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 | `task_app_notify_changed` | structure changed: refresh sidebar + task pane + open editors | list/group commands, the recurrence pass |
 | `task_app_notify_tasks` | tasks changed, sidebar cannot have: task pane only | editor saves, subtask/attachment edits, Settings changes that alter what rows show |
 | `task_app_status(app, fmt, …)` | a one-line message for the status bar | anyone |
+
+**Outside changes.**  The database is shared with Notes (and with scripts).
+`task_app_check_outside` asks `shared_db_changed` on the main connection and
+fires `task_app_notify_changed` when another connection has committed; it
+runs every second (`task_app_watch_start`) and when the app becomes active.
+The main connection's own writes never count.  The refresh keeps selection
+and scroll where the same tasks remain; an editor with a pending save saves
+it first (only its changed fields) and then reloads.
+
+**Writes name their columns.**  Never write a whole task row back:
+`task_db_task_update(db, before, after)` writes only the editable fields in
+which `after` differs from `before` (the row as loaded), so another app's
+change to a field the user did not touch survives.  The other writers are
+single-purpose setters (`task_db_task_set_status`, …).
 
 The library window is the listener.  It drops its three subscriptions FIRST
 when it shuts down, before the editors close, because a closing editor's final
@@ -254,7 +272,7 @@ One table (`src/commands.m`) drives menu items, toolbar items and validation.
 | Delete Task | shell | ⌘⌫ | |
 | Info… (open editor) | shell | ⌘I | |
 | Clear Completed Tasks | shell | | |
-| Open Database File… | shell | ⌘O | *(not implemented yet)* |
+| Open Database File… | shell | ⌘O | |
 | Find… | shell | ⌘F | |
 | Hide/Show Completed | shell | | |
 | Manual/Automatic Sorting | shell | | |
@@ -446,11 +464,12 @@ persistence, the teardown order.
 
 Still to do:
 - **Compact mode** (§11) and its floating New/Delete pair.
-- **Open Database File…** (`on_open_db` / `open_db_do` in the reference): pick
-  a `.db`, close editors, open it, re-arm workers with `task_worker_arm_all`,
-  health check, "Set as default?" writes `TASK_CFG_DB_DIR`; on failure reopen
-  the old one.  A path in the live directory is refused by the core — show
-  the message.
+- **Open Database File…** — done: pick a `.db`, verify it read-only (only a
+  stamped shared database passes; an old `tasks.db` is refused in the shared
+  module's words), close editors, open it, re-arm workers, health check,
+  then offer "Make Default", which writes the shared pointer file
+  (`shared_db_set_default_path`) both apps follow — never while
+  `CAMBIO_SHARED_DB` names the file.
 - First-run choice (map D7): today a missing database is simply created in
   the data directory.  Decide with the owner whether the Welcome choice
   (open existing / create new) is wanted.
@@ -507,8 +526,10 @@ delete the task).  After a subtask tick, resync the parent's status control.
 
 Owns: `settings_window.[hm]`.  Reference: `settings_window.c`.
 Appearance, the Database plate, backups (map §3.9).  After a change that
-alters rows call `task_app_notify_tasks`; after a backup setting change call
-`task_backup_auto_start`.  The Kanban shadow needs no call into the board:
+alters rows call `task_app_notify_tasks`.  The backup settings are the
+shared database's (`backup.h`: `task_backup_setting` /
+`task_backup_set_setting` / `task_backup_set_dir`), which Notes follows
+too; the poll reads them afresh, so nothing is re-armed.  The Kanban shadow needs no call into the board:
 the board re-reads `TASK_CFG_KANBAN_SHADOW` on every `show_rows:`.
 Lift into the core: `dir_shares_fate`, `health_stamp`
 (`settings_window.c:120–136, 206–225`).
@@ -637,16 +658,17 @@ screenshots the running app where that permission exists.
   the command table; `task_order_*` (tests only so far).  The no-unused-code
   rule applies again at integration: whatever still has no caller then is
   deleted.
-- **Open Database — accepts any compatible database (owner decision).**  The
-  fence protects the live directory by location; no format stamp is added.
-  The owner intends to open their existing GTK database with this AppKit
-  version, so the only check is `task_switch_check` (readable, not the live
-  directory, not already open).  A database that passes that check is opened
-  without further validation.
+- **Open Database — shared databases only (owner decision, 2026-10-12).**
+  The file Notes and Tasks share carries `application_id` and
+  `user_version` stamps (`shared_db.h`); any other file — the GTK app's or
+  this app's old `tasks.db`, a Notes `notes.db` — is refused untouched.  Old
+  files are converted by `migrate_shared` (`../shared_data/migrate/`).  The
+  location fence round the GTK app's live data stays.
 - **First-run Welcome screen (owner decision).**  When no database is found
   at launch, a modal Welcome alert offers two choices: "Open Existing
-  Database…" (runs a synchronous NSOpenPanel) or "Create New Database"
-  (task_db_open creates the file at the default path).  This prevents users
+  Database…" (runs a synchronous NSOpenPanel; the file chosen becomes the
+  default for both apps) or "Create New Database" (task_db_open creates the
+  shared file at `shared_db_path()`).  This prevents users
   with an existing GTK database from being silently given a second, empty
   one.
 - Not swept: comments inside the carried core files (`db.c`, `recur.c`,

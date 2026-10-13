@@ -23,6 +23,7 @@ xcode-select --install
 | libdispatch, CoreFoundation | timers and background work in the core; the tests' run loop | macOS SDK |
 | GLib 2 (`glib-2.0`; developed with 2.88) | utilities in the core — strings, arrays, key file, dates | MacPorts `glib2` |
 | SQLite 3 (3.35 or later; developed with 3.53) | storage | MacPorts `sqlite3` |
+| `shared_db` (the shared database module: schema, stamps, path, backups, check) | the database Notes and Tasks share | the `shared_data` repository beside this one, compiled in from source (below) |
 | libcurl, Security | the Google Calendar sync's HTTPS calls; the keychain item holding its sign-in | macOS SDK (the system libcurl, which trusts the keychain's certificates) |
 
 ```sh
@@ -35,6 +36,24 @@ installing or upgrading a port, run `make clean && make`.
 
 MacPorts installs `pkg-config` in `/opt/local/bin`; the Makefile finds it
 there when it is not on `PATH`.
+
+### The shared database module
+
+`shared_data/src/shared_db.c` is compiled into the core with this
+project's flags (it becomes `build/shared_db.o`, linked into the app, the
+tests, the seed tool and ui-check), and `shared_data/src` is on the include
+path.  The Makefile takes it from
+
+```make
+SHARED_DATA_DIR ?= $(CURDIR)/../shared_data
+```
+
+so the default layout is the two repositories side by side; point
+`SHARED_DATA_DIR` elsewhere on the command line (`make
+SHARED_DATA_DIR=/path/to/shared_data`).  The build stops with a message when
+`shared_db.c` is not there.  The module is plain C11 and SQLite, the same
+MacPorts SQLite this app links.  After pulling a new `shared_data`, run
+`make clean && make`.
 
 ## Targets
 
@@ -49,8 +68,12 @@ there when it is not on `PATH`.
 | `make clean` | Remove `build/` and the bundle |
 
 `make run`, `make seed`, `make test` and `make ui-check` always set
-`TASKS_DATA_DIR` to a folder under `dev/`, so no development run uses the
-per-user data folder.  `dev/` is gitignored.
+`TASKS_DATA_DIR` to a folder under `dev/` and `CAMBIO_SHARED_DB` to a
+database file inside it (`dev/data/shared_data.db`; each test its own
+scratch file under `dev/test-data`), so no development run uses the
+per-user data folder or the per-user shared database.  `make seed` also
+points the sandbox database's backups at `dev/data/backups`.  `dev/` is
+gitignored.
 
 The build must produce no compiler warnings.  One line of output is not a
 warning: `codesign` prints "replacing existing signature" each time it
@@ -127,16 +150,20 @@ The programs, all linked against the core only (no AppKit), include:
 
 | Program | Covers |
 |---|---|
-| `core_test` | the GTK app's 18 cases: search, recurrence arithmetic, database schema (GLib `g_test`) |
+| `core_test` | the GTK app's cases: search, recurrence arithmetic, opening the shared database and refusing an old v14 file (GLib `g_test`) |
 | `loop_test` | the main-loop service: one-shot and repeating timers, cancellation, background hand-back |
 | `config_test` | the data-folder policy and override, the fence round the GTK app's data, config defaults and write-through |
+| `shared_test` | the shared database: the column-diff update (two connections change different fields and both survive) and its stamping rules; Notes action items (the note lookup, the tombstone, the purge Tasks refuses) |
+| `backup_test` | backups through the shared module: the policy in `shared_settings`, refused destinations, Back Up Now, retention, the periodic poll |
+| `switch_test` | Open Database File: refusals (an old `tasks.db` among them), a switch, Make Default under the sandbox |
 | `rows_test` | the row description (lines, emphasis, notes preview) and the pane collection (filters, status line) |
 | `order_test` | saved orders: key spelling, the permutation, dropping keys |
-| `app_test` | the event bus, due-date urgency, the recurrence pass waking on a main-loop timer |
+| `app_test` | the event bus, the outside-change watch (`data_version`), due-date urgency, the recurrence pass waking on a main-loop timer |
 | `gcal_test` | the calendar sync without the network: every planning rule, reading events and writing request bodies, the sync's tables (dirty check, compare-and-set reschedule, event cache, account), the sign-in's loopback listener |
 
-They work in scratch folders under `dev/test-data` and refuse to run without
-`TASKS_DATA_DIR`.
+They work in scratch folders under `dev/test-data` and refuse to run unless
+`TASKS_DATA_DIR` names the sandbox and `CAMBIO_SHARED_DB` a file inside it
+(`tests/check.h`).
 
 `make ui-check` is the interface's check; see `porting/INTERFACES.md` §9.7.
 
@@ -146,14 +173,15 @@ They work in scratch folders under `dev/test-data` and refuse to run without
 src/
   task_paths.[ch]      data folder; the fence round the GTK app's data
   task_config.[ch]     settings (tasks.ini) and the registry of keys
-  task_app.[ch]        TaskApp: the database handle and the event bus
+  task_app.[ch]        TaskApp: the database handle, the event bus, the outside-change watch
   task_loop.[ch]       timers / main-queue / background work on libdispatch
   task_dates.[ch]      date helpers
-  db.[ch]              SQLite schema and CRUD
+  db.[ch]              Tasks' queries over the shared database (shared_db.h opens it)
   search.[ch]          search query language
   recur.[ch]           recurring tasks
-  backup.[ch]          rotating backups
-  task_worker.[ch]     scheduler for the recurrence pass and backups
+  backup.[ch]          backups through the shared module, on a background thread
+  task_worker.[ch]     scheduler for the recurrence pass and the backup poll
+  task_switch.[ch]     File > Open Database File, Make Default
   task_view.[ch]       registry of sidebar views
   core_views.[ch]      the three built-in views
   task_ops.[ch]        move-to-list, clear-completed
