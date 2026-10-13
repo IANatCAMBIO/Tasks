@@ -1514,6 +1514,53 @@ check_task_list(TaskApp *app, NSString *dir)
         task_free(before);
         task_free(after);
         table.sortDescriptors = @[];
+        settle(0);
+
+        /* An outside change (another connection, as Notes) to a task that
+         * is NOT selected: the pane refreshes and shows it, keeping the
+         * selection and the scroll position. */
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)table.numberOfRows - 1]
+           byExtendingSelection:NO];
+        gint64 target = [list selected_task_ids].firstObject.longLongValue;   /* the last row */
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:1] byExtendingSelection:NO];
+        [table scrollRowToVisible:table.numberOfRows - 1];
+        settle(0);
+        NSArray<NSNumber *> *kept   = [list selected_task_ids];
+        NSPoint              origin = table.enclosingScrollView.contentView.bounds.origin;
+        TaskDatabase *other = task_db_open(shared_db_file(app->db->shared), NULL);
+        Task         *seen  = task_db_task_get(other, target);
+        Task          moved = *seen;
+        moved.title = (gchar *)"Renamed in another app";
+        task_db_task_update(other, seen, &moved);
+        task_db_close(other);
+        check(task_app_check_outside(app), "list: (an outside change is noticed)");
+        settle(0);
+        /* The row text is drawn by its cell (task_list.m), not a text field:
+         * read the cell's `text`. */
+        BOOL (^drawn)(NSView *, NSString *) = ^BOOL(NSView *root, NSString *want) {
+            NSMutableArray<NSView *> *todo = [NSMutableArray arrayWithObject:root];
+            while (todo.count > 0) {
+                NSView *view = todo.lastObject;
+                [todo removeLastObject];
+                if ([view respondsToSelector:NSSelectorFromString(@"text")]) {
+                    id text = [view valueForKey:@"text"];
+                    if ([text isKindOfClass:NSAttributedString.class] &&
+                        [((NSAttributedString *)text).string containsString:want]) return YES;
+                }
+                [todo addObjectsFromArray:view.subviews];
+            }
+            return NO;
+        };
+        check(drawn(table, @"Renamed in another app") &&
+              [[list selected_task_ids] isEqualToArray:kept] &&
+              NSEqualPoints(table.enclosingScrollView.contentView.bounds.origin, origin),
+              "list: an outside change shows up, keeping the selection and the scroll");
+        Task *renamed = task_db_task_get(app->db, target);
+        task_db_task_update(app->db, renamed, seen);
+        task_free(renamed);
+        task_free(seen);
+        [library refresh_tasks];
+        settle(0);
 
         /* Return opens the editor of the one selected task. */
         [table selectRowIndexes:[NSIndexSet indexSetWithIndex:1] byExtendingSelection:NO];
