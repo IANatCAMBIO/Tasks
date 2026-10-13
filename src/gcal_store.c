@@ -148,12 +148,13 @@ gcal_store_calendars(TaskDatabase *db)
 
 /*
  * gcal_store_set_calendars — replace the calendar list, in one
- * transaction.  Documented in gcal_store.h.
+ * transaction (nothing is written when it cannot begin).  Documented in
+ * gcal_store.h.
  */
-void
+gboolean
 gcal_store_set_calendars(TaskDatabase *db, GPtrArray *calendars)
 {
-    gboolean      txn = task_db_transaction_begin(db);
+    if (!task_db_transaction_begin(db)) return FALSE;
     gboolean      ok  = run(db, "DELETE FROM gcal_calendar");
     sqlite3_stmt *st  = prepare(db,
         "INSERT OR REPLACE INTO gcal_calendar (id, summary, color, writable, is_primary) "
@@ -169,17 +170,18 @@ gcal_store_set_calendars(TaskDatabase *db, GPtrArray *calendars)
         sqlite3_reset(st);
     }
     sqlite3_finalize(st);
-    if (txn) task_db_transaction_end(db, ok && st != NULL);
+    return task_db_transaction_end(db, ok && st != NULL);
 }
 
 /*
  * gcal_store_set_events — replace one calendar's cached events, in one
- * transaction.  Documented in gcal_store.h.
+ * transaction (nothing is written when it cannot begin).  Documented in
+ * gcal_store.h.
  */
-void
+gboolean
 gcal_store_set_events(TaskDatabase *db, const gchar *calendar_id, GPtrArray *events)
 {
-    gboolean      txn = task_db_transaction_begin(db);
+    if (!task_db_transaction_begin(db)) return FALSE;
     sqlite3_stmt *del = prepare(db, "DELETE FROM gcal_event WHERE calendar_id = ?");
     sqlite3_stmt *ins = prepare(db,
         "INSERT OR REPLACE INTO gcal_event (calendar_id, event_id, title, start, end, all_day) "
@@ -202,7 +204,7 @@ gcal_store_set_events(TaskDatabase *db, const gchar *calendar_id, GPtrArray *eve
     }
     sqlite3_finalize(del);
     sqlite3_finalize(ins);
-    if (txn) task_db_transaction_end(db, ok);
+    return task_db_transaction_end(db, ok);
 }
 
 /*

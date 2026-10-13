@@ -533,6 +533,29 @@ find_text(NSView *root, NSString *text)
 }
 
 /*
+ * find_button — the first button in a view tree with a given title.
+ *
+ * Inputs:
+ *   root  — where to look
+ *   title — the button's title
+ *
+ * Output:
+ *   the button, or nil.
+ */
+static NSButton *
+find_button(NSView *root, NSString *title)
+{
+    if ([root isKindOfClass:NSButton.class] && [((NSButton *)root).title isEqualToString:title]) {
+        return (NSButton *)root;
+    }
+    for (NSView *child in root.subviews) {
+        NSButton *found = find_button(child, title);
+        if (found) return found;
+    }
+    return nil;
+}
+
+/*
  * content_is — whether a window's content area has a given size.
  *
  * Inputs:
@@ -1964,6 +1987,53 @@ check_editor_window(TaskApp *app, NSString *dir)
         [library close];
     }
 
+    /* A save that fails because another writer holds the file past the
+     * busy timeout loses nothing: the edit stays in the editor, closing
+     * is refused with a notice, and once the file is free the close saves
+     * it.  The holder is a second connection in a write transaction. */
+    @autoreleasepool {
+        GPtrArray *lists = task_db_lists(app->db, FALSE);
+        if (lists->len > 0) {
+            gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+            gint64 id      = task_db_task_create(app->db, list_id, 0, "busy-test");
+
+            tasks_editor_open(app, id);
+            check_spin(0.1);
+            NSWindow *editor_win = nil;
+            for (NSWindow *w in NSApp.windows) {
+                if (w.visible && [w.title isEqualToString:@"busy-test"]) editor_win = w;
+            }
+            NSButton *favorite = find_button(editor_win.contentView, @"Favorite");
+
+            TaskDatabase *holder = task_db_open(shared_db_file(app->db->shared), NULL);
+            check(shared_db_begin(holder->shared, NULL) == 0, "editor: (another writer holds the file)");
+            [favorite performClick:nil];
+            Task *now = task_db_task_get(app->db, id);
+            check(now != NULL && !now->pinned && favorite.state == NSControlStateValueOn &&
+                  [[editor_win.windowController valueForKey:@"save_pending"] boolValue],
+                  "editor: a save that fails keeps the edit, still pending");
+            task_free(now);
+
+            [editor_win performClose:nil];
+            check_spin(0.3);
+            check(editor_win.visible && editor_win.attachedSheet != nil,
+                  "editor: ... closing is refused with a notice while it cannot be saved");
+            if (editor_win.attachedSheet) [editor_win endSheet:editor_win.attachedSheet];
+            check_spin(0.2);
+
+            shared_db_rollback(holder->shared);
+            task_db_close(holder);
+            [editor_win performClose:nil];
+            check_spin(0.2);
+            now = task_db_task_get(app->db, id);
+            check(!editor_win.visible && now != NULL && now->pinned,
+                  "editor: ... and once the file is free, closing saves it");
+            task_free(now);
+            task_db_task_delete(app->db, id);
+        }
+        task_ptr_array_free_lists(lists);
+    }
+
     /* A Notes action item: a note_task row links the task to a note, as
      * Notes writes it.  The editor names the note; a plain task has no
      * such line.  The rows are removed again (dropping the link tombstones
@@ -2024,6 +2094,25 @@ check_editor_window(TaskApp *app, NSString *dir)
 
 
 /*
+ * policy — one backup-policy value as the shared module applies it
+ * (shared_backup_policy_get), as the Settings window shows it.
+ *
+ * Inputs:
+ *   app — the application context
+ *   key — a SHARED_SETTING_BACKUP_* integer key
+ *
+ * Output:
+ *   the value.
+ */
+static int64_t
+policy(TaskApp *app, const char *key)
+{
+    int64_t value = 0;
+    shared_backup_policy_get(app->db->shared, key, &value, NULL);
+    return value;
+}
+
+/*
  * check_settings — drive the Settings window through its own controls:
  * every Appearance box writes its key, Update records a verdict from the
  * background, a number is held to its range, a backup folder the core
@@ -2050,10 +2139,10 @@ check_settings(TaskApp *app, NSString *dir)
     /* The backup policy is the shared database's (backup.h).  It starts
      * switched off here, in the folder the seed chose (beside the sandbox
      * database), whatever an earlier run left, and is put back at the end. */
-    gint64 was_enabled = task_backup_setting(app, SHARED_SETTING_BACKUP_ENABLED);
+    int64_t was_enabled = policy(app, SHARED_SETTING_BACKUP_ENABLED);
     char  *seeded_dir  = NULL;
     shared_settings_get(app->db->shared, SHARED_SETTING_BACKUP_DIR, &seeded_dir, NULL);
-    task_backup_set_setting(app, SHARED_SETTING_BACKUP_ENABLED, 0);
+    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_ENABLED, "0", NULL);
 
     [files createDirectoryAtPath:backups withIntermediateDirectories:YES attributes:nil error:NULL];
     [files createDirectoryAtPath:live withIntermediateDirectories:YES attributes:nil error:NULL];
@@ -2079,10 +2168,7 @@ check_settings(TaskApp *app, NSString *dir)
             return nil;
         };
         NSButton *(^button)(NSString *) = ^NSButton *(NSString *title) {
-            return (NSButton *)find(^BOOL(NSView *view) {
-                return [view isKindOfClass:NSButton.class] &&
-                       [((NSButton *)view).title isEqualToString:title];
-            });
+            return find_button(window.contentView, title);
         };
         NSTextField *(^label)(NSString *) = ^NSTextField *(NSString *prefix) {
             return (NSTextField *)find(^BOOL(NSView *view) {
@@ -2125,9 +2211,9 @@ check_settings(TaskApp *app, NSString *dir)
               "settings: ... and the plate says so");
 
         /* Backups: the switch, then a number held to its range. */
-        gint64 interval = task_backup_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN);
+        int64_t interval = policy(app, SHARED_SETTING_BACKUP_INTERVAL_MIN);
         [button(@"Back up the database automatically") performClick:nil];
-        check(task_backup_setting(app, SHARED_SETTING_BACKUP_ENABLED) == 1 &&
+        check(policy(app, SHARED_SETTING_BACKUP_ENABLED) == 1 &&
               button(@"Back Up Now").enabled,
               "settings: the backup switch writes the shared setting and wakes the controls");
         check(label(@"⚠ alongside the database") != nil,
@@ -2138,8 +2224,8 @@ check_settings(TaskApp *app, NSString *dir)
         });
         interval_field.stringValue = @"99999";
         [interval_field sendAction:interval_field.action to:interval_field.target];
-        check(task_backup_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN) == 10080 &&
-              interval_field.integerValue == 10080,
+        check(policy(app, SHARED_SETTING_BACKUP_INTERVAL_MIN) == SHARED_BACKUP_INTERVAL_MIN_MAX &&
+              interval_field.integerValue == SHARED_BACKUP_INTERVAL_MIN_MAX,
               "settings: a typed interval is held to its range and written");
         interval_field.integerValue = (NSInteger)interval;
         [interval_field sendAction:interval_field.action to:interval_field.target];
@@ -2184,12 +2270,29 @@ check_settings(TaskApp *app, NSString *dir)
               "settings: Back Up Now again makes a second, new backup");
         check(snapshot(window, dir, @"settings-backups"), "settings: snapshot, backups on");
 
+        /* The last failure the module recorded is shown, and a backup that
+         * then succeeds (the module removes the record) takes it away. */
+        SEL refresh = NSSelectorFromString(@"refresh_backup");
+        shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_LAST_ERROR,
+                            "the disk was full", NULL);
+        [NSApp sendAction:refresh to:window.delegate from:nil];
+        check(label(@"Last backup failed: the disk was full") != nil,
+              "settings: the last backup's failure (backup_last_error) is shown");
+        [button(@"Back Up Now") performClick:nil];
+        for (int i = 0; i < 100 && (app->backup_running ||
+                                    label(@"Last backup failed") != nil); i++) {
+            check_spin(0.05);
+        }
+        check(label(@"Last backup failed") == nil,
+              "settings: ... until a backup succeeds");
+
         /* Put the settings back, then close with a probe still in flight. */
         shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_DIR, seeded_dir, NULL);
         [button(@"Back up the database automatically") performClick:nil];
-        check(task_backup_setting(app, SHARED_SETTING_BACKUP_ENABLED) == 0,
+        check(policy(app, SHARED_SETTING_BACKUP_ENABLED) == 0,
               "settings: (backups off again)");
-        task_backup_set_setting(app, SHARED_SETTING_BACKUP_ENABLED, was_enabled);
+        shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_ENABLED,
+                            was_enabled ? "1" : "0", NULL);
         [button(@"Update") performClick:nil];
         [window close];
     }

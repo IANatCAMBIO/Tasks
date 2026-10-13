@@ -3,7 +3,10 @@
  * (task_db_task_update) that keeps two writers from losing each other's
  * changes, and its stamping rules; and Notes action items (a note_task row
  * names the task) — the editor's note lookup, ordinary deletion, and the
- * purge Tasks refuses.
+ * purge Tasks refuses; which outside changes refresh the app (only a
+ * change to Tasks' data, never its own writes); and writes that fail
+ * because another PROCESS holds the file past the busy timeout — they
+ * report it, write nothing, and succeed once the file is free.
  *
  * Two connections to one file stand for Tasks and Notes (or two threads):
  * each loads the row, changes a different field and saves; both changes
@@ -11,9 +14,15 @@
  */
 
 #include "fixture.h"
+#include "gcal_store.h"
 
+#include <spawn.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
+
+extern char **environ;
 
 /*
  * new_task — a fresh task in a fresh list.
@@ -262,19 +271,187 @@ test_note_items(TaskApp *app)
 }
 
 /*
- * main — run the shared-database tests.
+ * other_exec — run SQL on a second connection to the fixture's file, as
+ * another app would.
+ *
+ * Inputs:
+ *   app — the fixture
+ *   sql — the statements
+ */
+static void
+other_exec(TaskApp *app, const char *sql)
+{
+    TaskDatabase *other = task_db_open(shared_db_file(app->db->shared), NULL);
+    sqlite3_exec(shared_db_handle(other->shared), sql, NULL, NULL, NULL);
+    task_db_close(other);
+}
+
+/*
+ * test_refresh_rev — the app refreshes only when Tasks' data changed
+ * elsewhere: a commit to Notes' tables refreshes nothing, its own writes
+ * never count, and an outside change that lands while it writes is not
+ * hidden by that write.
+ *
+ * Inputs:
+ *   app — the fixture
+ */
+static void
+test_refresh_rev(TaskApp *app)
+{
+    gint64 id = new_task(app, "Watched");
+    char   sql[256];
+
+    task_app_check_outside(app);                       /* start from quiet */
+    check(!task_app_check_outside(app), "refresh: nothing changed, nothing refreshes");
+
+    other_exec(app, "INSERT INTO notes (title, created_at, updated_at) VALUES ('N', 0, 0)");
+    check(!task_app_check_outside(app), "refresh: a change to Notes' data alone refreshes nothing");
+
+    snprintf(sql, sizeof sql, "UPDATE tasks SET title = 'Elsewhere' WHERE id = %lld",
+             (long long)id);
+    other_exec(app, sql);
+    check(task_app_check_outside(app), "refresh: a change to Tasks' data refreshes");
+    check(!task_app_check_outside(app), "refresh: ... once");
+
+    task_db_task_set_pinned(app->db, id, TRUE);
+    check(!task_app_check_outside(app), "refresh: the app's own write does not refresh");
+    task_db_task_set_priority(app->db, id, TRUE);
+    other_exec(app, "UPDATE notes SET title = 'N2' WHERE title = 'N'");
+    check(!task_app_check_outside(app),
+          "refresh: ... nor does a later Notes-only change after it");
+
+    other_exec(app, sql);                              /* outside, then own */
+    task_db_task_set_pinned(app->db, id, FALSE);
+    check(task_app_check_outside(app),
+          "refresh: an outside change made just before the app's own write still refreshes");
+}
+
+/* How long the holder process keeps the write lock, in seconds: longer
+ * than the three writes that each wait out the busy timeout.               */
+#define HOLD_SECONDS 17
+
+/*
+ * hold_lock — the holder process (this binary run with --hold): take the
+ * file's write lock with BEGIN IMMEDIATE, say so on stdout, keep it for
+ * `seconds`, then let go.
+ *
+ * Inputs:
+ *   path    — the database file
+ *   seconds — how long to hold it
+ *
+ * Output:
+ *   the process's exit status: 0, or 2 when the lock was not taken.
+ */
+static int
+hold_lock(const char *path, int seconds)
+{
+    shared_db *db = shared_db_open(path, NULL);
+    if (db == NULL || shared_db_begin(db, NULL) != 0) return 2;
+    fputs("held\n", stdout);
+    fflush(stdout);
+    sleep((unsigned)seconds);
+    shared_db_rollback(db);
+    shared_db_close(db);
+    return 0;
+}
+
+/*
+ * test_busy — another process holds the write lock past the busy timeout:
+ * each write reports failure and changes nothing (the editor's column
+ * update, a list toggle's setter, the calendar store's transaction); once
+ * the lock is let go the same writes succeed.
+ *
+ * Inputs:
+ *   app  — the fixture
+ *   self — this binary's path, run again as the holder
+ */
+static void
+test_busy(TaskApp *app, const char *self)
+{
+    gint64 id = new_task(app, "Busy");
+    int    out[2];
+    pid_t  pid  = 0;
+    char   secs[8];
+
+    snprintf(secs, sizeof secs, "%d", HOLD_SECONDS);
+    char *argv[] = { (char *)self, "--hold", (char *)shared_db_file(app->db->shared), secs, NULL };
+    posix_spawn_file_actions_t actions;
+    if (pipe(out) != 0) abort();
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, out[1], STDOUT_FILENO);
+    posix_spawn_file_actions_addclose(&actions, out[0]);
+    int spawned = posix_spawn(&pid, self, &actions, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    close(out[1]);
+    char said[8] = "";
+    check(spawned == 0 && read(out[0], said, 4) == 4 && strncmp(said, "held", 4) == 0,
+          "busy: (another process holds the write lock)");
+    close(out[0]);
+
+    time_t   started = time(NULL);
+    gboolean pinned  = task_db_task_set_pinned(app->db, id, TRUE);
+    check(!pinned && time(NULL) - started >= SHARED_DB_BUSY_TIMEOUT_MS / 1000 - 1,
+          "busy: a toggle's write fails after the busy timeout, and says so");
+
+    Task *before = task_db_task_get(app->db, id);
+    Task  after  = *before;
+    after.title  = "Typed while busy";
+    check(task_db_task_update(app->db, before, &after) < 0,
+          "busy: the editor's update fails, and says so");
+
+    GPtrArray      *cals = g_ptr_array_new();
+    gcal_calendar_t cal  = { "c@x", "Cal", "", TRUE, TRUE };
+    g_ptr_array_add(cals, &cal);
+    check(!gcal_store_set_calendars(app->db, cals),
+          "busy: the calendar store fails its pass when BEGIN fails");
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "busy: (the lock is let go)");
+
+    Task *stored = task_db_task_get(app->db, id);
+    check(stored != NULL && !stored->pinned && strcmp(stored->title, "Busy") == 0,
+          "busy: nothing was written meanwhile");
+    task_free(stored);
+    GPtrArray *none = gcal_store_calendars(app->db);
+    check(none->len == 0, "busy: ... not even part of the calendar list");
+    g_ptr_array_free(none, TRUE);
+
+    check(task_db_task_set_pinned(app->db, id, TRUE) &&
+          task_db_task_update(app->db, before, &after) == 1 &&
+          gcal_store_set_calendars(app->db, cals),
+          "busy: the same writes succeed once the file is free");
+    stored = task_db_task_get(app->db, id);
+    check(stored != NULL && stored->pinned && strcmp(stored->title, "Typed while busy") == 0,
+          "busy: ... and are stored");
+    task_free(stored);
+    task_free(before);
+    g_ptr_array_free(cals, TRUE);
+}
+
+/*
+ * main — run the shared-database tests, or, run with --hold, be the
+ * process that holds the write lock for test_busy.
+ *
+ * Inputs:
+ *   argc, argv — none normally; "--hold <path> <seconds>" for the holder
  *
  * Output:
  *   0 when every check passed.
  */
 int
-main(void)
+main(int argc, char **argv)
 {
+    if (argc == 4 && strcmp(argv[1], "--hold") == 0)
+        return hold_lock(argv[2], atoi(argv[3]));
+
     TaskApp *app = fixture_open();
 
     test_no_lost_update(app);
     test_stamps(app);
     test_note_items(app);
+    test_refresh_rev(app);
+    test_busy(app, argv[0]);
 
     fixture_close(app);
     return check_result();

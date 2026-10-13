@@ -266,8 +266,15 @@ task_board_drop(TaskApp *app, task_sel_t sel, const task_board_t *board,
     /* The status half, in one transaction.  The database, not the board,
      * says what a task's status is now and whether it still exists: a
      * refresh may be pending. */
-    bool in_txn = task_db_transaction_begin(app->db);
-    for (size_t i = 0; i < n_moving; i++) {
+    if (!task_db_transaction_begin(app->db)) {
+        /* The busy timeout has already been waited out once: no card is
+         * written on its own, each waiting it out again. */
+        task_app_write_failed(app, "The move");
+        free(alive);
+        return true;
+    }
+    bool ok = true;
+    for (size_t i = 0; ok && i < n_moving; i++) {
         TaskStatus shown_in;
         size_t     index;
         if (!task_board_find(board, moving[i], &shown_in, &index)) continue;
@@ -280,10 +287,14 @@ task_board_drop(TaskApp *app, task_sel_t sel, const task_board_t *board,
 
         alive[n_alive++] = moving[i];
         if (!moves) continue;
-        task_db_task_set_status(app->db, moving[i], lane);
+        ok = task_db_task_set_status(app->db, moving[i], lane);
         if (n_status++ == 0) one_title = board->lanes[shown_in].cards[index]->title;
     }
-    if (in_txn) task_db_transaction_end(app->db, true);
+    if (!task_db_transaction_end(app->db, ok)) {
+        task_app_write_failed(app, "The move");   /* rolled back: nothing moved */
+        free(alive);
+        return true;
+    }
 
     /* The order half: nothing to save when the order shown already is it. */
     size_t   count = 0;

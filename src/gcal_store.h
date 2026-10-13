@@ -83,8 +83,13 @@ GPtrArray *gcal_store_calendars(TaskDatabase *db);
  * Inputs:
  *   db        — the connection
  *   calendars — gcal_calendar_t* elements (borrowed)
+ *
+ * Output:
+ *   TRUE when the new list is committed; FALSE when the transaction could
+ *   not begin (another writer held the file past the busy timeout) or a
+ *   write failed — then nothing changed.
  */
-void gcal_store_set_calendars(TaskDatabase *db, GPtrArray *calendars);
+gboolean gcal_store_set_calendars(TaskDatabase *db, GPtrArray *calendars);
 
 /*
  * gcal_store_set_events — replace one calendar's cached events.
@@ -94,8 +99,11 @@ void gcal_store_set_calendars(TaskDatabase *db, GPtrArray *calendars);
  *   calendar_id — the calendar
  *   events      — gcal_event_t* elements (borrowed); their calendar_id
  *                 is ignored in favour of `calendar_id`
+ *
+ * Output:
+ *   TRUE when committed; FALSE as for gcal_store_set_calendars.
  */
-void gcal_store_set_events(TaskDatabase *db, const gchar *calendar_id, GPtrArray *events);
+gboolean gcal_store_set_events(TaskDatabase *db, const gchar *calendar_id, GPtrArray *events);
 
 /*
  * gcal_store_keep_events — drop the cached events of every calendar not

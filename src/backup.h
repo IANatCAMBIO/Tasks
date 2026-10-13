@@ -8,16 +8,22 @@
  * is due, and it is made once.  The keys are SHARED_SETTING_BACKUP_*:
  *
  *   backup_enabled       1|0, default SHARED_BACKUP_ENABLED_DEFAULT.
- *   backup_dir           destination folder; unset = the module's default
- *                        (`backups` beside the $CAMBIO_SHARED_DB file in a
- *                        sandboxed run, else ~/Library/Application
+ *   backup_dir           destination folder; unset = the module's default:
+ *                        `backups` in the directory of the open database
+ *                        file (for the default file, ~/Library/Application
  *                        Support/camb.io/backups).
  *   backup_interval_min  minutes between backups, default
  *                        SHARED_BACKUP_INTERVAL_MIN_DEFAULT; 0 = only when
  *                        "Back Up Now" is pressed.
  *   backup_keep          files retained, SHARED_BACKUP_KEEP_MIN..MAX.
- *   backup_last_at       when the last backup was made (the module's).
- *   backup_last_error    why the last one failed (the module's).
+ *   backup_last_at       when the last backup was made (written by the
+ *                        module only; nothing in Tasks writes it).
+ *   backup_last_error    why the last one failed (the module's; Settings
+ *                        shows it).
+ *
+ * Settings reads the integers through shared_backup_policy_get and writes
+ * them with shared_settings_set: the defaults and ranges are the module's.
+ * Backup files are named shared_data-YYYYMMDD-HHMMSSZ.db, in UTC.
  *
  * What this module adds is Tasks' part: the background thread (with its
  * OWN connection — a connection never crosses threads — so a slow
@@ -34,40 +40,10 @@
 
 #include "task_app.h"
 
-/* How often the periodic worker asks the module whether a backup is due,
- * in minutes.  The module answers from the policy above, so a change in
- * Settings takes effect at the next poll without re-arming anything.     */
-#define TASK_BACKUP_POLL_MIN 1
-
 /* Completion callback; runs on the main thread.  `message` is a short
  * human-readable outcome (not owned by the callee).                        */
 typedef void (*TaskBackupDoneFn)(TaskApp *app, gboolean ok, const gchar *message,
                                  gpointer user_data);
-
-/* ---------------------------------------------------------------------------
- * task_backup_setting() — one integer of the backup policy, read from
- * shared_settings on the app's connection, with the module's default when
- * it is unset (and backup_keep held to SHARED_BACKUP_KEEP_MIN..MAX).
- *
- * Inputs:
- *   app — the application context, its database open
- *   key — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN, _KEEP or _LAST_AT
- *
- * Output:
- *   the value; the default (0 for LAST_AT) when unset or unreadable.
- * ------------------------------------------------------------------------- */
-gint64 task_backup_setting(TaskApp *app, const gchar *key);
-
-/* ---------------------------------------------------------------------------
- * task_backup_set_setting() — write one integer of the backup policy to
- * shared_settings (a failure is logged).  Both apps read it from there.
- *
- * Inputs:
- *   app   — the application context, its database open
- *   key   — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN or _KEEP
- *   value — the new value
- * ------------------------------------------------------------------------- */
-void task_backup_set_setting(TaskApp *app, const gchar *key, gint64 value);
 
 /* ---------------------------------------------------------------------------
  * task_backup_dir() — where backups go: shared_db_backup_dir (the
@@ -88,8 +64,9 @@ char *task_backup_dir(TaskApp *app, char **why);
 
 /* ---------------------------------------------------------------------------
  * task_backup_set_dir() — make `dir` the backup destination, if it can be:
- * an absolute path to a writable folder, outside the live data.  A folder
- * that is refused is not stored.
+ * Tasks refuses a folder inside the GTK app's live data; every other check
+ * (absolute, an existing folder, writable) is shared_db_set_backup_dir's.
+ * A folder that is refused is not stored.
  *
  * Inputs:
  *   app — the application context, its database open
@@ -113,7 +90,7 @@ void task_backup_start(TaskApp *app, TaskBackupDoneFn done, gpointer user_data);
 
 /* ---------------------------------------------------------------------------
  * task_backup_init() — register the periodic worker with the shared
- * scheduler (task_worker.h): every TASK_BACKUP_POLL_MIN minutes, and once
+ * scheduler (task_worker.h): every SHARED_BACKUP_POLL_MIN minutes, and once
  * when armed, a worker thread runs shared_db_backup_if_due, which makes a
  * backup only when the shared policy says one is due and claims it so that
  * a second app polling at once does not make another.  A poll that finds

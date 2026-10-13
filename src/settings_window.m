@@ -40,10 +40,9 @@ static const CGFloat plate_part_gap = 5.0;  /* between the parts of one value:
 static const NSUInteger sha_head = 8;
 static const NSUInteger sha_tail = 4;
 
-/* The backup schedule's controls.  The interval is in minutes, 0 meaning
- * "only when Back Up Now is pressed"; a week is the longest offered. */
-static const NSInteger backup_interval_max  = 10080;
-static const NSInteger backup_interval_step = 15;
+/* The backup schedule's interval field.  The interval is in minutes, 0
+ * meaning "only when Back Up Now is pressed"; its range and step are the
+ * shared module's (SHARED_BACKUP_INTERVAL_MIN_MAX / _STEP). */
 static const CGFloat   interval_field_w     = 56.0;  /* five digits  */
 /* The calendar sync's interval: up to a day, a minute at a time. */
 static const NSInteger gcal_interval_max    = 1440;
@@ -361,6 +360,9 @@ isFlipped
 @property (nonatomic, strong) NSTextField *folder_label; /* "Backing up to <folder>"      */
 @property (nonatomic, strong) NSTextField *fate_label;   /* the "alongside the database"
                                                           * warning; hidden otherwise     */
+@property (nonatomic, strong) NSTextField *error_label;  /* backup_last_error: why the last
+                                                          * backup failed; hidden when it
+                                                          * did not                       */
 @property (nonatomic, strong) NSButton *choose_button;
 @property (nonatomic, strong) NSButton *backup_button;
 @property (nonatomic, strong) NSTextField *backup_status; /* the last Back Up Now's outcome;
@@ -389,6 +391,7 @@ isFlipped
  * definitions; documented where they are defined. */
 - (void)show_probe:(const task_health_probe_t *)probe;
 - (void)show_backup_status:(NSString *)text;
+- (void)refresh_backup;
 - (void)queue_gcal_refresh;
 @end
 
@@ -477,6 +480,7 @@ on_backup_done(TaskApp *app, gboolean ok, const gchar *message, gpointer data)
     NSString *text = message != NULL ? tasks_string(message)
                    : ok              ? @"Backed up" : @"Backup failed";
 
+    [settings_window refresh_backup];
     [settings_window show_backup_status:text];
 }
 
@@ -651,7 +655,8 @@ database_rows
 schedule_row
 {
     self.interval_field   = number_field(interval_field_w, self, @selector(interval_changed:));
-    self.interval_stepper = number_stepper(0, backup_interval_max, backup_interval_step,
+    self.interval_stepper = number_stepper(0, SHARED_BACKUP_INTERVAL_MIN_MAX,
+                                           SHARED_BACKUP_INTERVAL_MIN_STEP,
                                            self, @selector(interval_changed:));
     self.keep_field       = number_field(keep_field_w, self, @selector(keep_changed:));
     self.keep_stepper     = number_stepper(SHARED_BACKUP_KEEP_MIN, SHARED_BACKUP_KEEP_MAX, 1,
@@ -664,10 +669,10 @@ schedule_row
         @"How many backup files to retain. The oldest are removed once a new backup has been "
         @"verified, never before.";
 
-    [self show_number:(NSInteger)task_backup_setting(self.app, SHARED_SETTING_BACKUP_INTERVAL_MIN)
+    [self show_number:[self policy:SHARED_SETTING_BACKUP_INTERVAL_MIN]
                 field:self.interval_field
               stepper:self.interval_stepper];
-    [self show_number:(NSInteger)task_backup_setting(self.app, SHARED_SETTING_BACKUP_KEEP)
+    [self show_number:[self policy:SHARED_SETTING_BACKUP_KEEP]
                 field:self.keep_field
               stepper:self.keep_stepper];
 
@@ -686,7 +691,7 @@ schedule_row
 /*
  * backup_rows — the Backups section: the master switch, the schedule it
  * turns on, where the copies land (with the warning when that is beside
- * the database), the two buttons that answer that line, and the outcome of
+ * the database), why the last backup failed when it did, the two buttons that answer that line, and the outcome of
  * the last Back Up Now.
  *
  * Output:
@@ -710,6 +715,7 @@ backup_rows
     self.folder_label  = wrapping_label(dim, text_w);
     self.fate_label    = wrapping_label(dim, text_w);
     self.backup_status = wrapping_label(dim, text_w);
+    self.error_label   = wrapping_label(NSColor.systemRedColor, text_w);
     self.fate_label.stringValue = @"⚠ alongside the database — change it to survive "
                                   @"losing that folder";
     self.backup_status.hidden   = YES;
@@ -722,7 +728,7 @@ backup_rows
                                             action:@selector(back_up_now:)];
 
     return @[section_label(@"Backups"), self.backup_box, [self schedule_row],
-             self.folder_label, self.fate_label,
+             self.folder_label, self.fate_label, self.error_label,
              button_row(@[self.choose_button, self.backup_button]), self.backup_status];
 }
 
@@ -1458,7 +1464,7 @@ show_number:(NSInteger)value field:(NSTextField *)field stepper:(NSStepper *)ste
 - (void)
 refresh_backup
 {
-    BOOL on = task_backup_setting(self.app, SHARED_SETTING_BACKUP_ENABLED) != 0;
+    BOOL on = [self policy:SHARED_SETTING_BACKUP_ENABLED] != 0;
 
     self.backup_box.state         = on ? NSControlStateValueOn : NSControlStateValueOff;
     self.interval_field.enabled   = on;
@@ -1479,6 +1485,51 @@ refresh_backup
                              !task_path_shares_fate(dir, db_dir.fileSystemRepresentation);
     free(dir);
     free(why);
+
+    char *failure = NULL;
+    shared_settings_get(self.app->db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, &failure, NULL);
+    self.error_label.hidden      = failure == NULL || failure[0] == '\0';
+    self.error_label.stringValue = self.error_label.hidden
+        ? @"" : [NSString stringWithFormat:@"Last backup failed: %@", tasks_string(failure)];
+    free(failure);
+}
+
+/*
+ * policy: — one backup-policy value as the shared module applies it
+ * (shared_backup_policy_get: the stored value, else its default, held to
+ * its range), so the window shows exactly what the backups obey.
+ *
+ * Inputs:
+ *   key — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN or _KEEP
+ *
+ * Output:
+ *   the value (the module's default when it cannot be read).
+ */
+- (NSInteger)
+policy:(const char *)key
+{
+    int64_t value = 0;
+    shared_backup_policy_get(self.app->db->shared, key, &value, NULL);
+    return (NSInteger)value;
+}
+
+/*
+ * store_policy:value: — write one backup-policy value to shared_settings,
+ * where both apps read it; a write that fails is said under the buttons.
+ *
+ * Inputs:
+ *   key   — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN or _KEEP
+ *   value — the new value
+ */
+- (void)
+store_policy:(const char *)key value:(NSInteger)value
+{
+    char *why = NULL;
+    if (shared_settings_set(self.app->db->shared, key, @(value).stringValue.UTF8String,
+                            &why) != 0)
+        [self show_backup_status:[NSString stringWithFormat:@"The setting was not saved: %@",
+                                  tasks_string(why)]];
+    free(why);
 }
 
 /*
@@ -1492,8 +1543,7 @@ refresh_backup
 - (void)
 toggle_backup:(NSButton *)sender
 {
-    task_backup_set_setting(self.app, SHARED_SETTING_BACKUP_ENABLED,
-                            sender.state == NSControlStateValueOn);
+    [self store_policy:SHARED_SETTING_BACKUP_ENABLED value:sender.state == NSControlStateValueOn];
     [self refresh_backup];
 }
 
@@ -1513,8 +1563,8 @@ interval_changed:(NSControl *)sender
 
     /* Leaving the field without changing it also lands here, and need not
      * write the database. */
-    if (minutes == task_backup_setting(self.app, SHARED_SETTING_BACKUP_INTERVAL_MIN)) return;
-    task_backup_set_setting(self.app, SHARED_SETTING_BACKUP_INTERVAL_MIN, minutes);
+    if (minutes == [self policy:SHARED_SETTING_BACKUP_INTERVAL_MIN]) return;
+    [self store_policy:SHARED_SETTING_BACKUP_INTERVAL_MIN value:minutes];
 }
 
 /*
@@ -1531,8 +1581,8 @@ keep_changed:(NSControl *)sender
                                  field:self.keep_field
                                stepper:self.keep_stepper];
 
-    if (keep == task_backup_setting(self.app, SHARED_SETTING_BACKUP_KEEP)) return;
-    task_backup_set_setting(self.app, SHARED_SETTING_BACKUP_KEEP, keep);
+    if (keep == [self policy:SHARED_SETTING_BACKUP_KEEP]) return;
+    [self store_policy:SHARED_SETTING_BACKUP_KEEP value:keep];
 }
 
 /*

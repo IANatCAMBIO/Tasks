@@ -162,7 +162,10 @@ int64_t *task_board_reorder(const task_board_t *board, const int64_t *moving,
  * lane are not touched.  The new order is saved when it differs from the
  * one shown, unless the lane is Done or `save_order` is false.  The
  * message — "“Title” — In Progress", or "3 tasks — Done" — reports the
- * status changes; a pure reorder says nothing.
+ * status changes; a pure reorder says nothing.  The status changes are one
+ * transaction: when it cannot be written (another writer held the file
+ * past the busy timeout) nothing moves, the order is not saved, and
+ * task_app_write_failed says so and refreshes to the stored state.
  *
  * Inputs:
  *   app        — the application context (database open)
@@ -177,9 +180,9 @@ int64_t *task_board_reorder(const task_board_t *board, const int64_t *moving,
  *                would discard the place of every hidden card
  *
  * Output:
- *   true when anything changed — the caller refreshes, and moves its
- *   selection to the dropped cards; false when the drop was a no-op
- *   (nothing was written).
+ *   true when anything changed, or a write failed — the caller refreshes,
+ *   and moves its selection to the dropped cards; false when the drop was
+ *   a no-op (nothing was written).
  */
 bool task_board_drop(TaskApp *app, task_sel_t sel, const task_board_t *board,
                      const int64_t *moving, size_t n_moving, TaskStatus lane,

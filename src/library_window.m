@@ -1315,7 +1315,7 @@ clear_completed
 /*
  * set_flag:on: — apply one of the context menu's flags to every selected
  * task, then refresh everything (the Favorites row and the sort order can
- * both change) and say what was done.
+ * both change) and say what was done — or that it was not saved.
  *
  * Inputs:
  *   command — TasksCommandMarkDone, TasksCommandSetPinned or
@@ -1327,23 +1327,31 @@ clear_completed
 - (void)
 set_flag:(TasksCommand)command on:(BOOL)on
 {
-    NSArray<NSNumber *> *ids = [self selected_task_ids];
+    NSArray<NSNumber *> *ids    = [self selected_task_ids];
+    unsigned long        failed = 0;
 
     for (NSNumber *task_id in ids) {
-        int64_t id = task_id.longLongValue;
+        int64_t  id = task_id.longLongValue;
+        gboolean ok;
         if (command == TasksCommandMarkDone) {
-            task_db_task_set_status(self.app->db, id,
-                                    on ? TASK_STATUS_DONE : TASK_STATUS_IN_PROGRESS);
+            ok = task_db_task_set_status(self.app->db, id,
+                                         on ? TASK_STATUS_DONE : TASK_STATUS_IN_PROGRESS);
         } else if (command == TasksCommandSetPinned) {
-            task_db_task_set_pinned(self.app->db, id, on);
+            ok = task_db_task_set_pinned(self.app->db, id, on);
         } else {
-            task_db_task_set_priority(self.app->db, id, on);
+            ok = task_db_task_set_priority(self.app->db, id, on);
         }
+        if (!ok) failed++;
     }
     [self full_refresh];
 
     unsigned long count = (unsigned long)ids.count;
-    if (command == TasksCommandMarkDone) {
+    if (failed > 0) {
+        /* Refreshes again, to what the database holds. */
+        gchar *what = g_strdup_printf("The change to %lu task%s", failed, plural(failed));
+        task_app_write_failed(self.app, what);
+        g_free(what);
+    } else if (command == TasksCommandMarkDone) {
         task_app_status(self.app, "Marked %lu task%s %s", count, plural(count),
                         on ? "complete" : "incomplete");
     } else if (command == TasksCommandSetPinned) {

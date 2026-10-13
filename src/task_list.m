@@ -1407,7 +1407,14 @@ done_clicked:(NSButton *)sender
     int64_t           task_id = old->id;
     BOOL              done    = old->status != TASK_STATUS_DONE;
 
-    task_db_task_set_status(library.app->db, task_id, task_status_apply_done(old->status, done));
+    if (!task_db_task_set_status(library.app->db, task_id,
+                                 task_status_apply_done(old->status, done))) {
+        /* The full refresh this fires puts the box back as stored. */
+        gchar *what = g_strdup_printf("The status of \xe2\x80\x9c%s\xe2\x80\x9d", old->title);
+        task_app_write_failed(library.app, what);
+        g_free(what);
+        return;
+    }
     if (done) {
         task_app_status(library.app, "\xe2\x80\x9c%s\xe2\x80\x9d \xe2\x80\x94 Completed", old->title);
     }

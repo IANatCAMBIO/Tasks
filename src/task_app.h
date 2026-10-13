@@ -51,9 +51,6 @@ typedef struct TaskApp {
     guint         watch_timer;
 } TaskApp;
 
-/* How often the outside-change watch asks the database, in seconds.        */
-#define TASK_APP_WATCH_SECONDS 1.0
-
 /*
  * task_app_new — allocate an empty context (no database, no listeners).
  *
@@ -83,6 +80,25 @@ void task_app_free(TaskApp *app);
  */
 void task_app_status(TaskApp *app, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 
+/* Why a write was not saved, in the user's words: the one text every
+ * failed-write message gives (task_app_write_failed, the editor's notice). */
+#define TASK_APP_WRITE_FAILED_REASON \
+    "the database could not be written: another app or script held it " \
+    "for too long, or the disk failed"
+
+/*
+ * task_app_write_failed — a write made for the user did not reach the
+ * database (a db.h writer returned FALSE): say so in the status bar and
+ * fire the FULL refresh, so every pane shows what the database really
+ * holds rather than the change that was not saved.
+ *
+ * Inputs:
+ *   app  — the context; NULL is ignored
+ *   what — what was not saved, as a sentence subject ("The status of
+ *          “Call Bob”", "3 tasks")
+ */
+void task_app_write_failed(TaskApp *app, const gchar *what);
+
 /*
  * task_app_notify_changed — fire the FULL refresh event.  For structural
  * changes.  Safe with no listeners.
@@ -103,12 +119,14 @@ void task_app_notify_changed(TaskApp *app);
 void task_app_notify_tasks(TaskApp *app);
 
 /*
- * task_app_check_outside — has the database been changed by ANOTHER
+ * task_app_check_outside — has Tasks' data been changed by ANOTHER
  * connection since the last look (Notes, a script, this app's own
- * background threads — shared_db_changed on the main connection)?  When
- * it has, fire the FULL refresh event, so every pane and editor re-reads
- * it.  This connection's own writes never count, so the app's ordinary
- * edits cause no second refresh.
+ * background threads — task_db_outside_change on the main connection)?
+ * When it has, fire the FULL refresh event, so every pane and editor
+ * re-reads it (each keeps its selection and scroll).  A commit that
+ * touched only Notes' data refreshes nothing, and this connection's own
+ * writes never count, so the app's ordinary edits cause no second
+ * refresh.
  *
  * Inputs:
  *   app — the context; NULL or no database open is a no-op
@@ -120,7 +138,7 @@ gboolean task_app_check_outside(TaskApp *app);
 
 /*
  * task_app_watch_start — check for outside changes every
- * TASK_APP_WATCH_SECONDS on the main loop (task_app_check_outside).  The
+ * SHARED_DB_POLL_SECONDS on the main loop (task_app_check_outside).  The
  * app also checks when it becomes active.  Restarting replaces the timer.
  *
  * Inputs:

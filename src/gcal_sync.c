@@ -136,8 +136,12 @@ pick_calendars(pass_job_t *job, GPtrArray *cals, const gchar *primary, GPtrArray
  *   show  — the shown calendars' ids
  *   keep  — out: gcal_remote_t* arrays to free after the push (they own
  *           what ctx->ours points at)
+ *
+ * Output:
+ *   FALSE when the cache could not be written (the error is noted): the
+ *   pass fails rather than pushing from a half-stored pull.
  */
-static void
+static gboolean
 pull(pass_ctx_t *ctx, GPtrArray *show, GPtrArray *keep)
 {
     GPtrArray *wanted = g_ptr_array_new();
@@ -173,11 +177,18 @@ pull(pass_ctx_t *ctx, GPtrArray *show, GPtrArray *keep)
                 g_ptr_array_add(cache, e);
             }
         }
-        if (shown) gcal_store_set_events(ctx->db, cal, cache);
+        gboolean stored = !shown || gcal_store_set_events(ctx->db, cal, cache);
         g_ptr_array_free(cache, TRUE);
+        if (!stored) {
+            note_error(ctx->job, g_strdup("the calendar's events could not be stored "
+                                          "in the database"));
+            g_ptr_array_free(wanted, TRUE);
+            return FALSE;
+        }
     }
     gcal_store_keep_events(ctx->db, show);
     g_ptr_array_free(wanted, TRUE);
+    return TRUE;
 }
 
 /*
@@ -422,8 +433,10 @@ pass_run(void *data)
     GPtrArray *cals = NULL;
     if (gcal_api_calendars(token, &cals, &err) != GCAL_OK) {
         note_error(job, err);
+    } else if (!gcal_store_set_calendars(db, cals)) {
+        note_error(job, g_strdup("the calendar list could not be stored in the database"));
+        g_ptr_array_free(cals, TRUE);
     } else {
-        gcal_store_set_calendars(db, cals);
 
         const gchar *primary = "primary";
         pass_ctx_t   ctx     = { job, db, token, NULL,
@@ -445,8 +458,7 @@ pass_run(void *data)
         GPtrArray *show = g_ptr_array_new();
         GPtrArray *keep = g_ptr_array_new_with_free_func((GDestroyNotify)g_ptr_array_unref);
         ctx.push_id = pick_calendars(job, cals, primary, show);
-        pull(&ctx, show, keep);
-        push(&ctx);
+        if (pull(&ctx, show, keep)) push(&ctx);
 
         g_ptr_array_free(keep, TRUE);
         g_ptr_array_free(show, TRUE);

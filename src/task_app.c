@@ -208,6 +208,18 @@ task_app_status(TaskApp *app, const gchar *fmt, ...)
 }
 
 /*
+ * task_app_write_failed — report a write that failed, then refresh.
+ * Inputs are documented in task_app.h.
+ */
+void
+task_app_write_failed(TaskApp *app, const gchar *what)
+{
+    if (app == NULL) return;
+    task_app_status(app, "%s was not saved: " TASK_APP_WRITE_FAILED_REASON, what);
+    task_app_notify_changed(app);
+}
+
+/*
  * task_app_notify_changed — fire the full-refresh event.
  * Inputs are documented in task_app.h.
  */
@@ -237,7 +249,7 @@ gboolean
 task_app_check_outside(TaskApp *app)
 {
     if (app == NULL || app->db == NULL) return FALSE;
-    if (shared_db_changed(app->db->shared) != 1) return FALSE;
+    if (!task_db_outside_change(app->db)) return FALSE;
 
     task_app_notify_changed(app);
     return TRUE;
@@ -263,7 +275,7 @@ void
 task_app_watch_start(TaskApp *app)
 {
     task_app_watch_stop(app);
-    app->watch_timer = task_loop_timer_every(TASK_APP_WATCH_SECONDS, watch_tick, app, NULL);
+    app->watch_timer = task_loop_timer_every(SHARED_DB_POLL_SECONDS, watch_tick, app, NULL);
 }
 
 /*

@@ -73,22 +73,29 @@ typedef struct {
      * the connection and deliberately never written down — see
      * task_db_health_check.                                               */
     TaskDbHealth health;
+    /* The 'tasks' change revision (shared_db_rev) of the data this
+     * connection's app last loaded or wrote; -1 when unknown.  Kept by
+     * task_db_outside_change and by every commit of this connection.      */
+    int64_t      tasks_rev;
+    /* Another connection committed while this one was committing, so that
+     * change is still to be looked at by task_db_outside_change.          */
+    gboolean     outside_pending;
 } TaskDatabase;
 
 /* ---------------------------------------------------------------------------
  * TaskStatus — a task's progress, and the ONLY completion state stored.
- * The values are the on-disk encoding of tasks.status, so they must not
- * be renumbered; New is 0 so a freshly INSERTed row needs no explicit
- * value.
+ * The values are the on-disk encoding of tasks.status, defined once for
+ * both apps by the shared module (SHARED_DB_TASK_STATUS_*, shared_db.h);
+ * New is 0 so a freshly INSERTed row needs no explicit value.
  *
  * DONE is exactly the old boolean `done`: it strikes the title through,
  * hides the row under the completed-visibility toggle, stamps
  * completed_at.  NEW and IN_PROGRESS are both "not done".
  * ------------------------------------------------------------------------- */
 typedef enum {
-    TASK_STATUS_NEW         = 0,
-    TASK_STATUS_IN_PROGRESS = 1,
-    TASK_STATUS_DONE        = 2
+    TASK_STATUS_NEW         = SHARED_DB_TASK_STATUS_NEW,
+    TASK_STATUS_IN_PROGRESS = SHARED_DB_TASK_STATUS_IN_PROGRESS,
+    TASK_STATUS_DONE        = SHARED_DB_TASK_STATUS_DONE
 } TaskStatus;
 
 /* Number of values, for the editor's dropdown and bounds checks.           */
@@ -237,10 +244,11 @@ void task_free(Task *t);
 
 /* ---------------------------------------------------------------------------
  * task_db_open() — open a connection to the shared database at `path`
- * (shared_db_open: a missing or empty file gets the shared schema; any file
- * that is not a stamped shared database — an old tasks.db, a Notes
- * notes.db — is refused untouched, as is one on a network volume or in a
- * cloud-synced folder).  The path to open is shared_db_path().  Returns
+ * (shared_db_open: a missing file is created complete, in one step; any
+ * file that is not a stamped shared database — an empty one, an old
+ * tasks.db, a Notes notes.db — is refused untouched, as is one on a
+ * network volume or in a cloud-synced folder).  Nothing in Tasks creates
+ * a file at the path first.  The path to open is shared_db_path().  Returns
  * the handle, or NULL with `err` set to the module's own words.
  *
  * A path inside the GTK app's live data directory (task_paths.h) is
@@ -251,6 +259,25 @@ TaskDatabase *task_db_open(const gchar *path, GError **err);
 
 /* task_db_close() — close the connection and free the handle.  NULL-safe.  */
 void task_db_close(TaskDatabase *db);
+
+/* ---------------------------------------------------------------------------
+ * task_db_outside_change() — has ANOTHER connection (Notes, a script, this
+ * app's own worker threads) changed Tasks' data since the last look?
+ * Asks shared_db_changed first (cheap), then, only when something was
+ * committed, compares the 'tasks' change revision (shared_db_rev,
+ * SHARED_DB_REV_TASKS) with the one remembered on `db`: a commit that
+ * touched only Notes' tables or the shared settings is not a change to
+ * Tasks' data.  This connection's own commits move the remembered
+ * revision with them, so they never count.
+ *
+ * Inputs:
+ *   db — the app's main connection
+ *
+ * Output:
+ *   TRUE when Tasks' data changed elsewhere (the caller refreshes); FALSE
+ *   otherwise.  A revision that cannot be read answers TRUE.
+ * ------------------------------------------------------------------------- */
+gboolean task_db_outside_change(TaskDatabase *db);
 
 /* ---------------------------------------------------------------------------
  * task_db_verify_file() — is the database at `path` structurally sound?
@@ -337,6 +364,13 @@ gchar *task_db_file_sha256(const gchar *path);
 
 /* --------------------------------- lists --------------------------------- */
 
+/* Every write below that returns gboolean returns TRUE when its change was
+ * committed and FALSE when it was not (logged): above all when another
+ * writer held the file past the busy timeout (SHARED_DB_BUSY_TIMEOUT_MS).
+ * A caller acting for the user must not let such a failure pass silently:
+ * the editor keeps its edit and retries, the list and board toggles say so
+ * and show the database's true state.                                     */
+
 /* All lists — alphabetical (case-insensitive) by DEFAULT; once the user
  * drag-reorders the sidebar (sync_state "lists_custom_order" set by
  * task_db_lists_reorder) the stored positions rule, name-tiebroken.
@@ -349,7 +383,7 @@ GPtrArray *task_db_lists(TaskDatabase *db, gboolean include_deleted);
  * (one transaction) and switch task_db_lists to custom-order mode.  The
  * order is local-only — Google tasklists have no ordering — so rows are
  * NOT dirtied for sync.                                                    */
-void task_db_lists_reorder(TaskDatabase *db, const gint64 *ids, gsize n);
+gboolean task_db_lists_reorder(TaskDatabase *db, const gint64 *ids, gsize n);
 
 TaskList  *task_db_list_get(TaskDatabase *db, gint64 id);
 
@@ -360,12 +394,12 @@ gint64   task_db_list_create(TaskDatabase *db, const gchar *name,
 
 /* Update a list's name + emoji (stamps updated_at; a changed name syncs
  * to Google, the emoji never does).                                        */
-void     task_db_list_update(TaskDatabase *db, gint64 id, const gchar *name,
+gboolean task_db_list_update(TaskDatabase *db, gint64 id, const gchar *name,
                              const gchar *emoji);
 
 /* Tombstone the list AND every task in it (they must disappear from the
  * remote side too).                                                        */
-void     task_db_list_delete(TaskDatabase *db, gint64 id);
+gboolean task_db_list_delete(TaskDatabase *db, gint64 id);
 
 /* --------------------------------- tasks --------------------------------- */
 
@@ -447,9 +481,9 @@ Task *task_dup(const Task *t);
  * and dirties the row — including New ↔ In Progress, which neither
  * Google nor Notes can represent.  `pinned` and `priority` are
  * LOCAL-ONLY and never stamp (see the .c banners).                         */
-void task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status);
-void task_db_task_set_pinned(TaskDatabase *db, gint64 id, gboolean pinned);
-void task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority);
+gboolean task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status);
+gboolean task_db_task_set_pinned(TaskDatabase *db, gint64 id, gboolean pinned);
+gboolean task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority);
 
 /* ---------------------------------------------------------------------------
  * The recurrence pass's two write paths (see recur.h for the rule; these
@@ -474,14 +508,14 @@ void task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority);
  * occurrence that changed nothing, must not dirty the row for sync.
  * ------------------------------------------------------------------------- */
 GPtrArray *task_db_tasks_recurring(TaskDatabase *db);
-void task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
+gboolean task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
                               gint due_time, gint64 next);
-void task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next);
+gboolean task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next);
 
 /* Set or clear a task's day-planner schedule.  Both fields are
  * LOCAL-ONLY and do NOT stamp updated_at.  Pass start_unix = 0 to
  * remove the schedule.                                                    */
-void task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
+gboolean task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
                                 gint64 start_unix, gint duration_min);
 
 /* Tasks scheduled within a local day, [lo, hi) in unix seconds (the
@@ -491,7 +525,7 @@ void task_db_task_set_scheduled(TaskDatabase *db, gint64 id,
 GPtrArray *task_db_tasks_scheduled_for_day(TaskDatabase *db, gint64 lo, gint64 hi);
 
 /* Tombstone the task and its subtasks, in one transaction.                */
-void task_db_task_delete(TaskDatabase *db, gint64 id);
+gboolean task_db_task_delete(TaskDatabase *db, gint64 id);
 
 /* Tombstone every completed top-level task of a list and their subtasks,
  * in ONE transaction.  Returns how many top-level tasks went.              */
@@ -502,26 +536,27 @@ guint task_db_tasks_delete_done(TaskDatabase *db, gint64 list_id);
  * five.  begin returns FALSE when the transaction could not start (the
  * writes then run on their own; nothing is lost but the batching); end
  * COMMITs on ok and ROLLS BACK otherwise, and after a failed COMMIT, so
- * the connection is never left inside a transaction.                      */
+ * the connection is never left inside a transaction, and returns TRUE
+ * only when the work was committed.                                      */
 gboolean task_db_transaction_begin(TaskDatabase *db);
-void     task_db_transaction_end(TaskDatabase *db, gboolean ok);
+gboolean task_db_transaction_end(TaskDatabase *db, gboolean ok);
 
 /* Swap the display position of subtask `id` with its neighbor in the
  * current sorted order (direction = -1 up, +1 down).  No-op at the
  * edges or for top-level tasks.  Position is LOCAL-ONLY for ordering —
  * updated_at is not stamped.                                               */
-void task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction);
+gboolean task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction);
 
 /* Move a top-level task (and its subtasks) to another list, appended at
  * the end; stamps updated_at.                                              */
-void task_db_task_move_list(TaskDatabase *db, gint64 id, gint64 dest_list);
+gboolean task_db_task_move_list(TaskDatabase *db, gint64 id, gint64 dest_list);
 
 /* ------------------------------ attachments ------------------------------ */
 
 GPtrArray *task_db_attachments(TaskDatabase *db, gint64 task_id);
 gint64     task_db_attachment_add(TaskDatabase *db, gint64 task_id,
                                   const gchar *path);
-void       task_db_attachment_remove(TaskDatabase *db, gint64 id);
+gboolean   task_db_attachment_remove(TaskDatabase *db, gint64 id);
 
 /* task_id → attachment count for every task, as one query.  Keys/values
  * are packed into the pointers (GINT_TO_POINTER); free with
@@ -574,13 +609,13 @@ TaskGroup *task_db_group_get(TaskDatabase *db, gint64 id);
 gint64    task_db_group_create(TaskDatabase *db, const gchar *name);
 
 /* Delete a group: un-groups all its lists (sets group_id = NULL).          */
-void      task_db_group_delete(TaskDatabase *db, gint64 id);
+gboolean  task_db_group_delete(TaskDatabase *db, gint64 id);
 
 /* Rename a group.                                                          */
-void      task_db_group_rename(TaskDatabase *db, gint64 id, const gchar *name);
+gboolean  task_db_group_rename(TaskDatabase *db, gint64 id, const gchar *name);
 
 /* Move a list into a group (group_id 0 = ungrouped → sets NULL).           */
-void      task_db_list_set_group(TaskDatabase *db, gint64 list_id,
+gboolean  task_db_list_set_group(TaskDatabase *db, gint64 list_id,
                                  gint64 group_id);
 
 #endif /* TASK_DB_H */

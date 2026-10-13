@@ -729,20 +729,24 @@ performDragOperation:(id<NSDraggingInfo>)info
     TaskApp            *app        = library.app;
     NSInteger           offset_min = 0;
     BOOL                promoted   = NO;
+    BOOL                failed     = NO;
     for (NSUInteger i = 0; i < ids.count; i++) {
         int64_t tid = ids[i].longLongValue;
-        task_db_task_set_scheduled(app->db, tid, start + offset_min * 60, 60);
+        failed = !task_db_task_set_scheduled(app->db, tid, start + offset_min * 60, 60) ||
+                 failed;
         offset_min += (NSInteger)snap_minutes;
         if (i >= n_cards) continue;
 
         Task *task = task_db_task_get(app->db, tid);
         if (task != NULL && task->status == TASK_STATUS_NEW) {
-            task_db_task_set_status(app->db, tid, TASK_STATUS_IN_PROGRESS);
+            failed   = !task_db_task_set_status(app->db, tid, TASK_STATUS_IN_PROGRESS) || failed;
             promoted = YES;
         }
         task_free(task);
     }
-    if (promoted) {
+    if (failed) {
+        task_app_write_failed(app, "The schedule");   /* refreshes everything */
+    } else if (promoted) {
         __weak TasksLibraryWindow *weak_library = library;
         dispatch_async(dispatch_get_main_queue(), ^{ [weak_library full_refresh]; });
     } else {
@@ -928,10 +932,9 @@ mouseUp:(NSEvent *)event
         self.resizing = NO;
         for (TasksDayItem *item in self.planner.items) {
             if (!item.is_event && item.task_id == self.resize_id) {
-                task_db_task_set_scheduled(self.planner.library.app->db,
-                                           item.task_id,
-                                           item.start_unix,
-                                           item.duration);
+                if (!task_db_task_set_scheduled(self.planner.library.app->db, item.task_id,
+                                                item.start_unix, item.duration))
+                    task_app_write_failed(self.planner.library.app, "The new length");
                 break;
             }
         }
@@ -944,10 +947,9 @@ mouseUp:(NSEvent *)event
         self.moving = NO;
         for (TasksDayItem *item in self.planner.items) {
             if (!item.is_event && item.task_id == self.move_id) {
-                task_db_task_set_scheduled(self.planner.library.app->db,
-                                           item.task_id,
-                                           item.start_unix,
-                                           item.duration);
+                if (!task_db_task_set_scheduled(self.planner.library.app->db, item.task_id,
+                                                item.start_unix, item.duration))
+                    task_app_write_failed(self.planner.library.app, "The new time");
                 break;
             }
         }
@@ -1651,10 +1653,13 @@ scroll_to_now
 - (void)
 remove_selected_from_schedule:(id)sender
 {
-    NSSet<NSNumber *> *ids = [self.canvas.selected_ids copy];
+    NSSet<NSNumber *> *ids    = [self.canvas.selected_ids copy];
+    BOOL               failed = NO;
     for (NSNumber *tid in ids)
-        task_db_task_set_scheduled(self.library.app->db, tid.longLongValue, 0, 0);
+        failed = !task_db_task_set_scheduled(self.library.app->db, tid.longLongValue, 0, 0) ||
+                 failed;
     [self.canvas.selected_ids removeAllObjects];
+    if (failed) task_app_write_failed(self.library.app, "Removing from the schedule");
     [self reload];
     [self.library refresh_tasks];
     gcal_sync_kick();

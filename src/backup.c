@@ -7,49 +7,9 @@
 #include "task_paths.h"
 #include "task_worker.h"             /* the shared periodic-pass scheduler  */
 #include "db.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
-
-/* ---------------------------------------------------------------------------
- * task_backup_setting() — see backup.h.
- * ------------------------------------------------------------------------- */
-gint64
-task_backup_setting(TaskApp *app, const gchar *key)
-{
-    gint64 def = 0;
-    if (strcmp(key, SHARED_SETTING_BACKUP_ENABLED) == 0)
-        def = SHARED_BACKUP_ENABLED_DEFAULT;
-    else if (strcmp(key, SHARED_SETTING_BACKUP_INTERVAL_MIN) == 0)
-        def = SHARED_BACKUP_INTERVAL_MIN_DEFAULT;
-    else if (strcmp(key, SHARED_SETTING_BACKUP_KEEP) == 0)
-        def = SHARED_BACKUP_KEEP_DEFAULT;
-
-    int64_t value = def;
-    if (shared_settings_get_int(app->db->shared, key, def, &value, NULL) != 0)
-        value = def;
-    if (strcmp(key, SHARED_SETTING_BACKUP_KEEP) == 0)
-        value = CLAMP(value, SHARED_BACKUP_KEEP_MIN, SHARED_BACKUP_KEEP_MAX);
-    return value;
-}
-
-/* ---------------------------------------------------------------------------
- * task_backup_set_setting() — see backup.h.
- * ------------------------------------------------------------------------- */
-void
-task_backup_set_setting(TaskApp *app, const gchar *key, gint64 value)
-{
-    char  text[32];
-    char *why = NULL;
-
-    snprintf(text, sizeof text, "%lld", (long long)value);
-    if (shared_settings_set(app->db->shared, key, text, &why) != 0) {
-        g_warning("backup: cannot store %s: %s", key, why != NULL ? why : "?");
-        free(why);
-    }
-}
 
 /* ---------------------------------------------------------------------------
  * task_backup_dir() — see backup.h.
@@ -82,20 +42,12 @@ gboolean
 task_backup_set_dir(TaskApp *app, const gchar *dir, char **why)
 {
     *why = NULL;
-    if (dir == NULL || dir[0] != '/') {
-        *why = g_strdup("The backup folder must be an absolute path");
-    } else if (task_path_is_live_data(dir)) {
+    if (dir != NULL && task_path_is_live_data(dir)) {
         *why = g_strdup_printf("%s is inside the live Tasks data directory, "
                                "which this app never touches", dir);
-    } else if (!g_file_test(dir, G_FILE_TEST_IS_DIR)) {
-        *why = g_strdup_printf("%s is not a folder", dir);
-    } else if (access(dir, W_OK) != 0) {
-        *why = g_strdup_printf("%s is not writable", dir);
-    } else {
-        return shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_DIR,
-                                   dir, why) == 0;
+        return FALSE;
     }
-    return FALSE;
+    return shared_db_set_backup_dir(app->db->shared, dir, why) == 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -251,7 +203,7 @@ static const TaskWorkerDef backup_worker = {
     .id               = "backup",
     .enabled_key      = NULL,
     .interval_key     = NULL,
-    .period_min       = TASK_BACKUP_POLL_MIN,
+    .period_min       = SHARED_BACKUP_POLL_MIN,
     .initial          = TASK_WORKER_INITIAL_ARMED,
     .running          = NULL,        /* completed by task_backup_init       */
     .timer            = NULL,

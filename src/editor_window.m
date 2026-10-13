@@ -1300,14 +1300,24 @@ form
  * and times keep the loaded value (task_edit_apply), so they write nothing
  * either.  Afterwards the loaded row is what the controls show.
  *
+ * When the write fails (another writer held the file past the busy
+ * timeout) nothing is lost: the edit stays in the controls, save_pending
+ * stays set and the loaded row unchanged, so the next save — the next
+ * debounce, leaving a field, closing the window — tries again; the status
+ * bar says it was not saved.
+ *
  * Does nothing once the editor is closed or its new task was cancelled.
+ *
+ * Output:
+ *   NO when the write failed (the edit is still pending); YES otherwise,
+ *   including when there was nothing to write.
  */
-- (void)
+- (BOOL)
 save_now
 {
     self.save_pending = NO;
     self.save_id++;
-    if (self.is_shut_down || self.discarded || self.loaded == NULL) return;
+    if (self.is_shut_down || self.discarded || self.loaded == NULL) return YES;
 
     /* A copy of the loaded row with the controls' values over it.  The two
      * strings are lent to it for the update, not given. */
@@ -1324,7 +1334,15 @@ save_now
     task_edit_apply(&form, &edited);
     edited.recur_next = self.recur_next;
 
-    if (task_db_task_update(self.app->db, self.loaded, &edited) <= 0) return;
+    gint written = task_db_task_update(self.app->db, self.loaded, &edited);
+    if (written < 0) {
+        self.save_pending = YES;
+        task_app_status(self.app, "Changes to \xe2\x80\x9c%s\xe2\x80\x9d were not saved "
+                        "yet: " TASK_APP_WRITE_FAILED_REASON "; they are kept and saved again "
+                        "with the next change or when the editor closes", edited.title);
+        return NO;
+    }
+    if (written == 0) return YES;
 
     /* A schedule that now fires sooner has to wake the recurrence pass. */
     task_recur_wake_by(self.app, edited.recur_next > 0
@@ -1346,6 +1364,7 @@ save_now
         task_free(fresh);
     }
     task_app_notify_tasks(self.app);
+    return YES;
 }
 
 /*
@@ -1838,8 +1857,12 @@ subtask_ticked:(NSButton *)sender
     BOOL    done       = sender.state == NSControlStateValueOn;
     int64_t subtask_id = ((const Task *)g_ptr_array_index(self.subtasks, (guint)row))->id;
 
-    task_db_task_set_status(self.app->db, subtask_id,
-                            done ? TASK_STATUS_DONE : TASK_STATUS_IN_PROGRESS);
+    if (!task_db_task_set_status(self.app->db, subtask_id,
+                                 done ? TASK_STATUS_DONE : TASK_STATUS_IN_PROGRESS)) {
+        [self reload_subtasks];          /* the box as stored */
+        task_app_write_failed(self.app, "The subtask's status");
+        return;
+    }
     [self reload_subtasks];
     if (done) [self resync_status];
     task_app_notify_tasks(self.app);
@@ -1866,9 +1889,12 @@ save_subtask_title:(NSTextField *)field
      * title column is written, and only when it changed. */
     Task edited  = *stored;
     edited.title = (char *)field.stringValue.UTF8String;
-    if (task_db_task_update(self.app->db, stored, &edited) > 0) {
+    gint written = task_db_task_update(self.app->db, stored, &edited);
+    if (written > 0) {
         [self reload_subtasks];
         task_app_notify_tasks(self.app);
+    } else if (written < 0) {
+        task_app_write_failed(self.app, "The subtask's title");
     }
     task_free(stored);
 }
@@ -2462,8 +2488,10 @@ dismiss
 /* ── Closing ────────────────────────────────────────────────────────── */
 
 /*
- * save_action: — Save, and Return in the title: flush the save and close.
- * The editor may be released by the time this returns.
+ * save_action: — Save, and Return in the title: flush the save and close —
+ * unless the save failed, when the window stays open with the edit in it
+ * and says why (unsaved_notice).  The editor may be released by the time
+ * this returns.
  *
  * Inputs:
  *   sender — the button (unused)
@@ -2471,8 +2499,46 @@ dismiss
 - (void)
 save_action:(id)sender
 {
-    [self save_now];
+    if (![self save_now]) {
+        [self unsaved_notice];
+        return;
+    }
     [self close];
+}
+
+/*
+ * unsaved_notice — tell the user, on this window, that their changes could
+ * not be saved and are still here.
+ */
+- (void)
+unsaved_notice
+{
+    tasks_ui_notice(self.window, @"Your changes could not be saved",
+                    @"The changes are still in this window. Close it, or press Save, to try "
+                    @"again in a moment. (The cause: " TASK_APP_WRITE_FAILED_REASON @".)", nil);
+}
+
+/*
+ * windowShouldClose: — the close button or ⌘W: end the edit in progress and
+ * save it first.  When that save fails the window stays open, with the
+ * edit in it, and says so — closing would lose it.
+ *
+ * Inputs:
+ *   sender — the window (unused)
+ *
+ * Output:
+ *   NO while the edit could not be saved.
+ */
+- (BOOL)
+windowShouldClose:(NSWindow *)sender
+{
+    if (self.discarded || self.is_shut_down) return YES;
+    [self.window makeFirstResponder:nil];
+    if (self.save_pending && ![self save_now]) {
+        [self unsaved_notice];
+        return NO;
+    }
+    return YES;
 }
 
 /*
@@ -2503,7 +2569,9 @@ cancel_action:(id)sender
 /*
  * shut_down — tear the editor down as its window closes: end any edit in
  * progress and flush the pending save (unless the task is being
- * discarded), end a sheet that is still up, and let go of the tables.
+ * discarded; a save that still fails is reported, since a close the app
+ * makes cannot be refused), end a sheet that is still up, and let go of
+ * the tables.
  * Idempotent; nothing is saved after it.
  */
 - (void)
@@ -2516,7 +2584,17 @@ shut_down
          * and flushes a pending save through controlTextDidEndEditing:; the
          * notes have no "end", so their pending save is flushed here. */
         [self.window makeFirstResponder:nil];
-        if (self.save_pending) [self save_now];
+        if (self.save_pending && ![self save_now]) {
+            /* Closed by the app (the library window went, the database
+             * changed), so the window cannot stay: say what was lost,
+             * once the close is over. */
+            NSString *title = self.title_field.stringValue;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                tasks_ui_notice(nil, [NSString stringWithFormat:
+                                      @"Changes to \u201C%@\u201D could not be saved", title],
+                                @"The cause: " TASK_APP_WRITE_FAILED_REASON @".", nil);
+            });
+        }
     }
     self.is_shut_down = YES;
     self.save_pending = NO;
@@ -2613,14 +2691,16 @@ tasks_editor_close(int64_t task_id)
  * tasks_editor_refresh_all — reload every open editor; close those whose
  * task has gone.  An editor with an unsaved edit saves it first: the save
  * writes only the fields the user changed, so the reload then shows those
- * as typed and every other field as the database now has it.
+ * as typed and every other field as the database now has it.  An editor
+ * whose save fails is not reloaded, so its edit is not lost.
  */
 void
 tasks_editor_refresh_all(void)
 {
     /* A copy: closing an editor removes it from the registry. */
     for (TasksEditorWindow *editor in editors().allValues) {
-        if (editor.save_pending) [editor save_now];
+        /* An edit that could not be saved stays on screen as typed. */
+        if (editor.save_pending && ![editor save_now]) continue;
         if (![editor reload]) [editor close];
     }
 }

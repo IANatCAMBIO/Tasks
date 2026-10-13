@@ -12,7 +12,9 @@
 #include "task_switch.h"
 
 #include <string.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 /*
  * write_text — create a small file that is not a database.
@@ -119,6 +121,22 @@ test_refusals(TaskApp *app, const char *scratch)
     check(task_switch_check(app, path, &why) == task_switch_refused && why != NULL,
           "check: a missing file is refused");
     free(why);
+    check(access(path, F_OK) != 0, "check: ... and nothing is created in its place");
+
+    /* An empty file is never a legitimate database (the module creates a
+     * missing one complete, in one step): refused, by the switch and by a
+     * plain open, and left exactly as it was. */
+    snprintf(path, sizeof path, "%s/empty.db", scratch);
+    close(open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644));
+    check(task_switch_check(app, path, &why) == task_switch_refused && why != NULL,
+          "check: an empty file is refused");
+    free(why);
+    GError       *err   = NULL;
+    TaskDatabase *empty = task_db_open(path, &err);
+    struct stat   st;
+    check(empty == NULL && err != NULL && stat(path, &st) == 0 && st.st_size == 0,
+          "open: an empty file is refused and left empty");
+    g_clear_error(&err);
 
     /* A sound database inside the (fake) live directory: only the fence
      * stands between it and being opened. */

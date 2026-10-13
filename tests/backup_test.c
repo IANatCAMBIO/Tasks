@@ -1,11 +1,12 @@
 /*
- * backup_test.c — backups through the shared module (src/backup.h): the
- * policy read from and written to shared_settings, where backups go (by
- * default `backups` beside the CAMBIO_SHARED_DB file, never the per-user
- * folder) and what is refused (the live data), Back Up Now on the
- * background job,
- * the retention the module applies, and the periodic poll that makes a
- * backup only when the shared policy says one is due.
+ * backup_test.c — backups through the shared module (src/backup.h): where
+ * backups go (by default `backups` beside the open database file, never
+ * the per-user folder) and what is refused (the live data — Tasks' own
+ * refusal — and the module's folder checks), Back Up Now on the background
+ * job and the UTC name it writes, the retention the module applies, and
+ * the periodic poll that makes a backup only when the shared policy says
+ * one is due.  The policy's defaults and ranges are the module's
+ * (shared_backup_policy_get) and are tested there.
  *
  * Every pass here runs on the real background job and is waited for with
  * check_spin.  The copy, its verification and the pruning are the shared
@@ -131,43 +132,6 @@ use_folder(TaskApp *app, const char *name, char *buf, size_t size)
 }
 
 /*
- * test_policy — the settings live in shared_settings, with the module's
- * defaults, and the retention count is held to its range.
- *
- * Inputs:
- *   app — the fixture
- */
-static void
-test_policy(TaskApp *app)
-{
-    char *raw = NULL;
-
-    check(task_backup_setting(app, SHARED_SETTING_BACKUP_ENABLED) == SHARED_BACKUP_ENABLED_DEFAULT &&
-          task_backup_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN) ==
-              SHARED_BACKUP_INTERVAL_MIN_DEFAULT &&
-          task_backup_setting(app, SHARED_SETTING_BACKUP_KEEP) == SHARED_BACKUP_KEEP_DEFAULT &&
-          task_backup_setting(app, SHARED_SETTING_BACKUP_LAST_AT) == 0,
-          "policy: unset keys read as the shared module's defaults");
-
-    task_backup_set_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN, 15);
-    check(shared_settings_get(app->db->shared, SHARED_SETTING_BACKUP_INTERVAL_MIN, &raw, NULL) == 1 &&
-          strcmp(raw, "15") == 0,
-          "policy: a setting is written to shared_settings, where Notes reads it");
-    free(raw);
-    check(task_backup_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN) == 15,
-          "policy: ... and reads back");
-
-    task_backup_set_setting(app, SHARED_SETTING_BACKUP_KEEP, 0);
-    check(task_backup_setting(app, SHARED_SETTING_BACKUP_KEEP) == SHARED_BACKUP_KEEP_MIN,
-          "policy: a keep of 0 reads as the floor");
-    task_backup_set_setting(app, SHARED_SETTING_BACKUP_KEEP, 100000);
-    check(task_backup_setting(app, SHARED_SETTING_BACKUP_KEEP) == SHARED_BACKUP_KEEP_MAX,
-          "policy: a huge keep reads as the ceiling");
-    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_KEEP, NULL, NULL);
-    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_INTERVAL_MIN, NULL, NULL);
-}
-
-/*
  * test_destination — where backups go, and what is refused.
  *
  * Inputs:
@@ -272,9 +236,14 @@ test_back_up_now(TaskApp *app)
                   strlen("Backed up to " SHARED_DB_BACKUP_PREFIX)) == 0 &&
           strcmp(last_status, seen.message) == 0,
           "now: the message names the file, in the status bar too");
+    const char *name = seen.message + strlen("Backed up to ");
+    size_t      plen = strlen(SHARED_DB_BACKUP_PREFIX);
+    check(strlen(name) == plen + strlen("YYYYMMDD-HHMMSSZ.db") && name[plen + 8] == '-' &&
+          strcmp(name + plen + 15, "Z.db") == 0,
+          "now: the name is the UTC stamp shared_data-YYYYMMDD-HHMMSSZ.db");
 
     char path[1400];
-    snprintf(path, sizeof path, "%s/%s", dir, seen.message + strlen("Backed up to "));
+    snprintf(path, sizeof path, "%s/%s", dir, name);
     char      *why  = NULL;
     shared_db *copy = shared_db_open_readonly(path, &why);
     gint lists = 0;
@@ -287,11 +256,13 @@ test_back_up_now(TaskApp *app)
     check(copy != NULL && lists == 1, "now: the backup is a shared database holding the data");
     shared_db_close(copy);
     free(why);
-    check(task_backup_setting(app, SHARED_SETTING_BACKUP_LAST_AT) > 0,
+    int64_t last_at = 0;
+    shared_backup_policy_get(app->db->shared, SHARED_SETTING_BACKUP_LAST_AT, &last_at, NULL);
+    check(last_at > 0,
           "now: the module records when it was made");
 
     /* Retention: keep 2, then two more backups leave two. */
-    task_backup_set_setting(app, SHARED_SETTING_BACKUP_KEEP, 2);
+    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_KEEP, "2", NULL);
     for (int i = 0; i < 2; i++) {
         seen_t more = { 0 };
         task_backup_start(app, on_done, &more);
@@ -318,19 +289,19 @@ test_poll(TaskApp *app)
     task_backup_init(app);
     shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_LAST_AT, NULL, NULL);
 
-    task_backup_set_setting(app, SHARED_SETTING_BACKUP_ENABLED, 0);
+    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_ENABLED, "0", NULL);
     task_worker_arm_all(app, shared_db_file(app->db->shared));
     wait_idle(app);
     check(count_backups(dir) == 0 && app->backup_timer != 0,
           "poll: switched off, the poll runs but makes no backup");
 
-    task_backup_set_setting(app, SHARED_SETTING_BACKUP_ENABLED, 1);
-    task_backup_set_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN, 0);
+    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_ENABLED, "1", NULL);
+    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_INTERVAL_MIN, "0", NULL);
     task_worker_arm_all(app, shared_db_file(app->db->shared));
     wait_idle(app);
     check(count_backups(dir) == 0, "poll: interval 0 means only on request");
 
-    task_backup_set_setting(app, SHARED_SETTING_BACKUP_INTERVAL_MIN, 60);
+    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_INTERVAL_MIN, "60", NULL);
     last_status[0] = '\0';
     task_worker_arm_all(app, shared_db_file(app->db->shared));
     wait_idle(app);
@@ -359,7 +330,6 @@ main(void)
     TaskApp *app = fixture_open();
     guint    sid = task_app_listen_status(app, on_status, NULL);
 
-    test_policy(app);
     test_destination(app);
     test_back_up_now(app);
     test_poll(app);

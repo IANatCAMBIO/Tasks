@@ -444,9 +444,9 @@ test_db_create_read_task(void)
 
 /*
  * test_db_create_due_time_default — a new task's due time is
- * SHARED_DB_TASK_DUE_TIME_DEFAULT even in a file whose tasks table was created under
- * an older default: SQLite cannot alter a column DEFAULT, so the file's
- * stale one (08:00 here) must not be what a new task gets.
+ * SHARED_DB_TASK_DUE_TIME_DEFAULT: Tasks leaves it to the column DEFAULT
+ * (as Notes does), and the shared module, the only creator of the schema,
+ * writes that DEFAULT from the macro.
  */
 static void
 test_db_create_due_time_default(void)
@@ -454,26 +454,8 @@ test_db_create_due_time_default(void)
     GError  *err    = NULL;
     gchar   *tmpdir = scratch_dir();
     gchar   *path   = g_build_filename(tmpdir, "tasks.db", NULL);
-    sqlite3 *sq     = NULL;
 
     TaskDatabase *db = task_db_open(path, &err);
-    g_assert_no_error(err);
-    task_db_close(db);
-
-    /* Rewrite the stored schema to the 08:00 default an older build wrote. */
-    gchar *old_default = g_strdup_printf(
-        "PRAGMA writable_schema = ON;"
-        "UPDATE sqlite_master SET sql = replace(sql, 'due_time            "
-        "INTEGER NOT NULL DEFAULT %d', 'due_time            INTEGER NOT NULL "
-        "DEFAULT 480') WHERE name = 'tasks';"
-        "PRAGMA writable_schema = OFF", SHARED_DB_TASK_DUE_TIME_DEFAULT);
-    g_assert_cmpint(sqlite3_open(path, &sq), ==, SQLITE_OK);
-    g_assert_cmpint(sqlite3_exec(sq, old_default, NULL, NULL, NULL), ==, SQLITE_OK);
-    g_assert_cmpint(sqlite3_changes(sq), ==, 1);
-    sqlite3_close(sq);
-    g_free(old_default);
-
-    db = task_db_open(path, &err);
     g_assert_no_error(err);
     gint64 list_id = task_db_list_create(db, "L", NULL);
     gint64 task_id = task_db_task_create(db, list_id, 0, "Task");

@@ -217,8 +217,13 @@ notify_run(TaskApp *app, const gchar *db_path)
          * not in the day planner, so that it happens whether or not the
          * planner is on screen or showing today. */
         if (t->scheduled_start <= (gint64)now && t->status == TASK_STATUS_NEW) {
-            task_db_task_set_status(app->db, t->id, TASK_STATUS_IN_PROGRESS);
-            promoted++;
+            if (task_db_task_set_status(app->db, t->id, TASK_STATUS_IN_PROGRESS)) {
+                promoted++;
+            } else {
+                gchar *what = g_strdup_printf("Starting \xe2\x80\x9c%s\xe2\x80\x9d", t->title);
+                task_app_write_failed(app, what);
+                g_free(what);
+            }
         }
 
         gint64 alert_at = t->scheduled_start - (gint64)(notify_sched_lead * 60);
