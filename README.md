@@ -136,6 +136,18 @@ shown only while there is one: it appears by itself when Notes writes the
 first and goes when the last is deleted.  Completed items follow
 show/hide completed, as in every view.
 
+**Tags.**  The editor's **Tags** field, below Status, gives a task any
+number of tags.  Typing offers the tags that already exist (pick one with
+the arrow keys or a click); Return makes what you typed a tag, a new one
+when no tag has that name.  Names ignore case: "work" typed is the existing
+"Work".  Delete a tag's token to take it off the task.  Every tag gets a
+🏷️ button after the lists in the bar: its proto-list shows every task
+carrying the tag, from whichever list, the way a list shows its tasks
+(sorting, Kanban, search, its own manual order).  New Task there files the
+task in the default list and gives it the tag.  A tag exists only while a
+task carries it: when the last task loses it — untagged or deleted — the
+tag and its button go.
+
 A task written as an action item in a note shows "From note: …" in its
 editor.  Its title, completion and due date stay in step with the note's
 line; deleting it here makes Notes drop the item mark from the line.
@@ -196,7 +208,7 @@ menu holds the rest.  Every key and its default is listed in
 
 | Shortcut | Action |
 |---|---|
-| ⌘N | New Task (in the selected list; with a group or a view selected, in the default list; disabled in Action Items, which only Notes fills) |
+| ⌘N | New Task (in the selected list; with a group, a view or a tag selected, in the default list — given the tag, for a tag; disabled in Action Items, which only Notes fills) |
 | ⌃⌥⌘T | Quick Task — a task in the default list whatever is selected, its editor in the lower-right corner of the screen; works from any app while Tasks is running |
 | ⇧⌘N | New List… |
 | ⌘I | Info… — open the task editor |

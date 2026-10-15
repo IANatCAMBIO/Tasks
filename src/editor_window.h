@@ -3,7 +3,9 @@
 
 /*
  * editor_window — the per-task editor: one window per task, edits every
- * property of the task plus its subtasks, attachments and recurrence.
+ * property of the task plus its tags, subtasks, attachments and
+ * recurrence.  Tags are written as they are added or deleted, not with
+ * the debounced save.
  *
  * Saves are write-through with a 600 ms debounce on text; closing a window
  * flushes its pending save.  A save writes only the fields that differ

@@ -183,7 +183,7 @@ asking for it is running inside a handler of a view the refresh will destroy
 
 | State | Reader | Single writer |
 |---|---|---|
-| `selection` (`task_sel_t`: view / list / group + id) | everyone | `select:` (called by the sidebar) |
+| `selection` (`task_sel_t`: view / list / group / tag + id) | everyone | `select:` (called by the sidebar) |
 | `search` (`const TaskSearch *`, NULL = no filter) | everyone | the search field's action |
 | `manual_sort` | task list | `TasksCommandToggleSort` |
 | `kanban_on` | shell | `TasksCommandTogglePane` |
@@ -309,8 +309,10 @@ One table (`src/commands.m`) drives menu items, toolbar items and validation.
 
 **Where a new task goes.**  New Task files its task in
 `task_sel_new_task_list(app, selection)` (`task_pane.h`): the selected list,
-or for a group or a view the default list (`TASK_CFG_DEFAULT_LIST`, chosen in
-Settings; `task_ops_default_list` treats a deleted list as none).  A view
+or for a group, a tag or a view the default list (`TASK_CFG_DEFAULT_LIST`,
+chosen in Settings; `task_ops_default_list` treats a deleted list as none).
+In a tag's proto-list (`task_sel_tag`) the new task is also given the tag
+(`task_sel_tag_id`, `task_db_task_tag_add`).  A view
 with `refuses_new_tasks` (Action Items: only Notes writes those) disables New
 Task (`task_sel_takes_new_tasks`).  Quick Task always uses the default list,
 and opens the editor in the lower-right corner of `NSScreen.mainScreen`

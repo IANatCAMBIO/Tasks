@@ -11,7 +11,9 @@
  * Virtual views appear first, then group buttons that open a menu of All
  * Tasks (the group's aggregate view) and the group's member lists (with
  * Rename Group and Remove Group below them),
- * then the lists in no group.  Clicking any item calls [library select:].
+ * then the lists in no group, then one button per tag: the tag's
+ * proto-list, every task carrying it (a tag has a button exactly while a
+ * task carries it).  Clicking any item calls [library select:].
  *
  * The bar OWNS: the list and group sheets (New List, Edit List, New Group,
  * Rename Group), the confirmations of Delete List and Remove Group, Move

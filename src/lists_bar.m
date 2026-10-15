@@ -789,7 +789,8 @@ add_button:(NSString *)title sel:(task_sel_t)sel at:(CGFloat *)x action:(SEL)act
 /*
  * reload — discard and rebuild every button from the database, then update
  * states to reflect the window's selection.  A selection whose row has
- * gone (a deleted list or group, the Favorites view emptied) is moved by
+ * gone (a deleted list or group, the Favorites view emptied, a tag no task
+ * carries any more) is moved by
  * the sidebar's rules (task_sidebar_pick) and reported with [library
  * select:].
  * Documented in lists_bar.h.
@@ -805,12 +806,14 @@ reload
     CGFloat    x      = bar_pad;
     GPtrArray *groups = task_db_groups(app->db);
     GPtrArray *lists  = task_db_lists(app->db, FALSE);
+    GPtrArray *tags   = task_db_tags(app->db);
 
     /* Every selection the bar can reach, in the order it is shown: the
      * views, each group followed by its lists (reached through the group's
-     * menu), then the ungrouped lists. */
+     * menu), the ungrouped lists, then the tags. */
     guint       n_rows = 0;
-    task_sel_t *rows   = g_new(task_sel_t, task_view_count() + groups->len + lists->len);
+    task_sel_t *rows   = g_new(task_sel_t, task_view_count() + groups->len + lists->len +
+                                           tags->len);
 
     for (guint i = 0; i < task_view_count(); i++) {
         const TaskView *view = task_view_nth(i);
@@ -849,6 +852,17 @@ reload
         [self add_button:title sel:rows[n_rows - 1] at:&x action:@selector(btn_clicked:)]
             .draggable = YES;
     }
+
+    for (guint i = 0; i < tags->len; i++) {
+        const TaskTag *tag   = g_ptr_array_index(tags, i);
+        char          *label = task_sidebar_tag_label(tag);
+
+        rows[n_rows++] = (task_sel_t){ task_sel_tag, tag->id };
+        [self add_button:tasks_string(label) sel:rows[n_rows - 1] at:&x
+                  action:@selector(btn_clicked:)];
+        free(label);
+    }
+    task_ptr_array_free_tags(tags);
     task_ptr_array_free_lists(lists);
     task_ptr_array_free_groups(groups);
 
@@ -869,8 +883,8 @@ reload
 /* ── Button actions ──────────────────────────────────────────────────── */
 
 /*
- * btn_clicked: — a view or standalone list button was clicked: tell the
- * window to select it.
+ * btn_clicked: — a view, standalone list or tag button was clicked: tell
+ * the window to select it.
  *
  * Inputs:
  *   sender — the button; sel_data is @[@(kind), @(id)]

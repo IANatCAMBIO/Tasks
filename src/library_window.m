@@ -11,6 +11,7 @@
 
 #include "task_config.h"
 #include "task_ops.h"
+#include "task_sidebar.h"
 #include "task_switch.h"
 #include "task_view.h"
 
@@ -63,9 +64,11 @@ static NSString * const search_tooltip       =
 @property (nonatomic, assign) guint listen_tasks;
 @property (nonatomic, assign) guint listen_notes;
 @property (nonatomic, assign) guint listen_status;
-/* Which views had a sidebar row at its last rebuild (task_view_shown_mask):
- * the light task event rebuilds the sidebar only when that changes. */
+/* Which views had a sidebar row at its last rebuild (task_view_shown_mask),
+ * and which tags (tag_ids): the light task event rebuilds the sidebar only
+ * when either changes. */
 @property (nonatomic, assign) guint64 shown_views;
+@property (nonatomic, copy)   NSArray<NSNumber *> *shown_tags;
 @property (nonatomic, assign) BOOL is_shut_down;
 
 /* Declared here because the C listeners below call it before its
@@ -75,6 +78,29 @@ static NSString * const search_tooltip       =
 @end
 
 /* ── App-event listeners (C callbacks; user_data is the window) ─────── */
+
+/*
+ * tag_ids — the ids of every tag, in the bar's order: what decides whether
+ * a task change added or removed a tag's button.
+ *
+ * Inputs:
+ *   app — the application context
+ *
+ * Output:
+ *   the ids.
+ */
+static NSArray<NSNumber *> *
+tag_ids(TaskApp *app)
+{
+    GPtrArray                 *tags = task_db_tags(app->db);
+    NSMutableArray<NSNumber *> *ids = [NSMutableArray arrayWithCapacity:tags->len];
+
+    for (guint i = 0; i < tags->len; i++) {
+        [ids addObject:@(((const TaskTag *)g_ptr_array_index(tags, i))->id)];
+    }
+    task_ptr_array_free_tags(tags);
+    return ids;
+}
 
 /*
  * on_app_changed — the app's FULL refresh event.
@@ -94,8 +120,9 @@ on_app_changed(TaskApp *app, gpointer data)
  * on_app_tasks — the app's light event: the task pane, the day planner and
  * the reminders' titles.  One exception: a task change can add or remove
  * a view's row (a favourite flag the Favorites row, the last Notes action
- * item deleted the Action Items row), so the sidebar is rebuilt when the
- * set of shown views changed.
+ * item deleted the Action Items row) or a tag's (the first task given a
+ * new tag, the last one losing it), so the sidebar is rebuilt when the set
+ * of shown views or of tags changed.
  *
  * Inputs:
  *   app  — the application context
@@ -106,7 +133,10 @@ on_app_tasks(TaskApp *app, gpointer data)
 {
     TasksLibraryWindow *window = (__bridge TasksLibraryWindow *)data;
 
-    if (task_view_shown_mask(app) != window.shown_views) [window refresh_sidebar];
+    if (task_view_shown_mask(app) != window.shown_views ||
+        ![tag_ids(app) isEqualToArray:window.shown_tags]) {
+        [window refresh_sidebar];
+    }
     [window refresh_tasks];
     if (!window.day_planner.hidden) [window.day_planner reload];
     tasks_notify_retitle();
@@ -833,7 +863,7 @@ apply_pane_mode
 
 /*
  * update_window_title — set the window title from the current selection:
- * "Tasks — Name" for a list, group or view; the plain app name
+ * "Tasks — Name" for a list, group, view or tag; the plain app name
  * otherwise.
  */
 - (void)
@@ -851,6 +881,14 @@ update_window_title
     } else if (sel.kind == task_sel_view) {
         const TaskView *view = task_view_nth((guint)sel.id);
         if (view) suffix = tasks_string(view->label);
+    } else if (sel.kind == task_sel_tag) {
+        TaskTag *tag = task_db_tag_get(self.app->db, sel.id);
+        if (tag) {
+            char *label = task_sidebar_tag_label(tag);
+            suffix = tasks_string(label);
+            free(label);
+            task_tag_free(tag);
+        }
     }
 
     self.window.title = suffix
@@ -902,6 +940,7 @@ refresh_sidebar
 
     [self.lists_bar reload];
     self.shown_views = task_view_shown_mask(self.app);
+    self.shown_tags  = tag_ids(self.app);
 }
 
 /*
@@ -1241,33 +1280,43 @@ plural(NSUInteger count)
 }
 
 /*
- * create_task_in:quick: — create an empty task in a list and open its
- * editor (the variant with Cancel, which deletes the task again).
+ * create_task_in:tag:quick: — create an empty task in a list, give it a
+ * tag when one is named, and open its editor (the variant with Cancel,
+ * which deletes the task again).
  *
  * Inputs:
  *   list_id — the list; not 0
+ *   tag_id  — the tag the task is given (New Task in a tag's proto-list,
+ *             so the task shows where it was made); 0 for none
  *   quick   — YES for Quick Task: the editor opens in the corner of the
  *             screen the user is on, and the app comes forward with it
  *             (the shortcut may have been pressed in another app)
  */
 - (void)
-create_task_in:(int64_t)list_id quick:(BOOL)quick
+create_task_in:(int64_t)list_id tag:(int64_t)tag_id quick:(BOOL)quick
 {
     int64_t task_id = task_db_task_create(self.app->db, list_id, 0, "New Task");
     if (task_id == 0) {
         task_app_status(self.app, "Could not create the task");
         return;
     }
+    TaskTag *tag = tag_id != 0 ? task_db_tag_get(self.app->db, tag_id) : NULL;
+    if (tag != NULL && task_db_task_tag_add(self.app->db, task_id, tag->name) == 0) {
+        task_app_status(self.app, "Could not tag the new task \xe2\x80\x9c%s\xe2\x80\x9d",
+                        tag->name);
+    }
+    task_tag_free(tag);
     [self full_refresh];
     tasks_editor_open_new(self.app, task_id, quick);
     if (quick) [NSApp activate];
 }
 
 /*
- * new_task — New Task: a task in the selected list or, when a group or a
- * view is selected, in the default list (task_sel_new_task_list).  With no
- * default list the status bar says how to get one.  Action Items refuses
- * new tasks (the command is disabled there).
+ * new_task — New Task: a task in the selected list or, when a group, a tag
+ * or a view is selected, in the default list (task_sel_new_task_list); in
+ * a tag's proto-list the task is given the tag.  With no default list the
+ * status bar says how to get one.  Action Items refuses new tasks (the
+ * command is disabled there).
  */
 - (void)
 new_task
@@ -1279,7 +1328,7 @@ new_task
         }
         return;
     }
-    [self create_task_in:list_id quick:NO];
+    [self create_task_in:list_id tag:task_sel_tag_id(self.selection) quick:NO];
 }
 
 /*
@@ -1302,7 +1351,7 @@ quick_task
         });
         return;
     }
-    [self create_task_in:list_id quick:YES];
+    [self create_task_in:list_id tag:0 quick:YES];
 }
 
 /*

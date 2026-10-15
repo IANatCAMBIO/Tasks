@@ -56,6 +56,13 @@ SHARED_DATA_DIR=/path/to/shared_data`).  The build stops with a message when
 MacPorts SQLite this app links.  After pulling a new `shared_data`, run
 `make clean && make`.
 
+Tags need `shared_data` at schema version 101 (`task_tag_names`,
+`task_tags`).  The module brings a version-100 file up to date in place,
+in one transaction, the first time an app opens it read-write; until then
+read-only tools (the skill's scripts) refuse it.  A file at 101 is refused
+by a Notes or Tasks built against an older `shared_data`, so rebuild Notes
+from the same `shared_data` as well.
+
 ## Targets
 
 | Target | What it does |

@@ -2567,6 +2567,166 @@ policy(TaskApp *app, const char *key)
 }
 
 /*
+ * check_tags — tags from the editor to the lists bar: a tag typed in an
+ * editor's tag field is created and gets a button after the lists; the
+ * field offers the existing tags (not those the task carries) and takes an
+ * existing one in any case as itself; the button selects the tag's
+ * proto-list, which lists the tagged tasks; New Task there gives the new
+ * task the tag; deleting the last token removes the tag, its button, and
+ * moves the selection to a view.  The field's delegate is called as AppKit
+ * would call it.  Everything it creates is deleted again.
+ *
+ * Inputs:
+ *   app — the application context
+ *   dir — the snapshot folder
+ */
+static void
+check_tags(TaskApp *app, NSString *dir)
+{
+    GPtrArray *lists = task_db_lists(app->db, FALSE);
+    if (lists->len == 0) {
+        task_ptr_array_free_lists(lists);
+        printf("     skipping tag checks (no lists)\n");
+        return;
+    }
+    gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
+    task_ptr_array_free_lists(lists);
+
+    @autoreleasepool {
+        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
+        NSWindow           *window  = library.window;
+        [library showWindow:nil];
+        check_spin(0.2);
+
+        /* The bar's button whose title is exactly `title`, or nil. */
+        NSButton *(^bar_button)(NSString *) = ^(NSString *title) {
+            NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:window.contentView];
+            for (NSUInteger i = 0; i < queue.count; i++) {
+                if ([queue[i] isKindOfClass:NSButton.class] &&
+                    [((NSButton *)queue[i]).title isEqualToString:title]) return (NSButton *)queue[i];
+                [queue addObjectsFromArray:queue[i].subviews];
+            }
+            return (NSButton *)nil;
+        };
+        /* The tag of a name, or 0. */
+        int64_t (^tag_named)(NSString *) = ^(NSString *name) {
+            GPtrArray *tags  = task_db_tags(app->db);
+            int64_t    found = 0;
+            for (guint i = 0; i < tags->len; i++) {
+                const TaskTag *tag = g_ptr_array_index(tags, i);
+                if ([tasks_string(tag->name) isEqualToString:name]) found = tag->id;
+            }
+            task_ptr_array_free_tags(tags);
+            return found;
+        };
+        NSString *tag_title   = @"\U0001F3F7️  UI Check Tag";
+        gint64    tagged      = task_db_task_create(app->db, list_id, 0, "ui-check tagged");
+        gint64    other       = task_db_task_create(app->db, list_id, 0, "ui-check other");
+        task_db_task_tag_add(app->db, other, "UI Check Other");
+        [library full_refresh];
+
+        tasks_editor_open(app, tagged);
+        check_spin(0.1);
+        NSWindow *editor_win = nil;
+        for (NSWindow *w in NSApp.windows) {
+            if (w.visible && [w.title isEqualToString:@"ui-check tagged"]) editor_win = w;
+        }
+        NSTokenField *field = (NSTokenField *)find_view(editor_win.contentView, NSTokenField.class);
+        id<NSTokenFieldDelegate> editor = field.delegate;
+        check(field != nil && [field.objectValue count] == 0,
+              "tags: the editor has a tag field, empty for an untagged task");
+
+        NSArray *added = [editor tokenField:field shouldAddObjects:@[@"  UI Check Tag "] atIndex:0];
+        field.objectValue = added;
+        check_spin(0.3);
+        int64_t tag_id = tag_named(@"UI Check Tag");
+        check([added isEqual:@[@"UI Check Tag"]] && tag_id != 0,
+              "tags: Return on a new name creates the tag, trimmed");
+        check(bar_button(tag_title) != nil, "tags: the new tag gets a button in the lists bar");
+
+        NSInteger selected = 0;
+        NSArray *offered = [editor tokenField:field completionsForSubstring:@"check"
+                                 indexOfToken:1 indexOfSelectedItem:&selected];
+        check([offered isEqual:@[@"UI Check Other"]] && selected == -1,
+              "tags: typing offers existing tags it does not carry, none preselected");
+        added = [editor tokenField:field shouldAddObjects:@[@"ui check other"] atIndex:1];
+        check([added isEqual:@[@"UI Check Other"]], "tags: an existing tag, typed in any case, is that tag");
+        field.objectValue = @[@"UI Check Tag", @"UI Check Other"];
+        check([[editor tokenField:field shouldAddObjects:@[@"UI CHECK TAG"] atIndex:2] count] == 0,
+              "tags: a tag the task carries is not added twice");
+        check(snapshot(editor_win, dir, @"editor-tags"), "tags: snapshot, the editor's tag field");
+        check(find_text(editor_win.contentView, @"Completed") == nil,
+              "editor: no completion line for a task never completed");
+
+        /* Done, the completion date shows on its own line under the tags
+         * and flags, and the window grows to fit it. */
+        CGFloat open_h = NSHeight(editor_win.frame);
+        task_db_task_set_status(app->db, tagged, TASK_STATUS_DONE);
+        tasks_editor_refresh_all();
+        check_spin(0.2);
+        NSView *done_line = nil;
+        for (NSView *view in editor_win.contentView.subviews.firstObject.subviews.firstObject.subviews) {
+            if ([view isKindOfClass:NSTextField.class] &&
+                [((NSTextField *)view).stringValue hasPrefix:@"Completed "]) done_line = view;
+        }
+        check(done_line != nil && !done_line.hidden && NSHeight(editor_win.frame) > open_h,
+              "editor: a Done task shows when it was completed, on a line of its own");
+        check(snapshot(editor_win, dir, @"editor-completed"), "editor: snapshot, a completed task");
+        task_db_task_set_status(app->db, tagged, TASK_STATUS_NEW);
+        tasks_editor_refresh_all();
+        check_spin(0.2);
+
+        [bar_button(tag_title) performClick:nil];
+        check_spin(0.3);
+        check(library.selection.kind == task_sel_tag && library.selection.id == tag_id &&
+              find_drawn(window.contentView, @"ui-check tagged") &&
+              !find_drawn(window.contentView, @"ui-check other"),
+              "tags: the tag's button selects its proto-list, listing the tasks carrying it");
+        check([window.title hasSuffix:tag_title], "tags: the window is titled with the tag");
+        check(snapshot(window, dir, @"lists-bar-tag"), "tags: snapshot, a tag's proto-list");
+
+        task_config_set_int(TASK_CFG_DEFAULT_LIST, (gint)list_id);
+        check([library state_of_command:TasksCommandNewTask].enabled, "tags: New Task is enabled in a tag");
+        [library perform_command:TasksCommandNewTask param:nil];
+        check_spin(0.2);
+        NSWindow *new_win = nil;
+        for (NSWindow *w in NSApp.windows) {
+            if (w.visible && [w.title isEqualToString:@"New Task"]) new_win = w;
+        }
+        GPtrArray *in_tag = task_db_tasks_tagged(app->db, tag_id);
+        check(new_win != nil && in_tag->len == 2, "tags: New Task in a tag gives the new task the tag");
+        task_ptr_array_free_tasks(in_tag);
+        if (new_win) send_escape(new_win);
+        check_spin(0.2);
+        task_config_set(TASK_CFG_DEFAULT_LIST, NULL);
+        in_tag = task_db_tasks_tagged(app->db, tag_id);
+        check(in_tag->len == 1, "tags: Cancel deletes the new task, and it leaves the tag");
+        task_ptr_array_free_tasks(in_tag);
+
+        /* Deleting the token: the edit is reported as AppKit reports it. */
+        field.objectValue = @[@"UI Check Other"];
+        [NSNotificationCenter.defaultCenter
+            postNotificationName:NSControlTextDidChangeNotification object:field];
+        check_spin(0.3);
+        check(tag_named(@"UI Check Tag") == 0 && bar_button(tag_title) == nil,
+              "tags: deleting the last token deletes the tag and its button");
+        check(library.selection.kind == task_sel_view,
+              "tags: ... and the selection moves from its proto-list to a view");
+
+        tasks_editor_close_all();
+        task_db_task_delete(app->db, tagged);
+        task_db_task_delete(app->db, other);
+        task_app_notify_tasks(app);
+        check_spin(0.3);
+        check(tag_named(@"UI Check Other") == 0 &&
+              bar_button(@"\U0001F3F7️  UI Check Other") == nil,
+              "tags: deleting the last task carrying a tag deletes it and its button");
+        [library close];
+    }
+    check_spin(0.2);
+}
+
+/*
  * check_settings — drive the Settings window through its own controls:
  * every Appearance box writes its key, Update records a verdict from the
  * background, a number is held to its range, a backup folder the core
@@ -2953,6 +3113,7 @@ main(int argc, const char *argv[])
         check_open_database(app);
         check_menu_bar();
         check_lists_bar(app, dir);
+        check_tags(app, dir);
         check_task_list(app, dir);
         check_kanban(app, dir);
         check_editor_window(app, dir);

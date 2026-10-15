@@ -24,9 +24,9 @@
 
 <h2>The window</h2>
 <p>The sidebar on the left lists the views (Favorites, All Tasks, 3-Day
-Forecast, Action Items), then your lists and groups of lists.  Favorites
-appears only while something is starred, and Action Items only while there
-are items from Notes.  The pane on the right shows
+Forecast, Action Items), then your lists and groups of lists, then your
+tags.  Favorites appears only while something is starred, and Action Items
+only while there are items from Notes.  The pane on the right shows
 the tasks of whatever is selected there, as a list or as a Kanban board.
 The bar along the bottom says how many tasks are showing and, for a few
 seconds, what the last action did.</p>
@@ -67,9 +67,23 @@ title that already starts with the folder's name and a “-” or “:” is sho
 as it is, and an item from a note at the top level (not in a folder) has no
 context to show.  The option is on until you turn it off.</p>
 
+<h2>Tags</h2>
+<p>The <b>Tags</b> field in a task's editor, below Status, gives the task
+any number of tags.  As you type, the tags that already exist are offered:
+choose one with the arrow keys or a click.  Press Return to make what you
+typed a tag; if no tag has that name, a new one is created.  Names ignore
+case, so “work” is the same tag as “Work”.  To take a tag off, delete its
+token.</p>
+<p>Each tag has a 🏷️ button after your lists.  It shows every task carrying
+the tag, from whichever list, just as a list shows its tasks.  New Task
+there adds the task to the default list and gives it the tag.  A tag lasts
+only while a task carries it: when the last one loses it, or is deleted,
+the tag and its button go.</p>
+
 <h2>New tasks and Quick Task</h2>
-<p>New Task (⌘N) adds a task to the selected list.  With a group or a view
-such as All Tasks selected, it goes to the <b>default list</b>, which you
+<p>New Task (⌘N) adds a task to the selected list.  With a group, a tag or
+a view such as All Tasks selected, it goes to the <b>default list</b> (and,
+for a tag, gets that tag), which you
 choose in Settings under New Tasks; with no default list, select a list
 first.  New Task is not offered in Action Items: those come only from
 Notes.</p>

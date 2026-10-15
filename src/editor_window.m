@@ -536,7 +536,7 @@ becomeFirstResponder
 
 /* ── The editor ─────────────────────────────────────────────────────── */
 
-@interface TasksEditorWindow : NSWindowController <NSWindowDelegate, NSTextFieldDelegate,
+@interface TasksEditorWindow : NSWindowController <NSWindowDelegate, NSTokenFieldDelegate,
                                                    NSTextViewDelegate, NSTableViewDataSource,
                                                    NSTableViewDelegate>
 
@@ -550,6 +550,7 @@ becomeFirstResponder
 @property (nonatomic, strong) NSTextField   *source_label;     /* "From note: …" for an
                                                                  * action item from Notes */
 @property (nonatomic, strong) NSPopUpButton *status_popup;      /* index is a TaskStatus */
+@property (nonatomic, strong) NSTokenField  *tag_field;         /* one token per tag      */
 @property (nonatomic, strong) NSTextField   *due_field;
 @property (nonatomic, strong) NSDatePicker  *due_time_field;
 @property (nonatomic, strong) NSButton      *favorite_check;
@@ -807,22 +808,45 @@ build_fields:(NSStackView *)form
     ]);
     add_row(form, status_row);
 
-    /* The completed label at the left; flags right-aligned under the time picker. */
+    /* The tags, as tokens: typing offers the existing tags (completions),
+     * Return or a comma makes the typed text a tag, new or not. */
+    self.tag_field = [[NSTokenField alloc] initWithFrame:NSZeroRect];
+    self.tag_field.font              = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    self.tag_field.bezelStyle        = NSTextFieldRoundedBezel;
+    self.tag_field.placeholderString = @"Add a tag";
+    self.tag_field.toolTip           =
+        @"Type to find a tag; pick one from the list, or press Return to make a new one. "
+        @"Each tag has its own button in the lists bar.";
+    self.tag_field.delegate          = self;
+    self.tag_field.completionDelay   = 0;
+    self.tag_field.cell.wraps        = NO;
+    self.tag_field.cell.scrollable   = YES;
+    [self.tag_field setContentHuggingPriority:NSLayoutPriorityDefaultLow - 1
+                               forOrientation:NSLayoutConstraintOrientationHorizontal];
+
+    /* The tags at the left, taking the spare width; the flags right-aligned
+     * under the time picker. */
     self.favorite_check = [NSButton checkboxWithTitle:@"Favorite" target:self
                                                action:@selector(flag_changed:)];
     self.favorite_check.font = [NSFont systemFontOfSize:tasks_look_row_small_font];
     self.priority_check = [NSButton checkboxWithTitle:@"High Priority" target:self
                                                action:@selector(flag_changed:)];
     self.priority_check.font = [NSFont systemFontOfSize:tasks_look_row_small_font];
-    self.completed_label = [NSTextField labelWithString:@""];
-    self.completed_label.font      = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    self.completed_label.textColor = NSColor.secondaryLabelColor;
-    NSView *flags_row = row_stack(@[self.completed_label, spacer(),
+    NSView *flags_row = row_stack(@[form_label(@"Tags:"), self.tag_field,
                                     self.favorite_check, self.priority_check]);
     [form setCustomSpacing:tasks_look_form_spacing * 1.2 afterView:status_row];
     add_row(form, flags_row);
 
+    /* When the task was completed, on a line of its own under the flags;
+     * hidden for a task never completed (show_completed:). */
+    self.completed_label = [NSTextField labelWithString:@""];
+    self.completed_label.font      = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+    self.completed_label.textColor = NSColor.secondaryLabelColor;
+    self.completed_label.hidden    = YES;
+    add_row(form, self.completed_label);
+
     [form setCustomSpacing:tasks_look_form_spacing * 2.5 afterView:flags_row];
+    [form setCustomSpacing:tasks_look_form_spacing * 2.5 afterView:self.completed_label];
     add_row(form, heading_label(@"Notes"));
     add_row(form, [self build_notes]);
 
@@ -1126,6 +1150,7 @@ show_task:(const Task *)task
     show_text(self.title_field, tasks_string(task->title), NO);
     [self show_source];
     [self show_status:task->status];
+    [self show_tags];
     self.favorite_check.state = task->pinned ? NSControlStateValueOn : NSControlStateValueOff;
     self.priority_check.state = task->priority ? NSControlStateValueOn : NSControlStateValueOff;
     [self show_date:task->due in:self.due_field];
@@ -1187,6 +1212,173 @@ show_source
     self.source_label.stringValue = text;
     self.source_label.hidden      = hidden;
     if (self.window.visible) [self refit_animated:NO];
+}
+
+/* ── Tags ───────────────────────────────────────────────────────────── */
+
+/*
+ * stored_tag_names — the names of the tags the task carries, as stored.
+ *
+ * Output:
+ *   the names, alphabetical.
+ */
+- (NSArray<NSString *> *)
+stored_tag_names
+{
+    GPtrArray                  *tags  = task_db_task_tags(self.app->db, self.task_id);
+    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithCapacity:tags->len];
+
+    for (guint i = 0; i < tags->len; i++) {
+        [names addObject:tasks_string(((const TaskTag *)g_ptr_array_index(tags, i))->name)];
+    }
+    task_ptr_array_free_tags(tags);
+    return names;
+}
+
+/*
+ * has_name — whether a name is among some tag names: tag names compare
+ * case-insensitively, as the database compares them.
+ *
+ * Inputs:
+ *   names — the names
+ *   name  — the name looked for
+ *
+ * Output:
+ *   YES when it is there.
+ */
+static BOOL
+has_name(NSArray<NSString *> *names, NSString *name)
+{
+    for (NSString *have in names) {
+        if ([have caseInsensitiveCompare:name] == NSOrderedSame) return YES;
+    }
+    return NO;
+}
+
+/*
+ * show_tags — the task's tags as the tag field's tokens.  A field being
+ * edited is left alone (its tokens are written as they are made, and the
+ * field is shown again when the edit ends).
+ */
+- (void)
+show_tags
+{
+    if (is_editing(self.tag_field)) return;
+
+    NSArray<NSString *> *names = [self stored_tag_names];
+    if (![self.tag_field.objectValue isEqual:names]) self.tag_field.objectValue = names;
+}
+
+/*
+ * drop_removed_tags — take off the task every tag that is no longer a
+ * token in the field (the user deleted it).  Text still being typed never
+ * names a stored tag that is not also a token, so it removes nothing.
+ */
+- (void)
+drop_removed_tags
+{
+    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
+    for (id token in self.tag_field.objectValue) {
+        if ([token isKindOfClass:NSString.class]) [tokens addObject:token];
+    }
+
+    GPtrArray *tags    = task_db_task_tags(self.app->db, self.task_id);
+    BOOL       changed = NO;
+    for (guint i = 0; i < tags->len; i++) {
+        const TaskTag *tag = g_ptr_array_index(tags, i);
+        if (has_name(tokens, tasks_string(tag->name))) continue;
+
+        if (task_db_task_tag_remove(self.app->db, self.task_id, tag->id)) {
+            changed = YES;
+        } else {
+            gchar *what = g_strdup_printf("Removing the tag \xe2\x80\x9c%s\xe2\x80\x9d", tag->name);
+            task_app_write_failed(self.app, what);
+            g_free(what);
+        }
+    }
+    task_ptr_array_free_tags(tags);
+    if (changed) task_app_notify_tasks(self.app);
+}
+
+/*
+ * tokenField:completionsForSubstring:indexOfToken:indexOfSelectedItem: —
+ * the existing tags offered while a tag is typed: those whose name starts
+ * with the text, then those containing it elsewhere, leaving out the tags
+ * the task already carries.  Nothing is preselected, so Return makes the
+ * text as typed a tag — a new one when no tag has that name — and an
+ * offered tag is chosen with the arrow keys or a click.
+ *
+ * Inputs:
+ *   field       — the tag field (unused)
+ *   substring   — the text typed for this token
+ *   token_index — its place among the tokens (unused)
+ *   selected    — out: the preselected completion, -1 for none
+ *
+ * Output:
+ *   the names to offer.
+ */
+- (NSArray *)
+tokenField:(NSTokenField *)field
+completionsForSubstring:(NSString *)substring
+indexOfToken:(NSInteger)token_index
+indexOfSelectedItem:(NSInteger *)selected
+{
+    NSArray<NSString *>        *have    = [self stored_tag_names];
+    NSMutableArray<NSString *> *starts  = [NSMutableArray array];
+    NSMutableArray<NSString *> *inside  = [NSMutableArray array];
+    GPtrArray                  *tags    = task_db_tags(self.app->db);
+
+    for (guint i = 0; i < tags->len; i++) {
+        NSString *name  = tasks_string(((const TaskTag *)g_ptr_array_index(tags, i))->name);
+        NSRange   found = [name rangeOfString:substring options:NSCaseInsensitiveSearch];
+        if (found.location == NSNotFound || has_name(have, name)) continue;
+        [found.location == 0 ? starts : inside addObject:name];
+    }
+    task_ptr_array_free_tags(tags);
+    if (selected != NULL) *selected = -1;
+    return [starts arrayByAddingObjectsFromArray:inside];
+}
+
+/*
+ * tokenField:shouldAddObjects:atIndex: — tokens are being made from typed
+ * or chosen text: give the task each tag at once (the existing tag of that
+ * name, in any case, or a new one) and show it as stored.  A name the task
+ * already carries, an empty one and one that could not be saved are not
+ * made into tokens.
+ *
+ * Inputs:
+ *   field  — the tag field (unused)
+ *   tokens — the new tokens' texts
+ *   index  — where they go (unused)
+ *
+ * Output:
+ *   the tokens to insert: the stored names of the tags added.
+ */
+- (NSArray *)
+tokenField:(NSTokenField *)field shouldAddObjects:(NSArray *)tokens atIndex:(NSUInteger)index
+{
+    NSArray<NSString *>        *have  = [self stored_tag_names];
+    NSMutableArray<NSString *> *added = [NSMutableArray array];
+
+    for (id token in tokens) {
+        if (![token isKindOfClass:NSString.class]) continue;
+        NSString *name = [token stringByTrimmingCharactersInSet:
+                             NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (name.length == 0 || has_name(have, name) || has_name(added, name)) continue;
+
+        int64_t  tag_id = task_db_task_tag_add(self.app->db, self.task_id, name.UTF8String);
+        TaskTag *tag    = tag_id != 0 ? task_db_tag_get(self.app->db, tag_id) : NULL;
+        if (tag == NULL) {
+            gchar *what = g_strdup_printf("The tag \xe2\x80\x9c%s\xe2\x80\x9d", name.UTF8String);
+            task_app_write_failed(self.app, what);
+            g_free(what);
+            continue;
+        }
+        [added addObject:tasks_string(tag->name)];
+        task_tag_free(tag);
+    }
+    if (added.count > 0) task_app_notify_tasks(self.app);
+    return added;
 }
 
 /*
@@ -1262,7 +1454,8 @@ show_lead:(int)minutes
 /*
  * show_completed: — the read-only line saying when the task was last
  * completed: "Completed <date>" while it is Done, "Last completed <date>"
- * once it has been reopened, nothing when it never was.
+ * once it has been reopened; hidden when it never was.  The window is
+ * refitted when the line appears or goes.
  *
  * Inputs:
  *   task — the task as stored (borrowed)
@@ -1270,13 +1463,19 @@ show_lead:(int)minutes
 - (void)
 show_completed:(const Task *)task
 {
-    gchar *when = task_due_format(task->completed_at);
-
-    self.completed_label.stringValue = *when == '\0' ? @"" :
+    gchar    *when   = task_due_format(task->completed_at);
+    NSString *text   = *when == '\0' ? @"" :
         [NSString stringWithFormat:@"%@ %@",
             task->status == TASK_STATUS_DONE ? @"Completed" : @"Last completed",
             tasks_string(when)];
+    BOOL      hidden = text.length == 0;
     g_free(when);
+
+    if ([self.completed_label.stringValue isEqualToString:text] &&
+        self.completed_label.hidden == hidden) return;
+    self.completed_label.stringValue = text;
+    self.completed_label.hidden      = hidden;
+    if (self.window.visible) [self refit_animated:NO];
 }
 
 /*
@@ -2361,7 +2560,8 @@ pick_start_date:(id)sender
  * controlTextDidChange: — a field's text changed under the user's hands.
  * The title, due date and due time queue a debounced save; a schedule
  * field goes through recur_changed.  A subtask's title waits for the edit
- * to end.
+ * to end.  In the tag field a deleted token takes its tag off the task at
+ * once (a new one is added as it is made: tokenField:shouldAddObjects:).
  *
  * Inputs:
  *   note — the notification; its object is the field
@@ -2372,6 +2572,10 @@ controlTextDidChange:(NSNotification *)note
     NSTextField *field = note.object;
 
     if ([self is_subtask_field:field]) return;
+    if (field == self.tag_field) {
+        [self drop_removed_tags];
+        return;
+    }
 
     if (field == self.title_field) {
         [self refresh_title];
@@ -2387,8 +2591,9 @@ controlTextDidChange:(NSNotification *)note
 
 /*
  * controlTextDidEndEditing: — the user left a field (Return, Tab or a click
- * elsewhere).  A subtask's title is saved.  For the form's fields a pending
- * save is flushed, and the form is then shown again from the database, so
+ * elsewhere).  A subtask's title is saved.  The tag field's deleted tokens
+ * take their tags off the task.  For the form's fields a pending save is
+ * flushed, and the form is then shown again from the database, so
  * that a date typed as 10/4/26 reads 2026-10-04 and text that was not
  * understood gives way to the value that is stored.
  *
@@ -2405,6 +2610,7 @@ controlTextDidEndEditing:(NSNotification *)note
         [self save_subtask_title:field];
         return;
     }
+    if (field == self.tag_field) [self drop_removed_tags];
     if (self.save_pending) [self save_now];
 
     /* On the next pass: the field still counts as being edited here, and a
@@ -2420,9 +2626,11 @@ controlTextDidEndEditing:(NSNotification *)note
 /*
  * control:textView:doCommandBySelector: — Return and Escape in a field.
  *
- * Return in the title saves and closes the editor.  Return anywhere else
- * ends the edit (which saves it) and lets go of the field, instead of
- * AppKit selecting all its text again.  Escape in a subtask's title
+ * Return in the title saves and closes the editor.  Return in the tag
+ * field is the token field's own: it makes the typed text a tag and stays
+ * in the field for the next one.  Return anywhere else ends the edit
+ * (which saves it) and lets go of the field, instead of AppKit selecting
+ * all its text again.  Escape in a subtask's title
  * abandons that edit; anywhere else it is Escape for the window (dismiss).
  *
  * Inputs:
@@ -2440,6 +2648,7 @@ doCommandBySelector:(SEL)command
 {
     BOOL subtask = [self is_subtask_field:control];
 
+    if (command == @selector(insertNewline:) && control == self.tag_field) return NO;
     if (command == @selector(insertNewline:)) {
         if (control == self.title_field) {
             [self save_action:nil];
