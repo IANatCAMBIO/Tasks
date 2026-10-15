@@ -720,6 +720,7 @@ check_compact(TaskApp *app, NSString *dir)
     /* Start from full mode, whatever an earlier run left behind. */
     task_config_set_bool(TASK_CFG_COMPACT, FALSE);
     task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, FALSE);
+    task_config_set_bool(TASK_CFG_FAVORITES_BAR_VISIBLE, TRUE);
 
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
@@ -1394,34 +1395,42 @@ check_sidebar(TaskApp *app, NSString *dir)
         }
         check(picked.count == 2 && add.numberOfItems > 0 && errands_item != nil,
               "add tag: the context menu has Add Tag with every tag");
-        GPtrArray *before = task_db_tasks_tagged(app->db, errands->id);
-        guint      had    = before->len;
-        BOOL       both_had = YES;
-        for (NSNumber *id in picked) {
-            BOOL has = NO;
-            for (guint t = 0; t < before->len; t++)
-                has = has || ((const Task *)g_ptr_array_index(before, t))->id == id.longLongValue;
-            both_had = both_had && has;
+        /* Which of them lacked the tag: those it is taken off again. */
+        GPtrArray      *before  = task_db_tasks_tagged(app->db, errands->id);
+        NSMutableArray *lacking = [NSMutableArray arrayWithArray:picked];
+        for (guint t = 0; t < before->len; t++) {
+            [lacking removeObject:@(((const Task *)g_ptr_array_index(before, t))->id)];
         }
         task_ptr_array_free_tasks(before);
         [library run_command:errands_item];
         check_spin(0.2);
         GPtrArray *after = task_db_tasks_tagged(app->db, errands->id);
-        BOOL       tagged_both = YES;
-        for (NSNumber *id in picked) {
-            BOOL has = NO;
-            for (guint t = 0; t < after->len; t++)
-                has = has || ((const Task *)g_ptr_array_index(after, t))->id == id.longLongValue;
-            tagged_both = tagged_both && has;
+        NSMutableSet *now_tagged = [NSMutableSet set];
+        for (guint t = 0; t < after->len; t++) {
+            [now_tagged addObject:@(((const Task *)g_ptr_array_index(after, t))->id)];
         }
-        check(tagged_both && (both_had || after->len > had),
-              "add tag: choosing a tag gives it to every selected task");
         task_ptr_array_free_tasks(after);
-        for (NSNumber *id in picked) {
-            if (!both_had) task_db_task_tag_remove(app->db, id.longLongValue, errands->id);
+        check(lacking.count > 0 && [[NSSet setWithArray:picked] isSubsetOfSet:now_tagged],
+              "add tag: choosing a tag gives it to every selected task");
+        BOOL put_back = YES;
+        for (NSNumber *id in lacking) {
+            put_back = task_db_task_tag_remove(app->db, id.longLongValue, errands->id) == 1 && put_back;
         }
+        check(put_back, "add tag: (taken off again)");
         task_tag_free(errands);
         [library full_refresh];
+
+        /* The Favorites bar spans the window under the toolbar; the
+         * sidebar and the tasks start below it, and take its room when it
+         * is hidden. */
+        NSView *content = window.contentView;
+        [window layoutIfNeeded];
+        NSRect bar_frame  = [bar convertRect:bar.bounds toView:content];
+        NSRect side_frame = [sidebar convertRect:sidebar.bounds toView:content];
+        check(fabs(NSWidth(bar_frame) - NSWidth(content.bounds)) < 0.5 &&
+              fabs(NSMaxY(bar_frame) - NSMaxY(content.bounds)) < 0.5 &&
+              fabs(NSMaxY(side_frame) - NSMinY(bar_frame)) < 0.5,
+              "layout: the Favorites bar spans the window, the sidebar starts below it");
 
         /* The toggles, and the sidebar button first in the toolbar. */
         check([window.toolbar.items.firstObject.itemIdentifier
@@ -1440,6 +1449,10 @@ check_sidebar(TaskApp *app, NSString *dir)
               "toggle: Show Sidebar brings it back");
         [library perform_command:TasksCommandToggleFavoritesBar param:nil];
         check_spin(SLIDE_SECONDS);
+        [window layoutIfNeeded];
+        side_frame = [sidebar convertRect:sidebar.bounds toView:content];
+        check(fabs(NSMaxY(side_frame) - NSMaxY(content.bounds)) < 0.5,
+              "layout: with the bar hidden, the sidebar starts at the top");
         check(bar.hiddenOrHasHiddenAncestor && !task_config_get_bool(TASK_CFG_FAVORITES_BAR_VISIBLE) &&
               [[library state_of_command:TasksCommandToggleFavoritesBar].title
                   isEqualToString:@"Show Favorites Bar"],

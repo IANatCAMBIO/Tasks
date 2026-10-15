@@ -5,9 +5,11 @@
 @class TasksLibraryWindow;
 
 /*
- * TasksFavoritesBar — a 28 pt horizontal scrolling strip with one button
- * per FAVORITE tag (TaskTag.favorite), alphabetically.  Clicking a button
- * selects its tag through [library select:]; the button of the selected
+ * TasksFavoritesBar — a 28 pt horizontal scrolling strip across the whole
+ * window, under the toolbar (the sidebar and the tasks start below it),
+ * with one button per FAVORITE tag (TaskTag.favorite), alphabetically.
+ * Clicking a button selects its tag through [library select:]; the button
+ * of the selected
  * tag is lit.  A right-click on a button offers Edit Tag… (its emoji and
  * favorite flag, TasksCommandEditTag).  With no favorite tag the bar says
  * how to make one.

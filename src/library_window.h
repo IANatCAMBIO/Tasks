@@ -12,14 +12,16 @@
  * panes it hosts (the sidebar, the Favorites bar, the task list, the
  * Kanban board, the day planner).
  *
- *   ┌───────────────────────────────────────────────────────┬─────────┐
+ *   ┌─────────────────────────────────────────────────────────────────┐
  *   │ toolbar: Sidebar │ New  Delete │ Completed  Pane  Planner  search │
- *   ├──────────┬────────────────────────────────────────────┤  day    │
- *   │ sidebar  │ Favorites bar (TasksFavoritesBar)           │ planner │
- *   │ (Tasks-  ├────────────────────────────────────────────┤ (hidden │
- *   │ Sidebar):│ task pane: the task list OR the Kanban board│  by     │
- *   │ views,   │ (TasksTaskList / TasksKanban, one visible)  │ default)│
- *   │ tags     │                                             │         │
+ *   ├─────────────────────────────────────────────────────────────────┤
+ *   │ Favorites bar (TasksFavoritesBar): favorite tags, full width     │
+ *   ├──────────┬────────────────────────────────────────────┬─────────┤
+ *   │ sidebar  │ task pane: the task list OR the Kanban board│  day    │
+ *   │ (Tasks-  │ (TasksTaskList / TasksKanban, one visible)  │ planner │
+ *   │ Sidebar):│                                             │ (hidden │
+ *   │ views,   │                                             │  by     │
+ *   │ tags     │                                             │ default)│
  *   ├──────────┴────────────────────────────────────────────┴─────────┤
  *   │ <view> - N tasks                            latest event message │
  *   └─────────────────────────────────────────────────────────────────┘

@@ -170,13 +170,24 @@ init_with_library:(TasksLibraryWindow *)library
     self.hint.textColor = NSColor.secondaryLabelColor;
     self.hint.translatesAutoresizingMaskIntoConstraints = NO;
 
+    /* The bar spans the window: a rule along its bottom parts it from the
+     * sidebar and the tasks below.  Wider than tall, so it is horizontal. */
+    NSBox *rule  = [[NSBox alloc] initWithFrame:NSMakeRect(0, 0, 100, 1)];
+    rule.boxType = NSBoxSeparator;
+    rule.translatesAutoresizingMaskIntoConstraints = NO;
+
     [self addSubview:self.scroll];
     [self addSubview:self.hint];
+    [self addSubview:rule];
     [NSLayoutConstraint activateConstraints:@[
         [self.scroll.topAnchor constraintEqualToAnchor:self.topAnchor],
         [self.scroll.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
         [self.scroll.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-        [self.scroll.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+        [self.scroll.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
+        [rule.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+        [rule.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [rule.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+        [rule.heightAnchor constraintEqualToConstant:1.0],
         [self.hint.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:bar_pad * 2],
         [self.hint.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
     ]];

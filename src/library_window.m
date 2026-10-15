@@ -41,6 +41,7 @@ static NSString * const search_tooltip       =
 @property (nonatomic, strong) TasksSidebar      *sidebar;
 @property (nonatomic, strong) NSLayoutConstraint *sidebar_width;  /* 0 while hidden */
 @property (nonatomic, strong) TasksFavoritesBar *favorites_bar;
+@property (nonatomic, strong) NSLayoutConstraint *favorites_height; /* 0 while hidden */
 @property (nonatomic, strong) TasksTaskList *task_list;
 @property (nonatomic, strong) TasksKanban *kanban;
 @property (nonatomic, strong) TasksDayPlanner *day_planner;
@@ -472,13 +473,13 @@ build_float_bar:(NSView *)pane
 }
 
 /*
- * build_layout — the window's content: the tag sidebar at the left, then a
- * split view running from the toolbar to the status bar's separator, its
- * left half the Favorites bar over the task pane and its right half the
- * day planner, which therefore stands the full height.  The task pane
- * holds BOTH presentations, the list and the board, of which
- * apply_pane_mode shows one.  NSStackView collapses the bar when hidden,
- * so the pane fills the left half; a hidden sidebar has no width.
+ * build_layout — the window's content: the Favorites bar across the whole
+ * width under the toolbar; below it the tag sidebar at the left, then a
+ * split view down to the status bar's separator, its left half the task
+ * pane and its right half the day planner.  The task pane holds BOTH
+ * presentations, the list and the board, of which apply_pane_mode shows
+ * one.  A hidden bar has no height and a hidden sidebar no width, so what
+ * is left fills the room.
  */
 - (void)
 build_layout
@@ -497,20 +498,6 @@ build_layout
     pin_edges(self.kanban);
     [self build_float_bar:pane];
 
-    [self.favorites_bar.heightAnchor
-        constraintEqualToConstant:tasks_look_favorites_bar_h].active = YES;
-
-    /* The split's left half: the Favorites bar over the task pane.  A plain
-     * container owns the stack so the split view manages a frame-based
-     * subview, as it does the day planner. */
-    NSStackView *left_stack = [NSStackView stackViewWithViews:@[self.favorites_bar, pane]];
-    left_stack.orientation  = NSUserInterfaceLayoutOrientationVertical;
-    left_stack.spacing      = 0;
-    left_stack.distribution = NSStackViewDistributionFill;
-
-    NSView *left = [[NSView alloc] initWithFrame:NSZeroRect];
-    [left addSubview:left_stack];
-    pin_edges(left_stack);
 
     self.day_planner = [[TasksDayPlanner alloc] init_with_library:self];
 
@@ -518,7 +505,7 @@ build_layout
     split.vertical     = YES;
     split.dividerStyle = NSSplitViewDividerStyleThin;
     split.delegate     = self;
-    [split addSubview:left];
+    [split addSubview:pane];
     [split addSubview:self.day_planner];
     self.main_split = split;
 
@@ -552,22 +539,31 @@ build_layout
      * a height of one point, which would squeeze the window to fit it. */
     NSBox *edge  = [[NSBox alloc] initWithFrame:NSMakeRect(0, 0, 1, 100)];
     edge.boxType = NSBoxSeparator;
-    for (NSView *v in @[self.sidebar, edge, split_host, rule, self.status_left, self.status_right]) {
+    for (NSView *v in @[self.favorites_bar, self.sidebar, edge, split_host, rule,
+                        self.status_left, self.status_right]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:v];
     }
+    self.favorites_height = [self.favorites_bar.heightAnchor
+                                constraintEqualToConstant:tasks_look_favorites_bar_h];
     self.sidebar_width = [self.sidebar.widthAnchor constraintEqualToConstant:tasks_look_sidebar_w];
+    NSLayoutYAxisAnchor *below_bar = self.favorites_bar.bottomAnchor;
     [NSLayoutConstraint activateConstraints:@[
-        [self.sidebar.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [self.favorites_bar.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [self.favorites_bar.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [self.favorites_bar.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        self.favorites_height,
+
+        [self.sidebar.topAnchor constraintEqualToAnchor:below_bar],
         [self.sidebar.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [self.sidebar.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
         self.sidebar_width,
-        [edge.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [edge.topAnchor constraintEqualToAnchor:below_bar],
         [edge.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
         [edge.leadingAnchor constraintEqualToAnchor:self.sidebar.trailingAnchor],
         [edge.widthAnchor constraintEqualToConstant:1.0],
 
-        [split_host.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [split_host.topAnchor constraintEqualToAnchor:below_bar],
         [split_host.leadingAnchor constraintEqualToAnchor:edge.trailingAnchor],
         [split_host.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
         [split_host.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
@@ -1482,8 +1478,42 @@ add_tag:(int64_t)tag_id
 }
 
 /*
- * show_sidebar:animated: — show or hide the tag sidebar: a hidden sidebar
- * has no width, so the task pane takes the room.
+ * slide:size:to:show:animated: — show or hide a panel by its extent: a
+ * hidden panel has none (the sidebar no width, the Favorites bar no
+ * height), so its neighbours take the room.
+ *
+ * Inputs:
+ *   view     — the panel
+ *   size     — the constraint holding its width or height
+ *   extent   — its extent while shown
+ *   show     — YES to show it
+ *   animated — YES to slide it
+ */
+- (void)
+slide:(NSView *)view size:(NSLayoutConstraint *)size to:(CGFloat)extent show:(BOOL)show
+     animated:(BOOL)animated
+{
+    CGFloat target = show ? extent : 0.0;
+
+    if (!animated) {
+        view.hidden   = !show;
+        size.constant = target;
+        return;
+    }
+    view.hidden = NO;
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+        ctx.duration = 0.15;
+        ctx.allowsImplicitAnimation = YES;
+        size.animator.constant = target;
+    } completionHandler:^{
+        /* From the extent in force, not this slide's direction: a slide
+         * the other way may have begun since, and it decides. */
+        view.hidden = size.constant == 0.0;
+    }];
+}
+
+/*
+ * show_sidebar:animated: — show or hide the tag sidebar.
  *
  * Inputs:
  *   show     — YES to show it
@@ -1492,21 +1522,22 @@ add_tag:(int64_t)tag_id
 - (void)
 show_sidebar:(BOOL)show animated:(BOOL)animated
 {
-    CGFloat width = show ? tasks_look_sidebar_w : 0.0;
+    [self slide:self.sidebar size:self.sidebar_width to:tasks_look_sidebar_w show:show
+       animated:animated];
+}
 
-    if (!animated) {
-        self.sidebar.hidden          = !show;
-        self.sidebar_width.constant  = width;
-        return;
-    }
-    self.sidebar.hidden = NO;
-    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
-        ctx.duration = 0.15;
-        ctx.allowsImplicitAnimation = YES;
-        self.sidebar_width.animator.constant = width;
-    } completionHandler:^{
-        self.sidebar.hidden = !show;
-    }];
+/*
+ * show_favorites_bar:animated: — show or hide the Favorites bar.
+ *
+ * Inputs:
+ *   show     — YES to show it
+ *   animated — YES to slide it
+ */
+- (void)
+show_favorites_bar:(BOOL)show animated:(BOOL)animated
+{
+    [self slide:self.favorites_bar size:self.favorites_height to:tasks_look_favorites_bar_h
+           show:show animated:animated];
 }
 
 /*
@@ -1537,12 +1568,9 @@ toggle_sidebar
 - (void)
 toggle_favorites_bar
 {
-    BOOL show = self.favorites_bar.hidden;
+    BOOL show = self.favorites_height.constant == 0.0;
 
-    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
-        ctx.duration = 0.15;
-        self.favorites_bar.animator.hidden = !show;
-    }];
+    [self show_favorites_bar:show animated:YES];
     task_config_set_bool(TASK_CFG_FAVORITES_BAR_VISIBLE, show);
 }
 
@@ -1682,7 +1710,7 @@ apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
     frame = [self.window constrainFrameRect:frame toScreen:self.window.screen];
 
     if (!animated) {
-        self.favorites_bar.hidden = no_bar;
+        [self show_favorites_bar:!no_bar animated:NO];
         [self show_sidebar:!no_side animated:NO];
         [self.window setFrame:frame display:NO];
         return;
@@ -1691,12 +1719,12 @@ apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
     self.compact_animating = YES;
     __weak TasksLibraryWindow *ws = self;
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        self.favorites_bar.animator.hidden = no_bar;
         [self.window.animator setFrame:frame display:YES];
     } completionHandler:^{
         ws.compact_animating = NO;
     }];
     [self show_sidebar:!no_side animated:YES];
+    [self show_favorites_bar:!no_bar animated:YES];
 }
 
 /*
@@ -2019,7 +2047,7 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
         }
         break;
     case TasksCommandToggleFavoritesBar:
-        if (self.favorites_bar.hidden) state.title = @"Show Favorites Bar";
+        if (self.favorites_height.constant == 0.0) state.title = @"Show Favorites Bar";
         /* Compact mode hides the bar whatever the setting. */
         state.enabled = !task_config_get_bool(TASK_CFG_COMPACT);
         break;
