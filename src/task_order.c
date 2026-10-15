@@ -35,6 +35,8 @@ order_key(const char *family, task_sel_t sel)
         rc = asprintf(&key, "%s_list_%" PRId64, family, sel.id);
     } else if (sel.kind == task_sel_group) {
         rc = asprintf(&key, "%s_group_%" PRId64, family, sel.id);
+    } else if (sel.kind == task_sel_tag) {
+        rc = asprintf(&key, "%s_tag_%" PRId64, family, sel.id);
     } else {
         /* A view's id is part of the ini format (task_view.h). */
         const TaskView *view = task_sel_view_of(sel);

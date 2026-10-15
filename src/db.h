@@ -22,6 +22,11 @@
  *                scheduled_start / scheduled_duration (the day planner)
  *   attachments  id, task_id, path, added_at
  *   sync_state   key, value
+ *   task_tag_names id, name (UNIQUE, compared case-insensitively)
+ *   task_tags    task_id, tag_id — the tags a task carries.  A tag exists
+ *                only while a live task carries it: the shared schema's
+ *                triggers drop a tombstoned task's tags, and a tag with
+ *                them when it was the last (shared_db.c, TASK_TAGS_SQL).
  *
  * NOTHING belonging to a particular INTEGRATION is here.  An integration
  * keeps its per-row state in its own SIDE TABLE keyed by row id: the
@@ -637,6 +642,56 @@ gboolean   task_db_attachment_remove(TaskDatabase *db, gint64 id);
  * are packed into the pointers (GINT_TO_POINTER); free with
  * g_hash_table_destroy.                                                    */
 GHashTable *task_db_attachment_counts(TaskDatabase *db);
+
+/* --------------------------------- tags ---------------------------------- */
+
+/* One tag.  The name is owned by the struct.                               */
+typedef struct {
+    gint64    id;
+    gchar    *name;
+} TaskTag;
+
+void task_tag_free(TaskTag *tag);
+void task_ptr_array_free_tags(GPtrArray *a);
+
+/* Every tag, alphabetical (case-insensitive) — each is carried by at least
+ * one live task (the schema's triggers delete the rest).  TaskTag*
+ * elements (task_ptr_array_free_tags); never NULL.                         */
+GPtrArray *task_db_tags(TaskDatabase *db);
+
+/* One tag, or NULL when no tag has that id (it has gone).  Free with
+ * task_tag_free.                                                           */
+TaskTag   *task_db_tag_get(TaskDatabase *db, gint64 id);
+
+/* The tags one task carries, alphabetical (case-insensitive).  TaskTag*
+ * elements (task_ptr_array_free_tags); never NULL.                         */
+GPtrArray *task_db_task_tags(TaskDatabase *db, gint64 task_id);
+
+/* ---------------------------------------------------------------------------
+ * task_db_task_tag_add() — give a live task a tag, by name: the existing
+ * tag of that name (compared case-insensitively, so its stored spelling
+ * wins), or a new one.  The name is trimmed of surrounding white space.
+ * One transaction (the caller's when one is open).  Tags are local-only:
+ * updated_at is not stamped.
+ *
+ *   db      — the connection
+ *   task_id — the task; a tombstoned or missing task is refused
+ *   name    — the tag's name; empty once trimmed is refused
+ *
+ * Returns the tag's id (also when the task already carried it), or 0 when
+ * refused or the write failed (logged).
+ * ------------------------------------------------------------------------- */
+gint64     task_db_task_tag_add(TaskDatabase *db, gint64 task_id, const gchar *name);
+
+/* Take a tag off a task.  The tag itself is deleted when no other task
+ * carries it (the schema's trigger).  Returns TRUE when written (also when
+ * the task did not carry it).                                              */
+gboolean   task_db_task_tag_remove(TaskDatabase *db, gint64 task_id, gint64 tag_id);
+
+/* Every live task carrying a tag, of any level and in whatever list it is
+ * filed — a tag's proto-list — ordered like task_db_tasks_pinned.  Done
+ * ones are included; the rows layer applies show_completed.               */
+GPtrArray *task_db_tasks_tagged(TaskDatabase *db, gint64 tag_id);
 
 /* -------------------------------- vitals --------------------------------- */
 

@@ -1815,6 +1815,26 @@ task_db_tasks_delete_done(TaskDatabase *db, gint64 list_id)
     return top > 0 ? (guint)top : 0;
 }
 
+/*
+ * task_db_tasks_tagged — a tag's proto-list (see db.h).
+ *
+ * Inputs:
+ *   db     — the connection
+ *   tag_id — the tag
+ *
+ * Output:
+ *   GPtrArray of Task* (possibly empty, never NULL); free with
+ *   task_ptr_array_free_tasks.
+ */
+GPtrArray *
+task_db_tasks_tagged(TaskDatabase *db, gint64 tag_id)
+{
+    return task_query(db,
+        "SELECT " TASK_COLS " FROM tasks WHERE deleted = 0 AND "
+        "id IN (SELECT task_id FROM task_tags WHERE tag_id = ?)" CROSS_LIST_ORDER,
+        1, tag_id, 0);
+}
+
 /* ---------------------------------------------------------------------------
  * Attachments.
  * ------------------------------------------------------------------------- */
@@ -1887,6 +1907,169 @@ task_db_attachment_counts(TaskDatabase *db)
                 GINT_TO_POINTER(sqlite3_column_int(st, 1)));
     sqlite3_finalize(st);
     return map;
+}
+
+/* ---------------------------------------------------------------------------
+ * Tags.
+ * ------------------------------------------------------------------------- */
+
+/*
+ * task_tag_free — free a tag and its name.
+ *
+ * Inputs:
+ *   tag — the tag, or NULL (ignored)
+ */
+void
+task_tag_free(TaskTag *tag)
+{
+    if (tag == NULL) return;
+    g_free(tag->name);
+    g_free(tag);
+}
+
+/*
+ * task_ptr_array_free_tags — free an array of tags and the tags in it.
+ *
+ * Inputs:
+ *   a — the array, or NULL (ignored)
+ */
+void
+task_ptr_array_free_tags(GPtrArray *a)
+{
+    if (a == NULL) return;
+    for (guint i = 0; i < a->len; i++)
+        task_tag_free(g_ptr_array_index(a, i));
+    g_ptr_array_free(a, TRUE);
+}
+
+/*
+ * tag_query — the tags a query yields, as (id, name) rows.
+ *
+ * Inputs:
+ *   db    — the connection
+ *   sql   — the query, with at most one ? (bound to `param`)
+ *   param — the value bound to the ?, when there is one
+ *
+ * Output:
+ *   GPtrArray of TaskTag* (task_ptr_array_free_tags); never NULL.
+ */
+static GPtrArray *
+tag_query(TaskDatabase *db, const gchar *sql, gint64 param)
+{
+    GPtrArray    *out = g_ptr_array_new();
+    sqlite3_stmt *st  = NULL;
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK) {
+        if (sqlite3_bind_parameter_count(st) > 0)
+            sqlite3_bind_int64(st, 1, param);
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            TaskTag *tag = g_new0(TaskTag, 1);
+            tag->id   = sqlite3_column_int64(st, 0);
+            tag->name = column_text_dup(st, 1);
+            g_ptr_array_add(out, tag);
+        }
+    } else {
+        step_done(db, NULL, "tag query", NULL);
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* task_db_tags() — every tag, alphabetical (see db.h).                     */
+GPtrArray *
+task_db_tags(TaskDatabase *db)
+{
+    return tag_query(db, "SELECT id, name FROM task_tag_names "
+                         "ORDER BY name COLLATE NOCASE, id", 0);
+}
+
+/* task_db_tag_get() — one tag, or NULL (see db.h).                         */
+TaskTag *
+task_db_tag_get(TaskDatabase *db, gint64 id)
+{
+    GPtrArray *a   = tag_query(db, "SELECT id, name FROM task_tag_names WHERE id = ?", id);
+    TaskTag   *tag = a->len > 0 ? g_ptr_array_steal_index(a, 0) : NULL;
+    task_ptr_array_free_tags(a);
+    return tag;
+}
+
+/* task_db_task_tags() — one task's tags, alphabetical (see db.h).          */
+GPtrArray *
+task_db_task_tags(TaskDatabase *db, gint64 task_id)
+{
+    return tag_query(db, "SELECT n.id, n.name FROM task_tags tt "
+                         "JOIN task_tag_names n ON n.id = tt.tag_id "
+                         "WHERE tt.task_id = ? ORDER BY n.name COLLATE NOCASE, n.id",
+                     task_id);
+}
+
+/*
+ * task_db_task_tag_add — give a live task a tag by name (see db.h).  Three
+ * statements in one transaction: the name (unless a tag of that name
+ * exists), the link, and the tag's id.  Both writes are conditional on the
+ * task being live, so a refused add writes nothing: a name row without a
+ * link would be a tag no task carries.
+ *
+ * Inputs:
+ *   db      — the connection
+ *   task_id — the task
+ *   name    — the tag's name, trimmed here
+ *
+ * Output:
+ *   the tag id, or 0 when refused or a write failed.
+ */
+gint64
+task_db_task_tag_add(TaskDatabase *db, gint64 task_id, const gchar *name)
+{
+    static const gchar *const steps[] = {
+        "INSERT INTO task_tag_names (name) SELECT ?1 "
+        " WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ?2 AND deleted = 0) "
+        "ON CONFLICT (name) DO NOTHING",
+        "INSERT OR IGNORE INTO task_tags (task_id, tag_id) "
+        "SELECT ?2, id FROM task_tag_names WHERE name = ?1 "
+        " AND EXISTS (SELECT 1 FROM tasks WHERE id = ?2 AND deleted = 0)",
+        "SELECT tt.tag_id FROM task_tags tt "
+        "JOIN task_tag_names n ON n.id = tt.tag_id "
+        "WHERE tt.task_id = ?2 AND n.name = ?1",
+    };
+    gchar *clean = g_strstrip(g_strdup(name != NULL ? name : ""));
+    gint64 tag_id = 0;
+    gboolean own;
+
+    if (clean[0] == '\0' || !txn_join(db, &own)) {
+        g_free(clean);
+        return 0;
+    }
+    gboolean ok = TRUE;
+    for (gsize i = 0; ok && i < G_N_ELEMENTS(steps); i++) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(shared_db_handle(db->shared), steps[i], -1, &st, NULL)
+            == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, clean, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(st, 2, task_id);
+        }
+        if (i + 1 < G_N_ELEMENTS(steps)) {
+            ok = step_done(db, st, "tag add", NULL);
+        } else if (st != NULL && sqlite3_step(st) == SQLITE_ROW) {
+            tag_id = sqlite3_column_int64(st, 0);
+        } else {
+            ok = FALSE;              /* refused: the task is not live      */
+        }
+        sqlite3_finalize(st);
+    }
+    g_free(clean);
+    return txn_leave(db, own, ok) ? tag_id : 0;
+}
+
+/* task_db_task_tag_remove() — take a tag off a task (see db.h).            */
+gboolean
+task_db_task_tag_remove(TaskDatabase *db, gint64 task_id, gint64 tag_id)
+{
+    gchar *sql = sqlite3_mprintf(
+        "DELETE FROM task_tags WHERE task_id = %lld AND tag_id = %lld",
+        (long long)task_id, (long long)tag_id);
+    gboolean ok = exec(db, sql);
+    sqlite3_free(sql);
+    return ok;
 }
 
 /* task_db_totals() — non-tombstoned task/list counts (see db.h).           */

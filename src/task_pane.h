@@ -2,7 +2,8 @@
  * task_pane — what the task pane shows for a sidebar selection.
  *
  * The sidebar selects ONE row: a registered view (Favorites, All Tasks, Due
- * Today — task_view.h), a list, or a list group.  This module names that
+ * Today — task_view.h), a list, a list group, or a tag's proto-list (every
+ * task carrying the tag, shown the way a list is).  This module names that
  * selection (task_sel_t) and collects its content: the tasks, filtered by
  * the search box, with completed ones left out when the setting hides
  * them, described as rows (task_rows.h), plus the status bar's line.
@@ -33,7 +34,9 @@ typedef enum {
     task_sel_header,                /* the "Lists" header: never selected,
                                      * here so the sidebar has one enum   */
     task_sel_list,                  /* a real list; id is the list id     */
-    task_sel_group                  /* a list group; id is the group id   */
+    task_sel_group,                 /* a list group; id is the group id   */
+    task_sel_tag                    /* a tag's proto-list; id is the tag
+                                     * id (task_db_tasks_tagged)          */
 } task_sel_kind_t;
 
 /* The sidebar selection. */
@@ -89,8 +92,10 @@ bool task_sel_takes_new_tasks(task_sel_t sel);
 
 /*
  * task_sel_new_task_list — the list New Task creates its task in: the
- * selected list, or — for a group or a view that takes new tasks — the
- * default list (task_ops_default_list).
+ * selected list, or — for a group, a tag or a view that takes new tasks —
+ * the default list (task_ops_default_list).  New Task in a tag's
+ * proto-list also gives the task that tag (task_sel_tag_id), so it shows
+ * where it was made.
  *
  * Inputs:
  *   app — the context (the default list is checked against its database)
@@ -103,9 +108,20 @@ bool task_sel_takes_new_tasks(task_sel_t sel);
 int64_t task_sel_new_task_list(TaskApp *app, task_sel_t sel);
 
 /*
+ * task_sel_tag_id — the selected tag.
+ *
+ * Inputs:
+ *   sel — the selection
+ *
+ * Output:
+ *   the tag id, or 0 when the selection is not a tag's proto-list.
+ */
+int64_t task_sel_tag_id(task_sel_t sel);
+
+/*
  * task_sel_is_virtual — whether the selection gathers tasks from several
- * lists, so that each row carries its "in <list>" line: a group always, a
- * view when it says so (TaskView.virtual_rows), a list never.  This is the
+ * lists, so that each row carries its "in <list>" line: a group and a tag
+ * always, a view when it says so (TaskView.virtual_rows), a list never.  This is the
  * flag task_row_ctx_init wants when a single row is rebuilt in place.
  *
  * Inputs:

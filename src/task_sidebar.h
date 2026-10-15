@@ -47,14 +47,28 @@ char *task_sidebar_list_label(const TaskList *list);
 char *task_sidebar_group_label(const TaskGroup *group);
 
 /*
+ * task_sidebar_tag_label — what a tag's proto-list is called wherever it is
+ * shown by name: the tag emoji (🏷️), two spaces, the tag's name — the
+ * same shape as a list's label.
+ *
+ * Inputs:
+ *   tag — the tag
+ *
+ * Output:
+ *   new string (free it).
+ */
+char *task_sidebar_tag_label(const TaskTag *tag);
+
+/*
  * task_sidebar_pick — the row to select after the sidebar was rebuilt.
  *
  * Exactly one row is always selected and the Lists header never is.  When
  * the row that was selected has gone, the selection falls back, in order:
  *
  *   1. the row of the same kind and id (nothing has gone);
- *   2. for a VIEW only: the first row that is a view (Favorites vanishes
- *      when the last favourite is removed; the user stays among the views);
+ *   2. for a VIEW or a TAG: the first row that is a view (Favorites
+ *      vanishes when the last favourite is removed, a tag when the last
+ *      task carrying it loses it; the user stays among the views);
  *   3. the first list (a deleted list or group leaves the user on a list);
  *   4. the first row that is not the header.
  *

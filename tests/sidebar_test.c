@@ -1,6 +1,6 @@
 /*
  * sidebar_test.c — the sidebar's toolkit-free rules (src/task_sidebar.h):
- * a list's label, the selection fallback after a rebuild, and where a
+ * a list's and a tag's label, the selection fallback after a rebuild, and where a
  * dragged list lands in the saved order.
  */
 
@@ -100,6 +100,11 @@ main(void)
     char     *group_label = task_sidebar_group_label(&group);
     check(strcmp(group_label, "\xe2\x96\xbc  Work") == 0, "label: a group is \xe2\x96\xbc, two spaces, name");
     free(group_label);
+    TaskTag tag       = { .id = 3, .name = (gchar *)"errands" };
+    char   *tag_label = task_sidebar_tag_label(&tag);
+    check(strcmp(tag_label, "\xf0\x9f\x8f\xb7\xef\xb8\x8f  errands") == 0,
+          "label: a tag is the tag emoji, two spaces, name");
+    free(tag_label);
 
     /* Selection: step 1, the same row. */
     check(pick(task_sel_view, 1) == 1, "pick: the same view");
@@ -108,6 +113,7 @@ main(void)
 
     /* Step 2: a view that has gone leaves the user on the first view. */
     check(pick(task_sel_view, 7) == 0, "pick: a vanished view falls back to the first view");
+    check(pick(task_sel_tag, 4) == 0, "pick: a vanished tag falls back to the first view");
 
     /* Step 3: a list or group that has gone leaves the user on the first
      * list — never on another group, and never on a view while a list is

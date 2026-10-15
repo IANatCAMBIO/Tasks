@@ -48,6 +48,16 @@ task_sidebar_group_label(const TaskGroup *group)
 }
 
 /*
+ * task_sidebar_tag_label — a tag's display label.
+ * Inputs/output are documented in task_sidebar.h.
+ */
+char *
+task_sidebar_tag_label(const TaskTag *tag)
+{
+    return icon_label("\xf0\x9f\x8f\xb7\xef\xb8\x8f", tag->name);   /* 🏷️ */
+}
+
+/*
  * first_of_kind — the first row of one kind.
  *
  * Inputs:
@@ -81,7 +91,7 @@ task_sidebar_pick(const task_sel_t *rows, int n, task_sel_t wanted)
             if (rows[i].kind == wanted.kind && rows[i].id == wanted.id) found = i;
         }
     }
-    if (found < 0 && wanted.kind == task_sel_view) {
+    if (found < 0 && (wanted.kind == task_sel_view || wanted.kind == task_sel_tag)) {
         found = first_of_kind(rows, n, task_sel_view);
     }
     if (found < 0) found = first_of_kind(rows, n, task_sel_list);

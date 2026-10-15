@@ -42,6 +42,16 @@ task_sel_list_id(task_sel_t sel)
 }
 
 /*
+ * task_sel_tag_id — the selected tag, or 0.
+ * Inputs/output are documented in task_pane.h.
+ */
+int64_t
+task_sel_tag_id(task_sel_t sel)
+{
+    return sel.kind == task_sel_tag ? sel.id : 0;
+}
+
+/*
  * task_sel_takes_new_tasks — whether New Task is offered here.
  * Inputs/output are documented in task_pane.h.
  */
@@ -74,7 +84,7 @@ task_sel_is_virtual(task_sel_t sel)
     const TaskView *view = task_sel_view_of(sel);
 
     if (view != NULL) return view->virtual_rows;
-    return sel.kind == task_sel_group;
+    return sel.kind == task_sel_group || sel.kind == task_sel_tag;
 }
 
 /*
@@ -85,9 +95,11 @@ task_pane_content_t *
 task_pane_collect(TaskApp *app, task_sel_t sel, const TaskSearch *search)
 {
     /* A registered view answers for itself; a group shows the tasks of
-     * every list under it, aggregated; anything else is a real list. */
+     * every list under it, aggregated; a tag every task carrying it;
+     * anything else is a real list. */
     const TaskView *view  = task_sel_view_of(sel);
     TaskGroup      *group = NULL;   /* owns `where` for a group           */
+    TaskTag        *tag   = NULL;   /* owns `where` for a tag             */
     TaskList       *list  = NULL;   /* owns `where` for a list            */
     GPtrArray      *tasks;
     const gchar    *where = "?";
@@ -101,6 +113,10 @@ task_pane_collect(TaskApp *app, task_sel_t sel, const TaskSearch *search)
         tasks = task_db_tasks_in_group(app->db, sel.id);
         group = task_db_group_get(app->db, sel.id);
         where = group != NULL ? group->name : "";
+    } else if (sel.kind == task_sel_tag) {
+        tasks = task_db_tasks_tagged(app->db, sel.id);
+        tag   = task_db_tag_get(app->db, sel.id);
+        where = tag != NULL ? tag->name : "";
     } else {
         tasks = task_db_tasks_toplevel(app->db, sel.id);
         list  = task_db_list_get(app->db, sel.id);
@@ -143,6 +159,7 @@ task_pane_collect(TaskApp *app, task_sel_t sel, const TaskSearch *search)
     if (filtered != NULL) g_ptr_array_free(filtered, TRUE);
     task_ptr_array_free_tasks(tasks);
     task_group_free(group);
+    task_tag_free(tag);
     task_list_free(list);
     return content;
 }

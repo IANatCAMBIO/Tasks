@@ -8,6 +8,9 @@
  *   <family>_list_<id>      a list
  *   <family>_group_<id>     a group's aggregate (ordered separately from
  *                           the lists under it: a different pane of tasks)
+ *   <family>_tag_<id>       a tag's proto-list.  Tag ids are never reused
+ *                           (AUTOINCREMENT), so the order of a tag that
+ *                           has gone never applies to a later one
  *   <family>_<view id>      a registered view: manual_order_all, ...
  *
  * with the two families TASK_CFG_FAMILY_MANUAL (the list) and

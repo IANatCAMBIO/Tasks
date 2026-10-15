@@ -3,7 +3,8 @@
  * has something to show: list groups, lists, and a few dozen tasks covering
  * due dates (overdue, today, ahead, with and without a time), recurrence,
  * subtasks, notes, completed and in-progress work, favourites, high
- * priority, attachments, and Notes action items (in a folder and not).
+ * priority, attachments, Notes action items (in a folder and not), and
+ * tags (one across lists and groups, one on a single task).
  *
  * Run through `make seed`, which empties the sandbox first and sets
  * TASKS_DATA_DIR and CAMBIO_SHARED_DB.  The tool refuses to run without
@@ -150,6 +151,22 @@ static const seed_link_t seed_links[] = {
     { 43, "Captain's Log", "Log, stardate today" },
     { 44, "Quad",          "Quad weekly sync"    },
     { 45, NULL,            "Loose ends"          },
+};
+
+/* Tags: tasks of the table above and a tag each carries, so the tag
+ * buttons and their proto-lists have something to show — one tag across
+ * lists of both groups (a subtask among them), one on a single task. */
+typedef struct {
+    int         task;               /* table position of the task (1-based) */
+    const char *tag;                /* the tag's name                       */
+} seed_tag_t;
+
+static const seed_tag_t seed_tags[] = {
+    {  5, "urgent" },
+    { 17, "urgent" },
+    { 25, "urgent" },
+    { 12, "urgent" },
+    { 37, "deep work" },
 };
 
 #define COUNT(a) (sizeof (a) / sizeof (a)[0])
@@ -372,6 +389,13 @@ main(void)
 
     for (size_t i = 0; i < COUNT(seed_links); i++) {
         if (seed_link(app, &seed_links[i], task_ids[seed_links[i].task - 1]) != 0) return 1;
+    }
+
+    for (size_t i = 0; i < COUNT(seed_tags); i++) {
+        if (task_db_task_tag_add(app->db, task_ids[seed_tags[i].task - 1], seed_tags[i].tag) == 0) {
+            fprintf(stderr, "seed: could not tag a task \"%s\"\n", seed_tags[i].tag);
+            return 1;
+        }
     }
 
     gint n_tasks = 0, n_lists = 0;
