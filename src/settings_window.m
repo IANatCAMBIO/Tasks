@@ -75,6 +75,9 @@ static const option_spec_t appearance_options[] = {
       @"An action item written in a note in the folder \u201CCaptain\u2019s Log\u201D "
       @"reads \u201CCaptain\u2019s Log - lock down my diet\u201D. Display only: the "
       @"title itself, and the line in the note, are unchanged." },
+    { @"Show task counts next to tags in the sidebar",
+      TASK_CFG_SIDEBAR_COUNTS,
+      @"How many open tasks (not Done) carry each tag." },
 };
 #define APPEARANCE_OPTION_COUNT (sizeof(appearance_options) / sizeof(appearance_options[0]))
 

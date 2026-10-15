@@ -136,6 +136,18 @@ test_add_remove(TaskApp *app)
           "add: an empty name is refused");
     check(tag_count(app) == 3, "tags: three tags exist");
 
+    GHashTable *counts = task_db_tag_open_counts(app->db);
+    check(GPOINTER_TO_INT(g_hash_table_lookup(counts, GINT_TO_POINTER(errands))) == 2 &&
+          GPOINTER_TO_INT(g_hash_table_lookup(counts, GINT_TO_POINTER(diy))) == 2,
+          "counts: each tag's open tasks, a subtask among them");
+    g_hash_table_destroy(counts);
+    task_db_task_set_status(app->db, sub, TASK_STATUS_DONE);
+    counts = task_db_tag_open_counts(app->db);
+    check(GPOINTER_TO_INT(g_hash_table_lookup(counts, GINT_TO_POINTER(diy))) == 1,
+          "counts: a Done task is not counted");
+    g_hash_table_destroy(counts);
+    task_db_task_set_status(app->db, sub, TASK_STATUS_NEW);
+
     TaskTag *tag = task_db_tag_get(app->db, errands);
     check(tag != NULL && strcmp(tag->name, "Errands") == 0 && strcmp(tag->emoji, "") == 0 &&
           !tag->favorite, "get: a tag by id, no emoji, not a favorite");

@@ -1697,6 +1697,34 @@ task_db_tag_set_favorite(TaskDatabase *db, gint64 id, gboolean favorite)
 }
 
 /*
+ * task_db_tag_open_counts — each tag's open tasks, one query (see db.h).
+ *
+ * Inputs:
+ *   db — the connection
+ *
+ * Output:
+ *   tag id → count; never NULL.
+ */
+GHashTable *
+task_db_tag_open_counts(TaskDatabase *db)
+{
+    GHashTable   *map = g_hash_table_new(g_direct_hash, g_direct_equal);
+    sqlite3_stmt *st  = NULL;
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
+            "SELECT tt.tag_id, COUNT(*) FROM task_tags tt JOIN tasks t ON t.id = tt.task_id "
+            "WHERE t.deleted = 0 AND t.status <> " DONE_SQL " GROUP BY tt.tag_id",
+            -1, &st, NULL) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW)
+            g_hash_table_insert(map, GINT_TO_POINTER(sqlite3_column_int64(st, 0)),
+                                GINT_TO_POINTER(sqlite3_column_int(st, 1)));
+    } else {
+        step_done(db, NULL, "tag counts", NULL);
+    }
+    sqlite3_finalize(st);
+    return map;
+}
+
+/*
  * task_db_tags_by_task — every live task's tags, one query (see db.h).
  *
  * Inputs:

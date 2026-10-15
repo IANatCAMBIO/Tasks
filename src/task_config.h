@@ -42,6 +42,8 @@
 #define TASK_CFG_NOTE_CONTEXT        "note_context_titles"     /* bool, 1: a Notes action item's
                                                                * title is SHOWN after its note
                                                                * context (task_display_title) */
+#define TASK_CFG_SIDEBAR_COUNTS      "sidebar_tag_counts"      /* bool, 1: each tag in the sidebar
+                                                               * shows its open tasks' count */
 
 /* New tasks (Settings window) */
 #define TASK_CFG_DEFAULT_TAG         "default_tag"             /* string tag name; none = no

@@ -7,7 +7,8 @@
 /*
  * TasksSidebar — the window's left column: the views (Favorites, All
  * Tasks, 3-Day Forecast — task_view.h), then a "Tags" header and every
- * tag, alphabetically, as a source list.  Selecting a row selects it in
+ * tag, alphabetically, as a source list.  While TASK_CFG_SIDEBAR_COUNTS is
+ * on, each tag shows how many open tasks carry it, at the row's right.  Selecting a row selects it in
  * the window through [library select:]; a row is selected on mouse-down
  * (TasksTable).
  *
@@ -47,6 +48,13 @@
  * rebuilding the rows.
  */
 - (void)update_selection;
+
+/*
+ * refresh_counts — re-read the tags' open-task counts (and whether they
+ * are shown) and redraw them, leaving the rows and the selection as they
+ * are.  For a task change that did not change the tags.
+ */
+- (void)refresh_counts;
 
 /*
  * show_tag_sheet: — the Edit Tag sheet for a tag: its name (fixed), an

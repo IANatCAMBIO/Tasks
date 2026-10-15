@@ -3,6 +3,7 @@
 #import "look.h"
 #import "ui_util.h"
 
+#include "task_config.h"
 #include "task_sidebar.h"
 #include "task_view.h"
 
@@ -12,6 +13,7 @@ static NSString * const cell_id       = @"sidebar.row";
 static NSString * const header_id     = @"sidebar.header";
 static NSString * const header_title  = @"Tags";
 static const CGFloat    row_h         = 24.0;
+static NSString * const count_id      = @"sidebar.count";   /* a tag cell's count label */
 
 /* The Edit Tag sheet's emoji slot. */
 static NSString * const emoji_placeholder = @"…";
@@ -96,6 +98,9 @@ textDidChange:(NSNotification *)note
 @property (nonatomic, strong) TasksTable         *table;
 @property (nonatomic, strong) NSMutableData      *rows;      /* task_sel_t[], on screen */
 @property (nonatomic, copy)   NSArray<NSString *> *titles;   /* one per row             */
+@property (nonatomic, copy)   NSDictionary<NSNumber *, NSNumber *> *counts; /* tag id → open
+                                                              * tasks; empty while the
+                                                              * counts are not shown    */
 @property (nonatomic, assign) BOOL                showing;   /* selecting a row from the
                                                               * window: not a choice    */
 @property (nonatomic, assign) BOOL                is_shut_down;
@@ -117,6 +122,7 @@ init_with_library:(TasksLibraryWindow *)library
     _library = library;
     _rows    = [NSMutableData data];
     _titles  = @[];
+    _counts  = @{};
 
     NSVisualEffectView *back = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
     back.material     = NSVisualEffectMaterialSidebar;
@@ -215,6 +221,7 @@ reload
     }
     task_ptr_array_free_tags(tags);
     self.titles = titles;
+    [self read_counts];
 
     self.showing = YES;
     [self.table reloadData];
@@ -230,6 +237,47 @@ reload
         }
     }
     [self update_selection];
+}
+
+/*
+ * read_counts — the tags' open-task counts from the database, or none
+ * while the setting hides them.
+ */
+- (void)
+read_counts
+{
+    NSMutableDictionary<NSNumber *, NSNumber *> *counts = [NSMutableDictionary dictionary];
+
+    if (task_config_get_bool(TASK_CFG_SIDEBAR_COUNTS)) {
+        GHashTable    *map = task_db_tag_open_counts(self.library.app->db);
+        GHashTableIter it;
+        gpointer       key, value;
+        g_hash_table_iter_init(&it, map);
+        while (g_hash_table_iter_next(&it, &key, &value)) {
+            counts[@((int64_t)GPOINTER_TO_INT(key))] = @(GPOINTER_TO_INT(value));
+        }
+        g_hash_table_destroy(map);
+    }
+    self.counts = counts;
+}
+
+/*
+ * refresh_counts — re-read and redraw the counts only.
+ * Documented in sidebar.h.
+ */
+- (void)
+refresh_counts
+{
+    if (!self.library || self.is_shut_down) return;
+
+    [self read_counts];
+    NSMutableIndexSet *tag_rows = [NSMutableIndexSet indexSet];
+    for (NSInteger row = 0; row < [self row_count]; row++) {
+        if ([self sel_at:row].kind == task_sel_tag) [tag_rows addIndex:(NSUInteger)row];
+    }
+    self.showing = YES;
+    [self.table reloadDataForRowIndexes:tag_rows columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+    self.showing = NO;
 }
 
 /*
@@ -307,7 +355,8 @@ tableView:(NSTableView *)table shouldSelectRow:(NSInteger)row
 }
 
 /*
- * tableView:viewForTableColumn:row: — a row's cell: its label.
+ * tableView:viewForTableColumn:row: — a row's cell: its label and, for a
+ * tag while the counts are shown, its open tasks' count at the right.
  *
  * Inputs:
  *   table  — the table
@@ -332,12 +381,31 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
         text.translatesAutoresizingMaskIntoConstraints = NO;
         [cell addSubview:text];
         cell.textField = text;
+        NSTextField *count = [NSTextField labelWithString:@""];
+        count.identifier = count_id;
+        count.font       = [NSFont monospacedDigitSystemFontOfSize:NSFont.smallSystemFontSize
+                                                           weight:NSFontWeightRegular];
+        count.textColor  = NSColor.secondaryLabelColor;
+        count.alignment  = NSTextAlignmentRight;
+        count.translatesAutoresizingMaskIntoConstraints = NO;
+        [count setContentCompressionResistancePriority:NSLayoutPriorityRequired
+                                        forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [cell addSubview:count];
         [NSLayoutConstraint activateConstraints:@[
             [text.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:4.0],
-            [text.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-4.0],
+            [text.trailingAnchor constraintLessThanOrEqualToAnchor:count.leadingAnchor constant:-4.0],
             [text.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+            [count.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-6.0],
+            [count.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
+    task_sel_t   sel   = [self sel_at:row];
+    NSNumber    *n     = sel.kind == task_sel_tag ? self.counts[@(sel.id)] : nil;
+    NSTextField *count = nil;
+    for (NSView *v in cell.subviews) {
+        if ([v.identifier isEqualToString:count_id]) count = (NSTextField *)v;
+    }
+    count.stringValue = n != nil ? n.stringValue : @"";
     cell.textField.stringValue = self.titles[(NSUInteger)row];
     cell.textField.font = header ? [NSFont boldSystemFontOfSize:NSFont.smallSystemFontSize]
                                  : [NSFont systemFontOfSize:NSFont.systemFontSize];

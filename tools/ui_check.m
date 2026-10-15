@@ -1121,6 +1121,33 @@ sidebar_rows(NSView *sidebar)
 }
 
 /*
+ * sidebar_count — the count a sidebar row shows at its right.
+ *
+ * Inputs:
+ *   sidebar — the sidebar
+ *   title   — the row's text
+ *
+ * Output:
+ *   the count's text ("" when none is shown), or nil when no row has that
+ *   text.
+ */
+static NSString *
+sidebar_count(NSView *sidebar, NSString *title)
+{
+    NSTableView *table = (NSTableView *)find_view(sidebar, NSTableView.class);
+
+    for (NSInteger row = 0; row < table.numberOfRows; row++) {
+        NSTableCellView *cell = [table viewAtColumn:0 row:row makeIfNecessary:YES];
+        if (![cell.textField.stringValue isEqualToString:title]) continue;
+        for (NSView *v in cell.subviews) {
+            if ([v.identifier isEqualToString:@"sidebar.count"]) return ((NSTextField *)v).stringValue;
+        }
+        return @"";
+    }
+    return nil;
+}
+
+/*
  * check_sidebar — the tag sidebar and the Favorites bar, driven as a user
  * drives them, without a pointer: the sidebar's rows (the three views, the
  * Tags header, every tag), selecting a tag, the Favorites bar's buttons
@@ -1223,6 +1250,35 @@ check_sidebar(TaskApp *app, NSString *dir)
         check(library.selection.kind == task_sel_tag && library.selection.id == errands->id && shown,
               "sidebar: selecting a tag lists the tasks carrying it");
         check([window.title hasSuffix:tasks_tag_title(errands)], "sidebar: the window is titled with it");
+
+        /* Counts: each tag's open tasks, kept up to date; the setting
+         * hides them. */
+        NSString *(^errands_count)(void) = ^{ return sidebar_count(sidebar, tasks_tag_title(errands)); };
+        GHashTable *counts = task_db_tag_open_counts(app->db);
+        gint        open   = GPOINTER_TO_INT(g_hash_table_lookup(counts, GINT_TO_POINTER(errands->id)));
+        g_hash_table_destroy(counts);
+        check(task_config_get_bool(TASK_CFG_SIDEBAR_COUNTS) && open > 0 &&
+              [errands_count() isEqualToString:[NSString stringWithFormat:@"%d", open]],
+              "counts: on by default, a tag shows its open tasks' count");
+        gint64 extra = task_db_task_create(app->db, 0, "ui-check counted", "Errands");
+        task_app_notify_tasks(app);
+        check_spin(0.2);
+        check([errands_count() isEqualToString:[NSString stringWithFormat:@"%d", open + 1]],
+              "counts: a new task carrying the tag counts at once");
+        task_db_task_set_status(app->db, extra, TASK_STATUS_DONE);
+        task_app_notify_tasks(app);
+        check_spin(0.2);
+        check([errands_count() isEqualToString:[NSString stringWithFormat:@"%d", open]],
+              "counts: a Done one does not count");
+        task_db_task_delete(app->db, extra);
+        task_config_set_bool(TASK_CFG_SIDEBAR_COUNTS, FALSE);
+        task_app_notify_tasks(app);
+        check_spin(0.2);
+        check([errands_count() isEqualToString:@""], "counts: the setting turned off hides them");
+        task_config_set_bool(TASK_CFG_SIDEBAR_COUNTS, TRUE);
+        task_app_notify_tasks(app);
+        check_spin(0.2);
+        check(errands_count().length > 0, "counts: ... and turned on shows them again");
         check(snapshot(window, dir, @"sidebar-tag"), "sidebar: snapshot, a tag selected");
 
         /* The Favorites bar: the favorite tags, the selected one lit. */

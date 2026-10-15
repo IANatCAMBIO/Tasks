@@ -124,7 +124,8 @@ on_app_changed(TaskApp *app, gpointer data)
  * on_app_tasks — the app's light event: the task pane, the day planner and
  * the reminders' titles.  One exception: a task change can add or remove
  * a tag (the first task given a new one, the last one losing it), so the
- * sidebar and the Favorites bar are rebuilt when the tags changed.
+ * sidebar and the Favorites bar are rebuilt when the tags changed; else
+ * only the sidebar's counts are re-read.
  *
  * Inputs:
  *   app  — the application context
@@ -135,7 +136,11 @@ on_app_tasks(TaskApp *app, gpointer data)
 {
     TasksLibraryWindow *window = (__bridge TasksLibraryWindow *)data;
 
-    if (![tag_rows(app) isEqualToArray:window.shown_tags]) [window refresh_sidebar];
+    if (![tag_rows(app) isEqualToArray:window.shown_tags]) {
+        [window refresh_sidebar];
+    } else {
+        [window.sidebar refresh_counts];
+    }
     [window refresh_tasks];
     if (!window.day_planner.hidden) [window.day_planner reload];
     tasks_notify_retitle();

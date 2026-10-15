@@ -598,6 +598,11 @@ void task_ptr_array_free_tags(GPtrArray *a);
  * string (g_free).                                                         */
 gchar *task_tag_label(const TaskTag *tag);
 
+/* How many OPEN tasks (live, not Done, of any level) carry each tag, as
+ * one query: tag id → count (GINT_TO_POINTER both); a tag carried only by
+ * Done tasks is absent (0).  Free with g_hash_table_destroy.               */
+GHashTable *task_db_tag_open_counts(TaskDatabase *db);
+
 /* Every live task's tags, as one query: task id → GPtrArray of TaskTag*
  * (alphabetical; the arrays own their tags).  Free with
  * g_hash_table_destroy.                                                    */
