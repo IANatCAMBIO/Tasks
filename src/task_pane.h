@@ -1,9 +1,8 @@
 /*
  * task_pane — what the task pane shows for a sidebar selection.
  *
- * The sidebar selects ONE row: a registered view (Favorites, All Tasks, Due
- * Today — task_view.h), a list, a list group, or a tag's proto-list (every
- * task carrying the tag, shown the way a list is).  This module names that
+ * The sidebar selects ONE row: a registered view (Favorites, All Tasks,
+ * 3-Day Forecast — task_view.h) or a tag (every task carrying it).  This module names that
  * selection (task_sel_t) and collects its content: the tasks, filtered by
  * the search box, with completed ones left out when the setting hides
  * them, described as rows (task_rows.h), plus the status bar's line.
@@ -31,12 +30,10 @@
 typedef enum {
     task_sel_view = 0,              /* a registered view; id is its INDEX
                                      * in the registry (task_view_nth)    */
-    task_sel_header,                /* the "Lists" header: never selected,
+    task_sel_header,                /* the "Tags" header: never selected,
                                      * here so the sidebar has one enum   */
-    task_sel_list,                  /* a real list; id is the list id     */
-    task_sel_group,                 /* a list group; id is the group id   */
-    task_sel_tag                    /* a tag's proto-list; id is the tag
-                                     * id (task_db_tasks_tagged)          */
+    task_sel_tag                    /* a tag; id is the tag id
+                                     * (task_db_tasks_tagged)             */
 } task_sel_kind_t;
 
 /* The sidebar selection. */
@@ -61,51 +58,9 @@ task_sel_t task_sel_default(void);
  *   sel — the selection
  *
  * Output:
- *   the view (borrowed), or NULL when the selection is a list or a group.
+ *   the view (borrowed), or NULL when the selection is a tag.
  */
 const TaskView *task_sel_view_of(task_sel_t sel);
-
-/*
- * task_sel_list_id — the selected REAL list.  Clear Completed needs one; a
- * view or a group has no single list to act on.
- *
- * Inputs:
- *   sel — the selection
- *
- * Output:
- *   the list id, or 0 when the selection is not a list.
- */
-int64_t task_sel_list_id(task_sel_t sel);
-
-/*
- * task_sel_takes_new_tasks — whether New Task is offered for a selection at
- * all.  Every list, group and view takes one except a view that refuses
- * them (TaskView.refuses_new_tasks: Action Items, which only Notes fills).
- *
- * Inputs:
- *   sel — the selection
- *
- * Output:
- *   false when New Task must be disabled.
- */
-bool task_sel_takes_new_tasks(task_sel_t sel);
-
-/*
- * task_sel_new_task_list — the list New Task creates its task in: the
- * selected list, or — for a group, a tag or a view that takes new tasks —
- * the default list (task_ops_default_list).  New Task in a tag's
- * proto-list also gives the task that tag (task_sel_tag_id), so it shows
- * where it was made.
- *
- * Inputs:
- *   app — the context (the default list is checked against its database)
- *   sel — the selection
- *
- * Output:
- *   the list id, or 0 when there is none: the selection refuses new
- *   tasks, or it is not a list and no default list is set.
- */
-int64_t task_sel_new_task_list(TaskApp *app, task_sel_t sel);
 
 /*
  * task_sel_tag_id — the selected tag.
@@ -114,23 +69,23 @@ int64_t task_sel_new_task_list(TaskApp *app, task_sel_t sel);
  *   sel — the selection
  *
  * Output:
- *   the tag id, or 0 when the selection is not a tag's proto-list.
+ *   the tag id, or 0 when the selection is not a tag.
  */
 int64_t task_sel_tag_id(task_sel_t sel);
 
 /*
- * task_sel_is_virtual — whether the selection gathers tasks from several
- * lists, so that each row carries its "in <list>" line: a group and a tag
- * always, a view when it says so (TaskView.virtual_rows), a list never.  This is the
- * flag task_row_ctx_init wants when a single row is rebuilt in place.
+ * task_sel_new_task_tag — the tag New Task gives its task: the selected
+ * tag, or — with a view selected — the default tag (task_ops_default_tag).
+ * Every task carries a tag, so with neither there is no New Task.
  *
  * Inputs:
+ *   app — the context (the selected tag's name is read from its database)
  *   sel — the selection
  *
  * Output:
- *   true for a virtual selection.
+ *   the tag's name (g_free), or NULL when there is none.
  */
-bool task_sel_is_virtual(task_sel_t sel);
+gchar *task_sel_new_task_tag(TaskApp *app, task_sel_t sel);
 
 /*
  * task_pane_content_t — the content of the task pane for one refresh.

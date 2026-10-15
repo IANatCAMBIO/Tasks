@@ -1428,7 +1428,7 @@ done_clicked:(NSButton *)sender
     }
 
     TaskRowCtx ctx;
-    task_row_ctx_init(library.app, &ctx, task_sel_is_virtual(library.selection));
+    task_row_ctx_init(library.app, &ctx);
     task_row_free(_rows->rows[base]);
     _rows->rows[base] = task_row_describe(task, &ctx);
     task_row_ctx_clear(&ctx);

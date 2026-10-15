@@ -12,7 +12,7 @@
  *   - The main menu's items target the app delegate, so they work
  *     whichever window is key; it forwards to the library window.  Toolbar
  *     items, the floating buttons, context-menu items and the items of the
- *     main menu's "Move to" submenus (rebuilt each time one opens) target
+ *     main menu's "Add Tag" submenu (rebuilt each time it opens) target
  *     the library window directly.
  *   - TasksLibraryWindow perform_command:param: dispatches by the table's
  *     `owner`: its own commands, or the sidebar's, or the task list's.
@@ -28,11 +28,11 @@
  *     force.  There are no check marks except on the column-visibility
  *     items.
  *   - A menu item that carries a PARAMETER keeps the title it was built
- *     with ("Mark All Incomplete", a destination list's name): validation
+ *     with ("Mark All Incomplete", a tag's name): validation
  *     changes only whether it is enabled.
- *   - Rename Group... and Remove Group act on a group.  A context-menu item
- *     names it in its parameter; the main menu's items carry none and mean
- *     the group selected in the sidebar.
+ *   - Edit Tag... acts on a tag.  A context-menu item names it in its
+ *     parameter; the main menu's item carries none and means the tag
+ *     selected in the sidebar.
  *
  * The Edit menu's Undo/Redo/Cut/Copy/Paste/Select All are NOT commands:
  * they use the standard selectors so that text fields get them.
@@ -45,34 +45,28 @@ typedef NS_ENUM(NSInteger, TasksCommand) {
     TasksCommandHelp,               /* open the bundled help page             */
 
     /* Library window (the shell) */
-    TasksCommandNewTask,            /* in the selected list, else the default */
-    TasksCommandQuickTask,          /* in the default list, editor in the
+    TasksCommandNewTask,            /* with the selected tag, else the default */
+    TasksCommandQuickTask,          /* with the default tag, editor in the
                                      * screen's corner; also a global hotkey  */
     TasksCommandDeleteTask,         /* the selected task(s), after a confirm  */
     TasksCommandTaskInfo,           /* open the editor; one task selected     */
-    TasksCommandClearCompleted,     /* the selected list's Done tasks         */
+    TasksCommandClearCompleted,     /* the selected tag's Done tasks          */
     TasksCommandOpenDatabase,       /* pick a database file and switch to it  */
     TasksCommandFind,               /* put the cursor in the search field     */
     TasksCommandToggleCompleted,    /* Hide / Show Completed                  */
     TasksCommandToggleSidebar,      /* Hide / Show Sidebar                    */
+    TasksCommandToggleFavoritesBar, /* Hide / Show Favorites Bar              */
     TasksCommandToggleCompact,      /* Compact / Full Controls                */
     TasksCommandTogglePane,         /* Kanban / List View                     */
     TasksCommandToggleDayPlanner,   /* Hide / Show Day Planner                */
     TasksCommandMarkDone,           /* param: BOOL — complete or reopen       */
-    TasksCommandSetPinned,          /* param: BOOL — favourite or not         */
     TasksCommandSetPriority,        /* param: BOOL — high priority or not     */
-    TasksCommandMoveToList,         /* param: destination list id             */
+    TasksCommandAddTag,             /* param: the tag id to add to the
+                                     * selected tasks                         */
 
     /* Sidebar */
-    TasksCommandNewList,
-    TasksCommandNewGroup,
-    TasksCommandEditList,           /* the selected list                      */
-    TasksCommandDeleteList,         /* the selected list, after a confirm     */
-    TasksCommandMoveToGroup,        /* param: destination group id            */
-    TasksCommandRemoveFromGroup,    /* the selected list                      */
-    TasksCommandRenameGroup,        /* param: group id (none: the selected)   */
-    TasksCommandDeleteGroup,        /* param: group id (none: the selected),
-                                     * after a confirm                        */
+    TasksCommandEditTag,            /* param: tag id (none: the selected) —
+                                     * its emoji and favorite flag            */
 
     /* Task list: column visibility (check-marked items) */
     TasksCommandColumnDone,
@@ -85,7 +79,7 @@ typedef NS_ENUM(NSInteger, TasksCommand) {
 typedef NS_ENUM(NSInteger, TasksCommandOwner) {
     TasksCommandOwnerApp = 0,       /* TasksAppDelegate                       */
     TasksCommandOwnerShell,         /* TasksLibraryWindow                     */
-    TasksCommandOwnerSidebar,       /* TasksListsBar                          */
+    TasksCommandOwnerSidebar,       /* TasksSidebar                           */
     TasksCommandOwnerTaskList       /* TasksTaskList                          */
 };
 
@@ -192,8 +186,8 @@ NSToolbarItem *tasks_command_toolbar_item(TasksCommand command, id target);
 
 /*
  * tasks_command_flag_item — a menu item for ONE DIRECTION of a flag command
- * (TasksCommandMarkDone, TasksCommandSetPinned, TasksCommandSetPriority),
- * titled for that direction: "Mark Incomplete", "Add All to Favorites".
+ * (TasksCommandMarkDone, TasksCommandSetPriority),
+ * titled for that direction: "Mark Incomplete", "Set All High Priority".
  * The direction rides in the item as the command's BOOL parameter.  The
  * context menu and the main menu both make their flag items here, so the
  * wording exists once.

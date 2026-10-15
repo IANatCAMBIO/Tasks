@@ -294,11 +294,11 @@ finish_launch_at:(NSString *)open_path choice:(TasksWelcomeChoice)choice
                         shared_db_file(self.app->db->shared));
     }
 
-    gint n_tasks = 0, n_lists = 0;
-    task_db_totals(self.app->db, &n_tasks, &n_lists);
-    NSLog(@"[launch] config %@, database %@: %d tasks in %d lists",
+    gint n_tasks = 0, n_tags = 0;
+    task_db_totals(self.app->db, &n_tasks, &n_tags);
+    NSLog(@"[launch] config %@, database %@: %d tasks with %d tags",
           tasks_string(task_config_path()), tasks_string(shared_db_file(self.app->db->shared)),
-          n_tasks, n_lists);
+          n_tasks, n_tags);
 }
 
 /*
@@ -572,14 +572,14 @@ add_menu(NSMenu *bar, NSString *title)
 }
 
 /*
- * destinations_item: — a "Move to" item for the main menu: its submenu is
+ * destinations_item: — an "Add Tag" item for the main menu: its submenu is
  * left empty here and filled each time it opens (menuNeedsUpdate:), so it
- * always lists the lists or groups there are now.  The submenu carries the
+ * always lists the tags there are now.  The submenu carries the
  * command's identifier, which is how menuNeedsUpdate: knows what to fill
  * it with.
  *
  * Inputs:
- *   command — TasksCommandMoveToList or TasksCommandMoveToGroup
+ *   command — TasksCommandAddTag
  *
  * Output:
  *   new NSMenuItem holding the submenu.
@@ -600,7 +600,7 @@ destinations_item:(TasksCommand)command
 }
 
 /*
- * menuNeedsUpdate: — a "Move to" submenu is about to open: have the library
+ * menuNeedsUpdate: — the "Add Tag" submenu is about to open: have the library
  * window fill it with the current destinations.
  *
  * Inputs:
@@ -616,7 +616,7 @@ menuNeedsUpdate:(NSMenu *)menu
 
 /*
  * menuHasKeyEquivalent:forEvent:target:action: — AppKit asks whether a
- * "Move to" submenu claims a key press.  Its items have no shortcuts, and
+ * "Add Tag" submenu claims a key press.  Its items have no shortcuts, and
  * saying so here stops AppKit filling the submenu (a database query) on
  * every key press just to look.
  *
@@ -674,24 +674,16 @@ build_menu_bar
     [app_menu addItem:standard_item(@"Quit " @TASKS_APP_NAME, @selector(terminate:), @"q", 0)];
 
     /* ── File menu ── what is created, then the selected task, the selected
-     * list, the selected group, and the file all of it is kept in. */
+     * tag, and the file all of it is kept in. */
     NSMenu *file_menu = add_menu(bar, @"File");
     [file_menu addItem:command(TasksCommandNewTask)];
     [file_menu addItem:command(TasksCommandQuickTask)];
-    [file_menu addItem:command(TasksCommandNewList)];
-    [file_menu addItem:command(TasksCommandNewGroup)];
     [file_menu addItem:NSMenuItem.separatorItem];
     [file_menu addItem:command(TasksCommandTaskInfo)];
     [file_menu addItem:command(TasksCommandDeleteTask)];
     [file_menu addItem:command(TasksCommandClearCompleted)];
     [file_menu addItem:NSMenuItem.separatorItem];
-    [file_menu addItem:command(TasksCommandEditList)];
-    [file_menu addItem:[self destinations_item:TasksCommandMoveToGroup]];
-    [file_menu addItem:command(TasksCommandRemoveFromGroup)];
-    [file_menu addItem:command(TasksCommandDeleteList)];
-    [file_menu addItem:NSMenuItem.separatorItem];
-    [file_menu addItem:command(TasksCommandRenameGroup)];
-    [file_menu addItem:command(TasksCommandDeleteGroup)];
+    [file_menu addItem:command(TasksCommandEditTag)];
     [file_menu addItem:NSMenuItem.separatorItem];
     [file_menu addItem:command(TasksCommandOpenDatabase)];
     [file_menu addItem:NSMenuItem.separatorItem];
@@ -712,12 +704,11 @@ build_menu_bar
     [edit_menu addItem:NSMenuItem.separatorItem];
     [edit_menu addItem:command(TasksCommandFind)];
     [edit_menu addItem:NSMenuItem.separatorItem];
-    for (NSNumber *flag in @[@(TasksCommandMarkDone), @(TasksCommandSetPinned),
-                             @(TasksCommandSetPriority)]) {
+    for (NSNumber *flag in @[@(TasksCommandMarkDone), @(TasksCommandSetPriority)]) {
         [edit_menu addItem:tasks_command_flag_item(flag.integerValue, YES, NO, self)];
         [edit_menu addItem:tasks_command_flag_item(flag.integerValue, NO, NO, self)];
     }
-    [edit_menu addItem:[self destinations_item:TasksCommandMoveToList]];
+    [edit_menu addItem:[self destinations_item:TasksCommandAddTag]];
 
     /* ── View menu ── what the task pane shows, then how the window looks. */
     NSMenu *view_menu = add_menu(bar, @"View");
@@ -731,6 +722,7 @@ build_menu_bar
     [view_menu addItem:columns];
     [view_menu addItem:NSMenuItem.separatorItem];
     [view_menu addItem:command(TasksCommandToggleSidebar)];
+    [view_menu addItem:command(TasksCommandToggleFavoritesBar)];
     [view_menu addItem:command(TasksCommandToggleCompact)];
     [view_menu addItem:command(TasksCommandTogglePane)];
     [view_menu addItem:command(TasksCommandToggleDayPlanner)];

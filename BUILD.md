@@ -56,10 +56,12 @@ SHARED_DATA_DIR=/path/to/shared_data`).  The build stops with a message when
 MacPorts SQLite this app links.  After pulling a new `shared_data`, run
 `make clean && make`.
 
-Tags need `shared_data` at schema version 101 (`task_tag_names`,
-`task_tags`).  The module brings a version-100 file up to date in place,
-in one transaction, the first time an app opens it read-write; until then
-read-only tools (the skill's scripts) refuse it.  A file at 101 is refused
+Tasks needs `shared_data` at schema version 102: tags (`task_tag_names`
+with emoji and favorite, `task_tags`) are its only organisation.  The
+module brings a version-100 or -101 file up to date in place, in one
+transaction, the first time an app opens it read-write — the step to 102
+also turns every list and group into a tag on its tasks — and until then
+read-only tools (the skill's scripts) refuse it.  A file at 102 is refused
 by a Notes or Tasks built against an older `shared_data`, so rebuild Notes
 from the same `shared_data` as well.
 
@@ -69,7 +71,7 @@ from the same `shared_data` as well.
 |--------|--------------|
 | `make` | Build `Tasks.app` in the source directory |
 | `make run` | Build, then run the app against the sandbox data in `dev/data` (seeding it first if empty) |
-| `make seed` | Recreate the sandbox test database: 2 groups, 8 lists, 45 tasks, three of them Notes action items (one in a folder) |
+| `make seed` | Recreate the sandbox test database: 45 tasks with a dozen tags (emojis, two favorites), three of them Notes action items (one in a folder) |
 | `make test` | Build and run the core tests (`tests/*_test.c`); no window is opened |
 | `make ui-check` | Build the real windows in-process against the sandbox: writes PNG snapshots to `dev/snapshots` and checks window ownership and memory |
 | `make install` | Copy the bundle to `~/Applications` (quits and reopens a running copy) |
@@ -161,10 +163,12 @@ The programs, all linked against the core only (no AppKit), include:
 | `core_test` | the GTK app's cases: search, recurrence arithmetic, opening the shared database and refusing an old v14 file; the display title (`task_display_title`: the note-context prefix, an empty context, an already-prefixed title, case folding, separators) (GLib `g_test`) |
 | `loop_test` | the main-loop service: one-shot and repeating timers, cancellation, background hand-back |
 | `config_test` | the data-folder policy and override, the fence round the GTK app's data, config defaults and write-through (the note-context setting among them) |
-| `shared_test` | the shared database: the column-diff update (two connections change different fields and both survive) and its stamping rules; Notes action items (the note lookup, the note context every read carries — a folder, the top level, a task not from Notes, a folder renamed — the tombstone, the purge Tasks refuses); refreshing only on a change to Tasks' data (`change_rev`), never on its own writes; writes failing, and then succeeding, while a second process (this test re-run with `--hold`) holds the write lock past the busy timeout — this test takes about 20 s |
+| `shared_test` | the shared database: the column-diff update (two connections change different fields and both survive) and its stamping rules; Notes action items (the Action Items tag the schema gives them, the note lookup, the note context every read carries — a folder, the top level, a task not from Notes, a folder renamed — the tombstone, the purge Tasks refuses); refreshing only on a change to Tasks' data (`change_rev`), never on its own writes; writes failing, and then succeeding, while a second process (this test re-run with `--hold`) holds the write lock past the busy timeout — this test takes about 20 s |
 | `backup_test` | backups through the shared module: refused destinations (Tasks' live-data fence and the module's folder checks), Back Up Now and its UTC file name, retention, the periodic poll |
 | `switch_test` | Open Database File: refusals (an old `tasks.db` and an empty file among them, left untouched), a switch, Make Default under the sandbox |
-| `rows_test` | the row description (lines, emphasis, notes preview, the note-context prefix) and the pane collection (filters, a search matching the prefix, status line); where New Task files a task (the selected list, else the default list while it exists; refused in Action Items) |
+| `rows_test` | the row description (lines, emphasis, the tags line, notes preview, the note-context prefix) and the pane collection (filters, a search matching the prefix, status line, the Favorites view); which tag New Task gives (the selected tag, else the default tag) |
+| `tags_test` | tags: adding by name (any case, trimmed), the refusals, a subtask's inherited tags, removal and the last tag kept, a tag going with its last task, emoji and favorite, a tag's view and its saved order |
+| `sidebar_test` | a tag's label, the selection fallback after a rebuild |
 | `order_test` | saved orders: key spelling, the permutation, dropping keys |
 | `app_test` | the event bus, the outside-change watch (`data_version`), due-date urgency, the recurrence pass waking on a main-loop timer |
 | `gcal_test` | the calendar sync without the network: every planning rule, reading events and writing request bodies, the sync's tables (dirty check, compare-and-set reschedule, event cache, account), the sign-in's loopback listener |
@@ -191,10 +195,11 @@ src/
   task_worker.[ch]     scheduler for the recurrence pass and the backup poll
   task_switch.[ch]     File > Open Database File, Make Default
   task_view.[ch]       registry of sidebar views
-  core_views.[ch]      the four built-in views
-  task_ops.[ch]        move-to-list, clear-completed
+  core_views.[ch]      the three built-in views
+  task_ops.[ch]        clear-completed, the default tag
   task_rows.[ch]       toolkit-neutral description of a task row
-  task_pane.[ch]       sidebar selection type; collects a selection's rows
+  task_pane.[ch]       sidebar selection type (a view or a tag); collects its rows
+  task_sidebar.[ch]    the sidebar's selection fallback
   task_order.[ch]      saved manual / Kanban orders
   http.[ch]            one blocking HTTPS request (libcurl)
   json.[ch]            minimal JSON parser and string escaping
@@ -213,7 +218,8 @@ src/
   tool_panel.[hm]      the app's own dialog (never a system alert) and its blue hero strip
   hotkey.[hm]          Quick Task's system-wide shortcut
   row_text.[hm]        the renderer of a task row's text
-  lists_bar.[hm]       lists bar: views, groups and lists, their sheets
+  sidebar.[hm]         sidebar: the views and every tag, Edit Tag
+  favorites_bar.[hm]   Favorites bar: the favorite tags
   task_list.[hm]       task list          (stub)
   kanban.[hm]          Kanban board       (stub)
   day_planner.[hm]     day planner, with Google Calendar events

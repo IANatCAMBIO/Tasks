@@ -55,17 +55,17 @@ NSString *tasks_string(const char *text);
 NSString *tasks_title_string(const Task *task, NSString *untitled);
 
 /*
- * tasks_list_title — the text a menu item shows for a list: its emoji, two
- * spaces and its name, as the lists bar spells it, or the name alone when
- * it has no emoji.
+ * tasks_tag_title — the text a menu item or button shows for a tag: its
+ * label (task_tag_label: emoji, two spaces, name; the name alone without
+ * an emoji).
  *
  * Inputs:
- *   list — the list, not NULL
+ *   tag — the tag
  *
  * Output:
- *   the string; never nil.
+ *   the title.
  */
-NSString *tasks_list_title(const TaskList *list);
+NSString *tasks_tag_title(const TaskTag *tag);
 
 /* ── Images ─────────────────────────────────────────────────────────── */
 

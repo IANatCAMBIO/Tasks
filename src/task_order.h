@@ -5,10 +5,7 @@
  * user drag tasks into an order, kept per sidebar selection in the config
  * as a comma-separated list of task ids:
  *
- *   <family>_list_<id>      a list
- *   <family>_group_<id>     a group's aggregate (ordered separately from
- *                           the lists under it: a different pane of tasks)
- *   <family>_tag_<id>       a tag's proto-list.  Tag ids are never reused
+ *   <family>_tag_<id>       a tag.  Tag ids are never reused
  *                           (AUTOINCREMENT), so the order of a tag that
  *                           has gone never applies to a later one
  *   <family>_<view id>      a registered view: manual_order_all, ...
@@ -73,12 +70,13 @@ void task_order_save(const char *family, task_sel_t sel, const int64_t *ids,
                      int n);
 
 /*
- * task_order_drop — remove BOTH families' saved orders of a list or group
- * that is being deleted.  Nothing else removes them, so the ini would
- * otherwise grow a dead entry per family for every list ever deleted.
+ * task_order_drop — remove BOTH families' saved orders of a tag that has
+ * gone (no task carries it any more).  Nothing else removes them, so the
+ * ini would otherwise grow a dead entry per family for every tag ever
+ * emptied.
  *
  * Inputs:
- *   sel — a list or group selection; anything else is ignored
+ *   sel — a tag selection; anything else is ignored
  */
 void task_order_drop(task_sel_t sel);
 

@@ -104,8 +104,9 @@ pane_ids(TaskApp *app, task_sel_t sel, const gint64 *want, size_t n)
 
 /*
  * test_add_remove — tags by name: new, existing in another case, trimmed,
- * a second add, the refusals; taking one off; the last one off deletes
- * the tag; a tombstoned task loses its tags.
+ * a second add, a subtask's inherited tags, the refusals; taking one off;
+ * a live task's last tag kept; the last task's tag going deletes the tag;
+ * a tombstoned task loses its tags.
  *
  * Inputs:
  *   app — the fixture
@@ -113,44 +114,59 @@ pane_ids(TaskApp *app, task_sel_t sel, const gint64 *want, size_t n)
 static void
 test_add_remove(TaskApp *app)
 {
-    gint64 list  = task_db_list_create(app->db, "Chores", "");
-    gint64 a     = task_db_task_create(app->db, list, 0, "Buy milk");
-    gint64 b     = task_db_task_create(app->db, list, 0, "Fix the shelf");
-    gint64 sub   = task_db_task_create(app->db, list, b, "Find the drill");
+    gint64 a   = task_db_task_create(app->db, 0, "Buy milk", "Chores");
+    gint64 b   = task_db_task_create(app->db, 0, "Fix the shelf", "Chores");
+    gint64 sub = task_db_task_create(app->db, b, "Find the drill", NULL);
 
+    check(names_are(app, a, "Chores") && names_are(app, sub, "Chores"),
+          "create: a task has its tag, a subtask its parent's");
     gint64 errands = task_db_task_tag_add(app->db, a, "Errands");
-    check(errands != 0 && names_are(app, a, "Errands"), "add: a new tag");
-    check(task_db_task_tag_add(app->db, b, "  errands ") == errands && names_are(app, b, "Errands"),
+    check(errands != 0 && names_are(app, a, "Chores,Errands"), "add: a new tag");
+    check(task_db_task_tag_add(app->db, b, "  errands ") == errands &&
+          names_are(app, b, "Chores,Errands"),
           "add: an existing tag, in another case and with spaces, is the same tag");
-    check(task_db_task_tag_add(app->db, a, "ERRANDS") == errands && names_are(app, a, "Errands"),
+    check(task_db_task_tag_add(app->db, a, "ERRANDS") == errands &&
+          names_are(app, a, "Chores,Errands"),
           "add: a tag the task already carries is not added twice");
     gint64 diy = task_db_task_tag_add(app->db, b, "diy");
-    check(diy != 0 && diy != errands && names_are(app, b, "diy,Errands"),
-          "add: a second tag; a task's tags read alphabetically, ignoring case");
+    check(diy != 0 && diy != errands && names_are(app, b, "Chores,diy,Errands"),
+          "add: a third tag; a task's tags read alphabetically, ignoring case");
     check(task_db_task_tag_add(app->db, sub, "diy") == diy, "add: a subtask can carry a tag");
-    check(task_db_task_tag_add(app->db, a, "   ") == 0 && names_are(app, a, "Errands"),
+    check(task_db_task_tag_add(app->db, a, "   ") == 0 && names_are(app, a, "Chores,Errands"),
           "add: an empty name is refused");
-    check(tag_count(app) == 2, "tags: two tags exist");
+    check(tag_count(app) == 3, "tags: three tags exist");
 
     TaskTag *tag = task_db_tag_get(app->db, errands);
-    check(tag != NULL && strcmp(tag->name, "Errands") == 0, "get: a tag by id");
+    check(tag != NULL && strcmp(tag->name, "Errands") == 0 && strcmp(tag->emoji, "") == 0 &&
+          !tag->favorite, "get: a tag by id, no emoji, not a favorite");
     task_tag_free(tag);
+    check(task_db_tag_set_emoji(app->db, errands, " \xf0\x9f\x9b\x92 ") &&
+          task_db_tag_set_favorite(app->db, errands, TRUE), "tag: emoji and favorite set");
+    tag = task_db_tag_find(app->db, " errands ");
+    check(tag != NULL && tag->id == errands && strcmp(tag->emoji, "\xf0\x9f\x9b\x92") == 0 &&
+          tag->favorite, "find: by name in any case; the emoji trimmed, the flag kept");
+    task_tag_free(tag);
+    check(task_db_tag_find(app->db, "nothing") == NULL, "find: no tag of that name");
 
-    check(task_db_task_tag_remove(app->db, a, errands) && names_are(app, a, ""),
+    check(task_db_task_tag_remove(app->db, a, errands) == 1 && names_are(app, a, "Chores"),
           "remove: the tag comes off the task");
     tag = task_db_tag_get(app->db, errands);
     check(tag != NULL, "remove: a tag another task carries stays");
     task_tag_free(tag);
-    check(task_db_task_tag_remove(app->db, b, errands) && task_db_tag_get(app->db, errands) == NULL,
+    check(task_db_task_tag_remove(app->db, b, errands) == 1 &&
+          task_db_tag_get(app->db, errands) == NULL,
           "remove: the last task's tag going deletes the tag");
-    check(tag_count(app) == 1, "tags: one tag left");
+    TaskTag *chores = task_db_tag_find(app->db, "Chores");
+    check(task_db_task_tag_remove(app->db, a, chores->id) == 0 && names_are(app, a, "Chores"),
+          "remove: a task's last tag is refused, and kept");
+    task_tag_free(chores);
 
     task_db_task_delete(app->db, b);
-    check(names_are(app, b, "") && names_are(app, sub, "") && tag_count(app) == 0,
-          "delete: a deleted task and its subtask lose their tags, and the tag goes");
-    check(task_db_task_tag_add(app->db, b, "late") == 0 && tag_count(app) == 0,
+    check(names_are(app, b, "") && names_are(app, sub, "") && tag_count(app) == 1,
+          "delete: a deleted task and its subtask lose their tags, and diy goes");
+    check(task_db_task_tag_add(app->db, b, "late") == 0 && tag_count(app) == 1,
           "add: refused for a deleted task, writing no tag");
-    check(task_db_task_tag_add(app->db, 999999, "ghost") == 0 && tag_count(app) == 0,
+    check(task_db_task_tag_add(app->db, 999999, "ghost") == 0 && tag_count(app) == 1,
           "add: refused for a task that does not exist");
 }
 
@@ -166,12 +182,10 @@ test_add_remove(TaskApp *app)
 static void
 test_proto_list(TaskApp *app)
 {
-    gint64 work  = task_db_list_create(app->db, "Work", "");
-    gint64 home  = task_db_list_create(app->db, "Home", "");
-    gint64 w1    = task_db_task_create(app->db, work, 0, "Quarterly report");
-    gint64 h1    = task_db_task_create(app->db, home, 0, "Pay the bills");
-    gint64 plain = task_db_task_create(app->db, home, 0, "Water the plants");
-    gint64 done  = task_db_task_create(app->db, work, 0, "Book the venue");
+    gint64 w1    = task_db_task_create(app->db, 0, "Quarterly report", "Work");
+    gint64 h1    = task_db_task_create(app->db, 0, "Pay the bills", "Home");
+    gint64 plain = task_db_task_create(app->db, 0, "Water the plants", "Home");
+    gint64 done  = task_db_task_create(app->db, 0, "Book the venue", "Work");
     gint64 tag   = task_db_task_tag_add(app->db, w1, "urgent");
 
     task_db_task_tag_add(app->db, h1, "Urgent");
@@ -179,15 +193,14 @@ test_proto_list(TaskApp *app)
     task_db_task_set_status(app->db, done, TASK_STATUS_DONE);
 
     task_sel_t sel = { task_sel_tag, tag };
-    check(task_sel_tag_id(sel) == tag && task_sel_is_virtual(sel) && task_sel_takes_new_tasks(sel),
-          "selection: a tag is virtual and takes new tasks");
+    check(task_sel_tag_id(sel) == tag, "selection: a tag selection names its tag");
 
     gboolean was = task_config_get_bool(TASK_CFG_SHOW_COMPLETED);
     task_config_set_bool(TASK_CFG_SHOW_COMPLETED, FALSE);
     check(pane_ids(app, sel, (gint64[]){ w1, h1 }, 2),
-          "pane: the tagged tasks of two lists, list by list, not the untagged one");
+          "pane: the tasks carrying the tag, in their one order, not the others");
     task_config_set_bool(TASK_CFG_SHOW_COMPLETED, TRUE);
-    check(pane_ids(app, sel, (gint64[]){ w1, done, h1 }, 3),
+    check(pane_ids(app, sel, (gint64[]){ w1, h1, done }, 3),
           "pane: a Done one is shown with show_completed");
     task_config_set_bool(TASK_CFG_SHOW_COMPLETED, was);
 

@@ -5,46 +5,42 @@
 #include "task_ops.h"
 #include "task_config.h"
 
-#include <stdbool.h>
-
-/* ---------------------------------------------------------------------------
- * task_ops_move_to_list() — the local move (see task_ops.h).
- * ------------------------------------------------------------------------- */
-gboolean
-task_ops_move_to_list(TaskApp *app, gint64 task_id, gint64 dest_list_id)
-{
-    Task *t = task_db_task_get(app->db, task_id);
-    if (t == NULL || t->parent_id != 0 || t->list_id == dest_list_id) {
-        task_free(t);
-        return FALSE;
-    }
-    task_free(t);
-
-    task_db_task_move_list(app->db, task_id, dest_list_id);
-    return TRUE;
-}
-
-/* ---------------------------------------------------------------------------
- * task_ops_clear_completed() — tombstone the done tasks (see task_ops.h).
- * ------------------------------------------------------------------------- */
+/*
+ * task_ops_clear_completed — tombstone a tag's done tasks (see
+ * task_ops.h).
+ *
+ * Inputs:
+ *   app    — the context
+ *   tag_id — the tag
+ *
+ * Output:
+ *   how many top-level tasks went.
+ */
 guint
-task_ops_clear_completed(TaskApp *app, gint64 list_id)
+task_ops_clear_completed(TaskApp *app, gint64 tag_id)
 {
-    return task_db_tasks_delete_done(app->db, list_id);
+    return task_db_tasks_delete_done(app->db, tag_id);
 }
 
-/* ---------------------------------------------------------------------------
- * task_ops_default_list() — the configured default list, if it is still a
- * live list (see task_ops.h).
- * ------------------------------------------------------------------------- */
-int64_t
-task_ops_default_list(TaskApp *app)
+/*
+ * task_ops_default_tag — the configured default tag's name (see
+ * task_ops.h).
+ *
+ * Inputs:
+ *   app — the context (unused: a tag lives by its name, see task_ops.h)
+ *
+ * Output:
+ *   the name (g_free), or NULL when none is set.
+ */
+gchar *
+task_ops_default_tag(TaskApp *app)
 {
-    int64_t id = task_config_get_int(TASK_CFG_DEFAULT_LIST);
-    if (id <= 0) return 0;
-
-    TaskList *list = task_db_list_get(app->db, id);
-    bool live = list != NULL && !list->deleted;
-    task_list_free(list);
-    return live ? id : 0;
+    (void)app;
+    gchar *name = task_config_get(TASK_CFG_DEFAULT_TAG);
+    if (name != NULL) g_strstrip(name);
+    if (name != NULL && name[0] == '\0') {
+        g_free(name);
+        name = NULL;
+    }
+    return name;
 }

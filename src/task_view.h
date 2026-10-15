@@ -1,7 +1,7 @@
 /* ===========================================================================
  * task_view.h — the sidebar's virtual views, as a registry.
  *
- * A "virtual view" is a sidebar row that is NOT a list: Favorites, All
+ * A "virtual view" is a sidebar row that is NOT a tag: Favorites, All
  * Tasks, 3-Day Forecast.  Each one used to be an SbKind enum member, and
  * adding one meant editing five places in library_window.c that had to
  * agree — the metas[] literal, its visibility gate, the refresh_tasks
@@ -41,38 +41,13 @@ struct TaskView {
     /* The name the status bar shows for this view ("All Tasks").          */
     const gchar *name;
 
-    /* Singular noun for the status bar's count — "task" gives
-     * "12 tasks", "action item" gives "12 action items".  NULL means
-     * "task".  Only the plural "s" is added, so a noun that pluralises
-     * some other way does not belong here.                                */
-    const gchar *unit;
-
     /* Display order among views, low first.  Ties keep registration
      * order.                                                              */
     gint sort;
 
-    /* Whether the row exists at all right now — Favorites appears only
-     * while something is pinned.  NULL means always.                      */
-    gboolean (*visible)(TaskApp *app, gpointer user_data);
-
     /* The tasks to show, newly allocated, freed by the caller with
      * task_ptr_array_free_tasks.  Required.                               */
     GPtrArray *(*query)(TaskApp *app, gpointer user_data);
-
-    /* Whether rows should carry their "in <list>" line.  A query view
-     * that gathers tasks from across lists wants TRUE (the line is the
-     * only thing saying where the task actually sits).                    */
-    gboolean virtual_rows;
-
-    /* Whether New Task is refused while this view is selected, because
-     * something other than the user fills it (Action Items: only Notes
-     * writes those).  FALSE means New Task files the task in the default
-     * list (task_sel_new_task_list).                                      */
-    gboolean refuses_new_tasks;
-
-    /* Shown when the user tries to edit or delete this view as though it
-     * were a list.  NULL falls back to a generic refusal.                 */
-    const gchar *not_a_list;
 
     gpointer user_data;
 };
@@ -99,23 +74,5 @@ const TaskView  *task_view_find(const gchar *id);
 /* task_view_index_of() — a view's index, or -1 when not registered (or
  * NULL).  The index is what a sidebar selection carries (task_pane.h).    */
 gint             task_view_index_of(const TaskView *v);
-
-/* ---------------------------------------------------------------------------
- * task_view_shown() — whether a view's row exists right now: its
- * `visible` answers TRUE, or it has none.
- *   v   — the view (not NULL)
- *   app — the context its `visible` reads
- * ------------------------------------------------------------------------- */
-gboolean         task_view_shown(const TaskView *v, TaskApp *app);
-
-/* ---------------------------------------------------------------------------
- * task_view_shown_mask() — which views' rows exist right now, as a bit per
- * registry index (bit i for task_view_nth(i)).  The registry holds a
- * handful of views; any past the 64th are left out.  A window keeps the
- * mask of its last sidebar rebuild and rebuilds again when a light task
- * change moves it (Favorites emptied, the first Notes action item).
- *   app — the context
- * ------------------------------------------------------------------------- */
-guint64          task_view_shown_mask(TaskApp *app);
 
 #endif /* TASK_VIEW_H */

@@ -221,7 +221,7 @@ test_back_up_now(TaskApp *app)
     char dir[1200];
 
     use_folder(app, "now", dir, sizeof dir);
-    task_db_list_create(app->db, "Backed up", "");
+    task_db_task_create(app->db, 0, "Backed up", "probe");
 
     last_status[0] = '\0';
     seen_t seen   = { 0 };

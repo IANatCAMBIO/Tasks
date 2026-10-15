@@ -23,7 +23,7 @@ typedef struct {
  *
  * Output:
  *   new string (free it), or NULL for a selection that keeps no order (the
- *   Lists header, an unregistered view).
+ *   Tags header, an unregistered view).
  */
 static char *
 order_key(const char *family, task_sel_t sel)
@@ -31,11 +31,7 @@ order_key(const char *family, task_sel_t sel)
     char *key = NULL;
     int   rc  = -1;
 
-    if (sel.kind == task_sel_list) {
-        rc = asprintf(&key, "%s_list_%" PRId64, family, sel.id);
-    } else if (sel.kind == task_sel_group) {
-        rc = asprintf(&key, "%s_group_%" PRId64, family, sel.id);
-    } else if (sel.kind == task_sel_tag) {
+    if (sel.kind == task_sel_tag) {
         rc = asprintf(&key, "%s_tag_%" PRId64, family, sel.id);
     } else {
         /* A view's id is part of the ini format (task_view.h). */
@@ -190,7 +186,7 @@ task_order_save(const char *family, task_sel_t sel, const int64_t *ids, int n)
 }
 
 /*
- * task_order_drop — remove a deleted list's or group's saved orders.
+ * task_order_drop — remove a tag's saved orders once the tag has gone.
  * Inputs are documented in task_order.h.
  */
 void
@@ -200,7 +196,7 @@ task_order_drop(task_sel_t sel)
         TASK_CFG_FAMILY_MANUAL, TASK_CFG_FAMILY_KANBAN,
     };
 
-    if (sel.kind != task_sel_list && sel.kind != task_sel_group) return;
+    if (sel.kind != task_sel_tag) return;
 
     for (size_t i = 0; i < sizeof families / sizeof families[0]; i++) {
         char *key = order_key(families[i], sel);

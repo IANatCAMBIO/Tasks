@@ -296,7 +296,7 @@ test_probe(TaskApp *app)
 {
     struct stat sb;
 
-    task_db_list_create(app->db, "Probe", "");
+    task_db_task_create(app->db, 0, "Probe", "probe");
     forget_verdict(app->db);
     check(task_db_health(app->db) == NULL, "probe: (the handle starts unchecked)");
 

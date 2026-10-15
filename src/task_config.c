@@ -23,6 +23,7 @@ static const struct {
     { TASK_CFG_KANBAN_VIEW,         "0"   },
     { TASK_CFG_COMPACT,             "0"   },
     { TASK_CFG_SIDEBAR_VISIBLE,     "1"   },
+    { TASK_CFG_FAVORITES_BAR_VISIBLE, "1" },
     { TASK_CFG_WIN_W,               "980" },
     { TASK_CFG_WIN_H,               "640" },
     { TASK_CFG_COMPACT_W,           "600" },

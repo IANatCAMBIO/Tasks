@@ -32,16 +32,6 @@ task_sel_view_of(task_sel_t sel)
 }
 
 /*
- * task_sel_list_id — the selected real list, or 0.
- * Inputs/output are documented in task_pane.h.
- */
-int64_t
-task_sel_list_id(task_sel_t sel)
-{
-    return sel.kind == task_sel_list ? sel.id : 0;
-}
-
-/*
  * task_sel_tag_id — the selected tag, or 0.
  * Inputs/output are documented in task_pane.h.
  */
@@ -52,39 +42,18 @@ task_sel_tag_id(task_sel_t sel)
 }
 
 /*
- * task_sel_takes_new_tasks — whether New Task is offered here.
+ * task_sel_new_task_tag — the selected tag's name, else the default tag.
  * Inputs/output are documented in task_pane.h.
  */
-bool
-task_sel_takes_new_tasks(task_sel_t sel)
+gchar *
+task_sel_new_task_tag(TaskApp *app, task_sel_t sel)
 {
-    const TaskView *view = task_sel_view_of(sel);
-    return view == NULL || !view->refuses_new_tasks;
-}
+    if (sel.kind != task_sel_tag) return task_ops_default_tag(app);
 
-/*
- * task_sel_new_task_list — the selected list, else the default list.
- * Inputs/output are documented in task_pane.h.
- */
-int64_t
-task_sel_new_task_list(TaskApp *app, task_sel_t sel)
-{
-    if (!task_sel_takes_new_tasks(sel)) return 0;
-    int64_t list_id = task_sel_list_id(sel);
-    return list_id != 0 ? list_id : task_ops_default_list(app);
-}
-
-/*
- * task_sel_is_virtual — whether rows carry their "in <list>" line.
- * Inputs/output are documented in task_pane.h.
- */
-bool
-task_sel_is_virtual(task_sel_t sel)
-{
-    const TaskView *view = task_sel_view_of(sel);
-
-    if (view != NULL) return view->virtual_rows;
-    return sel.kind == task_sel_group || sel.kind == task_sel_tag;
+    TaskTag *tag  = task_db_tag_get(app->db, sel.id);
+    gchar   *name = tag != NULL ? g_strdup(tag->name) : NULL;
+    task_tag_free(tag);
+    return name;
 }
 
 /*
@@ -94,37 +63,24 @@ task_sel_is_virtual(task_sel_t sel)
 task_pane_content_t *
 task_pane_collect(TaskApp *app, task_sel_t sel, const TaskSearch *search)
 {
-    /* A registered view answers for itself; a group shows the tasks of
-     * every list under it, aggregated; a tag every task carrying it;
-     * anything else is a real list. */
+    /* A registered view answers for itself; a tag shows every task
+     * carrying it. */
     const TaskView *view  = task_sel_view_of(sel);
-    TaskGroup      *group = NULL;   /* owns `where` for a group           */
     TaskTag        *tag   = NULL;   /* owns `where` for a tag             */
-    TaskList       *list  = NULL;   /* owns `where` for a list            */
     GPtrArray      *tasks;
-    const gchar    *where = "?";
-    const gchar    *unit  = "task";
+    const gchar    *where = "";
 
     if (view != NULL) {
         tasks = view->query(app, view->user_data);
         where = view->name != NULL ? view->name : "";
-        if (view->unit != NULL) unit = view->unit;
-    } else if (sel.kind == task_sel_group) {
-        tasks = task_db_tasks_in_group(app->db, sel.id);
-        group = task_db_group_get(app->db, sel.id);
-        where = group != NULL ? group->name : "";
-    } else if (sel.kind == task_sel_tag) {
+    } else {
         tasks = task_db_tasks_tagged(app->db, sel.id);
         tag   = task_db_tag_get(app->db, sel.id);
-        where = tag != NULL ? tag->name : "";
-    } else {
-        tasks = task_db_tasks_toplevel(app->db, sel.id);
-        list  = task_db_list_get(app->db, sel.id);
-        if (list != NULL) where = list->name;
+        if (tag != NULL) where = tag->name;
     }
 
     TaskRowCtx ctx;
-    task_row_ctx_init(app, &ctx, task_sel_is_virtual(sel));
+    task_row_ctx_init(app, &ctx);
 
     /* The search narrows the view IN PLACE, between the collection and the
      * presentation.  The filtered array BORROWS its elements; `tasks`
@@ -148,19 +104,16 @@ task_pane_collect(TaskApp *app, task_sel_t sel, const TaskSearch *search)
     if (content == NULL) abort();
     content->rows = task_rows_build(filtered != NULL ? filtered : tasks, &ctx);
 
-    /* The view names its own noun; only the plural "s" is ours. */
-    if (asprintf(&content->status_text, "%s - %zu %s%s%s", where,
+    if (asprintf(&content->status_text, "%s - %zu %stask%s", where,
                  content->rows->count, search != NULL ? "matching " : "",
-                 unit, content->rows->count == 1 ? "" : "s") < 0) {
+                 content->rows->count == 1 ? "" : "s") < 0) {
         abort();
     }
 
     task_row_ctx_clear(&ctx);
     if (filtered != NULL) g_ptr_array_free(filtered, TRUE);
     task_ptr_array_free_tasks(tasks);
-    task_group_free(group);
     task_tag_free(tag);
-    task_list_free(list);
     return content;
 }
 

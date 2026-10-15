@@ -9,26 +9,28 @@
 
 /*
  * library_window — the main window, and the contract between it and the
- * panes it hosts (the lists bar, the task list, the Kanban board, the day
- * planner).
+ * panes it hosts (the sidebar, the Favorites bar, the task list, the
+ * Kanban board, the day planner).
  *
- *   ┌────────────────────────────────────────────────────┬─────────┐
- *   │ toolbar: New  Delete │ Lists  Completed  Pane  search │         │
- *   ├────────────────────────────────────────────────────┤  day    │
- *   │ lists bar (TasksListsBar): views, groups, lists      │ planner │
- *   ├────────────────────────────────────────────────────┤ (hidden │
- *   │ task pane: the task list OR the Kanban board         │  by     │
- *   │ (TasksTaskList / TasksKanban, one visible)           │ default)│
- *   ├────────────────────────────────────────────────────┴─────────┤
- *   │ <view> - N tasks                         latest event message │
- *   └──────────────────────────────────────────────────────────────┘
+ *   ┌───────────────────────────────────────────────────────┬─────────┐
+ *   │ toolbar: Sidebar │ New  Delete │ Completed  Pane  Planner  search │
+ *   ├──────────┬────────────────────────────────────────────┤  day    │
+ *   │ sidebar  │ Favorites bar (TasksFavoritesBar)           │ planner │
+ *   │ (Tasks-  ├────────────────────────────────────────────┤ (hidden │
+ *   │ Sidebar):│ task pane: the task list OR the Kanban board│  by     │
+ *   │ views,   │ (TasksTaskList / TasksKanban, one visible)  │ default)│
+ *   │ tags     │                                             │         │
+ *   ├──────────┴────────────────────────────────────────────┴─────────┤
+ *   │ <view> - N tasks                            latest event message │
+ *   └─────────────────────────────────────────────────────────────────┘
  *
  * In COMPACT mode (View > Compact Controls) the window shrinks to a
- * remembered small size, the toolbar and the lists bar are hidden, and New
+ * remembered small size, the toolbar, the sidebar and the Favorites bar
+ * are hidden, and New
  * and Delete float as a two-button plate at the bottom-right of the task
  * pane.  porting/INTERFACES.md §11 is the specification.
  *
- * THE WINDOW OWNS THE SHARED STATE.  Which list or view is selected, the
+ * THE WINDOW OWNS THE SHARED STATE.  Which tag or view is selected, the
  * search and the Kanban flag all live here, each with ONE writer; panes
  * read them through the properties below and never keep copies.
  *
@@ -166,7 +168,7 @@
  * current one only refreshes.
  *
  * Inputs:
- *   selection — the new selection; never the Lists header
+ *   selection — the new selection; never the Tags header
  */
 - (void)select:(task_sel_t)selection;
 
@@ -178,8 +180,8 @@
 - (void)refresh_tasks;
 
 /*
- * refresh_sidebar — rebuild the sidebar from the database (lists or groups
- * were created, renamed, moved or deleted).
+ * refresh_sidebar — rebuild the sidebar and the Favorites bar from the
+ * database (a tag was first used or last dropped, or edited).
  */
 - (void)refresh_sidebar;
 
@@ -203,18 +205,17 @@
 - (NSMenu *)task_context_menu;
 
 /*
- * fill_menu:with_destinations_of: — rebuild a "Move to" submenu: one item
- * per place the command can send things, each carrying that place's id as
- * the command's parameter and targeting this window.  The task context
- * menu fills its submenu with this when it is built; the main menu's
- * submenus are filled each time they open, so they always show the lists
- * and groups there are now.
+ * fill_menu:with_destinations_of: — rebuild the "Add Tag" submenu: one
+ * item per tag, each carrying the tag's id as the command's parameter and
+ * targeting this window.  The task context menu fills its submenu with
+ * this when it is built; the main menu's submenu is filled each time it
+ * opens, so it always shows the tags there are now.
  *
  * Inputs:
  *   menu    — the submenu; its items are replaced
- *   command — TasksCommandMoveToList: every list, less the list a single
- *             selected task is already in.  TasksCommandMoveToGroup: every
- *             group.  Any other command leaves the menu empty.
+ *   command — TasksCommandAddTag: every tag, less those a single selected
+ *             task already carries.  Any other command leaves the menu
+ *             empty.
  */
 - (void)fill_menu:(NSMenu *)menu with_destinations_of:(TasksCommand)command;
 

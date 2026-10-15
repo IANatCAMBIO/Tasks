@@ -63,7 +63,7 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 
 | Prefix | Meaning |
 |---|---|
-| `task_…`, `Task…` types, `TASK_…` | the core (carried names: `Task`, `TaskApp`, `TaskList`, …) |
+| `task_…`, `Task…` types, `TASK_…` | the core (carried names: `Task`, `TaskApp`, `TaskTag`, …) |
 | `task_…_t` | NEW core types written for the fork (`task_row_t`, `task_sel_t`) |
 | `tasks_…` | AppKit-layer C functions (`tasks_icon`, `tasks_row_text`) |
 | `Tasks…` | Objective-C classes, `NS_ENUM` types and their members |
@@ -98,7 +98,7 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 | `backup` | backups through the shared module, on a background job; policy in `shared_settings` |
 | `task_worker` | the scheduler the recurrence pass and the backup are registered with |
 | `task_view`, `core_views` | the registry of sidebar views (Favorites, All Tasks, 3-Day Forecast, Action Items) |
-| `task_ops` | move-to-list, clear-completed, the default list (`task_ops_default_list`) |
+| `task_ops` | clear-completed (a tag's), the default tag (`task_ops_default_tag`) |
 | `task_rows` | what a task row SAYS, as toolkit-neutral data |
 | `task_pane` | the sidebar selection type; collects a selection's rows + status line |
 | `task_order` | saved manual and Kanban orders |
@@ -138,7 +138,7 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 
 | Fire | Meaning | Who fires it |
 |---|---|---|
-| `task_app_notify_changed` | structure changed: refresh sidebar + task pane + open editors | list/group commands, the recurrence pass |
+| `task_app_notify_changed` | structure changed: refresh sidebar + task pane + open editors | the recurrence pass |
 | `task_app_notify_tasks` | tasks changed, sidebar cannot have: task pane only | editor saves, subtask/attachment edits, Settings changes that alter what rows show |
 | the notes event (`task_app_listen_notes`) | Notes' data changed elsewhere: re-read open editors' "From note" lines; while `TASK_CFG_NOTE_CONTEXT` is on, also everything the tasks event refreshes (a renamed folder renames the prefix) | `task_app_check_outside` only |
 | `task_app_status(app, fmt, …)` | a one-line message for the status bar | anyone |
@@ -183,7 +183,7 @@ asking for it is running inside a handler of a view the refresh will destroy
 
 | State | Reader | Single writer |
 |---|---|---|
-| `selection` (`task_sel_t`: view / list / group / tag + id) | everyone | `select:` (called by the sidebar) |
+| `selection` (`task_sel_t`: view / tag + id) | everyone | `select:` (called by the sidebar and the Favorites bar) |
 | `search` (`const TaskSearch *`, NULL = no filter) | everyone | the search field's action |
 | `manual_sort` | task list | `TasksCommandToggleSort` |
 | `kanban_on` | shell | `TasksCommandTogglePane` |
@@ -222,10 +222,19 @@ order while a search is active** — `[library manual_sort_live]` is the test;
 the list hides its drag handle, the board skips the order half of a drop (its
 status half still runs).  Reading an order is always allowed.
 
-**The sidebar** (`src/sidebar.h`) reports selection changes with
-`[library select:]`; `reload` rebuilds from the database and must leave
-exactly one row selected (never the Lists header), moving the selection if its
-row has gone.  Selecting a GROUP shows the aggregated tasks of its lists.
+**There are no lists.**  Tags are the only organisation (db.h): every live
+task carries at least one, the schema keeps that and deletes a tag no task
+carries; the shared `lists` / `list_groups` tables are storage only.
+
+**The sidebar** (`src/sidebar.h`) shows the views, the Tags header and every
+tag; it reports selection changes with `[library select:]`; `reload`
+rebuilds from the database and must leave exactly one row selected (never
+the Tags header), moving the selection to the first view if its row has
+gone (`task_sidebar_pick`).  It owns Edit Tag (emoji, favorite; never the
+name).  **The Favorites bar** (`src/favorites_bar.h`) shows one button per
+favorite tag and selects through `[library select:]` too.  The window
+rebuilds both when the tags change (`tag_rows`: ids, emojis, favorites),
+and drops a gone tag's saved orders (`task_order_drop`).
 
 ---
 
@@ -244,7 +253,7 @@ row has gone.  Selecting a GROUP shows the aggregated tasks of its lists.
   `TASK_CONTEXT_SEPARATOR`) is made.  `Task.context` is the
   `action_items_ctx.context` of the task's note (its folder's name), read
   with every task row by `TASK_COLS`; "" for anything else.  The rows
-  (`task_row_describe`: list, Kanban, 3-Day Forecast, Action Items) and the search
+  (`task_row_describe`: list, Kanban, 3-Day Forecast, any tag) and the search
   (`task_search_matches`) take the setting from `TaskRowCtx.note_context`;
   the AppKit labels (day planner blocks, reminders, the subtask editor's
   parent line) use `tasks_title_string` (ui_util.h).  Display only: never
@@ -296,25 +305,22 @@ One table (`src/commands.m`) drives menu items, toolbar items and validation.
 | Hide/Show Completed | shell | | |
 | Manual/Automatic Sorting | shell | | |
 | Hide/Show Sidebar | shell | ⌃⌘S | |
+| Hide/Show Favorites Bar | shell | | |
 | Compact/Full Controls | shell | | *(not implemented yet)* |
 | Kanban/List View | shell | ⇧⌘K | |
 | Mark Complete/Incomplete | shell | | BOOL |
-| Add to/Remove from Favorites | shell | | BOOL |
 | Set/Clear High Priority | shell | | BOOL |
-| Move to List | shell | | list id |
-| New List… | sidebar | ⇧⌘N | |
-| New Group…, Edit List…, Delete List, Remove from Group | sidebar | | |
-| Move to Group, Rename Group…, Remove Group | sidebar | | group id |
+| Add Tag ▸ (every tag) | shell | | tag id |
+| Edit Tag… | sidebar | | tag id (none: the selected tag) |
 | Done / Status / Due Date / Completion Date columns | task list | | |
 
-**Where a new task goes.**  New Task files its task in
-`task_sel_new_task_list(app, selection)` (`task_pane.h`): the selected list,
-or for a group, a tag or a view the default list (`TASK_CFG_DEFAULT_LIST`,
-chosen in Settings; `task_ops_default_list` treats a deleted list as none).
-In a tag's proto-list (`task_sel_tag`) the new task is also given the tag
-(`task_sel_tag_id`, `task_db_task_tag_add`).  A view
-with `refuses_new_tasks` (Action Items: only Notes writes those) disables New
-Task (`task_sel_takes_new_tasks`).  Quick Task always uses the default list,
+**Which tag a new task gets.**  New Task gives its task
+`task_sel_new_task_tag(app, selection)` (`task_pane.h`): the selected tag,
+or for a view the default tag (`TASK_CFG_DEFAULT_TAG`, a NAME, chosen in
+Settings: a tag exists only while a task carries it, so the default may
+name one that has gone, and `task_db_task_create` makes it again).  With
+neither there is no New Task (the status bar says why).  Quick Task always
+gives the default tag,
 and opens the editor in the lower-right corner of `NSScreen.mainScreen`
 (`tasks_editor_open_new(…, true)`); `src/hotkey.m` registers its shortcut
 system-wide through Carbon while `TASK_CFG_QUICK_TASK_HOTKEY` is on.
@@ -350,7 +356,7 @@ question is a tool panel (`tool_panel.h`) — a floating utility window with
 the blue hero strip — never `NSAlert`, an alert sheet or `runModal`.
 `tasks_ui_notice` and `tasks_ui_confirm` are built on it; in a tool panel
 Escape and the close box are no answer (Cancel), never the default
-button.  `tasks_ui_sheet` (New List and the other small forms) is still a
+button.  `tasks_ui_sheet` (Edit Tag and the other small forms) is still a
 sheet, and the file chooser is the system's (`NSOpenPanel`).
 Every table is a `TasksTable` (or a subclass of it), which selects a
 clicked row on mouse-down.
@@ -521,13 +527,12 @@ Still to do:
 
 ### WP2 — Sidebar
 
-Owns: `sidebar.[hm]`.  Reference: `sidebar.c`.
-Outline (views, non-selectable Lists header, groups, lists), selection and
-expansion restored across reloads (the 4-step fallback), list and group
-dialogs (through `tasks_ui_sheet`), emoji picker, context menus, drag-reorder
-with the cross-group rule, auto-fit width, its commands.
-Lift into the core: the reorder index arithmetic (`sidebar.c:337–397`).
-On delete of a list or group call `task_order_drop`.
+Owns: `sidebar.[hm]`, `favorites_bar.[hm]`.  Reference: `sidebar.c`.
+Lists and groups are gone (tags replaced them): a source list of the
+views, the non-selectable Tags header and every tag; selection restored
+across reloads (`task_sidebar_pick`); Edit Tag through `tasks_ui_sheet`,
+with the emoji picker; the Favorites bar of favorite tags; the toolbar's
+sidebar toggle.
 
 ### WP3 — Task list
 
@@ -662,7 +667,7 @@ flags as a side effect.
 ```sh
 make clean && make      # zero warnings
 make test               # core tests
-make seed               # fresh sandbox database (45 tasks, 8 lists, 2 groups; 3 Notes items)
+make seed               # fresh sandbox database (45 tasks, a dozen tags; 3 Notes items)
 make ui-check           # snapshots in dev/snapshots, ownership + memory checks
 make run                # the app, against dev/data
 ```

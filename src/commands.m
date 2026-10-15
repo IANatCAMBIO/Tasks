@@ -4,8 +4,8 @@
 
 /* The table.  Shortcuts follow Mac conventions.  A toggling command's
  * title, icon and tooltip here are its FIRST face: what it offers while
- * completed tasks are shown, sorting is automatic, the sidebar is visible
- * and the list is up.  The library window supplies only the other face
+ * completed tasks are shown, sorting is automatic, the sidebar and the
+ * Favorites bar are visible and the list is up.  The library window supplies only the other face
  * (update_shell_state:for_command:). */
 static const tasks_command_spec_t command_specs[] = {
     { TasksCommandAbout,           TasksCommandOwnerApp,      @"tasks.about",
@@ -17,7 +17,7 @@ static const tasks_command_spec_t command_specs[] = {
 
     { TasksCommandNewTask,         TasksCommandOwnerShell,    @"tasks.new-task",
       @"New Task",                 @"n", 0, @"plus",
-      @"Create a task in the selected list, or else in the default list" },
+      @"Create a task with the selected tag, or else with the default tag" },
     /* The same shortcut is registered system-wide by hotkey.m. */
     { TasksCommandQuickTask,       TasksCommandOwnerShell,    @"tasks.quick-task",
       @"Quick Task",               @"t", NSEventModifierFlagControl | NSEventModifierFlagOption,
@@ -35,8 +35,10 @@ static const tasks_command_spec_t command_specs[] = {
     { TasksCommandToggleCompleted, TasksCommandOwnerShell,    @"tasks.toggle-completed",
       @"Hide Completed",           @"",  0, @"eye.slash", @"Hide completed tasks" },
     { TasksCommandToggleSidebar,   TasksCommandOwnerShell,    @"tasks.toggle-sidebar",
-      @"Hide Lists Bar",           @"s", NSEventModifierFlagControl,
-      @"sidebar.left",             @"Hide the lists bar" },
+      @"Hide Sidebar",             @"s", NSEventModifierFlagControl,
+      @"sidebar.left",             @"Hide the sidebar" },
+    { TasksCommandToggleFavoritesBar, TasksCommandOwnerShell, @"tasks.toggle-favorites-bar",
+      @"Hide Favorites Bar",       @"",  0, nil, nil },
     { TasksCommandToggleCompact,   TasksCommandOwnerShell,    @"tasks.toggle-compact",
       @"Compact Controls",         @"",  0, nil, nil },
     { TasksCommandTogglePane,      TasksCommandOwnerShell,    @"tasks.toggle-pane",
@@ -47,29 +49,13 @@ static const tasks_command_spec_t command_specs[] = {
       @"calendar.badge.clock",      @"Hide the day planner" },
     { TasksCommandMarkDone,        TasksCommandOwnerShell,    @"tasks.mark-done",
       @"Mark Complete",            @"",  0, nil, nil },
-    { TasksCommandSetPinned,       TasksCommandOwnerShell,    @"tasks.set-pinned",
-      @"Add to Favorites",         @"",  0, nil, nil },
     { TasksCommandSetPriority,     TasksCommandOwnerShell,    @"tasks.set-priority",
       @"Set High Priority",        @"",  0, nil, nil },
-    { TasksCommandMoveToList,      TasksCommandOwnerShell,    @"tasks.move-to-list",
-      @"Move to List",             @"",  0, nil, nil },
+    { TasksCommandAddTag,          TasksCommandOwnerShell,    @"tasks.add-tag",
+      @"Add Tag",                  @"",  0, nil, nil },
 
-    { TasksCommandNewList,         TasksCommandOwnerSidebar,  @"tasks.new-list",
-      @"New List…",                @"n", NSEventModifierFlagShift, nil, nil },
-    { TasksCommandNewGroup,        TasksCommandOwnerSidebar,  @"tasks.new-group",
-      @"New Group…",               @"",  0, nil, nil },
-    { TasksCommandEditList,        TasksCommandOwnerSidebar,  @"tasks.edit-list",
-      @"Edit List…",               @"",  0, nil, nil },
-    { TasksCommandDeleteList,      TasksCommandOwnerSidebar,  @"tasks.delete-list",
-      @"Delete List",              @"",  0, nil, nil },
-    { TasksCommandMoveToGroup,     TasksCommandOwnerSidebar,  @"tasks.move-to-group",
-      @"Move to Group",            @"",  0, nil, nil },
-    { TasksCommandRemoveFromGroup, TasksCommandOwnerSidebar,  @"tasks.remove-from-group",
-      @"Remove from Group",        @"",  0, nil, nil },
-    { TasksCommandRenameGroup,     TasksCommandOwnerSidebar,  @"tasks.rename-group",
-      @"Rename Group…",            @"",  0, nil, nil },
-    { TasksCommandDeleteGroup,     TasksCommandOwnerSidebar,  @"tasks.delete-group",
-      @"Remove Group",             @"",  0, nil, nil },
+    { TasksCommandEditTag,         TasksCommandOwnerSidebar,  @"tasks.edit-tag",
+      @"Edit Tag…",                @"",  0, nil, nil },
 
     { TasksCommandColumnDone,      TasksCommandOwnerTaskList, @"tasks.column-done",
       @"Done",                     @"",  0, nil, nil },
@@ -94,8 +80,6 @@ typedef struct {
 static const flag_titles_t flag_titles[] = {
     { TasksCommandMarkDone,    @"Mark Incomplete",
       @"Mark All Complete",    @"Mark All Incomplete" },
-    { TasksCommandSetPinned,   @"Remove from Favorites",
-      @"Add All to Favorites", @"Remove All from Favorites" },
     { TasksCommandSetPriority, @"Clear High Priority",
       @"Set All High Priority", @"Clear All High Priority" },
 };

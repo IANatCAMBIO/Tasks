@@ -479,7 +479,7 @@ test_db_open_existing(void)
     TaskDatabase *db = task_db_open_existing(path, &err);
     g_assert_no_error(err);
     g_assert_nonnull(db);
-    g_assert_cmpint(task_db_list_create(db, "Written", ""), >, 0);
+    g_assert_cmpint(task_db_task_create(db, 0, "Written", "probe"), >, 0);
     task_db_close(db);
 
     g_remove(path);
@@ -550,18 +550,17 @@ test_db_create_read_task(void)
     g_assert_no_error(err);
     g_assert_nonnull(db);
 
-    /* Create a list, then a task in it. */
-    gint64 list_id = task_db_list_create(db, "Test List", NULL);
-    g_assert_cmpint(list_id, >, 0);
-
-    gint64 task_id = task_db_task_create(db, list_id, 0, "Walk the dog");
+    /* A task needs a tag; it is filed in a storage list made for it. */
+    g_assert_cmpint(task_db_task_create(db, 0, "Untagged", NULL), ==, 0);
+    g_assert_cmpint(task_db_task_create(db, 0, "Untagged", "  "), ==, 0);
+    gint64 task_id = task_db_task_create(db, 0, "Walk the dog", "Test");
     g_assert_cmpint(task_id, >, 0);
 
     /* Read the task back and check its fields. */
     Task *t = task_db_task_get(db, task_id);
     g_assert_nonnull(t);
     g_assert_cmpstr(t->title, ==, "Walk the dog");
-    g_assert_cmpint(t->list_id, ==, list_id);
+    g_assert_cmpint(t->list_id, >, 0);
     g_assert_cmpint(t->parent_id, ==, 0);
     g_assert_cmpint(t->status, ==, TASK_STATUS_NEW);
     g_assert_cmpint(t->updated_at, >, 0);   /* stamped on create */
@@ -589,8 +588,7 @@ test_db_create_due_time_default(void)
 
     TaskDatabase *db = task_db_open(path, &err);
     g_assert_no_error(err);
-    gint64 list_id = task_db_list_create(db, "L", NULL);
-    gint64 task_id = task_db_task_create(db, list_id, 0, "Task");
+    gint64 task_id = task_db_task_create(db, 0, "Task", "L");
 
     Task *t = task_db_task_get(db, task_id);
     g_assert_nonnull(t);
@@ -618,8 +616,7 @@ test_db_status_stamps_updated_at(void)
     TaskDatabase *db = task_db_open(path, &err);
     g_assert_no_error(err);
 
-    gint64 list_id = task_db_list_create(db, "L", NULL);
-    gint64 task_id = task_db_task_create(db, list_id, 0, "Task");
+    gint64 task_id = task_db_task_create(db, 0, "Task", "L");
 
     Task *before = task_db_task_get(db, task_id);
     gint64 at_create = before->updated_at;

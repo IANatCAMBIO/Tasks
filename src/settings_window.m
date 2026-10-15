@@ -345,7 +345,7 @@ isFlipped
 @property (nonatomic, strong) NSTextField *health_light; /* the round indicator           */
 @property (nonatomic, strong) NSTextField *health_label; /* the verdict and when          */
 @property (nonatomic, strong) NSTextField *path_label;
-@property (nonatomic, strong) NSTextField *data_label;   /* "42 tasks in 8 lists"         */
+@property (nonatomic, strong) NSTextField *data_label;   /* "42 tasks with 8 tags"        */
 @property (nonatomic, strong) NSTextField *size_label;
 @property (nonatomic, strong) NSTextField *sha_label;    /* the digest, shortened         */
 @property (nonatomic, strong) NSButton *sha_copy;        /* its "copy" link               */
@@ -380,8 +380,8 @@ isFlipped
                                                            * hidden until there is one    */
 
 /* New tasks. */
-@property (nonatomic, strong) NSPopUpButton *default_list_popup; /* None, then every list;
-                                                                  * rebuilt as it opens */
+@property (nonatomic, strong) NSPopUpButton *default_tag_popup; /* None, then every tag;
+                                                                 * rebuilt as it opens  */
 
 /* Notifications. */
 @property (nonatomic, strong) NSButton *notif_tasks_btn;   /* radio: Tasks popup  */
@@ -650,7 +650,7 @@ database_rows
                                             action:@selector(update_database:)];
     self.update_button.toolTip =
         @"Re-read every line above: run PRAGMA integrity_check and PRAGMA foreign_key_check "
-        @"against this database, then re-count its tasks and lists and re-read its size and "
+        @"against this database, then re-count its tasks and tags and re-read its size and "
         @"SHA-256.";
 
     return @[section_label(@"Database"), [self database_plate],
@@ -751,7 +751,7 @@ backup_rows
 }
 
 /*
- * new_task_rows — the New Tasks section: the default list, and whether
+ * new_task_rows — the New Tasks section: the default tag, and whether
  * Quick Task's shortcut works from any app.
  *
  * Output:
@@ -760,19 +760,18 @@ backup_rows
 - (NSArray<NSView *> *)
 new_task_rows
 {
-    self.default_list_popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    self.default_list_popup.target        = self;
-    self.default_list_popup.action        = @selector(default_list_changed:);
-    self.default_list_popup.menu.delegate = self;
-    self.default_list_popup.toolTip       =
-        @"New Task files its task here when a group or a view is selected; "
-        @"Quick Task always does.";
-    [self menuNeedsUpdate:self.default_list_popup.menu];
+    self.default_tag_popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    self.default_tag_popup.target        = self;
+    self.default_tag_popup.action        = @selector(default_tag_changed:);
+    self.default_tag_popup.menu.delegate = self;
+    self.default_tag_popup.toolTip       =
+        @"New Task gives its task this tag when a view is selected; Quick Task always does.";
+    [self menuNeedsUpdate:self.default_tag_popup.menu];
 
-    NSStackView *list_row = [NSStackView stackViewWithViews:@[
-        [NSTextField labelWithString:@"Default list:"], self.default_list_popup]];
-    list_row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    list_row.alignment   = NSLayoutAttributeFirstBaseline;
+    NSStackView *tag_row = [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:@"Default tag:"], self.default_tag_popup]];
+    tag_row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    tag_row.alignment   = NSLayoutAttributeFirstBaseline;
 
     NSButton *hotkey = [NSButton checkboxWithTitle:
                             @"Quick Task (\u2303\u2325\u2318T) works from any app"
@@ -783,17 +782,19 @@ new_task_rows
 
     NSTextField *note = wrapping_label(NSColor.secondaryLabelColor, form_content_w());
     note.stringValue =
-        @"New Task uses the default list when a group or a view is selected. Quick Task "
-        @"always uses it, and opens its editor in the lower-right corner of the screen.";
+        @"Every task has a tag. New Task gives the default tag when a view is selected "
+        @"rather than a tag. Quick Task always gives it, and opens its editor in the "
+        @"lower-right corner of the screen.";
 
-    return @[section_label(@"New Tasks"), list_row, hotkey, note];
+    return @[section_label(@"New Tasks"), tag_row, hotkey, note];
 }
 
 /*
- * menuNeedsUpdate: — the default-list popup's menu is about to open (or is
- * being built): fill it afresh from the database, so lists made, renamed
- * or deleted while Settings is open are offered as they now are.  "None"
- * leads; a default list that has gone shows as None.
+ * menuNeedsUpdate: — the default-tag popup's menu is about to open (or is
+ * being built): fill it afresh from the database, so tags made or gone
+ * while Settings is open are offered as they now are.  "None" leads.  A
+ * default that no task carries just now is offered too, by its name: the
+ * next task given it makes the tag again.
  *
  * Inputs:
  *   menu — the popup's menu
@@ -801,33 +802,45 @@ new_task_rows
 - (void)
 menuNeedsUpdate:(NSMenu *)menu
 {
+    gchar    *chosen  = task_ops_default_tag(self.app);
+    NSString *current = chosen != NULL ? tasks_string(chosen) : nil;
+    g_free(chosen);
+
     [menu removeAllItems];
     NSMenuItem *none = [menu addItemWithTitle:@"None" action:NULL keyEquivalent:@""];
-    none.tag = 0;
     [menu addItem:NSMenuItem.separatorItem];
 
-    GPtrArray *lists = task_db_lists(self.app->db, FALSE);
-    for (guint i = 0; i < lists->len; i++) {
-        const TaskList *list = g_ptr_array_index(lists, i);
-        NSMenuItem *item = [menu addItemWithTitle:tasks_list_title(list) action:NULL
-                                    keyEquivalent:@""];
-        item.tag = (NSInteger)list->id;
+    NSMenuItem *selected = none;
+    GPtrArray  *tags     = task_db_tags(self.app->db);
+    for (guint i = 0; i < tags->len; i++) {
+        const TaskTag *tag  = g_ptr_array_index(tags, i);
+        NSMenuItem    *item = [menu addItemWithTitle:tasks_tag_title(tag) action:NULL
+                                       keyEquivalent:@""];
+        item.representedObject = tasks_string(tag->name);
+        if (current != nil && [current caseInsensitiveCompare:item.representedObject] == NSOrderedSame) {
+            selected = item;
+        }
     }
-    task_ptr_array_free_lists(lists);
-
-    [self.default_list_popup selectItemWithTag:(NSInteger)task_ops_default_list(self.app)];
+    task_ptr_array_free_tags(tags);
+    if (current != nil && selected == none) {
+        selected = [menu addItemWithTitle:current action:NULL keyEquivalent:@""];
+        selected.representedObject = current;
+    }
+    [self.default_tag_popup selectItem:selected];
 }
 
 /*
- * default_list_changed: — a default list (or None) was chosen.
+ * default_tag_changed: — a default tag (or None) was chosen.
  *
  * Inputs:
- *   sender — the popup; the chosen item's tag is the list id, 0 for None
+ *   sender — the popup; the chosen item carries the tag's name, nil for
+ *            None
  */
 - (void)
-default_list_changed:(NSPopUpButton *)sender
+default_tag_changed:(NSPopUpButton *)sender
 {
-    task_config_set_int(TASK_CFG_DEFAULT_LIST, (gint)sender.selectedTag);
+    NSString *name = sender.selectedItem.representedObject;
+    task_config_set(TASK_CFG_DEFAULT_TAG, name != nil ? name.UTF8String : NULL);
 }
 
 /*
@@ -1372,14 +1385,14 @@ refresh_facts
 {
     TaskDatabase *db = self.app->db;
     gint n_tasks = 0;
-    gint n_lists = 0;
+    gint n_tags  = 0;
 
     self.path_label.stringValue = tasks_string(shared_db_file(db->shared));
 
-    task_db_totals(db, &n_tasks, &n_lists);
+    task_db_totals(db, &n_tasks, &n_tags);
     self.data_label.stringValue =
-        [NSString stringWithFormat:@"%d task%s in %d list%s",
-            n_tasks, n_tasks == 1 ? "" : "s", n_lists, n_lists == 1 ? "" : "s"];
+        [NSString stringWithFormat:@"%d task%s with %d tag%s",
+            n_tasks, n_tasks == 1 ? "" : "s", n_tags, n_tags == 1 ? "" : "s"];
 
     char *summary = NULL;
     char *detail  = NULL;

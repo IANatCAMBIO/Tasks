@@ -62,7 +62,8 @@
 #import "look.h"
 #import "row_text.h"
 #import "settings_window.h"
-#import "lists_bar.h"
+#import "favorites_bar.h"
+#import "sidebar.h"
 #import "task_list.h"
 #import "ui_util.h"
 
@@ -250,19 +251,19 @@ snapshot_windows(TaskApp *app, NSString *dir)
 
         check(snapshot(library.window, dir, @"library-list"), "snapshot: library, list view");
 
-        /* A real list, so the rows have no "in <list>" line. */
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
-        if (lists->len > 0) {
-            task_sel_t first = { task_sel_list, ((const TaskList *)g_ptr_array_index(lists, 0))->id };
+        /* One tag's tasks. */
+        GPtrArray *tags = task_db_tags(app->db);
+        if (tags->len > 0) {
+            task_sel_t first = { task_sel_tag, ((const TaskTag *)g_ptr_array_index(tags, 0))->id };
             /* select: is the sidebar's report of a change; coming from
              * here instead, the sidebar is reloaded to show it. */
             [library select:first];
             [library refresh_sidebar];
-            check(snapshot(library.window, dir, @"library-one-list"), "snapshot: library, one list");
+            check(snapshot(library.window, dir, @"library-one-tag"), "snapshot: library, one tag");
             [library select:task_sel_default()];
             [library refresh_sidebar];
         }
-        task_ptr_array_free_lists(lists);
+        task_ptr_array_free_tags(tags);
 
         BOOL was_kanban = library.kanban_on;
         [library perform_command:TasksCommandTogglePane param:nil];
@@ -729,8 +730,9 @@ check_compact(TaskApp *app, NSString *dir)
 
         check(content_is(window, TASK_CFG_WIN_W, TASK_CFG_WIN_H),
               "geometry: the window opens at its saved content size");
-        check(find_view(content, TasksListsBar.class).hiddenOrHasHiddenAncestor,
-              "geometry: ... with the sidebar hidden when it was left hidden");
+        check(find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor &&
+              !find_view(content, TasksFavoritesBar.class).hiddenOrHasHiddenAncestor,
+              "geometry: ... with the sidebar hidden when it was left hidden, the bar shown");
         check(window.toolbar.visible && find_view(content, plate_class).hidden,
               "compact: full mode shows the toolbar and no floating controls");
 
@@ -747,8 +749,9 @@ check_compact(TaskApp *app, NSString *dir)
 
         check(task_config_get_bool(TASK_CFG_COMPACT) && !window.toolbar.visible,
               "compact: entering hides the toolbar");
-        check(find_view(content, TasksListsBar.class).hiddenOrHasHiddenAncestor,
-              "compact: ... and the sidebar");
+        check(find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor &&
+              find_view(content, TasksFavoritesBar.class).hiddenOrHasHiddenAncestor,
+              "compact: ... and the sidebar and the Favorites bar");
         check(!find_view(content, plate_class).hiddenOrHasHiddenAncestor,
               "compact: ... and shows the floating controls");
         check(library.search == NULL && [field.stringValue isEqualToString:@""],
@@ -796,7 +799,7 @@ check_compact(TaskApp *app, NSString *dir)
 
         check(content_is(window, TASK_CFG_COMPACT_W, TASK_CFG_COMPACT_H) &&
               !window.toolbar.visible &&
-              find_view(content, TasksListsBar.class).hiddenOrHasHiddenAncestor &&
+              find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor &&
               !find_view(content, plate_class).hiddenOrHasHiddenAncestor,
               "compact: a launch in Compact opens Compact, at that size");
 
@@ -806,9 +809,10 @@ check_compact(TaskApp *app, NSString *dir)
         check(!task_config_get_bool(TASK_CFG_COMPACT) && window.toolbar.visible &&
               find_view(content, plate_class).hidden,
               "compact: leaving shows the toolbar and hides the floating controls");
-        check(!find_view(content, TasksListsBar.class).hiddenOrHasHiddenAncestor &&
+        check(!find_view(content, TasksSidebar.class).hiddenOrHasHiddenAncestor &&
+              !find_view(content, TasksFavoritesBar.class).hiddenOrHasHiddenAncestor &&
               task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE),
-              "compact: ... and brings the sidebar back, and records it");
+              "compact: ... and brings the sidebar and the bar back, and records it");
         check(content_is(window, TASK_CFG_COMPACT_PRE_W, TASK_CFG_COMPACT_PRE_H),
               "compact: ... and restores the size the window had before");
         [library close];
@@ -902,7 +906,7 @@ check_open_database(TaskApp *app)
     [files removeItemAtPath:folder error:NULL];
     [files createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:NULL];
     TaskDatabase *db = task_db_open(other.fileSystemRepresentation, NULL);
-    task_db_task_create(db, task_db_list_create(db, "Elsewhere", ""), 0, "The only task");
+    task_db_task_create(db, 0, "The only task", "Elsewhere");
     task_db_close(db);
     [@"not a database" writeToFile:junk atomically:YES encoding:NSUTF8StringEncoding error:NULL];
     sqlite3 *sq = NULL;
@@ -1092,43 +1096,51 @@ check_memory_and_ownership(TaskApp *app)
           "ownership: no event listener is left subscribed");
 }
 
-/* The latest status-bar message keep_status heard. */
-static char ui_status[512];
-
 /*
- * keep_status — a status listener: keep the latest message in ui_status.
+ * sidebar_rows — the texts of a sidebar's rows, top to bottom, scrolled out
+ * of sight or not (a view-based table makes only the rows on screen until
+ * asked).
  *
  * Inputs:
- *   app     — the context (unused)
- *   message — the message (borrowed)
- *   data    — unused
+ *   sidebar — the sidebar
+ *
+ * Output:
+ *   the texts.
  */
-static void
-keep_status(TaskApp *app, const gchar *message, gpointer data)
+static NSArray<NSString *> *
+sidebar_rows(NSView *sidebar)
 {
-    (void)app;
-    (void)data;
-    snprintf(ui_status, sizeof ui_status, "%s", message);
+    NSTableView                *table = (NSTableView *)find_view(sidebar, NSTableView.class);
+    NSMutableArray<NSString *> *texts = [NSMutableArray array];
+
+    for (NSInteger row = 0; row < table.numberOfRows; row++) {
+        NSTableCellView *cell = [table viewAtColumn:0 row:row makeIfNecessary:YES];
+        [texts addObject:cell.textField.stringValue ?: @""];
+    }
+    return texts;
 }
 
 /*
- * check_lists_bar — drive the lists bar through what a user does with it,
- * without a pointer: the selection rules, the list and group sheets (ended
- * as their buttons would end them), the context menus, Move to Group and
- * Remove from Group, the confirmations of Remove Group and Delete List,
- * and the Action Items view appearing and disappearing with Notes' items.
+ * check_sidebar — the tag sidebar and the Favorites bar, driven as a user
+ * drives them, without a pointer: the sidebar's rows (the three views, the
+ * Tags header, every tag), selecting a tag, the Favorites bar's buttons
+ * (the favorite tags) and the window's selection lit in both, Edit Tag
+ * (emoji and favorite, ended as its button would end it), the bar's
+ * hint with no favorites, the Action Items tag Notes' items carry, a tag
+ * vanishing while selected, Add Tag on selected tasks, and the two
+ * toggles with the toolbar's sidebar button at its far left.
  *
- * It creates a group and a list in the sandbox and removes both again; the
- * Notes action items it deletes are restored as they were.
+ * Everything it changes is put back: the tags' emojis and favorites, the
+ * tags it adds (deleted with the tasks it made).
  *
  * Inputs:
  *   app — the application context
- *   dir — the snapshot folder (the New List sheet is rendered into it)
+ *   dir — the snapshot folder
  */
 static void
-check_lists_bar(TaskApp *app, NSString *dir)
+check_sidebar(TaskApp *app, NSString *dir)
 {
-    __weak TasksListsBar *weak_bar = nil;
+    __weak TasksSidebar *weak_sidebar = nil;
 
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
@@ -1136,389 +1148,254 @@ check_lists_bar(TaskApp *app, NSString *dir)
         [library showWindow:nil];
         check_spin(0.2);
 
-        /* Every view of one class under a root, parents before children. */
-        NSArray<NSView *> *(^views_of)(NSView *, Class) = ^(NSView *root, Class class) {
-            NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:root];
-            NSMutableArray<NSView *> *found = [NSMutableArray array];
-            for (NSUInteger i = 0; i < queue.count; i++) {
-                if ([queue[i] isKindOfClass:class]) [found addObject:queue[i]];
-                [queue addObjectsFromArray:queue[i].subviews];
-            }
-            return found;
-        };
-        TasksListsBar *bar = (TasksListsBar *)find_view(window.contentView, TasksListsBar.class);
-        weak_bar = bar;
-        check(bar != nil, "lists bar: the pane is a lists bar");
+        TasksSidebar      *sidebar = (TasksSidebar *)find_view(window.contentView, TasksSidebar.class);
+        TasksFavoritesBar *bar     = (TasksFavoritesBar *)find_view(window.contentView,
+                                                                    TasksFavoritesBar.class);
+        NSTableView       *table   = (NSTableView *)find_view(sidebar, NSTableView.class);
+        weak_sidebar = sidebar;
+        check(sidebar != nil && bar != nil && table != nil,
+              "sidebar: the window has a sidebar and a Favorites bar");
 
-        /* The bar's buttons, left to right. */
-        NSArray<NSButton *> *(^buttons)(void) = ^{
+        NSArray<NSString *> *(^rows)(void) = ^{ return sidebar_rows(sidebar); };
+        /* The Favorites bar's buttons' titles, left to right, and the lit
+         * one. */
+        NSArray<NSString *> *(^favorites)(void) = ^{
             NSMutableArray<NSButton *> *found = [NSMutableArray array];
-            for (NSView *view in views_of(bar, NSButton.class)) [found addObject:(NSButton *)view];
+            NSMutableArray<NSView *>   *queue = [NSMutableArray arrayWithObject:bar];
+            for (NSUInteger k = 0; k < queue.count; k++) {
+                if ([queue[k] isKindOfClass:NSButton.class]) [found addObject:(NSButton *)queue[k]];
+                [queue addObjectsFromArray:queue[k].subviews];
+            }
             [found sortUsingComparator:^NSComparisonResult(NSButton *a, NSButton *b) {
                 return [@(NSMinX(a.frame)) compare:@(NSMinX(b.frame))];
             }];
-            return found;
-        };
-        /* The button whose title ends with a name, or nil. */
-        NSButton *(^button_of)(NSString *) = ^(NSString *name) {
-            for (NSButton *button in buttons()) {
-                if ([button.title hasSuffix:name]) return button;
-            }
-            return (NSButton *)nil;
-        };
-        /* The titles of the buttons shown as selected, "A|B". */
-        NSString *(^lit)(void) = ^{
             NSMutableArray<NSString *> *titles = [NSMutableArray array];
-            for (NSButton *button in buttons()) {
-                if (button.state == NSControlStateValueOn) [titles addObject:button.title];
+            for (NSButton *b in found) {
+                [titles addObject:[NSString stringWithFormat:@"%@%@", b.title,
+                                   b.state == NSControlStateValueOn ? @" (lit)" : @""]];
             }
-            return [titles componentsJoinedByString:@"|"];
+            return titles;
         };
-        /* The id of the list with a name, or 0. */
-        int64_t (^list_named)(NSString *) = ^(NSString *name) {
-            GPtrArray *lists = task_db_lists(app->db, FALSE);
-            int64_t    found = 0;
-            for (guint i = 0; i < lists->len; i++) {
-                const TaskList *list = g_ptr_array_index(lists, i);
-                if ([tasks_string(list->name) isEqualToString:name]) found = list->id;
+        NSButton *(^favorite_button)(NSString *) = ^NSButton *(NSString *title) {
+            NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:bar];
+            for (NSUInteger k = 0; k < queue.count; k++) {
+                if ([queue[k] isKindOfClass:NSButton.class] &&
+                    [((NSButton *)queue[k]).title isEqualToString:title]) return (NSButton *)queue[k];
+                [queue addObjectsFromArray:queue[k].subviews];
             }
-            task_ptr_array_free_lists(lists);
-            return found;
+            return nil;
         };
-        /* The id of the group with a name, or 0. */
-        int64_t (^group_named)(NSString *) = ^(NSString *name) {
-            GPtrArray *groups = task_db_groups(app->db);
-            int64_t    found  = 0;
-            for (guint i = 0; i < groups->len; i++) {
-                const TaskGroup *group = g_ptr_array_index(groups, i);
-                if ([tasks_string(group->name) isEqualToString:name]) found = group->id;
-            }
-            task_ptr_array_free_groups(groups);
-            return found;
-        };
-        /* The group a list is filed under. */
-        int64_t (^group_of)(int64_t) = ^(int64_t list_id) {
-            TaskList *list  = task_db_list_get(app->db, list_id);
-            int64_t   group = list != NULL ? list->group_id : -1;
-            task_list_free(list);
-            return group;
-        };
-        /* Put a sheet's editable fields to `values` and end it as its
-         * accept button would; NO when no sheet with that many fields is up. */
-        BOOL (^accept_sheet)(NSArray<NSString *> *) = ^(NSArray<NSString *> *values) {
-            check_spin(0.3);
-            NSWindow *sheet = window.attachedSheet;
-            NSMutableArray<NSTextField *> *fields = [NSMutableArray array];
-            for (NSView *view in views_of(sheet.contentView, NSTextField.class)) {
-                if (((NSTextField *)view).editable) [fields addObject:(NSTextField *)view];
-            }
-            if (sheet == nil || fields.count != values.count) return NO;
-            for (NSUInteger i = 0; i < values.count; i++) fields[i].stringValue = values[i];
-            [window endSheet:sheet returnCode:NSModalResponseOK];
-            check_spin(0.3);
-            return YES;
-        };
-        /* The context menu a right-click on a button gets, or on the empty
-         * space at the bar's right end for nil.  The click never reaches
-         * the screen: the bar is asked for its menu as AppKit would ask. */
-        NSMenu *(^menu_for)(NSButton *) = ^(NSButton *button) {
-            NSPoint point = button != nil
-                ? [button convertPoint:NSMakePoint(NSMidX(button.bounds), NSMidY(button.bounds))
-                                toView:nil]
-                : [bar convertPoint:NSMakePoint(NSWidth(bar.bounds) - 1.0, NSMidY(bar.bounds))
-                             toView:nil];
-            NSEvent *click = [NSEvent mouseEventWithType:NSEventTypeRightMouseDown
-                                                location:point
-                                           modifierFlags:0
-                                               timestamp:0
-                                            windowNumber:window.windowNumber
-                                                 context:nil
-                                             eventNumber:0
-                                              clickCount:1
-                                                pressure:1.0];
-            return [bar menuForEvent:click];
+        /* The tag of a name. */
+        TaskTag *(^tag_named)(const char *) = ^TaskTag *(const char *name) {
+            return task_db_tag_find(app->db, name);
         };
 
-        /* Selection: it is the window's, shown as the lit button; a view
-         * at first. */
-        check(library.selection.kind == task_sel_view &&
-              [lit() isEqualToString:tasks_string(task_view_nth((guint)library.selection.id)->label)],
-              "lists bar: the window's selection is the lit button, a view at first");
-        check(![library state_of_command:TasksCommandEditList].enabled,
-              "lists bar: Edit List is disabled while a view is selected");
+        /* Rows: the views, the header, then every tag by name. */
+        NSMutableArray<NSString *> *want = [NSMutableArray array];
+        for (guint v = 0; v < task_view_count(); v++) [want addObject:tasks_string(task_view_nth(v)->label)];
+        [want addObject:@"Tags"];
+        GPtrArray *tags = task_db_tags(app->db);
+        for (guint t = 0; t < tags->len; t++) [want addObject:tasks_tag_title(g_ptr_array_index(tags, t))];
+        task_ptr_array_free_tags(tags);
+        check([rows() isEqualToArray:want] && task_view_count() == 3 &&
+              [want[0] hasSuffix:@"Favorites"] && [want[1] hasSuffix:@"All Tasks"] &&
+              [want[2] hasSuffix:@"3-Day Forecast"],
+              "sidebar: Favorites, All Tasks, 3-Day Forecast, then Tags and every tag by name");
+        check(table.selectedRow == 1 && library.selection.kind == task_sel_view,
+              "sidebar: the window starts on All Tasks, selected in the sidebar");
+        check(![table.delegate tableView:table shouldSelectRow:3],
+              "sidebar: the Tags header cannot be selected");
 
-        int64_t admin = list_named(@"Admin");
-        [library select:(task_sel_t){ task_sel_list, admin }];
-        check([lit() isEqualToString:@"\u25BC  Work"], "lists bar: a grouped list lights its group's button");
-        check([library state_of_command:TasksCommandEditList].enabled &&
-              [library state_of_command:TasksCommandRemoveFromGroup].enabled,
-              "lists bar: a grouped list enables Edit List and Remove from Group");
-        [library select:(task_sel_t){ task_sel_group, group_named(@"Work") }];
-        check([[library state_of_command:TasksCommandDeleteList].title isEqualToString:@"Remove Group"],
-              "lists bar: Delete List offers to remove a selected group");
-
-        /* The menu over the empty space (no button clicked). */
-        NSMenu *menu = menu_for(nil);
-        check(menu.numberOfItems == 2 && menu.itemArray[0].tag == TasksCommandNewList &&
-              menu.itemArray[1].tag == TasksCommandNewGroup,
-              "lists bar: the empty-space menu offers New List and New Group");
-
-        /* The sheets: New Group, Rename Group, New List (with the emoji
-         * slot), Edit List. */
-        [library perform_command:TasksCommandNewGroup param:nil];
-        check(accept_sheet(@[@"  Check Group "]) && group_named(@"Check Group") != 0 &&
-              button_of(@"Check Group") != nil,
-              "lists bar: New Group creates the group, its name trimmed, and shows its button");
-        [library perform_command:TasksCommandRenameGroup param:@(group_named(@"Check Group"))];
-        check(accept_sheet(@[@"Check Renamed"]) && group_named(@"Check Renamed") != 0 &&
-              group_named(@"Check Group") == 0 && button_of(@"Check Renamed") != nil,
-              "lists bar: Rename Group renames it");
-        int64_t check_group = group_named(@"Check Renamed");
-
-        [library perform_command:TasksCommandNewList param:nil];
-        check_spin(0.3);
-        NSTextField *emoji = (NSTextField *)views_of(window.attachedSheet.contentView,
-                                                     NSClassFromString(@"TasksEmojiField")).firstObject;
-        check([window.attachedSheet.firstResponder isKindOfClass:NSTextView.class] &&
-              emoji.currentEditor == nil, "lists bar: the list sheet opens with the name being edited");
-        [window.attachedSheet makeFirstResponder:emoji];
-        [(NSTextView *)emoji.currentEditor insertText:@"ab\U0001F3AF" replacementRange:NSMakeRange(0, 0)];
-        check_spin(0.1);
-        check([emoji.stringValue isEqualToString:@"\U0001F3AF"] && emoji.currentEditor == nil,
-              "lists bar: the emoji slot keeps one character and ends its edit");
-        check(snapshot(window.attachedSheet, dir, @"lists-bar-list-sheet"), "snapshot: the New List sheet");
-        check(accept_sheet(@[@"\U0001F3AF", @"Check List"]) && list_named(@"Check List") != 0,
-              "lists bar: New List creates the list");
-        int64_t check_list = list_named(@"Check List");
-        check(library.selection.kind == task_sel_list && library.selection.id == check_list &&
-              [lit() isEqualToString:@"\U0001F3AF  Check List"],
-              "lists bar: the new list is selected and its button shows its emoji");
-
-        [library perform_command:TasksCommandEditList param:nil];
-        check(accept_sheet(@[@"", @"Check List With A Much Longer Name"]) &&
-              list_named(@"Check List With A Much Longer Name") == check_list &&
-              [lit() isEqualToString:@"Check List With A Much Longer Name"],
-              "lists bar: Edit List renames the list and clears its emoji");
-        [library perform_command:TasksCommandEditList param:nil];
-        check(accept_sheet(@[@"", @"Check List"]) && [lit() isEqualToString:@"Check List"],
-              "lists bar: ... and the button follows the name");
-
-        /* A write that cannot be saved (another writer holds the file past
-         * the busy timeout) says so in the status bar, and the bar shows
-         * what the database holds.  The holder is a second connection in
-         * a write transaction. */
-        guint         sid    = task_app_listen_status(app, keep_status, NULL);
-        TaskDatabase *holder = task_db_open_existing(shared_db_file(app->db->shared), NULL);
-        check(holder != NULL && shared_db_begin(holder->shared, NULL) == 0,
-              "lists bar: (another writer holds the file)");
-        ui_status[0] = '\0';
-        [library perform_command:TasksCommandEditList param:nil];
-        check(accept_sheet(@[@"", @"Check Unsaved"]) && strstr(ui_status, "was not saved") != NULL &&
-              list_named(@"Check Unsaved") == 0 && [lit() isEqualToString:@"Check List"],
-              "lists bar: a rename that cannot be saved says so, and the bar keeps the stored name");
-        if (holder != NULL) shared_db_rollback(holder->shared);
-        task_db_close(holder);
-        task_app_unlisten(app, sid);
-
-        /* Move to Group, the context menus of a group and of a list,
-         * Remove from Group. */
-        [library perform_command:TasksCommandMoveToGroup param:@(check_group)];
-        check(group_of(check_list) == check_group && button_of(@"Check List") == nil &&
-              [lit() isEqualToString:@"\u25BC  Check Renamed"],
-              "lists bar: Move to Group files the selected list under its group's button");
-        [library select:task_sel_default()];
-        menu = menu_for(button_of(@"Check Renamed"));
-        check(library.selection.kind == task_sel_default().kind &&
-              library.selection.id == task_sel_default().id,
-              "lists bar: a right-click on a group leaves the selection alone");
-        check(menu.numberOfItems == 5 && menu.itemArray[3].tag == TasksCommandRenameGroup &&
-              menu.itemArray[4].tag == TasksCommandDeleteGroup &&
-              [menu.itemArray[4].representedObject longLongValue] == check_group,
-              "lists bar: a group's menu adds Rename Group and Remove Group for that group");
-        /* A left-click's menu: All Tasks (the group itself), its lists,
-         * then the group's commands; the selection is checked. */
-        menu = [bar menu_for_group:check_group];
-        check(menu.numberOfItems == 6 && [menu.itemArray[0].title isEqualToString:@"All Tasks"] &&
-              menu.itemArray[0].state == NSControlStateValueOff &&
-              [menu.itemArray[2].title hasSuffix:@"Check List"] &&
-              menu.itemArray[2].state == NSControlStateValueOff &&
-              menu.itemArray[4].tag == TasksCommandRenameGroup &&
-              menu.itemArray[5].tag == TasksCommandDeleteGroup,
-              "lists bar: a group's click menu offers All Tasks, its lists, then its commands");
-        [NSApp sendAction:menu.itemArray[2].action to:menu.itemArray[2].target from:menu.itemArray[2]];
-        check(library.selection.kind == task_sel_list && library.selection.id == check_list,
-              "lists bar: choosing a list in a group's menu selects that list");
-        menu = [bar menu_for_group:check_group];
-        check(menu.itemArray[0].state == NSControlStateValueOff &&
-              menu.itemArray[2].state == NSControlStateValueOn,
-              "lists bar: ... and the menu then checks that list");
-        [NSApp sendAction:menu.itemArray[0].action to:menu.itemArray[0].target from:menu.itemArray[0]];
-        check(library.selection.kind == task_sel_group && library.selection.id == check_group &&
-              [lit() isEqualToString:@"\u25BC  Check Renamed"],
-              "lists bar: All Tasks selects the group's aggregate view");
-        menu = menu_for(button_of(@"Reading"));
-        check(library.selection.kind == task_sel_list && library.selection.id == list_named(@"Reading"),
-              "lists bar: a right-click selects the list it is on");
-        check(menu.numberOfItems == 7 && menu.itemArray[3].tag == TasksCommandEditList &&
-              menu.itemArray[4].tag == TasksCommandDeleteList &&
-              menu.itemArray[6].submenu.numberOfItems == 3,
-              "lists bar: an ungrouped list's menu adds Edit, Delete and Move to Group (every group)");
-        /* A grouped list has no button: its group's menu carries its
-         * commands while it is the selection, and keeps it selected. */
-        [library select:(task_sel_t){ task_sel_list, check_list }];
-        menu = menu_for(button_of(@"Check Renamed"));
-        check(library.selection.kind == task_sel_list && library.selection.id == check_list &&
-              menu.numberOfItems == 12 && !menu.itemArray[6].enabled &&
-              [menu.itemArray[6].title isEqualToString:@"Check List"] &&
-              menu.itemArray[7].tag == TasksCommandEditList &&
-              menu.itemArray[10].submenu.numberOfItems == 2 &&
-              menu.itemArray[11].tag == TasksCommandRemoveFromGroup,
-              "lists bar: a group's menu adds its selected list's commands, under the list's name");
-        [library perform_command:TasksCommandRemoveFromGroup param:nil];
-        check(group_of(check_list) == 0 && button_of(@"Check List") != nil &&
-              [lit() isEqualToString:@"Check List"],
-              "lists bar: Remove from Group ungroups it, and it gets a button of its own");
-
-        /* Dragging the list's button, through the bar's own drop: refused
-         * on itself; onto a group it joins the group at its end; onto the
-         * left half of an ungrouped list it lands in front of it, onto the
-         * right half after it. */
-        NSPoint (^at)(NSButton *, CGFloat) = ^(NSButton *button, CGFloat fraction) {
-            return [bar convertPoint:NSMakePoint(NSMinX(button.bounds) + fraction * NSWidth(button.bounds),
-                                                 NSMidY(button.bounds))
-                            fromView:button];
-        };
-        /* The names of a group's lists (0: the ungrouped ones) in the saved
-         * order, "A|B". */
-        NSString *(^members)(int64_t) = ^(int64_t group_id) {
-            NSMutableArray<NSString *> *names = [NSMutableArray array];
-            GPtrArray *lists = task_db_lists(app->db, FALSE);
-            for (guint i = 0; i < lists->len; i++) {
-                const TaskList *list = g_ptr_array_index(lists, i);
-                if (list->group_id == group_id) [names addObject:tasks_string(list->name)];
-            }
-            task_ptr_array_free_lists(lists);
-            return [names componentsJoinedByString:@"|"];
-        };
-        check(![bar drop_list:check_list at:at(button_of(@"Check List"), 0.5)],
-              "lists bar: a list dropped on itself goes nowhere");
-        check([bar drop_list:check_list at:at(button_of(@"Work"), 0.5)], "lists bar: (dropped on Work)");
+        /* Selecting a tag's row selects the tag in the window. */
+        TaskTag *errands = tag_named("Errands");
+        NSInteger errands_row = (NSInteger)[want indexOfObject:tasks_tag_title(errands)];
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)errands_row]
+           byExtendingSelection:NO];
         check_spin(0.2);
-        check(group_of(check_list) == group_named(@"Work") && button_of(@"Check List") == nil &&
-              [members(group_named(@"Work")) hasSuffix:@"|Check List"],
-              "lists bar: dropped on a group, the list joins it at the end");
-        check([bar drop_list:check_list at:at(button_of(@"Reading"), 0.1)], "lists bar: (dropped before Reading)");
+        GPtrArray *tagged = task_db_tasks_tagged(app->db, errands->id);
+        BOOL       shown  = tagged->len > 0;
+        for (guint t = 0; t < tagged->len; t++) {
+            const Task *task = g_ptr_array_index(tagged, t);
+            if (task->status != TASK_STATUS_DONE) shown = shown && find_drawn(window.contentView,
+                                                                              tasks_string(task->title));
+        }
+        task_ptr_array_free_tasks(tagged);
+        check(library.selection.kind == task_sel_tag && library.selection.id == errands->id && shown,
+              "sidebar: selecting a tag lists the tasks carrying it");
+        check([window.title hasSuffix:tasks_tag_title(errands)], "sidebar: the window is titled with it");
+        check(snapshot(window, dir, @"sidebar-tag"), "sidebar: snapshot, a tag selected");
+
+        /* The Favorites bar: the favorite tags, the selected one lit. */
+        check([favorites() isEqualToArray:@[@"\U0001F91D  Customers", @"\U0001F4DA  Reading"]],
+              "favorites: the bar shows the favorite tags, by name");
+        [favorite_button(@"\U0001F4DA  Reading") performClick:nil];
         check_spin(0.2);
-        check(group_of(check_list) == 0 && button_of(@"Check List") != nil &&
-              [members(0) containsString:@"Check List|Reading"],
-              "lists bar: dropped on the left half of an ungrouped list, it lands in front of it, ungrouped");
-        check([bar drop_list:check_list at:at(button_of(@"Reading"), 0.9)], "lists bar: (dropped after Reading)");
-        check_spin(0.2);
-        check([members(0) containsString:@"Reading|Check List"],
-              "lists bar: ... and on the right half, after it");
-        check(library.selection.kind == task_sel_list && library.selection.id == check_list,
-              "lists bar: the selection stays on the list through its moves");
+        TaskTag *reading = tag_named("Reading");
+        check(library.selection.kind == task_sel_tag && library.selection.id == reading->id &&
+              [favorites().lastObject hasSuffix:@"(lit)"] &&
+              [rows()[(NSUInteger)table.selectedRow] isEqualToString:tasks_tag_title(reading)],
+              "favorites: a button selects its tag, lit in the bar and the sidebar");
+        task_tag_free(reading);
+        NSMenu *bar_menu = [favorite_button(@"\U0001F91D  Customers") menuForEvent:[NSApp currentEvent]];
+        check(bar_menu.numberOfItems == 1 && bar_menu.itemArray[0].tag == TasksCommandEditTag,
+              "favorites: a button's menu offers Edit Tag");
 
-        /* Removing the group and deleting the list, each after its
-         * confirmation; the list's saved orders go with it. */
-        [library perform_command:TasksCommandDeleteGroup param:@(check_group)];
+        /* Edit Tag: an emoji and Favorite, through the sheet. */
+        [library perform_command:TasksCommandEditTag param:@(errands->id)];
         check_spin(0.3);
-        answer_panel(0);
-        check(group_named(@"Check Renamed") == 0 && button_of(@"Check Renamed") == nil,
-              "lists bar: Remove Group removes the group and its button");
-
-        task_sel_t list_sel = { task_sel_list, check_list };
-        [library select:list_sel];
-        NSString  *order_key = [NSString stringWithFormat:@"%s_list_%lld", TASK_CFG_FAMILY_MANUAL,
-                                (long long)check_list];
-        task_order_save(TASK_CFG_FAMILY_MANUAL, list_sel, (int64_t[]){ 1, 2 }, 2);
-        [library perform_command:TasksCommandDeleteList param:nil];
+        NSWindow *sheet = window.attachedSheet;
+        NSTextField *emoji = nil;
+        NSButton    *fav   = nil;
+        NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:sheet.contentView ?: [NSView new]];
+        for (NSUInteger k = 0; k < queue.count; k++) {
+            NSView *v = queue[k];
+            if ([v isKindOfClass:NSTextField.class] && ((NSTextField *)v).editable) emoji = (NSTextField *)v;
+            if ([v isKindOfClass:NSButton.class] && [((NSButton *)v).title hasPrefix:@"Show in"]) fav = (NSButton *)v;
+            [queue addObjectsFromArray:v.subviews];
+        }
+        check(sheet != nil && emoji != nil && fav != nil &&
+              find_text(sheet.contentView, @"Errands") != nil,
+              "edit tag: the sheet shows the name, an emoji slot and Favorite");
+        check(snapshot(sheet, dir, @"edit-tag"), "edit tag: snapshot");
+        emoji.stringValue = @"\U0001F6CD";
+        fav.state = NSControlStateValueOn;
+        [window endSheet:sheet returnCode:NSModalResponseOK];
         check_spin(0.3);
-        answer_panel(0);
-        gchar *saved_order = task_config_get(order_key.UTF8String);
-        check(list_named(@"Check List") == 0 && saved_order == NULL,
-              "lists bar: Delete List deletes the list and drops its saved orders");
-        g_free(saved_order);
+        TaskTag *edited = tag_named("Errands");
+        check(edited != NULL && strcmp(edited->emoji, "\U0001F6CD") == 0 && edited->favorite &&
+              strcmp(edited->name, "Errands") == 0,
+              "edit tag: Save writes the emoji and the flag; the name stays");
+        check([favorites() containsObject:@"\U0001F6CD  Errands"] &&
+              [rows() containsObject:@"\U0001F6CD  Errands"],
+              "edit tag: the bar gains the tag and the sidebar shows its new emoji");
+        check(snapshot(window, dir, @"favorites-bar"), "favorites: snapshot");
 
-        /* The first list, as the bar orders them: the first group's first
-         * member, else the first ungrouped list. */
-        int64_t    first_list = 0;
-        GPtrArray *groups     = task_db_groups(app->db);
-        GPtrArray *lists      = task_db_lists(app->db, FALSE);
-        int64_t    first_grp  = groups->len > 0 ? ((TaskGroup *)g_ptr_array_index(groups, 0))->id : 0;
-        for (guint i = 0; i < lists->len && first_list == 0; i++) {
-            const TaskList *list = g_ptr_array_index(lists, i);
-            if (list->group_id == first_grp) first_list = list->id;
+        /* Put it back, and empty the bar for its hint. */
+        task_db_tag_set_emoji(app->db, edited->id, errands->emoji);
+        task_db_tag_set_favorite(app->db, edited->id, FALSE);
+        task_tag_free(edited);
+        GPtrArray *all = task_db_tags(app->db);
+        NSMutableArray<NSNumber *> *were = [NSMutableArray array];
+        for (guint t = 0; t < all->len; t++) {
+            const TaskTag *tag = g_ptr_array_index(all, t);
+            if (!tag->favorite) continue;
+            [were addObject:@(tag->id)];
+            task_db_tag_set_favorite(app->db, tag->id, FALSE);
         }
-        task_ptr_array_free_lists(lists);
-        task_ptr_array_free_groups(groups);
-        check(library.selection.kind == task_sel_list && library.selection.id == first_list &&
-              lit().length > 0,
-              "lists bar: the selection falls back to the first list");
-        task_db_list_purge(app->db, check_list);
+        task_ptr_array_free_tags(all);
+        [library full_refresh];
+        check(favorites().count == 0 &&
+              find_text(bar, @"No favorites yet \u2014 right-click a tag in the sidebar and choose Edit Tag\u2026") != nil,
+              "favorites: with none, the bar says how to make one");
+        for (NSNumber *id in were) task_db_tag_set_favorite(app->db, id.longLongValue, TRUE);
+        [library full_refresh];
 
-        /* The Action Items view: its button follows the 3-Day Forecast's
-         * while the seed has Notes-born tasks, and selecting it lists them.
-         * Deleting them all in Tasks (the light task event) removes the
-         * button and moves the selection off it; Notes bringing them back
-         * (another connection's commit, as when Notes writes the first
-         * one) restores it.  Their rows are put back as they were. */
-        NSString *items_label    = tasks_string(task_view_find("action_items")->label);
-        NSString *forecast_label = tasks_string(task_view_find("forecast")->label);
-        NSMutableArray<NSString *> *titles = [NSMutableArray array];
-        for (NSButton *button in buttons()) [titles addObject:button.title];
-        NSUInteger at_forecast = [titles indexOfObject:forecast_label];
-        check(at_forecast != NSNotFound && at_forecast + 1 < titles.count &&
-              [titles[at_forecast + 1] isEqualToString:items_label],
-              "lists bar: Action Items follows the 3-Day Forecast while Notes items exist");
+        /* Notes' items carry the Action Items tag, with Notes' emoji. */
+        TaskTag *action = tag_named(SHARED_DB_ACTION_LIST_NAME);
+        check(action != NULL && strcmp(action->emoji, SHARED_DB_ACTION_LIST_EMOJI) == 0 &&
+              [rows() containsObject:tasks_tag_title(action)],
+              "sidebar: Notes' items are an ordinary tag, Action Items");
+        task_tag_free(action);
 
-        GPtrArray *items = task_db_tasks_action_items(app->db);
-        check(items->len > 0, "lists bar: (the seed has Notes action items)");
-        [button_of(items_label) performClick:nil];
-        check_spin(0.3);
-        BOOL all_shown = library.selection.kind == task_sel_view &&
-                         library.selection.id == task_view_index_of(task_view_find("action_items"));
-        for (guint i = 0; i < items->len; i++) {
-            const Task *t = g_ptr_array_index(items, i);
-            all_shown = all_shown && find_drawn(window.contentView, tasks_string(t->title));
-        }
-        check(all_shown && [lit() isEqualToString:items_label],
-              "lists bar: selecting Action Items lists every Notes-born task");
-        check(snapshot(window, dir, @"lists-bar-action-items"), "lists bar: snapshot, Action Items");
-        check(![library state_of_command:TasksCommandNewTask].enabled &&
-              [library state_of_command:TasksCommandQuickTask].enabled,
-              "lists bar: New Task is disabled in Action Items (only Notes fills it), Quick Task is not");
-
-        for (guint i = 0; i < items->len; i++) {
-            task_db_task_delete(app->db, ((const Task *)g_ptr_array_index(items, i))->id);
-        }
+        /* A tag vanishing while it is selected: the selection moves to the
+         * first view, and the tag's saved orders go with it. */
+        gint64 temp = task_db_task_create(app->db, 0, "ui-check vanishing", "UI Vanishing");
+        [library full_refresh];
+        TaskTag *vanishing = tag_named("UI Vanishing");
+        task_sel_t vsel = { task_sel_tag, vanishing->id };
+        [library select:vsel];
+        task_order_save(TASK_CFG_FAMILY_MANUAL, vsel, (int64_t[]){ temp, 1 }, 2);
+        task_db_task_delete(app->db, temp);
         task_app_notify_tasks(app);
         check_spin(0.3);
-        check(button_of(items_label) == nil && library.selection.kind == task_sel_view &&
-              ![lit() isEqualToString:items_label],
-              "lists bar: with none left, Action Items is hidden and the selection moves off it");
+        gchar *key = g_strdup_printf("%s_tag_%" G_GINT64_FORMAT, TASK_CFG_FAMILY_MANUAL, vanishing->id);
+        gchar *kept = task_config_get(key);
+        check(library.selection.kind == task_sel_view && library.selection.id == 0 &&
+              ![rows() containsObject:@"UI Vanishing"] && kept == NULL,
+              "sidebar: a tag gone while selected leaves for the first view, its orders dropped");
+        g_free(kept);
+        g_free(key);
+        task_tag_free(vanishing);
 
-        TaskDatabase *notes_app = task_db_open_existing(shared_db_file(app->db->shared), NULL);
-        sqlite3      *sq        = notes_app != NULL ? shared_db_handle(notes_app->shared) : NULL;
-        for (guint i = 0; i < items->len; i++) {
-            const Task *t   = g_ptr_array_index(items, i);
-            char       *sql = sqlite3_mprintf("UPDATE tasks SET deleted = 0, updated_at = %lld"
-                                              " WHERE id = %lld",
-                                              (long long)t->updated_at, (long long)t->id);
-            sqlite3_exec(sq, sql, NULL, NULL, NULL);
-            sqlite3_free(sql);
+        /* Add Tag on selected tasks, from the context menu's submenu. */
+        [library select:task_sel_default()];
+        check_spin(0.2);
+        NSTableView *list_table = nil;
+        for (NSView *v in @[find_view(window.contentView, TasksTaskList.class) ?: [NSView new]]) {
+            list_table = (NSTableView *)find_view(v, NSTableView.class);
         }
-        task_db_close(notes_app);
-        task_app_check_outside(app);
-        check_spin(0.3);
-        check(button_of(items_label) != nil,
-              "lists bar: Action Items comes back when Notes' items do");
-        task_ptr_array_free_tasks(items);
+        [list_table selectRowIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)]
+                byExtendingSelection:NO];
+        NSArray<NSNumber *> *picked = [library selected_task_ids];
+        NSMenu *menu = [library task_context_menu];
+        NSMenu *add  = nil;
+        for (NSMenuItem *item in menu.itemArray) {
+            if ([item.title isEqualToString:@"Add Tag"]) add = item.submenu;
+        }
+        NSMenuItem *errands_item = nil;
+        for (NSMenuItem *item in add.itemArray) {
+            if ([item.title isEqualToString:tasks_tag_title(errands)]) errands_item = item;
+        }
+        check(picked.count == 2 && add.numberOfItems > 0 && errands_item != nil,
+              "add tag: the context menu has Add Tag with every tag");
+        GPtrArray *before = task_db_tasks_tagged(app->db, errands->id);
+        guint      had    = before->len;
+        BOOL       both_had = YES;
+        for (NSNumber *id in picked) {
+            BOOL has = NO;
+            for (guint t = 0; t < before->len; t++)
+                has = has || ((const Task *)g_ptr_array_index(before, t))->id == id.longLongValue;
+            both_had = both_had && has;
+        }
+        task_ptr_array_free_tasks(before);
+        [library run_command:errands_item];
+        check_spin(0.2);
+        GPtrArray *after = task_db_tasks_tagged(app->db, errands->id);
+        BOOL       tagged_both = YES;
+        for (NSNumber *id in picked) {
+            BOOL has = NO;
+            for (guint t = 0; t < after->len; t++)
+                has = has || ((const Task *)g_ptr_array_index(after, t))->id == id.longLongValue;
+            tagged_both = tagged_both && has;
+        }
+        check(tagged_both && (both_had || after->len > had),
+              "add tag: choosing a tag gives it to every selected task");
+        task_ptr_array_free_tasks(after);
+        for (NSNumber *id in picked) {
+            if (!both_had) task_db_task_tag_remove(app->db, id.longLongValue, errands->id);
+        }
+        task_tag_free(errands);
+        [library full_refresh];
+
+        /* The toggles, and the sidebar button first in the toolbar. */
+        check([window.toolbar.items.firstObject.itemIdentifier
+                  isEqualToString:tasks_command_spec(TasksCommandToggleSidebar)->ident],
+              "toolbar: the sidebar button is at the far left");
+        [library perform_command:TasksCommandToggleSidebar param:nil];
+        check_spin(SLIDE_SECONDS);
+        check(sidebar.hiddenOrHasHiddenAncestor && NSWidth(sidebar.frame) < 1.0 &&
+              !task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE) &&
+              [[library state_of_command:TasksCommandToggleSidebar].title isEqualToString:@"Show Sidebar"],
+              "toggle: Hide Sidebar hides it, records it, and offers Show Sidebar");
+        [library perform_command:TasksCommandToggleSidebar param:nil];
+        check_spin(SLIDE_SECONDS);
+        check(!sidebar.hiddenOrHasHiddenAncestor && NSWidth(sidebar.frame) > 100.0 &&
+              task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE),
+              "toggle: Show Sidebar brings it back");
+        [library perform_command:TasksCommandToggleFavoritesBar param:nil];
+        check_spin(SLIDE_SECONDS);
+        check(bar.hiddenOrHasHiddenAncestor && !task_config_get_bool(TASK_CFG_FAVORITES_BAR_VISIBLE) &&
+              [[library state_of_command:TasksCommandToggleFavoritesBar].title
+                  isEqualToString:@"Show Favorites Bar"],
+              "toggle: Hide Favorites Bar hides the bar and records it");
+        [library perform_command:TasksCommandToggleFavoritesBar param:nil];
+        check_spin(SLIDE_SECONDS);
+        check(!bar.hiddenOrHasHiddenAncestor, "toggle: Show Favorites Bar brings it back");
 
         [library close];
     }
     check_spin(0.2);
-    check(weak_bar == nil, "lists bar: the bar is released with its window");
+    check(weak_sidebar == nil, "sidebar: the sidebar is released with its window");
 }
 
 /*
@@ -1547,7 +1424,7 @@ check_task_list(TaskApp *app, NSString *dir)
         gint64 today, tomorrow;
 
         task_day_bounds(0, &today, &tomorrow);
-        task_row_ctx_init(app, &ctx, FALSE);
+        task_row_ctx_init(app, &ctx);
         rows->rows  = calloc(many, sizeof *rows->rows);
         rows->count = many;
         for (int i = 0; i < many; i++) {
@@ -1649,7 +1526,8 @@ check_task_list(TaskApp *app, NSString *dir)
 
         NSSize full_size = window.contentView.frame.size;
         began = CFAbsoluteTimeGetCurrent();
-        [window setContentSize:NSMakeSize(tasks_look_pane_min_w + 100.0, full_size.height)];
+        CGFloat side = task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE) ? tasks_look_sidebar_w + 1.0 : 0.0;
+        [window setContentSize:NSMakeSize(side + tasks_look_pane_min_w + 100.0, full_size.height)];
         double resize = settle(began);
         check(heights_exact(), "list: rows are re-measured when the pane gets narrower");
         check(columns_fit(), "list: ... and the columns still fit");
@@ -1947,11 +1825,9 @@ check_kanban(TaskApp *app, NSString *dir)
         check([views_of(card_class) isEqualToArray:cards], "kanban: ... and back");
 
         /* The Done cap and its link. */
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
         int64_t    extra[6];
         for (int i = 0; i < 6; i++) {
-            int64_t list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
-            extra[i] = task_db_task_create(app->db, list_id, 0, "ui-check: completed");
+            extra[i] = task_db_task_create(app->db, 0, "ui-check: completed", "Errands");
             task_db_task_set_status(app->db, extra[i], TASK_STATUS_DONE);
         }
         [library refresh_tasks];
@@ -1969,7 +1845,9 @@ check_kanban(TaskApp *app, NSString *dir)
         check(views_of(card_class).count == n_tasks + 6 &&
               [link.title isEqualToString:@"Show recent only"],
               "kanban: the link shows every completed task and offers the way back");
-        [library select:(task_sel_t){ task_sel_list, ((const TaskList *)g_ptr_array_index(lists, 0))->id }];
+        TaskTag *errands = task_db_tag_find(app->db, "Errands");
+        [library select:(task_sel_t){ task_sel_tag, errands->id }];
+        task_tag_free(errands);
         [library select:task_sel_default()];
         check(views_of(card_class).count == capped && library.selected_task_ids.count == 0,
               "kanban: changing view resets the expansion and the selection");
@@ -1978,18 +1856,13 @@ check_kanban(TaskApp *app, NSString *dir)
         check(link.hidden && views_of(card_class).count == n_tasks,
               "kanban: the link goes when ten or fewer tasks are Done");
 
-        /* An empty view: three lanes that say they take drops. */
-        for (guint i = 0; i < lists->len; i++) {
-            const TaskList *list = g_ptr_array_index(lists, i);
-            if (strcmp(list->name, "Empty List") != 0) continue;
-            [library select:(task_sel_t){ task_sel_list, list->id }];
-            [library refresh_sidebar];
-            check(views_of(card_class).count == 0 && snapshot(window, dir, @"kanban-empty"),
-                  "snapshot: board of an empty list");
-            [library select:task_sel_default()];
-            [library refresh_sidebar];
-        }
-        task_ptr_array_free_lists(lists);
+        /* An empty view (a tag no task carries, as one just emptied is
+         * before the sidebar's rebuild): three lanes that say they take
+         * drops. */
+        [library select:(task_sel_t){ task_sel_tag, 999999 }];
+        check(views_of(card_class).count == 0 && snapshot(window, dir, @"kanban-empty"),
+              "snapshot: an empty board");
+        [library select:task_sel_default()];
 
         /* Resizing the window re-lays the lanes. */
         cards = views_of(card_class);
@@ -2072,26 +1945,19 @@ check_editor_window(TaskApp *app, NSString *dir)
     /* refresh_all must close an editor whose task has been deleted.  Use a
      * temporary task so the seed database is not permanently mutated. */
     {
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
-        if (lists->len > 0) {
-            gint64 list_id  = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
-            gint64 temp_id  = task_db_task_create(app->db, list_id, 0, "refresh-test");
-            tasks_editor_open(app, temp_id);
-            check_spin(0.05);
-            task_db_task_delete(app->db, temp_id);
-            tasks_editor_refresh_all();
-            check_spin(0.1);
-            check(visible_windows() == 0, "editor: refresh_all closes an orphaned editor");
-        }
-        task_ptr_array_free_lists(lists);
+        gint64 temp_id = task_db_task_create(app->db, 0, "refresh-test", "Errands");
+        tasks_editor_open(app, temp_id);
+        check_spin(0.05);
+        task_db_task_delete(app->db, temp_id);
+        tasks_editor_refresh_all();
+        check_spin(0.1);
+        check(visible_windows() == 0, "editor: refresh_all closes an orphaned editor");
     }
 
     /* Cancel on a new task: the task is deleted when the editor closes. */
     {
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
-        if (lists->len > 0) {
-            gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
-            gint64 new_id  = task_db_task_create(app->db, list_id, 0, "cancel-test");
+        {
+            gint64 new_id  = task_db_task_create(app->db, 0, "cancel-test", "Errands");
 
             tasks_editor_open_new(app, new_id, false);
             check_spin(0.05);
@@ -2110,7 +1976,6 @@ check_editor_window(TaskApp *app, NSString *dir)
             check_spin(0.05);
             check(visible_windows() == 0, "editor: Cancel on a new task deletes the task");
         }
-        task_ptr_array_free_lists(lists);
     }
 
     /* An outside change while the editor has an unsaved edit: the typed
@@ -2120,10 +1985,8 @@ check_editor_window(TaskApp *app, NSString *dir)
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
         [library showWindow:nil];
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
-        if (lists->len > 0) {
-            gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
-            gint64 id      = task_db_task_create(app->db, list_id, 0, "merge-test");
+        {
+            gint64 id      = task_db_task_create(app->db, 0, "merge-test", "Errands");
 
             tasks_editor_open(app, id);
             check_spin(0.05);
@@ -2157,23 +2020,21 @@ check_editor_window(TaskApp *app, NSString *dir)
             check_spin(0.1);
             task_db_task_delete(app->db, id);
         }
-        task_ptr_array_free_lists(lists);
         [library close];
     }
 
-    /* Quick Task: with one list selected, the task still goes to the
-     * default list, and its editor opens in the lower-right corner of the
-     * screen; Cancel takes the task away again.  With a VIEW selected, New
-     * Task also uses the default list. */
+    /* Quick Task: with one tag selected, the task still gets the default
+     * tag, and its editor opens in the lower-right corner of the screen;
+     * Cancel takes the task away again.  With a VIEW selected, New Task
+     * also uses the default tag; with a tag selected, that tag. */
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
         [library showWindow:nil];
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
-        if (lists->len > 1) {
-            gint64 selected = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
-            gint64 fallback = ((const TaskList *)g_ptr_array_index(lists, 1))->id;
-            guint (^count_in)(gint64) = ^guint(gint64 list_id) {
-                GPtrArray *tasks = task_db_tasks_toplevel(app->db, list_id);
+        TaskTag *selected = task_db_tag_find(app->db, "Errands");
+        TaskTag *fallback = task_db_tag_find(app->db, "Reading");
+        if (selected != NULL && fallback != NULL) {
+            guint (^count_in)(gint64) = ^guint(gint64 tag_id) {
+                GPtrArray *tasks = task_db_tasks_tagged(app->db, tag_id);
                 guint      n     = tasks->len;
                 task_ptr_array_free_tasks(tasks);
                 return n;
@@ -2185,15 +2046,15 @@ check_editor_window(TaskApp *app, NSString *dir)
                 }
                 return nil;
             };
-            guint in_selected = count_in(selected), in_fallback = count_in(fallback);
+            guint in_selected = count_in(selected->id), in_fallback = count_in(fallback->id);
 
-            [library select:(task_sel_t){ task_sel_list, selected }];
-            task_config_set_int(TASK_CFG_DEFAULT_LIST, (gint)fallback);
+            [library select:(task_sel_t){ task_sel_tag, selected->id }];
+            task_config_set(TASK_CFG_DEFAULT_TAG, fallback->name);
             [library perform_command:TasksCommandQuickTask param:nil];
             check_spin(0.1);
             NSWindow *editor_win = new_editor();
-            check(count_in(fallback) == in_fallback + 1 && count_in(selected) == in_selected,
-                  "quick task: goes to the default list, not the selected one");
+            check(count_in(fallback->id) == in_fallback + 1 && count_in(selected->id) == in_selected,
+                  "quick task: gets the default tag, not the selected one");
             NSRect area = NSScreen.mainScreen.visibleFrame;
             check(editor_win != nil &&
                   fabs(NSMaxX(editor_win.frame) - (NSMaxX(area) - tasks_look_screen_margin)) < 1 &&
@@ -2201,17 +2062,17 @@ check_editor_window(TaskApp *app, NSString *dir)
                   "quick task: its editor opens in the screen's lower-right corner");
             if (editor_win) send_escape(editor_win);
             check_spin(0.2);
-            check(count_in(fallback) == in_fallback, "quick task: Cancel deletes the task");
+            check(count_in(fallback->id) == in_fallback, "quick task: Cancel deletes the task");
 
-            /* With no default list, Quick Task says so in a tool panel and
+            /* With no default tag, Quick Task says so in a tool panel and
              * creates nothing; OK opens Settings, where one is chosen. */
-            task_config_set(TASK_CFG_DEFAULT_LIST, NULL);
+            task_config_set(TASK_CFG_DEFAULT_TAG, NULL);
             [library perform_command:TasksCommandQuickTask param:nil];
             check_spin(0.2);
             NSWindow *panel = tool_panel();
-            check(panel != nil && find_text(panel.contentView, @"Choose a default list first") != nil &&
-                  count_in(fallback) == in_fallback,
-                  "quick task: with no default list it says so in a tool panel and creates nothing");
+            check(panel != nil && find_text(panel.contentView, @"Choose a default tag first") != nil &&
+                  count_in(fallback->id) == in_fallback,
+                  "quick task: with no default tag it says so in a tool panel and creates nothing");
             check(snapshot(panel, dir, @"tool-panel"), "snapshot: a tool panel");
             answer_panel(0);
             NSWindow *settings = nil;
@@ -2221,35 +2082,47 @@ check_editor_window(TaskApp *app, NSString *dir)
             check(settings != nil, "quick task: ... and OK opens Settings");
             [settings close];
             check_spin(0.2);
-            task_config_set_int(TASK_CFG_DEFAULT_LIST, (gint)fallback);
 
             [library select:task_sel_default()];
+            [library perform_command:TasksCommandNewTask param:nil];
+            check_spin(0.1);
+            check(new_editor() == nil, "new task: in a view with no default tag, nothing is made");
+            task_config_set(TASK_CFG_DEFAULT_TAG, fallback->name);
             check([library state_of_command:TasksCommandNewTask].enabled,
                   "new task: enabled in All Tasks");
             [library perform_command:TasksCommandNewTask param:nil];
             check_spin(0.1);
             editor_win = new_editor();
-            check(count_in(fallback) == in_fallback + 1,
-                  "new task: with a view selected it goes to the default list");
+            check(count_in(fallback->id) == in_fallback + 1,
+                  "new task: with a view selected it gets the default tag");
             if (editor_win) send_escape(editor_win);
             check_spin(0.2);
-            task_config_set(TASK_CFG_DEFAULT_LIST, NULL);
+
+            [library select:(task_sel_t){ task_sel_tag, selected->id }];
+            [library perform_command:TasksCommandNewTask param:nil];
+            check_spin(0.1);
+            editor_win = new_editor();
+            check(count_in(selected->id) == in_selected + 1 &&
+                  count_in(fallback->id) == in_fallback,
+                  "new task: with a tag selected it gets that tag");
+            if (editor_win) send_escape(editor_win);
+            check_spin(0.2);
+            task_config_set(TASK_CFG_DEFAULT_TAG, NULL);
         }
-        task_ptr_array_free_lists(lists);
+        task_tag_free(selected);
+        task_tag_free(fallback);
         [library close];
     }
 
     /* A field being edited keeps the text it had when an outside change
      * arrives, and its column keeps the value that text shows: a later
-     * save (here, Favorite) must not write that old date back over the
+     * save (here, High Priority) must not write that old date back over the
      * outside one. */
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
         [library showWindow:nil];
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
-        if (lists->len > 0) {
-            gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
-            gint64 id      = task_db_task_create(app->db, list_id, 0, "focus-test");
+        {
+            gint64 id      = task_db_task_create(app->db, 0, "focus-test", "Errands");
             gint64 nov     = task_due_from_ymd(2026, 11, 1);
             gint64 dec     = task_due_from_ymd(2026, 12, 25);
             Task  *stored  = task_db_task_get(app->db, id);
@@ -2278,18 +2151,17 @@ check_editor_window(TaskApp *app, NSString *dir)
             check(task_app_check_outside(app), "editor: (an outside change to the due date)");
             check_spin(0.1);
 
-            NSButton *favorite = find_button(editor_win.contentView, @"Favorite");
+            NSButton *favorite = find_button(editor_win.contentView, @"High Priority");
             [favorite performClick:nil];
             check_spin(0.1);
             Task *now = task_db_task_get(app->db, id);
-            check(now != NULL && now->pinned && now->due == dec,
+            check(now != NULL && now->priority && now->due == dec,
                   "editor: a save while the Due field is focused keeps the outside due date");
             task_free(now);
             tasks_editor_close(id);
             check_spin(0.1);
             task_db_task_delete(app->db, id);
         }
-        task_ptr_array_free_lists(lists);
         [library close];
     }
 
@@ -2298,10 +2170,8 @@ check_editor_window(TaskApp *app, NSString *dir)
      * is refused with a notice, and once the file is free the close saves
      * it.  The holder is a second connection in a write transaction. */
     @autoreleasepool {
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
-        if (lists->len > 0) {
-            gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
-            gint64 id      = task_db_task_create(app->db, list_id, 0, "busy-test");
+        {
+            gint64 id      = task_db_task_create(app->db, 0, "busy-test", "Errands");
 
             tasks_editor_open(app, id);
             check_spin(0.1);
@@ -2309,13 +2179,13 @@ check_editor_window(TaskApp *app, NSString *dir)
             for (NSWindow *w in NSApp.windows) {
                 if (w.visible && [w.title isEqualToString:@"busy-test"]) editor_win = w;
             }
-            NSButton *favorite = find_button(editor_win.contentView, @"Favorite");
+            NSButton *favorite = find_button(editor_win.contentView, @"High Priority");
 
             TaskDatabase *holder = task_db_open(shared_db_file(app->db->shared), NULL);
             check(shared_db_begin(holder->shared, NULL) == 0, "editor: (another writer holds the file)");
             [favorite performClick:nil];
             Task *now = task_db_task_get(app->db, id);
-            check(now != NULL && !now->pinned && favorite.state == NSControlStateValueOn &&
+            check(now != NULL && !now->priority && favorite.state == NSControlStateValueOn &&
                   [[editor_win.windowController valueForKey:@"save_pending"] boolValue],
                   "editor: a save that fails keeps the edit, still pending");
             task_free(now);
@@ -2331,12 +2201,11 @@ check_editor_window(TaskApp *app, NSString *dir)
             [editor_win performClose:nil];
             check_spin(0.2);
             now = task_db_task_get(app->db, id);
-            check(!editor_win.visible && now != NULL && now->pinned,
+            check(!editor_win.visible && now != NULL && now->priority,
                   "editor: ... and once the file is free, closing saves it");
             task_free(now);
             task_db_task_delete(app->db, id);
         }
-        task_ptr_array_free_lists(lists);
     }
 
     /* A Notes action item: a note_task row links the task to a note, as
@@ -2347,10 +2216,8 @@ check_editor_window(TaskApp *app, NSString *dir)
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
         [library showWindow:nil];
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
-        if (lists->len > 0) {
-            gint64   list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
-            gint64   id      = task_db_task_create(app->db, list_id, 0, "Call the vendor back");
+        {
+            gint64   id      = task_db_task_create(app->db, 0, "Call the vendor back", "Errands");
             /* Notes' own connection: its writes are outside changes. */
             TaskDatabase *notes_app = task_db_open_existing(shared_db_file(app->db->shared), NULL);
             sqlite3 *sq      = notes_app != NULL ? shared_db_handle(notes_app->shared) : NULL;
@@ -2405,7 +2272,6 @@ check_editor_window(TaskApp *app, NSString *dir)
             sqlite3_free(sql);
             task_db_close(notes_app);
         }
-        task_ptr_array_free_lists(lists);
         [library close];
     }
 
@@ -2438,15 +2304,10 @@ check_note_context(TaskApp *app, NSString *dir)
 
     task_config_set_bool(TASK_CFG_NOTE_CONTEXT, FALSE);
     @autoreleasepool {
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
-        if (lists->len == 0) {
-            task_ptr_array_free_lists(lists);
-            check(NO, "context: (the seed has a list)");
-            return;
-        }
-        gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
-        task_ptr_array_free_lists(lists);
-        gint64 id = task_db_task_create(app->db, list_id, 0, title_text.UTF8String);
+        gint64   id  = task_db_task_create(app->db, 0, title_text.UTF8String, "UI Context");
+        TaskTag *tag = task_db_tag_find(app->db, "UI Context");
+        gint64   tag_id = tag != NULL ? tag->id : 0;
+        task_tag_free(tag);
 
         TaskDatabase *notes_app = task_db_open_existing(shared_db_file(app->db->shared), NULL);
         sqlite3      *sq        = notes_app != NULL ? shared_db_handle(notes_app->shared) : NULL;
@@ -2468,7 +2329,7 @@ check_note_context(TaskApp *app, NSString *dir)
         BOOL                was_kanban = library.kanban_on;
         [library showWindow:nil];
         if (was_kanban) [library perform_command:TasksCommandTogglePane param:nil];
-        [library select:(task_sel_t){ task_sel_list, list_id }];
+        [library select:(task_sel_t){ task_sel_tag, tag_id }];
         check_spin(0.3);
 
         NSString *prefixed = [@"Ui Check Log" TASK_CONTEXT_SEPARATOR stringByAppendingString:title_text];
@@ -2567,14 +2428,14 @@ policy(TaskApp *app, const char *key)
 }
 
 /*
- * check_tags — tags from the editor to the lists bar: a tag typed in an
- * editor's tag field is created and gets a button after the lists; the
- * field offers the existing tags (not those the task carries) and takes an
- * existing one in any case as itself; the button selects the tag's
- * proto-list, which lists the tagged tasks; New Task there gives the new
- * task the tag; deleting the last token removes the tag, its button, and
- * moves the selection to a view.  The field's delegate is called as AppKit
- * would call it.  Everything it creates is deleted again.
+ * check_tags — the editor's tag field: a tag typed is created and shows in
+ * the sidebar; the field offers the existing tags (not those the task
+ * carries) and takes an existing one in any case as itself; the tag's row
+ * lists the tasks carrying it; New Task there gives the new task the tag;
+ * deleting a token takes the tag off (and a tag nothing carries any more
+ * goes, its row with it, the selection moving to a view); deleting the
+ * LAST token is refused and it comes back.  The field's delegate is
+ * called as AppKit would call it.  Everything it creates is deleted again.
  *
  * Inputs:
  *   app — the application context
@@ -2583,46 +2444,22 @@ policy(TaskApp *app, const char *key)
 static void
 check_tags(TaskApp *app, NSString *dir)
 {
-    GPtrArray *lists = task_db_lists(app->db, FALSE);
-    if (lists->len == 0) {
-        task_ptr_array_free_lists(lists);
-        printf("     skipping tag checks (no lists)\n");
-        return;
-    }
-    gint64 list_id = ((const TaskList *)g_ptr_array_index(lists, 0))->id;
-    task_ptr_array_free_lists(lists);
-
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
         NSWindow           *window  = library.window;
         [library showWindow:nil];
         check_spin(0.2);
 
-        /* The bar's button whose title is exactly `title`, or nil. */
-        NSButton *(^bar_button)(NSString *) = ^(NSString *title) {
-            NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:window.contentView];
-            for (NSUInteger i = 0; i < queue.count; i++) {
-                if ([queue[i] isKindOfClass:NSButton.class] &&
-                    [((NSButton *)queue[i]).title isEqualToString:title]) return (NSButton *)queue[i];
-                [queue addObjectsFromArray:queue[i].subviews];
-            }
-            return (NSButton *)nil;
-        };
+        NSView *sidebar = find_view(window.contentView, TasksSidebar.class);
         /* The tag of a name, or 0. */
         int64_t (^tag_named)(NSString *) = ^(NSString *name) {
-            GPtrArray *tags  = task_db_tags(app->db);
-            int64_t    found = 0;
-            for (guint i = 0; i < tags->len; i++) {
-                const TaskTag *tag = g_ptr_array_index(tags, i);
-                if ([tasks_string(tag->name) isEqualToString:name]) found = tag->id;
-            }
-            task_ptr_array_free_tags(tags);
-            return found;
+            TaskTag *tag = task_db_tag_find(app->db, name.UTF8String);
+            int64_t  id  = tag != NULL ? tag->id : 0;
+            task_tag_free(tag);
+            return id;
         };
-        NSString *tag_title   = @"\U0001F3F7️  UI Check Tag";
-        gint64    tagged      = task_db_task_create(app->db, list_id, 0, "ui-check tagged");
-        gint64    other       = task_db_task_create(app->db, list_id, 0, "ui-check other");
-        task_db_task_tag_add(app->db, other, "UI Check Other");
+        gint64 tagged = task_db_task_create(app->db, 0, "ui-check tagged", "UI Base");
+        gint64 other  = task_db_task_create(app->db, 0, "ui-check other", "UI Check Other");
         [library full_refresh];
 
         tasks_editor_open(app, tagged);
@@ -2633,30 +2470,32 @@ check_tags(TaskApp *app, NSString *dir)
         }
         NSTokenField *field = (NSTokenField *)find_view(editor_win.contentView, NSTokenField.class);
         id<NSTokenFieldDelegate> editor = field.delegate;
-        check(field != nil && [field.objectValue count] == 0,
-              "tags: the editor has a tag field, empty for an untagged task");
+        check(field != nil && [field.objectValue isEqual:@[@"UI Base"]],
+              "tags: the editor's tag field shows the task's tag");
 
-        NSArray *added = [editor tokenField:field shouldAddObjects:@[@"  UI Check Tag "] atIndex:0];
-        field.objectValue = added;
+        NSArray *added = [editor tokenField:field shouldAddObjects:@[@"  UI Check Tag "] atIndex:1];
+        field.objectValue = [@[@"UI Base"] arrayByAddingObjectsFromArray:added];
         check_spin(0.3);
         int64_t tag_id = tag_named(@"UI Check Tag");
         check([added isEqual:@[@"UI Check Tag"]] && tag_id != 0,
               "tags: Return on a new name creates the tag, trimmed");
-        check(bar_button(tag_title) != nil, "tags: the new tag gets a button in the lists bar");
+        check([sidebar_rows(sidebar) containsObject:@"UI Check Tag"],
+              "tags: the new tag gets a row in the sidebar");
 
         NSInteger selected = 0;
         NSArray *offered = [editor tokenField:field completionsForSubstring:@"check"
-                                 indexOfToken:1 indexOfSelectedItem:&selected];
+                                 indexOfToken:2 indexOfSelectedItem:&selected];
         check([offered isEqual:@[@"UI Check Other"]] && selected == -1,
               "tags: typing offers existing tags it does not carry, none preselected");
-        added = [editor tokenField:field shouldAddObjects:@[@"ui check other"] atIndex:1];
+        added = [editor tokenField:field shouldAddObjects:@[@"ui check other"] atIndex:2];
         check([added isEqual:@[@"UI Check Other"]], "tags: an existing tag, typed in any case, is that tag");
-        field.objectValue = @[@"UI Check Tag", @"UI Check Other"];
-        check([[editor tokenField:field shouldAddObjects:@[@"UI CHECK TAG"] atIndex:2] count] == 0,
+        field.objectValue = @[@"UI Base", @"UI Check Tag", @"UI Check Other"];
+        check([[editor tokenField:field shouldAddObjects:@[@"UI CHECK TAG"] atIndex:3] count] == 0,
               "tags: a tag the task carries is not added twice");
         check(snapshot(editor_win, dir, @"editor-tags"), "tags: snapshot, the editor's tag field");
-        check(find_text(editor_win.contentView, @"Completed") == nil,
-              "editor: no completion line for a task never completed");
+        check(find_text(editor_win.contentView, @"Completed") == nil &&
+              find_button(editor_win.contentView, @"Favorite") == nil,
+              "editor: no completion line for a task never completed, and no Favorite box");
 
         /* Done, the completion date shows on its own line under the tags
          * and flags, and the window grows to fit it. */
@@ -2676,17 +2515,12 @@ check_tags(TaskApp *app, NSString *dir)
         tasks_editor_refresh_all();
         check_spin(0.2);
 
-        [bar_button(tag_title) performClick:nil];
+        [library select:(task_sel_t){ task_sel_tag, tag_id }];
         check_spin(0.3);
-        check(library.selection.kind == task_sel_tag && library.selection.id == tag_id &&
-              find_drawn(window.contentView, @"ui-check tagged") &&
+        check(find_drawn(window.contentView, @"ui-check tagged") &&
               !find_drawn(window.contentView, @"ui-check other"),
-              "tags: the tag's button selects its proto-list, listing the tasks carrying it");
-        check([window.title hasSuffix:tag_title], "tags: the window is titled with the tag");
-        check(snapshot(window, dir, @"lists-bar-tag"), "tags: snapshot, a tag's proto-list");
+              "tags: the tag's row lists the tasks carrying it");
 
-        task_config_set_int(TASK_CFG_DEFAULT_LIST, (gint)list_id);
-        check([library state_of_command:TasksCommandNewTask].enabled, "tags: New Task is enabled in a tag");
         [library perform_command:TasksCommandNewTask param:nil];
         check_spin(0.2);
         NSWindow *new_win = nil;
@@ -2698,29 +2532,37 @@ check_tags(TaskApp *app, NSString *dir)
         task_ptr_array_free_tasks(in_tag);
         if (new_win) send_escape(new_win);
         check_spin(0.2);
-        task_config_set(TASK_CFG_DEFAULT_LIST, NULL);
         in_tag = task_db_tasks_tagged(app->db, tag_id);
         check(in_tag->len == 1, "tags: Cancel deletes the new task, and it leaves the tag");
         task_ptr_array_free_tasks(in_tag);
 
-        /* Deleting the token: the edit is reported as AppKit reports it. */
-        field.objectValue = @[@"UI Check Other"];
+        /* Deleting tokens: the edit is reported as AppKit reports it. */
+        field.objectValue = @[@"UI Base"];
         [NSNotificationCenter.defaultCenter
             postNotificationName:NSControlTextDidChangeNotification object:field];
         check_spin(0.3);
-        check(tag_named(@"UI Check Tag") == 0 && bar_button(tag_title) == nil,
-              "tags: deleting the last token deletes the tag and its button");
+        check(tag_named(@"UI Check Tag") == 0 && ![sidebar_rows(sidebar) containsObject:@"UI Check Tag"] &&
+              tag_named(@"UI Check Other") != 0,
+              "tags: deleting a token takes its tag off; a tag nothing carries goes, row and all");
         check(library.selection.kind == task_sel_view,
-              "tags: ... and the selection moves from its proto-list to a view");
+              "tags: ... and the selection moves from its row to a view");
+
+        /* The last token cannot go. */
+        field.objectValue = @[];
+        [NSNotificationCenter.defaultCenter
+            postNotificationName:NSControlTextDidChangeNotification object:field];
+        check_spin(0.3);
+        check(tag_named(@"UI Base") != 0 && [field.objectValue isEqual:@[@"UI Base"]],
+              "tags: deleting the last token is refused, and the token comes back");
 
         tasks_editor_close_all();
         task_db_task_delete(app->db, tagged);
         task_db_task_delete(app->db, other);
         task_app_notify_tasks(app);
         check_spin(0.3);
-        check(tag_named(@"UI Check Other") == 0 &&
-              bar_button(@"\U0001F3F7️  UI Check Other") == nil,
-              "tags: deleting the last task carrying a tag deletes it and its button");
+        check(tag_named(@"UI Check Other") == 0 && tag_named(@"UI Base") == 0 &&
+              ![sidebar_rows(sidebar) containsObject:@"UI Check Other"],
+              "tags: deleting the last task carrying a tag deletes it and its row");
         [library close];
     }
     check_spin(0.2);
@@ -3112,7 +2954,7 @@ main(int argc, const char *argv[])
         check_status_message(app);
         check_open_database(app);
         check_menu_bar();
-        check_lists_bar(app, dir);
+        check_sidebar(app, dir);
         check_tags(app, dir);
         check_task_list(app, dir);
         check_kanban(app, dir);

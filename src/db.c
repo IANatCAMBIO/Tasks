@@ -110,22 +110,6 @@ task_db_transaction_end(TaskDatabase *db, gboolean ok)
     return TRUE;
 }
 
-/* ---------------------------------------------------------------------------
- * exec_txn() — run `sql` (one or more statements) inside a transaction,
- * ROLLING BACK on failure.  A bare "BEGIN;…;COMMIT;" through exec()
- * would leave the connection stuck inside an open transaction when a
- * middle statement fails (e.g. SQLITE_BUSY against the sync worker) —
- * every later BEGIN would then fail and writes would silently vanish
- * until the connection closes.  Returns TRUE when it committed.
- * ------------------------------------------------------------------------- */
-static gboolean
-exec_txn(TaskDatabase *db, const gchar *sql)
-{
-    if (!task_db_transaction_begin(db))
-        return FALSE;
-    return task_db_transaction_end(db, exec(db, sql));
-}
-
 /*
  * txn_join — make sure a write transaction is open: BEGIN IMMEDIATE when
  * none is, else join the caller's.  Pairs with txn_leave.
@@ -220,16 +204,6 @@ now(void)
 /* ---------------------------------------------------------------------------
  * Struct free helpers.
  * ------------------------------------------------------------------------- */
-void
-task_list_free(TaskList *l)
-{
-    if (l == NULL)
-        return;
-    g_free(l->name);
-    g_free(l->emoji);
-    g_free(l);
-}
-
 /* task_free() — free one task and its owned strings.  NULL-safe.        */
 void
 task_free(Task *t)
@@ -333,35 +307,6 @@ task_attachment_free(TaskAttachment *a)
         return;
     g_free(a->path);
     g_free(a);
-}
-
-/* task_ptr_array_free_lists() — free an array of TaskList*.  NULL-safe.    */
-void
-task_ptr_array_free_lists(GPtrArray *a)
-{
-    if (a == NULL)
-        return;
-    for (guint i = 0; i < a->len; i++)
-        task_list_free(g_ptr_array_index(a, i));
-    g_ptr_array_free(a, TRUE);
-}
-
-/* task_group_free() / task_ptr_array_free_groups() — free a TaskGroup.     */
-void
-task_group_free(TaskGroup *g)
-{
-    if (g == NULL) return;
-    g_free(g->name);
-    g_free(g);
-}
-
-void
-task_ptr_array_free_groups(GPtrArray *a)
-{
-    if (a == NULL) return;
-    for (guint i = 0; i < a->len; i++)
-        task_group_free(g_ptr_array_index(a, i));
-    g_ptr_array_free(a, TRUE);
 }
 
 /* task_ptr_array_free_tasks() — free an array of Task*.  NULL-safe.        */
@@ -649,156 +594,6 @@ task_db_close(TaskDatabase *db)
     g_free(db);
 }
 
-/* ---------------------------------------------------------------------------
- * read_list() — build a TaskList from the standard lists SELECT
- * (LIST_COLS: id, name, position, updated_at, deleted, emoji, group_id).
- * ------------------------------------------------------------------------- */
-static TaskList *
-read_list(sqlite3_stmt *st)
-{
-    TaskList *l = g_new0(TaskList, 1);
-    l->id         = sqlite3_column_int64(st, 0);
-    l->name       = column_text_dup(st, 1);
-    l->position   = sqlite3_column_int(st, 2);
-    l->updated_at = sqlite3_column_int64(st, 3);
-    l->deleted    = sqlite3_column_int(st, 4) != 0;
-    l->emoji      = column_text_dup(st, 5);
-    l->group_id   = sqlite3_column_int64(st, 6);
-    if (l->name == NULL)
-        l->name = g_strdup("");
-    if (l->emoji == NULL)
-        l->emoji = g_strdup("");
-    return l;
-}
-
-/* The shared column list for read_list().                                  */
-#define LIST_COLS "id, name, position, updated_at, deleted, " \
-                  "emoji, COALESCE(group_id, 0)"
-
-/* ---------------------------------------------------------------------------
- * task_db_lists() — all (visible) lists (see db.h).  Alphabetical until
- * the user drag-reorders the sidebar (which sets the sync_state flag
- * "lists_custom_order"); the dragged positions rule after that.
- * ------------------------------------------------------------------------- */
-GPtrArray *
-task_db_lists(TaskDatabase *db, gboolean include_deleted)
-{
-    GPtrArray *out = g_ptr_array_new();
-    /* Check once whether the user has ever drag-reordered the sidebar;
-     * if so, use stored positions (name-tiebroken), otherwise alphabetical. */
-    gboolean custom = FALSE;
-    {
-        sqlite3_stmt *cs = NULL;
-        if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-                "SELECT 1 FROM sync_state WHERE key='lists_custom_order'",
-                -1, &cs, NULL) == SQLITE_OK)
-            custom = (sqlite3_step(cs) == SQLITE_ROW);
-        sqlite3_finalize(cs);
-    }
-    gchar *sql = g_strdup_printf(
-        "SELECT " LIST_COLS " FROM lists%s ORDER BY %s",
-        include_deleted ? "" : " WHERE deleted = 0",
-        custom ? "position, lower(name)" : "lower(name)");
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK)
-        while (sqlite3_step(st) == SQLITE_ROW)
-            g_ptr_array_add(out, read_list(st));
-    else
-        step_done(db, NULL, "lists query", NULL);
-    sqlite3_finalize(st);
-    g_free(sql);
-    return out;
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_lists_reorder() — persist a drag-reorder (see db.h).
- * ------------------------------------------------------------------------- */
-gboolean
-task_db_lists_reorder(TaskDatabase *db, const gint64 *ids, gsize n)
-{
-    /* One transaction: position = array index for every id, plus the
-     * flag flipping task_db_lists into custom-order mode.  Positions are
-     * LOCAL-ONLY (Google tasklists carry no order), so updated_at is
-     * NOT stamped — a reorder must not dirty the rows for sync.            */
-    GString *sql = g_string_new(NULL);
-    for (gsize i = 0; i < n; i++)
-        g_string_append_printf(sql,
-            "UPDATE lists SET position = %d WHERE id = %lld;",
-            (gint)i, (long long)ids[i]);
-    g_string_append(sql,
-        "INSERT OR REPLACE INTO sync_state(key, value) "
-        "VALUES('lists_custom_order', '1');");
-    gboolean ok = exec_txn(db, sql->str);
-    g_string_free(sql, TRUE);
-    return ok;
-}
-
-/* task_db_list_get() — one list row, tombstoned or not; NULL if absent.    */
-TaskList *
-task_db_list_get(TaskDatabase *db, gint64 id)
-{
-    sqlite3_stmt *st = NULL;
-    TaskList *l = NULL;
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "SELECT " LIST_COLS " FROM lists WHERE id = ?", -1,
-            &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(st, 1, id);
-        if (sqlite3_step(st) == SQLITE_ROW)
-            l = read_list(st);
-    }
-    sqlite3_finalize(st);
-    return l;
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_list_create() — append a new list (see db.h).
- * ------------------------------------------------------------------------- */
-gint64
-task_db_list_create(TaskDatabase *db, const gchar *name, const gchar *emoji)
-{
-    sqlite3_stmt *st = NULL;
-    gint64 id = 0;                   /* the new rowid                       */
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "INSERT INTO lists(name, emoji, position, updated_at) "
-            "VALUES(?, ?, "
-            "(SELECT COALESCE(MAX(position), 0) + 1 FROM lists), ?)", -1,
-            &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 2, emoji != NULL ? emoji : "", -1,
-                          SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 3, now());
-        if (step_done(db, st, "list create", NULL))
-            id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
-    } else {
-        step_done(db, NULL, "list create", NULL);
-    }
-    sqlite3_finalize(st);
-    return id;
-}
-
-/* task_db_list_update() — rename/re-emoji + stamp.                         */
-gboolean
-task_db_list_update(TaskDatabase *db, gint64 id, const gchar *name,
-                    const gchar *emoji)
-{
-    sqlite3_stmt *st = NULL;
-    gboolean      ok = FALSE;
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "UPDATE lists SET name = ?, emoji = ?, updated_at = ? "
-            "WHERE id = ?", -1, &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 2, emoji != NULL ? emoji : "", -1,
-                          SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 3, now());
-        sqlite3_bind_int64(st, 4, id);
-        ok = step_done(db, st, "list update", NULL);
-    } else {
-        step_done(db, NULL, "list update", NULL);
-    }
-    sqlite3_finalize(st);
-    return ok;
-}
-
 /*
  * tombstone_each — tombstone each task `parents` names, with its live
  * subtasks, in ONE statement: SHARED_DB_SQL_TOMBSTONE_WHERE applied to
@@ -841,161 +636,11 @@ tombstone_each(TaskDatabase *db, const gchar *parents, gint64 owner, const gchar
 }
 
 /* ---------------------------------------------------------------------------
- * task_db_list_delete() — tombstone the list and every task in it, in ONE
- * transaction.
- * ------------------------------------------------------------------------- */
-gboolean
-task_db_list_delete(TaskDatabase *db, gint64 id)
-{
-    if (!task_db_transaction_begin(db))
-        return FALSE;
-    gboolean ok = tombstone_each(db, "SELECT id AS pid FROM tasks WHERE list_id = ?2",
-                                 id, "list delete tasks") >= 0;
-    if (ok) {
-        gchar *sql = sqlite3_mprintf(
-            "UPDATE lists SET deleted = 1, updated_at = %lld WHERE id = %lld;",
-            (long long)now(), (long long)id);
-        ok = exec(db, sql);
-        sqlite3_free(sql);
-    }
-    return task_db_transaction_end(db, ok);
-}
-
-/* ---------------------------------------------------------------------------
- * Group CRUD.
- * ------------------------------------------------------------------------- */
-
-/* The group column list, so the two queries below cannot disagree about
- * what read_group is reading.                                              */
-#define GROUP_COLS "id, name, position"
-
-/*
- * read_group — build a TaskGroup from the current row of a statement
- * selecting GROUP_COLS.
- *
- * Inputs:
- *   st — a stepped statement positioned on a row
- *
- * Output:
- *   a new TaskGroup (never NULL); free with task_group_free.
- */
-static TaskGroup *
-read_group(sqlite3_stmt *st)
-{
-    TaskGroup *g = g_new0(TaskGroup, 1);
-    g->id       = sqlite3_column_int64(st, 0);
-    g->name     = column_text_dup(st, 1);
-    if (g->name == NULL) g->name = g_strdup("");
-    g->position = sqlite3_column_int(st, 2);
-    return g;
-}
-
-/* task_db_groups() — all groups, ordered by position then name.            */
-GPtrArray *
-task_db_groups(TaskDatabase *db)
-{
-    GPtrArray *out = g_ptr_array_new();
-    const gchar *sql =
-        "SELECT " GROUP_COLS " FROM list_groups "
-        "ORDER BY position, lower(name)";
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK)
-        while (sqlite3_step(st) == SQLITE_ROW)
-            g_ptr_array_add(out, read_group(st));
-    sqlite3_finalize(st);
-    return out;
-}
-
-/* task_db_group_get() — one group row; NULL if absent (see db.h).          */
-TaskGroup *
-task_db_group_get(TaskDatabase *db, gint64 id)
-{
-    sqlite3_stmt *st = NULL;
-    TaskGroup    *g  = NULL;
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "SELECT " GROUP_COLS " FROM list_groups WHERE id = ?", -1,
-            &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(st, 1, id);
-        if (sqlite3_step(st) == SQLITE_ROW)
-            g = read_group(st);
-    }
-    sqlite3_finalize(st);
-    return g;
-}
-
-/* task_db_group_create() — insert a new group; returns rowid or 0.         */
-gint64
-task_db_group_create(TaskDatabase *db, const gchar *name)
-{
-    sqlite3_stmt *st = NULL;
-    gint64 id = 0;
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "INSERT INTO list_groups(name) VALUES(?)", -1, &st, NULL)
-            == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
-        if (step_done(db, st, "group create", NULL))
-            id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
-    } else {
-        step_done(db, NULL, "group create", NULL);
-    }
-    sqlite3_finalize(st);
-    return id;
-}
-
-/* task_db_group_delete() — remove the group; un-groups all its lists.      */
-gboolean
-task_db_group_delete(TaskDatabase *db, gint64 id)
-{
-    gchar *sql = sqlite3_mprintf(
-        "UPDATE lists SET group_id = NULL WHERE group_id = %lld;"
-        "DELETE FROM list_groups WHERE id = %lld;",
-        (long long)id, (long long)id);
-    gboolean ok = exec_txn(db, sql);
-    sqlite3_free(sql);
-    return ok;
-}
-
-/* task_db_group_rename() — update the group's name.                        */
-gboolean
-task_db_group_rename(TaskDatabase *db, gint64 id, const gchar *name)
-{
-    sqlite3_stmt *st = NULL;
-    gboolean      ok = FALSE;
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "UPDATE list_groups SET name = ? WHERE id = ?", -1, &st, NULL)
-            == SQLITE_OK) {
-        sqlite3_bind_text(st, 1, name, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 2, id);
-        ok = step_done(db, st, "group rename", NULL);
-    } else {
-        step_done(db, NULL, "group rename", NULL);
-    }
-    sqlite3_finalize(st);
-    return ok;
-}
-
-/* task_db_list_set_group() — assign a list to a group (0 = ungrouped).     */
-gboolean
-task_db_list_set_group(TaskDatabase *db, gint64 list_id, gint64 group_id)
-{
-    gchar *sql = group_id == 0
-        ? sqlite3_mprintf(
-              "UPDATE lists SET group_id = NULL WHERE id = %lld;",
-              (long long)list_id)
-        : sqlite3_mprintf(
-              "UPDATE lists SET group_id = %lld WHERE id = %lld;",
-              (long long)group_id, (long long)list_id);
-    gboolean ok = exec_txn(db, sql);
-    sqlite3_free(sql);
-    return ok;
-}
-
-/* ---------------------------------------------------------------------------
  * read_task() — build a Task from the standard tasks SELECT.
  * ------------------------------------------------------------------------- */
 #define TASK_COLS_WITH(notes) \
                   "id, list_id, COALESCE(parent_id, 0), title, " notes ", due, " \
-                  "status, pinned, position, updated_at, deleted, "\
+                  "status, position, updated_at, deleted, "\
                   "completed_at, priority, "\
                   "recur_interval, recur_unit, recur_time, recur_lead, "\
                   "recur_next, recur_start, due_time, "\
@@ -1028,40 +673,39 @@ read_task(sqlite3_stmt *st)
     t->notes        = column_text_dup(st, 4);
     t->due          = sqlite3_column_int64(st, 5);
     t->status       = (TaskStatus)sqlite3_column_int(st, 6);
-    t->pinned       = sqlite3_column_int(st, 7) != 0;
-    t->position     = sqlite3_column_int(st, 8);
-    t->updated_at   = sqlite3_column_int64(st, 9);
-    t->deleted      = sqlite3_column_int(st, 10) != 0;
-    t->completed_at = sqlite3_column_int64(st, 11);
-    t->priority     = sqlite3_column_int(st, 12) != 0;
-    t->recur_interval = sqlite3_column_int(st, 13);
+    t->position     = sqlite3_column_int(st, 7);
+    t->updated_at   = sqlite3_column_int64(st, 8);
+    t->deleted      = sqlite3_column_int(st, 9) != 0;
+    t->completed_at = sqlite3_column_int64(st, 10);
+    t->priority     = sqlite3_column_int(st, 11) != 0;
+    t->recur_interval = sqlite3_column_int(st, 12);
     /* Clamped on the way IN rather than at every reader: recur_unit is an
      * enum index into the unit tables in recur.c and the editor's combo,
      * and a hand-edited or future-version value must not index off the end
      * of either.  Minutes is the safe floor for the same reason New is
      * TaskStatus's (see editor_status_get).                                */
     {
-        gint u = sqlite3_column_int(st, 14);
+        gint u = sqlite3_column_int(st, 13);
         t->recur_unit = (u >= 0 && u < TASK_RECUR_N_UNITS)
                         ? (TaskRecurUnit)u : TASK_RECUR_MINUTE;
     }
-    t->recur_time   = sqlite3_column_int(st, 15);
-    t->recur_lead   = sqlite3_column_int(st, 16);
-    t->recur_next   = sqlite3_column_int64(st, 17);
-    t->recur_start  = sqlite3_column_int64(st, 18);
+    t->recur_time   = sqlite3_column_int(st, 14);
+    t->recur_lead   = sqlite3_column_int(st, 15);
+    t->recur_next   = sqlite3_column_int64(st, 16);
+    t->recur_start  = sqlite3_column_int64(st, 17);
     /* Clamped on the way IN, like recur_unit above: a hand-edited or
      * out-of-range value would otherwise format as a nonsense clock time
      * on every row that shows one.                                       */
     {
-        gint m = sqlite3_column_int(st, 19);
+        gint m = sqlite3_column_int(st, 18);
         t->due_time = (m >= 0 && m <= 23 * 60 + 59) ? m
                                                     : SHARED_DB_TASK_DUE_TIME_DEFAULT;
     }
-    t->scheduled_start    = sqlite3_column_int64(st, 20);
-    t->scheduled_duration = sqlite3_column_int(st, 21);
+    t->scheduled_start    = sqlite3_column_int64(st, 19);
+    t->scheduled_duration = sqlite3_column_int(st, 20);
     if (t->scheduled_duration <= 0)
         t->scheduled_duration = SHARED_DB_TASK_SCHEDULED_DURATION_DEFAULT;
-    t->context = column_text_dup(st, 22);
+    t->context = column_text_dup(st, 21);
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
     if (t->context == NULL) t->context = g_strdup("");
@@ -1107,19 +751,8 @@ task_db_task_get(TaskDatabase *db, gint64 id)
 }
 
 /* View queries sort `priority DESC` first: a high-priority task rises
- * to the top of every list it appears in (within its parent group for
+ * to the top of every view it appears in (within its parent group for
  * subtask queries).                                                        */
-
-/* task_db_tasks_toplevel() — visible top-level tasks of a list.            */
-GPtrArray *
-task_db_tasks_toplevel(TaskDatabase *db, gint64 list_id)
-{
-    return task_query(db,
-        "SELECT " TASK_COLS " FROM tasks WHERE list_id = ? AND "
-        "parent_id IS NULL AND deleted = 0 "
-        "ORDER BY priority DESC, position, id",
-        1, list_id, 0);
-}
 
 /* task_db_subtasks() — visible subtasks of a task.                         */
 GPtrArray *
@@ -1142,29 +775,29 @@ task_db_subtasks_all_visible(TaskDatabase *db)
         0, 0, 0);
 }
 
-/* WHERE fragments over `tasks`, each the ONE definition of a view's
- * membership, shared by the view's query and its "has any" check.  An
- * action item is a live task Notes wrote (a note_task row names it),
- * wherever it is filed now; note_task.task_id is UNIQUE, so the IN is an
- * index probe.                                                             */
-#define PINNED_WHERE      "pinned = 1 AND deleted = 0"
-#define ACTION_ITEM_WHERE "deleted = 0 AND id IN (SELECT task_id FROM note_task)"
+/* The order of every view: high priority first, then by position — one
+ * sequence across all top-level tasks (the schema's 102 step renumbered
+ * the per-list positions into it).  A subtask shown on a row of its own
+ * (a tag or Favorites gathers any level) sorts right after its parent, by
+ * its position among its siblings.                                         */
+#define VIEW_ORDER \
+    " ORDER BY priority DESC," \
+    " COALESCE((SELECT p.position FROM tasks p WHERE p.id = tasks.parent_id), position)," \
+    " parent_id IS NOT NULL, position, id"
 
-/* The order of a view that gathers tasks from several lists: high priority
- * first, then by list and position.                                        */
-#define CROSS_LIST_ORDER  " ORDER BY priority DESC, list_id, position, id"
-
-/* task_db_tasks_pinned() — the Pinned Tasks meta list.                     */
+/* task_db_tasks_all_visible() — the All Tasks view (top-level tasks; their
+ * subtasks render inside the rows as usual).                               */
 GPtrArray *
-task_db_tasks_pinned(TaskDatabase *db)
+task_db_tasks_all_visible(TaskDatabase *db)
 {
     return task_query(db,
-        "SELECT " TASK_COLS " FROM tasks WHERE " PINNED_WHERE CROSS_LIST_ORDER,
+        "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NULL AND "
+        "deleted = 0" VIEW_ORDER,
         0, 0, 0);
 }
 
 /*
- * task_db_tasks_action_items — the Action Items view (see db.h).
+ * task_db_tasks_favorite — the Favorites view (see db.h).
  *
  * Inputs:
  *   db — the connection
@@ -1174,82 +807,13 @@ task_db_tasks_pinned(TaskDatabase *db)
  *   task_ptr_array_free_tasks.
  */
 GPtrArray *
-task_db_tasks_action_items(TaskDatabase *db)
+task_db_tasks_favorite(TaskDatabase *db)
 {
     return task_query(db,
-        "SELECT " TASK_COLS " FROM tasks WHERE " ACTION_ITEM_WHERE CROSS_LIST_ORDER,
+        "SELECT " TASK_COLS " FROM tasks WHERE deleted = 0 AND id IN "
+        "(SELECT tt.task_id FROM task_tags tt JOIN task_tag_names n "
+        " ON n.id = tt.tag_id WHERE n.favorite <> 0)" VIEW_ORDER,
         0, 0, 0);
-}
-
-/*
- * any_task — whether any task matches a membership fragment: the shared
- * body of the views' "has any" checks.
- *
- * Inputs:
- *   db  — the connection
- *   sql — "SELECT EXISTS(SELECT 1 FROM tasks WHERE <fragment>)"
- *
- * Output:
- *   TRUE when a row matches; FALSE when none does or the query failed.
- */
-static gboolean
-any_task(TaskDatabase *db, const gchar *sql)
-{
-    gboolean has = FALSE;
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW)
-        has = sqlite3_column_int(st, 0) != 0;
-    sqlite3_finalize(st);
-    return has;
-}
-
-/* task_db_has_pinned() — any pinned task exists (see db.h).                */
-gboolean
-task_db_has_pinned(TaskDatabase *db)
-{
-    return any_task(db, "SELECT EXISTS(SELECT 1 FROM tasks WHERE " PINNED_WHERE ")");
-}
-
-/*
- * task_db_has_action_items — any live Notes-born task exists (see db.h).
- *
- * Inputs:
- *   db — the connection
- *
- * Output:
- *   TRUE when one exists.
- */
-gboolean
-task_db_has_action_items(TaskDatabase *db)
-{
-    return any_task(db, "SELECT EXISTS(SELECT 1 FROM tasks WHERE " ACTION_ITEM_WHERE ")");
-}
-
-/* task_db_tasks_all_visible() — the All Tasks meta list (top-level tasks
- * of every list; their subtasks render inside the rows as usual).          */
-GPtrArray *
-task_db_tasks_all_visible(TaskDatabase *db)
-{
-    return task_query(db,
-        "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NULL AND "
-        "deleted = 0" CROSS_LIST_ORDER,
-        0, 0, 0);
-}
-
-/* task_db_tasks_in_group() — All Tasks narrowed to one group's lists.
- * The subquery names the LIVE lists only: a tombstoned list keeps its
- * group_id, and its tasks are tombstoned with it, so leaving it in would
- * be a second spelling of the same exclusion.                              */
-GPtrArray *
-task_db_tasks_in_group(TaskDatabase *db, gint64 group_id)
-{
-    return task_query(db,
-        "SELECT " TASK_COLS " FROM tasks WHERE parent_id IS NULL AND "
-        "deleted = 0 AND list_id IN (SELECT id FROM lists "
-        "                            WHERE group_id = ? AND deleted = 0)"
-        CROSS_LIST_ORDER,
-        1, group_id, 0);
 }
 
 /* task_db_tasks_due_between() — the 3-Day Forecast view and
@@ -1265,65 +829,90 @@ task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi, gboolean open_
         open_only
         ? "SELECT " TASK_COLS " FROM tasks WHERE due >= ? AND due < ? AND "
           "deleted = 0 AND status <> " DONE_SQL " ORDER BY priority DESC, due, due_time, "
-          "list_id, position"
+          "position"
         : "SELECT " TASK_COLS " FROM tasks WHERE due >= ? AND due < ? AND "
-          "deleted = 0 ORDER BY priority DESC, due, due_time, list_id, "
-          "position",
+          "deleted = 0 ORDER BY priority DESC, due, due_time, position",
         2, lo, hi);
 }
 
-/* task_db_tasks_in_list_all() — one list's rows incl. tombstones (sync),
- * parents before subtasks.                                                 */
-GPtrArray *
-task_db_tasks_in_list_all(TaskDatabase *db, gint64 list_id)
-{
-    return task_query(db,
-        "SELECT " TASK_COLS " FROM tasks WHERE list_id = ? ORDER BY "
-        "parent_id IS NOT NULL, position, id", 1, list_id, 0);
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_task_create() — append a task (see db.h).  One nesting level: a
- * non-zero parent must itself be a top-level, undeleted task in the same
- * list, or the insert is refused.
- * ------------------------------------------------------------------------- */
+/*
+ * task_db_task_create — a task and its tags, in one transaction (see
+ * db.h).  A top-level task goes in the lowest-id live list (made when
+ * there is none: lists are storage) at the end of the one top-level order;
+ * a subtask in its parent's list at the end of its siblings, with every
+ * tag its parent carries.
+ *
+ * Inputs:
+ *   db        — the connection
+ *   parent_id — 0, or the live top-level parent
+ *   title     — the title
+ *   tag       — the tag's name; required for a top-level task
+ *
+ * Output:
+ *   the new id, or 0 when refused or a write failed.
+ */
 gint64
-task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
-                    const gchar *title)
+task_db_task_create(TaskDatabase *db, gint64 parent_id, const gchar *title,
+                    const gchar *tag)
 {
+    gchar   *clean   = g_strstrip(g_strdup(tag != NULL ? tag : ""));
+    gboolean has_tag = clean[0] != '\0';
+    g_free(clean);
+    if (parent_id == 0 && !has_tag)
+        return 0;
     if (parent_id != 0) {
         Task *p = task_db_task_get(db, parent_id);
-        gboolean ok = p != NULL && p->parent_id == 0 && !p->deleted &&
-                      p->list_id == list_id;
+        gboolean ok = p != NULL && p->parent_id == 0 && !p->deleted;
         task_free(p);
         if (!ok)
             return 0;
     }
+
+    gboolean own;
+    if (!txn_join(db, &own))
+        return 0;
+    gboolean ok = parent_id != 0 || exec(db,
+        "INSERT INTO lists (name, updated_at) SELECT 'Tasks', strftime('%s', 'now') "
+        "WHERE NOT EXISTS (SELECT 1 FROM lists WHERE deleted = 0)");
+
     sqlite3_stmt *st = NULL;
-    gint64 id = 0;                   /* the new rowid                       */
-    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "INSERT INTO tasks(list_id, parent_id, title, position, "
-            "updated_at) VALUES(?, ?, ?, (SELECT "
-            "COALESCE(MAX(position), 0) + 1 FROM tasks WHERE list_id = ?1 "
-            "AND COALESCE(parent_id, 0) = COALESCE(?2, 0)), ?)", -1,
+    gint64        id = 0;            /* the new rowid                       */
+    if (ok && sqlite3_prepare_v2(shared_db_handle(db->shared),
+            "INSERT INTO tasks(list_id, parent_id, title, position, updated_at) "
+            "VALUES(CASE WHEN ?1 IS NULL "
+            "            THEN (SELECT MIN(id) FROM lists WHERE deleted = 0) "
+            "            ELSE (SELECT list_id FROM tasks WHERE id = ?1) END, "
+            "       ?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks "
+            "                WHERE parent_id IS ?1), ?3)", -1,
             &st, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(st, 1, list_id);
         if (parent_id != 0)
-            sqlite3_bind_int64(st, 2, parent_id);
+            sqlite3_bind_int64(st, 1, parent_id);
         else
-            sqlite3_bind_null(st, 2);
-        sqlite3_bind_text(st, 3, title, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_null(st, 1);
+        sqlite3_bind_text(st, 2, title, -1, SQLITE_TRANSIENT);
         /* due_time is left to the column DEFAULT, as Notes leaves it: the
          * shared module alone creates the schema, from
          * SHARED_DB_TASK_DUE_TIME_DEFAULT, so the DEFAULT is that value.  */
-        sqlite3_bind_int64(st, 4, now());
-        if (step_done(db, st, "task create", NULL))
+        sqlite3_bind_int64(st, 3, now());
+        ok = step_done(db, st, "task create", NULL);
+        if (ok)
             id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
-    } else {
-        step_done(db, NULL, "task create", NULL);
+    } else if (ok) {
+        ok = step_done(db, NULL, "task create", NULL);
     }
     sqlite3_finalize(st);
-    return id;
+
+    if (ok && parent_id != 0) {
+        gchar *sql = sqlite3_mprintf(
+            "INSERT INTO task_tags (task_id, tag_id) "
+            "SELECT %lld, tag_id FROM task_tags WHERE task_id = %lld",
+            (long long)id, (long long)parent_id);
+        ok = exec(db, sql);
+        sqlite3_free(sql);
+    }
+    if (ok && has_tag)
+        ok = task_db_task_tag_add(db, id, tag) != 0;
+    return txn_leave(db, own, ok) ? id : 0;
 }
 
 /*
@@ -1396,7 +985,6 @@ static const struct {
     { "due",            EDIT_INT64, offsetof(Task, due),            TRUE  },
     { "due_time",       EDIT_INT,   offsetof(Task, due_time),       TRUE  },
     { "status",         EDIT_INT,   offsetof(Task, status),         TRUE  },
-    { "pinned",         EDIT_BOOL,  offsetof(Task, pinned),         FALSE },
     { "priority",       EDIT_BOOL,  offsetof(Task, priority),       FALSE },
     { "recur_interval", EDIT_INT,   offsetof(Task, recur_interval), FALSE },
     { "recur_unit",     EDIT_INT,   offsetof(Task, recur_unit),     FALSE },
@@ -1545,7 +1133,7 @@ task_db_task_update(TaskDatabase *db, const Task *before, const Task *after)
  * invisible to every consumer of updated_at, so the row reads as
  * untouched since the last sync and there is no record that anything
  * happened.  Status is the successor of a SYNCED field, not a local flag
- * like pinned/priority: a change to it is a change to the task.
+ * like priority: a change to it is a change to the task.
  * ------------------------------------------------------------------------- */
 gboolean
 task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status)
@@ -1574,23 +1162,10 @@ task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status)
     return txn_leave(db, own, ok);
 }
 
-/* task_db_task_set_pinned() — toggle the local-only pin (see db.h).
- * Deliberately NO updated_at bump: the pin is local-only and must not
- * dirty the row for sync (a bump makes newest-wins push a no-op PATCH
- * and can starve a concurrent remote edit behind a 412).                   */
-gboolean
-task_db_task_set_pinned(TaskDatabase *db, gint64 id, gboolean pinned)
-{
-    gchar *sql = g_strdup_printf(
-        "UPDATE tasks SET pinned = %d WHERE id = %lld",
-        pinned ? 1 : 0, (long long)id);
-    gboolean ok = exec(db, sql);
-    g_free(sql);
-    return ok;
-}
-
 /* task_db_task_set_priority() — toggle the local-only high-priority flag
- * (see db.h).  Deliberately NO updated_at bump (see set_pinned above).     */
+ * (see db.h).  Deliberately NO updated_at bump: the flag is local-only and
+ * must not dirty the row for sync (a bump makes newest-wins push a no-op
+ * PATCH and can starve a concurrent remote edit behind a 412).             */
 gboolean
 task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority)
 {
@@ -1604,7 +1179,7 @@ task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority)
 
 /*
  * task_db_task_set_scheduled() — write the day-planner schedule fields.
- * Local-only: no updated_at bump (see set_pinned).
+ * Local-only: no updated_at bump (see set_priority).
  *
  * Inputs:
  *   db           — the connection
@@ -1714,7 +1289,7 @@ task_db_task_recur_apply(TaskDatabase *db, gint64 id, gint64 due,
 
 /* task_db_task_recur_set_next() — store the next-occurrence stamp alone
  * (see db.h).  Deliberately NO updated_at bump, the same rule
- * set_pinned/set_priority follow: this is local bookkeeping, and seeding
+ * set_priority follows: this is local bookkeeping, and seeding
  * or advancing it must not dirty the row for sync.                          */
 gboolean
 task_db_task_recur_set_next(TaskDatabase *db, gint64 id, gint64 next)
@@ -1802,21 +1377,22 @@ task_db_task_delete(TaskDatabase *db, gint64 id)
 }
 
 /* ---------------------------------------------------------------------------
- * task_db_tasks_delete_done() — tombstone a list's completed top-level
+ * task_db_tasks_delete_done() — tombstone a tag's completed top-level
  * tasks and their subtasks, in ONE statement (see db.h).
  * ------------------------------------------------------------------------- */
 guint
-task_db_tasks_delete_done(TaskDatabase *db, gint64 list_id)
+task_db_tasks_delete_done(TaskDatabase *db, gint64 tag_id)
 {
     gint top = tombstone_each(db,
-        "SELECT id AS pid FROM tasks WHERE list_id = ?2 AND parent_id IS NULL "
-        "   AND status = " DONE_SQL " AND deleted = 0",
-        list_id, "delete done");
+        "SELECT id AS pid FROM tasks WHERE parent_id IS NULL "
+        "   AND status = " DONE_SQL " AND deleted = 0 "
+        "   AND id IN (SELECT task_id FROM task_tags WHERE tag_id = ?2)",
+        tag_id, "delete done");
     return top > 0 ? (guint)top : 0;
 }
 
 /*
- * task_db_tasks_tagged — a tag's proto-list (see db.h).
+ * task_db_tasks_tagged — a tag's view (see db.h).
  *
  * Inputs:
  *   db     — the connection
@@ -1831,7 +1407,7 @@ task_db_tasks_tagged(TaskDatabase *db, gint64 tag_id)
 {
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE deleted = 0 AND "
-        "id IN (SELECT task_id FROM task_tags WHERE tag_id = ?)" CROSS_LIST_ORDER,
+        "id IN (SELECT task_id FROM task_tags WHERE tag_id = ?)" VIEW_ORDER,
         1, tag_id, 0);
 }
 
@@ -1914,7 +1490,7 @@ task_db_attachment_counts(TaskDatabase *db)
  * ------------------------------------------------------------------------- */
 
 /*
- * task_tag_free — free a tag and its name.
+ * task_tag_free — free a tag and its strings.
  *
  * Inputs:
  *   tag — the tag, or NULL (ignored)
@@ -1924,6 +1500,7 @@ task_tag_free(TaskTag *tag)
 {
     if (tag == NULL) return;
     g_free(tag->name);
+    g_free(tag->emoji);
     g_free(tag);
 }
 
@@ -1943,7 +1520,46 @@ task_ptr_array_free_tags(GPtrArray *a)
 }
 
 /*
- * tag_query — the tags a query yields, as (id, name) rows.
+ * task_tag_label — a tag's display label (see db.h).
+ *
+ * Inputs:
+ *   tag — the tag
+ *
+ * Output:
+ *   new string (g_free).
+ */
+gchar *
+task_tag_label(const TaskTag *tag)
+{
+    return tag->emoji != NULL && tag->emoji[0] != '\0'
+        ? g_strdup_printf("%s  %s", tag->emoji, tag->name)
+        : g_strdup(tag->name);
+}
+
+/*
+ * read_tag — a TaskTag from a row whose first four columns are TAG_COLS.
+ *
+ * Inputs:
+ *   st — a stepped statement on a row
+ *
+ * Output:
+ *   new tag (task_tag_free).
+ */
+static TaskTag *
+read_tag(sqlite3_stmt *st)
+{
+    TaskTag *tag = g_new0(TaskTag, 1);
+    tag->id       = sqlite3_column_int64(st, 0);
+    tag->name     = column_text_dup(st, 1);
+    tag->emoji    = column_text_dup(st, 2);
+    tag->favorite = sqlite3_column_int(st, 3) != 0;
+    if (tag->name == NULL) tag->name = g_strdup("");
+    if (tag->emoji == NULL) tag->emoji = g_strdup("");
+    return tag;
+}
+
+/*
+ * tag_query — the tags a query yields, as TAG_COLS rows.
  *
  * Inputs:
  *   db    — the connection
@@ -1961,12 +1577,8 @@ tag_query(TaskDatabase *db, const gchar *sql, gint64 param)
     if (sqlite3_prepare_v2(shared_db_handle(db->shared), sql, -1, &st, NULL) == SQLITE_OK) {
         if (sqlite3_bind_parameter_count(st) > 0)
             sqlite3_bind_int64(st, 1, param);
-        while (sqlite3_step(st) == SQLITE_ROW) {
-            TaskTag *tag = g_new0(TaskTag, 1);
-            tag->id   = sqlite3_column_int64(st, 0);
-            tag->name = column_text_dup(st, 1);
-            g_ptr_array_add(out, tag);
-        }
+        while (sqlite3_step(st) == SQLITE_ROW)
+            g_ptr_array_add(out, read_tag(st));
     } else {
         step_done(db, NULL, "tag query", NULL);
     }
@@ -1974,29 +1586,158 @@ tag_query(TaskDatabase *db, const gchar *sql, gint64 param)
     return out;
 }
 
+/* The columns tag_query reads, over task_tag_names aliased n.            */
+#define TAG_COLS "n.id, n.name, n.emoji, n.favorite"
+
 /* task_db_tags() — every tag, alphabetical (see db.h).                     */
 GPtrArray *
 task_db_tags(TaskDatabase *db)
 {
-    return tag_query(db, "SELECT id, name FROM task_tag_names "
-                         "ORDER BY name COLLATE NOCASE, id", 0);
+    return tag_query(db, "SELECT " TAG_COLS " FROM task_tag_names n "
+                         "ORDER BY n.name COLLATE NOCASE, n.id", 0);
+}
+
+/*
+ * first_tag — the first tag a query yields, or NULL.
+ *
+ * Inputs:
+ *   a — tag_query's result, freed here
+ *
+ * Output:
+ *   the tag (task_tag_free), or NULL when the query yielded none.
+ */
+static TaskTag *
+first_tag(GPtrArray *a)
+{
+    TaskTag *tag = a->len > 0 ? g_ptr_array_steal_index(a, 0) : NULL;
+    task_ptr_array_free_tags(a);
+    return tag;
 }
 
 /* task_db_tag_get() — one tag, or NULL (see db.h).                         */
 TaskTag *
 task_db_tag_get(TaskDatabase *db, gint64 id)
 {
-    GPtrArray *a   = tag_query(db, "SELECT id, name FROM task_tag_names WHERE id = ?", id);
-    TaskTag   *tag = a->len > 0 ? g_ptr_array_steal_index(a, 0) : NULL;
-    task_ptr_array_free_tags(a);
-    return tag;
+    return first_tag(tag_query(db, "SELECT " TAG_COLS " FROM task_tag_names n "
+                                   "WHERE n.id = ?", id));
+}
+
+/*
+ * task_db_tag_find — the tag of a name (see db.h).
+ *
+ * Inputs:
+ *   db   — the connection
+ *   name — the name; trimmed here
+ *
+ * Output:
+ *   the tag (task_tag_free), or NULL when no tag has that name.
+ */
+TaskTag *
+task_db_tag_find(TaskDatabase *db, const gchar *name)
+{
+    gchar        *clean = g_strstrip(g_strdup(name != NULL ? name : ""));
+    sqlite3_stmt *st    = NULL;
+    gint64        id    = 0;
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
+            "SELECT id FROM task_tag_names WHERE name = ?", -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, clean, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) == SQLITE_ROW)
+            id = sqlite3_column_int64(st, 0);
+    } else {
+        step_done(db, NULL, "tag find", NULL);
+    }
+    sqlite3_finalize(st);
+    g_free(clean);
+    return id != 0 ? task_db_tag_get(db, id) : NULL;
+}
+
+/*
+ * task_db_tag_set_emoji — a tag's display prefix (see db.h).
+ *
+ * Inputs:
+ *   db    — the connection
+ *   id    — the tag
+ *   emoji — the emoji, trimmed; NULL or "" for none
+ *
+ * Output:
+ *   TRUE when written.
+ */
+gboolean
+task_db_tag_set_emoji(TaskDatabase *db, gint64 id, const gchar *emoji)
+{
+    gchar *clean = g_strstrip(g_strdup(emoji != NULL ? emoji : ""));
+    gchar *sql   = sqlite3_mprintf("UPDATE task_tag_names SET emoji = %Q WHERE id = %lld",
+                                   clean, (long long)id);
+    gboolean ok = exec(db, sql);
+    sqlite3_free(sql);
+    g_free(clean);
+    return ok;
+}
+
+/*
+ * task_db_tag_set_favorite — put a tag in the favorites or take it out
+ * (see db.h).
+ *
+ * Inputs:
+ *   db       — the connection
+ *   id       — the tag
+ *   favorite — the new flag
+ *
+ * Output:
+ *   TRUE when written.
+ */
+gboolean
+task_db_tag_set_favorite(TaskDatabase *db, gint64 id, gboolean favorite)
+{
+    gchar *sql = sqlite3_mprintf("UPDATE task_tag_names SET favorite = %d WHERE id = %lld",
+                                 favorite ? 1 : 0, (long long)id);
+    gboolean ok = exec(db, sql);
+    sqlite3_free(sql);
+    return ok;
+}
+
+/*
+ * task_db_tags_by_task — every live task's tags, one query (see db.h).
+ *
+ * Inputs:
+ *   db — the connection
+ *
+ * Output:
+ *   task id → GPtrArray of TaskTag* (each array frees its tags); never
+ *   NULL.
+ */
+GHashTable *
+task_db_tags_by_task(TaskDatabase *db)
+{
+    GHashTable   *map = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                                              (GDestroyNotify)task_ptr_array_free_tags);
+    sqlite3_stmt *st  = NULL;
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
+            "SELECT " TAG_COLS ", tt.task_id FROM task_tags tt "
+            "JOIN task_tag_names n ON n.id = tt.tag_id "
+            "JOIN tasks t ON t.id = tt.task_id WHERE t.deleted = 0 "
+            "ORDER BY tt.task_id, n.name COLLATE NOCASE, n.id", -1, &st, NULL) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            gpointer   key  = GINT_TO_POINTER(sqlite3_column_int64(st, 4));
+            GPtrArray *tags = g_hash_table_lookup(map, key);
+            if (tags == NULL) {
+                tags = g_ptr_array_new();
+                g_hash_table_insert(map, key, tags);
+            }
+            g_ptr_array_add(tags, read_tag(st));
+        }
+    } else {
+        step_done(db, NULL, "tags by task", NULL);
+    }
+    sqlite3_finalize(st);
+    return map;
 }
 
 /* task_db_task_tags() — one task's tags, alphabetical (see db.h).          */
 GPtrArray *
 task_db_task_tags(TaskDatabase *db, gint64 task_id)
 {
-    return tag_query(db, "SELECT n.id, n.name FROM task_tags tt "
+    return tag_query(db, "SELECT " TAG_COLS " FROM task_tags tt "
                          "JOIN task_tag_names n ON n.id = tt.tag_id "
                          "WHERE tt.task_id = ? ORDER BY n.name COLLATE NOCASE, n.id",
                      task_id);
@@ -2060,28 +1801,57 @@ task_db_task_tag_add(TaskDatabase *db, gint64 task_id, const gchar *name)
     return txn_leave(db, own, ok) ? tag_id : 0;
 }
 
-/* task_db_task_tag_remove() — take a tag off a task (see db.h).            */
-gboolean
+/*
+ * task_db_task_tag_remove — take a tag off a task (see db.h).  The schema
+ * refuses a live task's last tag (task_tags_keep_one): that refusal is an
+ * answer, not a failure, so it is told apart by its error and not logged.
+ *
+ * Inputs:
+ *   db      — the connection
+ *   task_id — the task
+ *   tag_id  — the tag
+ *
+ * Output:
+ *   1 written, 0 refused (the last tag), -1 failed (logged).
+ */
+gint
 task_db_task_tag_remove(TaskDatabase *db, gint64 task_id, gint64 tag_id)
 {
-    gchar *sql = sqlite3_mprintf(
-        "DELETE FROM task_tags WHERE task_id = %lld AND tag_id = %lld",
-        (long long)task_id, (long long)tag_id);
-    gboolean ok = exec(db, sql);
-    sqlite3_free(sql);
-    return ok;
+    sqlite3      *sq = shared_db_handle(db->shared);
+    sqlite3_stmt *st = NULL;
+    gint          rc = -1;
+    if (sqlite3_prepare_v2(sq, "DELETE FROM task_tags WHERE task_id = ? AND tag_id = ?",
+                           -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, task_id);
+        sqlite3_bind_int64(st, 2, tag_id);
+        int step = sqlite3_step(st);
+        if (step == SQLITE_DONE) {
+            rc = 1;
+            if (sqlite3_get_autocommit(sq))
+                own_commit(db);
+        } else if (sqlite3_extended_errcode(sq) == SQLITE_CONSTRAINT_TRIGGER &&
+                   g_strcmp0(sqlite3_errmsg(sq), SHARED_DB_TAG_KEEP_ONE_MSG) == 0) {
+            rc = 0;
+        } else {
+            g_warning("db: tag remove: %s", sqlite3_errmsg(sq));
+        }
+    } else {
+        step_done(db, NULL, "tag remove", NULL);
+    }
+    sqlite3_finalize(st);
+    return rc;
 }
 
-/* task_db_totals() — non-tombstoned task/list counts (see db.h).           */
+/* task_db_totals() — non-tombstoned task and tag counts (see db.h).        */
 void
-task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists)
+task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_tags)
 {
     const struct {
         const gchar *sql;
         gint        *out;            /* caller's slot (may be NULL)         */
     } q[] = {
         { "SELECT COUNT(*) FROM tasks WHERE deleted = 0", n_tasks },
-        { "SELECT COUNT(*) FROM lists WHERE deleted = 0", n_lists },
+        { "SELECT COUNT(*) FROM task_tag_names", n_tags },
     };
     for (gsize i = 0; i < G_N_ELEMENTS(q); i++) {
         if (q[i].out == NULL)
@@ -2096,30 +1866,6 @@ task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists)
     }
 }
 
-/* ---------------------------------------------------------------------------
- * Sync-side mutators (no updated_at stamp — see db.h).
- * ------------------------------------------------------------------------- */
-/* ---------------------------------------------------------------------------
- * task_db_task_move_list() — cross-list move (see db.h).
- * ------------------------------------------------------------------------- */
-gboolean
-task_db_task_move_list(TaskDatabase *db, gint64 id, gint64 dest_list)
-{
-    gchar *sql = sqlite3_mprintf(
-        "UPDATE tasks SET list_id = %lld, updated_at = %lld, "
-        "  position = (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks "
-        "              WHERE list_id = %lld AND parent_id IS NULL) "
-        "  WHERE id = %lld;"
-        "UPDATE tasks SET list_id = %lld, updated_at = %lld "
-        "  WHERE parent_id = %lld;",
-        (long long)dest_list, (long long)now(), (long long)dest_list,
-        (long long)id,
-        (long long)dest_list, (long long)now(), (long long)id);
-    gboolean ok = exec_txn(db, sql);
-    sqlite3_free(sql);
-    return ok;
-}
-
 /*
  * purge_unless_linked — physically delete rows, in one transaction, unless
  * a task among them is a Notes action item (a note_task row names it):
@@ -2131,7 +1877,7 @@ task_db_task_move_list(TaskDatabase *db, gint64 id, gint64 dest_list)
  *   db      — the connection
  *   members — a SELECT of the task ids the purge would remove (one ?1)
  *   deletes — the DELETE statements (each with ?1 where the id goes)
- *   id      — the list or task id bound to ?1
+ *   id      — the task id bound to ?1
  *
  * Output:
  *   TRUE when the rows were deleted; FALSE when a linked task refused the
@@ -2168,22 +1914,6 @@ purge_unless_linked(TaskDatabase *db, const gchar *members, const gchar *const *
         sqlite3_finalize(st);
     }
     return task_db_transaction_end(db, ok);
-}
-
-/* task_db_list_purge() — physically delete a list row + all its tasks'
- * rows (attachments cascade), unless one of them is a Notes action item
- * (see db.h).                                                               */
-gboolean
-task_db_list_purge(TaskDatabase *db, gint64 id)
-{
-    static const gchar *const deletes[] = {
-        "DELETE FROM tasks WHERE list_id = ?1 AND parent_id IS NOT NULL",
-        "DELETE FROM tasks WHERE list_id = ?1",
-        "DELETE FROM lists WHERE id = ?1",
-        NULL
-    };
-    return purge_unless_linked(db, "SELECT id FROM tasks WHERE list_id = ?1",
-                               deletes, id);
 }
 
 /* task_db_task_purge() — physically delete a task row + its subtasks,

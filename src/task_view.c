@@ -78,38 +78,3 @@ task_view_index_of(const TaskView *v)
             return (gint)i;
     return -1;
 }
-
-/*
- * task_view_shown — whether a view's row exists right now.
- *
- * Inputs:
- *   v   — the view (not NULL)
- *   app — the context its `visible` reads
- *
- * Output:
- *   TRUE when the view has no `visible` or it answers TRUE.
- */
-gboolean
-task_view_shown(const TaskView *v, TaskApp *app)
-{
-    return v->visible == NULL || v->visible(app, v->user_data);
-}
-
-/*
- * task_view_shown_mask — the shown views as a bit per registry index.
- *
- * Inputs:
- *   app — the context
- *
- * Output:
- *   bit i set when task_view_nth(i) is shown (the first 64 views only).
- */
-guint64
-task_view_shown_mask(TaskApp *app)
-{
-    guint64 mask = 0;
-    for (guint i = 0; i < task_view_count() && i < 64; i++)
-        if (task_view_shown(task_view_nth(i), app))
-            mask |= G_GUINT64_CONSTANT(1) << i;
-    return mask;
-}

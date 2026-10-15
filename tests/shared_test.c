@@ -2,13 +2,14 @@
  * shared_test.c — Tasks on the shared database: the column-diff update
  * (task_db_task_update) that keeps two writers from losing each other's
  * changes, and its stamping rules; and Notes action items (a note_task row
- * names the task) — the Action Items view and when it is shown, the
+ * names the task) — the "Action Items" tag the schema gives them, the
  * editor's note lookup, the note context every read
  * carries (action_items_ctx), ordinary deletion, and the purge Tasks
  * refuses; which outside changes refresh the app (a change to
  * Tasks' data refreshes, one to Notes' data re-reads only the editors'
  * note lines, its own writes never count, and an outside commit landing
- * right after its own is not lost); tombstones with subtasks; and writes
+ * right after its own is not lost); tombstones with subtasks, and the last
+ * tag a live task keeps; and writes
  * that fail because another PROCESS holds the file past the busy timeout —
  * they wait once, report it, write nothing, and succeed once the file is
  * free.
@@ -32,7 +33,7 @@
 extern char **environ;
 
 /*
- * new_task — a fresh task in a fresh list.
+ * new_task — a fresh task, tagged "Shared".
  *
  * Inputs:
  *   app   — the fixture
@@ -44,7 +45,7 @@ extern char **environ;
 static gint64
 new_task(TaskApp *app, const char *title)
 {
-    return task_db_task_create(app->db, task_db_list_create(app->db, "Shared", ""), 0, title);
+    return task_db_task_create(app->db, 0, title, "Shared");
 }
 
 /*
@@ -117,11 +118,11 @@ test_stamps(TaskApp *app)
     t->updated_at = 1000;
 
     Task local = *t;
-    local.pinned     = TRUE;
+    local.priority   = TRUE;
     local.recur_next = 12345;
     task_db_task_update(app->db, t, &local);
     Task *after = task_db_task_get(app->db, id);
-    check(after->pinned && after->recur_next == 12345 && after->updated_at == 1000,
+    check(after->priority && after->recur_next == 12345 && after->updated_at == 1000,
           "stamps: a local-only change does not stamp updated_at");
     task_free(after);
 
@@ -149,7 +150,7 @@ test_stamps(TaskApp *app)
     check(open->status == TASK_STATUS_IN_PROGRESS && open->completed_at == 777,
           "stamps: leaving Done keeps completed_at");
 
-    gint64 sub      = task_db_task_create(app->db, open->list_id, id, "Subtask");
+    gint64 sub      = task_db_task_create(app->db, id, "Subtask", NULL);
     Task  *child    = task_db_task_get(app->db, sub);
     Task   child_done = *child;
     child_done.status = TASK_STATUS_DONE;
@@ -237,7 +238,7 @@ context_of(TaskApp *app, gint64 task_id)
  * test_note_context — every task read carries its note context: the
  * folder of the note it was written in (action_items_ctx.context), ""
  * for a note at the top level and for a task not born in Notes, and the
- * folder's new name once Notes renames it.  List loads carry it too.
+ * folder's new name once Notes renames it.  View loads carry it too.
  *
  * Inputs:
  *   app — the fixture
@@ -245,10 +246,9 @@ context_of(TaskApp *app, gint64 task_id)
 static void
 test_note_context(TaskApp *app)
 {
-    gint64 list   = task_db_list_create(app->db, "Context", "");
-    gint64 filed  = task_db_task_create(app->db, list, 0, "lock down my diet RE keto");
-    gint64 loose  = task_db_task_create(app->db, list, 0, "Top-level note item");
-    gint64 plain  = task_db_task_create(app->db, list, 0, "Typed in Tasks");
+    gint64 filed  = task_db_task_create(app->db, 0, "lock down my diet RE keto", "Context");
+    gint64 loose  = task_db_task_create(app->db, 0, "Top-level note item", "Context");
+    gint64 plain  = task_db_task_create(app->db, 0, "Typed in Tasks", "Context");
     char  *sql    = sqlite3_mprintf(
         "INSERT INTO folders (name) VALUES ('Captain''s Log');"
         "INSERT INTO notes (folder_id, title, created_at, updated_at)"
@@ -271,7 +271,9 @@ test_note_context(TaskApp *app)
     check(ctx != NULL && *ctx == '\0', "context: a task not born in Notes has none");
     g_free(ctx);
 
-    GPtrArray *rows  = task_db_tasks_toplevel(app->db, list);
+    TaskTag   *tag   = task_db_tag_find(app->db, "Context");
+    GPtrArray *rows  = task_db_tasks_tagged(app->db, tag->id);
+    task_tag_free(tag);
     guint      with  = 0;               /* rows carrying any context      */
     gboolean   right = FALSE;           /* the filed one carries its own  */
     for (guint i = 0; i < rows->len; i++) {
@@ -280,7 +282,7 @@ test_note_context(TaskApp *app)
         if (t->id == filed) right = strcmp(t->context, "Captain's Log") == 0;
     }
     check(rows->len == 3 && with == 1 && right,
-          "context: a list load carries it on each row, and only on those");
+          "context: a tag's load carries it on each row, and only on those");
     task_ptr_array_free_tasks(rows);
 
     Task  *t     = task_db_task_get(app->db, filed);
@@ -301,127 +303,79 @@ test_note_context(TaskApp *app)
 }
 
 /*
- * view_has — whether a view's query returns a task.
+ * tag_names_of — a task's tags as one string, "a,b".
  *
  * Inputs:
  *   app — the fixture
- *   v   — the view
  *   id  — the task
  *
  * Output:
- *   TRUE when the view's query returns it.
+ *   new string (g_free).
  */
-static gboolean
-view_has(TaskApp *app, const TaskView *v, gint64 id)
+static gchar *
+tag_names_of(TaskApp *app, gint64 id)
 {
-    GPtrArray *tasks = v->query(app, v->user_data);
-    gboolean   found = FALSE;
-    for (guint i = 0; i < tasks->len && !found; i++) {
-        found = ((const Task *)g_ptr_array_index(tasks, i))->id == id;
+    GPtrArray *tags  = task_db_task_tags(app->db, id);
+    GString   *names = g_string_new("");
+    for (guint i = 0; i < tags->len; i++) {
+        if (i > 0) g_string_append_c(names, ',');
+        g_string_append(names, ((const TaskTag *)g_ptr_array_index(tags, i))->name);
     }
-    task_ptr_array_free_tasks(tasks);
-    return found;
+    task_ptr_array_free_tags(tags);
+    return g_string_free(names, FALSE);
 }
 
 /*
- * pane_count — how many rows the task pane shows for a view (the
- * show_completed setting applied).
- *
- * Inputs:
- *   app — the fixture
- *   v   — the view
- *
- * Output:
- *   the row count.
- */
-static size_t
-pane_count(TaskApp *app, const TaskView *v)
-{
-    task_sel_t           sel     = { task_sel_view, task_view_index_of(v) };
-    task_pane_content_t *content = task_pane_collect(app, sel, NULL);
-    size_t               n       = content->rows->count;
-    task_pane_content_free(content);
-    return n;
-}
-
-/*
- * test_action_items_view — the Action Items view: registered right after
- * the 3-Day Forecast; hidden while no live Notes-born task exists, shown
- * once one does, hidden again once it is deleted; it gathers every live
- * Notes-born task from every list (a subtask too) and nothing else; a Done
- * one is returned and left to the show_completed setting, as in every
- * view.  Runs on a database without action items.
+ * test_action_tag — a task Notes writes carries the "Action Items" tag
+ * (the schema's trigger), with Notes' emoji, beside the tag it had; it is
+ * an ordinary tag: its view lists the Notes-born tasks and nothing else,
+ * and it goes when the last of them is deleted.  Runs on a database
+ * without action items.
  *
  * Inputs:
  *   app — the fixture
  */
 static void
-test_action_items_view(TaskApp *app)
+test_action_tag(TaskApp *app)
 {
-    const TaskView *v        = task_view_find("action_items");
-    gint            forecast = task_view_index_of(task_view_find("forecast"));
+    gint64 plain = task_db_task_create(app->db, 0, "Typed, not noted", "Work items");
+    gint64 in_w  = task_db_task_create(app->db, 0, "From a meeting note", "Work items");
+    gint64 in_h  = task_db_task_create(app->db, 0, "From a home note", "Home items");
 
-    check(v != NULL && task_view_index_of(v) == forecast + 1 &&
-          strcmp(v->name, SHARED_DB_ACTION_LIST_NAME) == 0 &&
-          strcmp(v->label, SHARED_DB_ACTION_LIST_EMOJI "  " SHARED_DB_ACTION_LIST_NAME) == 0,
-          "action items: the view follows the 3-Day Forecast, named like Notes' list");
-    if (v == NULL) return;
-
-    gint64 work   = task_db_list_create(app->db, "Work items", "");
-    gint64 home   = task_db_list_create(app->db, "Home items", "");
-    gint64 plain  = task_db_task_create(app->db, work, 0, "Typed, not noted");
-    gint64 in_w   = task_db_task_create(app->db, work, 0, "From a meeting note");
-    gint64 in_h   = task_db_task_create(app->db, home, 0, "From a home note");
-    gint64 sub    = task_db_task_create(app->db, work, plain, "A noted subtask");
-    gint64 done   = task_db_task_create(app->db, home, 0, "A finished note item");
-    gint64 gone   = task_db_task_create(app->db, work, 0, "A deleted note item");
-
-    check(!task_view_shown(v, app) && pane_count(app, v) == 0,
-          "action items: hidden while there are none");
-
+    check(task_db_tag_find(app->db, SHARED_DB_ACTION_LIST_NAME) == NULL,
+          "action tag: none while there are no Notes items");
     link_to_note(app, in_w, "Meeting");
-    check(task_view_shown(v, app), "action items: shown once there is one");
-    task_db_task_delete(app->db, in_w);
-    check(!task_view_shown(v, app), "action items: hidden again once it is deleted");
-    char sql[128];
-    snprintf(sql, sizeof sql, "UPDATE tasks SET deleted = 0 WHERE id = %lld", (long long)in_w);
-    sqlite3_exec(shared_db_handle(app->db->shared), sql, NULL, NULL, NULL);
-    check(task_view_shown(v, app), "action items: shown again once it is restored");
-
     link_to_note(app, in_h, "Home");
-    link_to_note(app, sub, "Subtask note");
-    link_to_note(app, done, "Done note");
-    link_to_note(app, gone, "Deleted note");
-    task_db_task_delete(app->db, gone);
-    snprintf(sql, sizeof sql, "UPDATE tasks SET status = %d WHERE id = %lld",
-             SHARED_DB_TASK_STATUS_DONE, (long long)done);
-    sqlite3_exec(shared_db_handle(app->db->shared), sql, NULL, NULL, NULL);
 
-    check(view_has(app, v, in_w) && view_has(app, v, in_h),
-          "action items: Notes-born tasks of two lists are both listed");
-    check(view_has(app, v, sub), "action items: a Notes-born subtask is listed");
-    check(!view_has(app, v, plain), "action items: a task typed in Tasks is not");
-    check(!view_has(app, v, gone), "action items: a deleted one is not");
-    check(view_has(app, v, done), "action items: a Done one is returned to the pane");
+    TaskTag *action = task_db_tag_find(app->db, SHARED_DB_ACTION_LIST_NAME);
+    check(action != NULL && strcmp(action->emoji, SHARED_DB_ACTION_LIST_EMOJI) == 0,
+          "action tag: Notes' items carry it, with Notes' emoji");
+    gchar *names = tag_names_of(app, in_w);
+    check(strcmp(names, SHARED_DB_ACTION_LIST_NAME ",Work items") == 0,
+          "action tag: beside the tag the task already had");
+    g_free(names);
+    if (action == NULL) return;
 
-    gboolean was = task_config_get_bool(TASK_CFG_SHOW_COMPLETED);
-    task_config_set_bool(TASK_CFG_SHOW_COMPLETED, TRUE);
-    size_t with_done = pane_count(app, v);
-    task_config_set_bool(TASK_CFG_SHOW_COMPLETED, FALSE);
-    size_t open_only = pane_count(app, v);
-    task_config_set_bool(TASK_CFG_SHOW_COMPLETED, was);
-    check(with_done == 4 && open_only == 3,
-          "action items: the pane shows the Done one only with show_completed");
+    GPtrArray *tagged = task_db_tasks_tagged(app->db, action->id);
+    gboolean   only   = tagged->len == 2;
+    for (guint i = 0; i < tagged->len; i++) {
+        gint64 id = ((const Task *)g_ptr_array_index(tagged, i))->id;
+        only = only && (id == in_w || id == in_h);
+    }
+    check(only, "action tag: its view lists the Notes-born tasks and nothing else");
+    task_ptr_array_free_tasks(tagged);
 
-    /* Leave none behind for the tests after this one. */
-    const gint64 born[] = { in_w, in_h, sub, done };
-    for (gsize i = 0; i < G_N_ELEMENTS(born); i++) task_db_task_delete(app->db, born[i]);
-    check(!task_view_shown(v, app), "action items: hidden once all are deleted");
+    task_db_task_delete(app->db, in_w);
+    task_db_task_delete(app->db, in_h);
+    check(task_db_tag_get(app->db, action->id) == NULL,
+          "action tag: it goes with the last Notes item");
+    task_tag_free(action);
+    (void)plain;
 }
 
 /*
  * test_note_items — a Notes-born task: named by its note; never purged
- * (nor its parent, nor its list); deleted as an ordinary tombstone with
+ * (nor its parent); deleted as an ordinary tombstone with
  * the link kept, so Notes can unmark the line.
  *
  * Inputs:
@@ -430,10 +384,9 @@ test_action_items_view(TaskApp *app)
 static void
 test_note_items(TaskApp *app)
 {
-    gint64 list  = task_db_list_create(app->db, "Action Items", "");
-    gint64 born  = task_db_task_create(app->db, list, 0, "From a note");
-    gint64 plain = task_db_task_create(app->db, list, 0, "Typed in Tasks");
-    gint64 sub   = task_db_task_create(app->db, list, plain, "A subtask");
+    gint64 born  = task_db_task_create(app->db, 0, "From a note", "Inbox");
+    gint64 plain = task_db_task_create(app->db, 0, "Typed in Tasks", "Inbox");
+    gint64 sub   = task_db_task_create(app->db, plain, "A subtask", NULL);
     char   sql[256];
 
     link_to_note(app, born, "Weekly sync");
@@ -446,9 +399,6 @@ test_note_items(TaskApp *app)
 
     check(!task_db_task_purge(app->db, born) && task_db_task_get(app->db, born) != NULL,
           "notes: a Notes-born task is never purged");
-    check(!task_db_list_purge(app->db, list) && task_db_list_get(app->db, list) != NULL &&
-          row_int(app, "SELECT count(*) FROM tasks WHERE title = 'Typed in Tasks'") == 1,
-          "notes: nor is its list, and nothing in it is removed");
 
     /* A note-linked SUBTASK protects its parent from a purge as well. */
     link_to_note(app, sub, "Another note");
@@ -469,12 +419,10 @@ test_note_items(TaskApp *app)
     task_free(gone);
 
     /* A plain task purges as before. */
-    gint64 other = task_db_list_create(app->db, "Plain", "");
-    gint64 temp  = task_db_task_create(app->db, other, 0, "Throwaway");
-    check(task_db_task_purge(app->db, temp) && task_db_task_get(app->db, temp) == NULL,
-          "notes: a task not born in Notes is still purged");
-    check(task_db_list_purge(app->db, other) && task_db_list_get(app->db, other) == NULL,
-          "notes: as is a list holding none");
+    gint64 temp  = task_db_task_create(app->db, 0, "Throwaway", "Plain");
+    check(task_db_task_purge(app->db, temp) && task_db_task_get(app->db, temp) == NULL &&
+          task_db_tag_find(app->db, "Plain") == NULL,
+          "notes: a task not born in Notes is still purged, its last tag with it");
 
     shared_db_findings found;
     shared_db_check(app->db->shared, 1, &found, NULL);
@@ -519,11 +467,12 @@ task_column(TaskApp *app, gint64 id, const char *column)
 }
 
 /*
- * test_tombstones — deleting a task, a list's completed tasks or a list
- * tombstones each task with its live subtasks; a subtask already deleted
- * keeps its own updated_at (SHARED_DB_SQL_TOMBSTONE_WHERE), so an undo can
- * tell it apart.  A subtask entering Done moves its New parent to In
- * Progress.
+ * test_tombstones — deleting a task or a tag's completed tasks tombstones
+ * each task with its live subtasks; a subtask already deleted keeps its
+ * own updated_at (SHARED_DB_SQL_TOMBSTONE_WHERE), so an undo can tell it
+ * apart.  A subtask entering Done moves its New parent to In Progress.
+ * A subtask is born with its parent's tags; a live task's last tag cannot
+ * be taken off, any other can.
  *
  * Inputs:
  *   app — the fixture
@@ -531,13 +480,30 @@ task_column(TaskApp *app, gint64 id, const char *column)
 static void
 test_tombstones(TaskApp *app)
 {
-    gint64 list = task_db_list_create(app->db, "Tombs", "");
-    gint64 done = task_db_task_create(app->db, list, 0, "Done parent");
-    gint64 kid  = task_db_task_create(app->db, list, done, "Live child");
-    gint64 old  = task_db_task_create(app->db, list, done, "Deleted child");
-    gint64 open = task_db_task_create(app->db, list, 0, "Open parent");
-    gint64 sub  = task_db_task_create(app->db, list, open, "Open child");
+    gint64 done = task_db_task_create(app->db, 0, "Done parent", "Tombs");
+    gint64 kid  = task_db_task_create(app->db, done, "Live child", NULL);
+    gint64 old  = task_db_task_create(app->db, done, "Deleted child", "Extra");
+    gint64 open = task_db_task_create(app->db, 0, "Open parent", "Tombs");
+    gint64 sub  = task_db_task_create(app->db, open, "Open child", NULL);
     char   sql[160];
+
+    gchar *names = tag_names_of(app, kid);
+    check(strcmp(names, "Tombs") == 0, "tags: a subtask is born with its parent's tags");
+    g_free(names);
+    names = tag_names_of(app, old);
+    check(strcmp(names, "Extra,Tombs") == 0, "tags: ... and the one it was given");
+    g_free(names);
+    TaskTag *tombs = task_db_tag_find(app->db, "Tombs");
+    TaskTag *extra = task_db_tag_find(app->db, "Extra");
+    check(task_db_task_tag_remove(app->db, sub, tombs->id) == 0,
+          "tags: a live task's last tag cannot be taken off");
+    names = tag_names_of(app, sub);
+    check(strcmp(names, "Tombs") == 0, "tags: ... and it keeps it");
+    g_free(names);
+    check(task_db_task_tag_remove(app->db, old, tombs->id) == 1 &&
+          task_db_task_tag_remove(app->db, old, extra->id) == 0,
+          "tags: another can, then not the one left");
+    task_tag_free(extra);
 
     snprintf(sql, sizeof sql, "UPDATE tasks SET deleted = 1, updated_at = 1 WHERE id = %lld",
              (long long)old);
@@ -547,8 +513,9 @@ test_tombstones(TaskApp *app)
           "tombstone: (a subtask entering Done starts its New parent)");
     task_db_task_set_status(app->db, done, TASK_STATUS_DONE);
 
-    check(task_db_tasks_delete_done(app->db, list) == 1,
-          "tombstone: deleting done tasks counts the top-level ones");
+    check(task_db_tasks_delete_done(app->db, tombs->id) == 1,
+          "tombstone: deleting a tag's done tasks counts the top-level ones");
+    task_tag_free(tombs);
     check(task_column(app, done, "deleted") == 1 &&
           task_column(app, kid, "deleted") == 1,
           "tombstone: ... and takes their live subtasks");
@@ -561,16 +528,6 @@ test_tombstones(TaskApp *app)
           task_column(app, open, "deleted") == 1 &&
           task_column(app, sub, "deleted") == 1,
           "tombstone: deleting a task takes its subtasks");
-
-    gint64 left = task_db_task_create(app->db, list, 0, "Left");
-    gint64 dead = task_db_task_create(app->db, list, 0, "Dead");
-    snprintf(sql, sizeof sql, "UPDATE tasks SET deleted = 1, updated_at = 1 WHERE id = %lld",
-             (long long)dead);
-    other_exec(app, sql);
-    snprintf(sql, sizeof sql, "SELECT deleted FROM lists WHERE id = %lld", (long long)list);
-    check(task_db_list_delete(app->db, list) && row_int(app, sql) == 1 &&
-          task_column(app, left, "deleted") == 1 && task_column(app, dead, "updated_at") == 1,
-          "tombstone: deleting a list takes its live tasks; a deleted one keeps its stamp");
 }
 
 /* The commit the wal hook makes once, on another connection, the moment
@@ -646,19 +603,19 @@ test_refresh_rev(TaskApp *app)
           "refresh: a change to Tasks' data refreshes");
     check(task_app_check_outside(app) == 0, "refresh: ... once");
 
-    task_db_task_set_pinned(app->db, id, TRUE);
-    check(task_app_check_outside(app) == 0, "refresh: the app's own write does not refresh");
     task_db_task_set_priority(app->db, id, TRUE);
+    check(task_app_check_outside(app) == 0, "refresh: the app's own write does not refresh");
+    task_db_task_set_priority(app->db, id, FALSE);
     other_exec(app, "UPDATE notes SET title = 'N2' WHERE title = 'N'");
     check(task_app_check_outside(app) == TASK_DB_CHANGED_NOTES,
           "refresh: ... nor does a later Notes-only change after it");
 
     other_exec(app, sql);                              /* outside, then own */
-    task_db_task_set_pinned(app->db, id, FALSE);
+    task_db_task_set_priority(app->db, id, TRUE);
     check(task_app_check_outside(app) & TASK_DB_CHANGED_TASKS,
           "refresh: an outside change made just before the app's own write still refreshes");
 
-    task_db_task_set_pinned(app->db, id, TRUE);        /* own, then outside */
+    task_db_task_set_priority(app->db, id, FALSE);     /* own, then outside */
     other_exec(app, "UPDATE tasks SET title = 'After' WHERE title = 'Elsewhere'");
     check(task_app_check_outside(app) == TASK_DB_CHANGED_TASKS,
           "refresh: an outside change made just after the app's own write refreshes");
@@ -668,7 +625,7 @@ test_refresh_rev(TaskApp *app)
     snprintf(race_sql, sizeof race_sql,
              "UPDATE tasks SET title = 'Raced' WHERE id = %lld", (long long)id);
     sqlite3_wal_hook(shared_db_handle(app->db->shared), commit_right_after, app);
-    task_db_task_set_pinned(app->db, id, FALSE);
+    task_db_task_set_priority(app->db, id, TRUE);
     Task *raced = task_db_task_get(app->db, id);
     check(raced != NULL && strcmp(raced->title, "Raced") == 0,
           "refresh: (another commit landed right after the app's own)");
@@ -724,10 +681,8 @@ static void
 test_busy(TaskApp *app, const char *self)
 {
     gint64 id     = new_task(app, "Busy");
-    Task  *parent = task_db_task_get(app->db, id);
-    gint64 child  = task_db_task_create(app->db, parent->list_id, id, "Busy child");
+    gint64 child  = task_db_task_create(app->db, id, "Busy child", NULL);
     int    out[2];
-    task_free(parent);
     pid_t  pid  = 0;
     char   secs[8];
 
@@ -747,8 +702,8 @@ test_busy(TaskApp *app, const char *self)
     close(out[0]);
 
     time_t   started = time(NULL);
-    gboolean pinned  = task_db_task_set_pinned(app->db, id, TRUE);
-    check(!pinned && time(NULL) - started >= SHARED_DB_BUSY_TIMEOUT_MS / 1000 - 1,
+    gboolean flagged = task_db_task_set_priority(app->db, id, TRUE);
+    check(!flagged && time(NULL) - started >= SHARED_DB_BUSY_TIMEOUT_MS / 1000 - 1,
           "busy: a toggle's write fails after the busy timeout, and says so");
 
     started = time(NULL);
@@ -776,7 +731,7 @@ test_busy(TaskApp *app, const char *self)
 
     Task *stored = task_db_task_get(app->db, id);
     Task *kid = task_db_task_get(app->db, child);
-    check(stored != NULL && !stored->pinned && strcmp(stored->title, "Busy") == 0 &&
+    check(stored != NULL && !stored->priority && strcmp(stored->title, "Busy") == 0 &&
           stored->status == TASK_STATUS_NEW && kid != NULL && kid->status == TASK_STATUS_NEW,
           "busy: nothing was written meanwhile (neither the subtask nor its parent)");
     task_free(stored);
@@ -785,12 +740,12 @@ test_busy(TaskApp *app, const char *self)
     check(none->len == 0, "busy: ... not even part of the calendar list");
     g_ptr_array_free(none, TRUE);
 
-    check(task_db_task_set_pinned(app->db, id, TRUE) &&
+    check(task_db_task_set_priority(app->db, id, TRUE) &&
           task_db_task_update(app->db, before, &after) == 1 &&
           gcal_store_set_calendars(app->db, cals),
           "busy: the same writes succeed once the file is free");
     stored = task_db_task_get(app->db, id);
-    check(stored != NULL && stored->pinned && strcmp(stored->title, "Typed while busy") == 0,
+    check(stored != NULL && stored->priority && strcmp(stored->title, "Typed while busy") == 0,
           "busy: ... and are stored");
     task_free(stored);
     task_free(before);
@@ -817,7 +772,7 @@ main(int argc, char **argv)
 
     test_no_lost_update(app);
     test_stamps(app);
-    test_action_items_view(app);
+    test_action_tag(app);
     test_note_items(app);
     test_note_context(app);
     test_refresh_rev(app);

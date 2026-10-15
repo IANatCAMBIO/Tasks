@@ -553,7 +553,6 @@ becomeFirstResponder
 @property (nonatomic, strong) NSTokenField  *tag_field;         /* one token per tag      */
 @property (nonatomic, strong) NSTextField   *due_field;
 @property (nonatomic, strong) NSDatePicker  *due_time_field;
-@property (nonatomic, strong) NSButton      *favorite_check;
 @property (nonatomic, strong) NSButton      *priority_check;
 @property (nonatomic, strong) NSTextField   *completed_label;
 @property (nonatomic, strong) NSScrollView  *notes_scroll;
@@ -816,7 +815,7 @@ build_fields:(NSStackView *)form
     self.tag_field.placeholderString = @"Add a tag";
     self.tag_field.toolTip           =
         @"Type to find a tag; pick one from the list, or press Return to make a new one. "
-        @"Each tag has its own button in the lists bar.";
+        @"Every task keeps at least one tag. Each tag has its own row in the sidebar.";
     self.tag_field.delegate          = self;
     self.tag_field.completionDelay   = 0;
     self.tag_field.cell.wraps        = NO;
@@ -824,16 +823,13 @@ build_fields:(NSStackView *)form
     [self.tag_field setContentHuggingPriority:NSLayoutPriorityDefaultLow - 1
                                forOrientation:NSLayoutConstraintOrientationHorizontal];
 
-    /* The tags at the left, taking the spare width; the flags right-aligned
+    /* The tags at the left, taking the spare width; the flag right-aligned
      * under the time picker. */
-    self.favorite_check = [NSButton checkboxWithTitle:@"Favorite" target:self
-                                               action:@selector(flag_changed:)];
-    self.favorite_check.font = [NSFont systemFontOfSize:tasks_look_row_small_font];
     self.priority_check = [NSButton checkboxWithTitle:@"High Priority" target:self
                                                action:@selector(flag_changed:)];
     self.priority_check.font = [NSFont systemFontOfSize:tasks_look_row_small_font];
     NSView *flags_row = row_stack(@[form_label(@"Tags:"), self.tag_field,
-                                    self.favorite_check, self.priority_check]);
+                                    self.priority_check]);
     [form setCustomSpacing:tasks_look_form_spacing * 1.2 afterView:status_row];
     add_row(form, flags_row);
 
@@ -1151,7 +1147,6 @@ show_task:(const Task *)task
     [self show_source];
     [self show_status:task->status];
     [self show_tags];
-    self.favorite_check.state = task->pinned ? NSControlStateValueOn : NSControlStateValueOff;
     self.priority_check.state = task->priority ? NSControlStateValueOn : NSControlStateValueOff;
     [self show_date:task->due in:self.due_field];
     {
@@ -1272,7 +1267,9 @@ show_tags
 /*
  * drop_removed_tags — take off the task every tag that is no longer a
  * token in the field (the user deleted it).  Text still being typed never
- * names a stored tag that is not also a token, so it removes nothing.
+ * names a stored tag that is not also a token, so it removes nothing.  A
+ * task keeps at least one tag: deleting the last token is refused, said
+ * so, and the token comes back (on the next pass: the field is mid-edit).
  */
 - (void)
 drop_removed_tags
@@ -1288,8 +1285,18 @@ drop_removed_tags
         const TaskTag *tag = g_ptr_array_index(tags, i);
         if (has_name(tokens, tasks_string(tag->name))) continue;
 
-        if (task_db_task_tag_remove(self.app->db, self.task_id, tag->id)) {
+        gint removed = task_db_task_tag_remove(self.app->db, self.task_id, tag->id);
+        if (removed > 0) {
             changed = YES;
+        } else if (removed == 0) {
+            task_app_status(self.app, "A task keeps at least one tag \xe2\x80\x94 "
+                                      "add another before removing \xe2\x80\x9c%s\xe2\x80\x9d",
+                            tag->name);
+            NSArray *restored = [tokens arrayByAddingObject:tasks_string(tag->name)];
+            __weak TasksEditorWindow *ws = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                ws.tag_field.objectValue = restored;
+            });
         } else {
             gchar *what = g_strdup_printf("Removing the tag \xe2\x80\x9c%s\xe2\x80\x9d", tag->name);
             task_app_write_failed(self.app, what);
@@ -1560,7 +1567,6 @@ save_now
     edited.notes    = (char *)self.notes_view.string.UTF8String;
     edited.status   = status >= 0 && status < TASK_STATUS_N_VALUES ? (TaskStatus)status
                                                                    : TASK_STATUS_NEW;
-    edited.pinned   = self.favorite_check.state == NSControlStateValueOn;
     edited.priority = self.priority_check.state == NSControlStateValueOn;
     task_edit_apply(&form, &edited);
     edited.recur_next = self.recur_next;
@@ -2156,8 +2162,7 @@ add_subtask:(id)sender
 
     /* End an edit in progress first: the new row rebuilds the table. */
     [self.window makeFirstResponder:nil];
-    int64_t subtask_id = task_db_task_create(self.app->db, task->list_id, self.task_id,
-                                             "New subtask");
+    int64_t subtask_id = task_db_task_create(self.app->db, self.task_id, "New subtask", NULL);
     task_free(task);
     if (subtask_id == 0) {
         task_app_status(self.app, "Could not create the subtask");

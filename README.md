@@ -1,6 +1,6 @@
 # Tasks
 
-A macOS task manager — lists, tall task rows, a Kanban board, subtasks, due
+A macOS task manager — tags, tall task rows, a Kanban board, subtasks, due
 dates, recurring tasks — with a native AppKit interface.  Its tasks live in
 the one SQLite file it shares with the Notes app: an action item written in
 a note is an ordinary task here, and an edit made in either app appears in
@@ -18,16 +18,17 @@ app; the AppKit app is now the project's main line.
 runs under the Cocoa run loop; parts of the AppKit interface are still
 skeletons with placeholder panes.  What works today:
 
-- the main window: toolbar, search field, sidebar (flat list of views and
-  lists), task list (tall rows, read-only), status bar, the standard menus;
+- the main window: toolbar, search field, sidebar (the views, then every
+  tag), the Favorites bar, task list (tall rows), status bar, the standard
+  menus;
 - task commands from the menus, the toolbar and the context menu: new,
-  delete, mark complete, favourite, high priority, move to list, clear
-  completed; show/hide completed; show/hide sidebar; list/board toggle;
+  delete, mark complete, high priority, add tag, clear completed;
+  show/hide completed; show/hide sidebar and Favorites bar; list/board
+  toggle;
 - recurring tasks roll forward while the app runs.
 
 Not yet ported (placeholders): the Kanban board, the task editor, Settings,
-list groups and list editing in the sidebar, sorting and manual order in the
-list, Compact Controls.  The plan and the interfaces the
+sorting and manual order in the list, Compact Controls.  The plan and the interfaces the
 UI is being built against are in [porting/INTERFACES.md](porting/INTERFACES.md).
 
 The code is plain C for the core (with GLib, to be removed in a later phase)
@@ -125,28 +126,40 @@ tasks appear within a second, keeping the selection and the scroll; a change
 to notes alone refreshes only the "From note: …" lines of open editors.  An edit never overwrites a field you did
 not change, even one you were in the middle of editing.  When a change cannot
 be saved because another app held the file for too long, the status bar says
-so and the lists show what is really stored; an editor keeps the change,
+so and the panes show what is really stored; an editor keeps the change,
 saves it again with the next change or on closing, and will not close while
 it cannot.
 
-The built-in views come first in the bar: Favorites (only while something
-is starred), All Tasks, 3-Day Forecast and Action Items.  Action Items lists
-every live task written in a note, whichever list it is filed in now, and is
-shown only while there is one: it appears by itself when Notes writes the
-first and goes when the last is deleted.  Completed items follow
-show/hide completed, as in every view.
+**Tags are how tasks are organised**; there are no lists.  Every task has
+at least one tag, and any number.  The sidebar at the left shows three
+views — **Favorites** (every task with a favorite tag), **All Tasks** and
+the **3-Day Forecast** — then every tag, by name.  Selecting a tag shows
+every task carrying it, the way a list would (sorting, Kanban, search, its
+own manual order); each row says what it is tagged.
 
-**Tags.**  The editor's **Tags** field, below Status, gives a task any
-number of tags.  Typing offers the tags that already exist (pick one with
-the arrow keys or a click); Return makes what you typed a tag, a new one
-when no tag has that name.  Names ignore case: "work" typed is the existing
-"Work".  Delete a tag's token to take it off the task.  Every tag gets a
-🏷️ button after the lists in the bar: its proto-list shows every task
-carrying the tag, from whichever list, the way a list shows its tasks
-(sorting, Kanban, search, its own manual order).  New Task there files the
-task in the default list and gives it the tag.  A tag exists only while a
-task carries it: when the last task loses it — untagged or deleted — the
-tag and its button go.
+- The editor's **Tags** field gives a task its tags.  Typing offers the
+  tags that already exist (pick one with the arrow keys or a click);
+  Return makes what you typed a tag, a new one when no tag has that name.
+  Names ignore case: "work" typed is the existing "Work".  Delete a tag's
+  token to take it off — except the last: a task keeps at least one.
+- Select tasks and right-click, **Add Tag ▸** gives them all a tag.
+- Right-click a tag in the sidebar, **Edit Tag…**: give it an emoji, and
+  make it a favorite or not.  A tag's name never changes.
+- **Favorite** tags have a button each in the **Favorites bar** above the
+  task pane (View → Hide/Show Favorites Bar).  The sidebar toggles with the
+  button at the far left of the toolbar (⌃⌘S).
+- A subtask is born with its parent's tags.  New Task gives the selected
+  tag, or with a view selected the **default tag** chosen in Settings; Quick
+  Task always gives the default tag.
+- A tag exists only while a task carries it: when the last one loses it —
+  untagged or deleted — the tag goes.
+- A task Notes writes carries the tag **❗ Action Items**.
+
+Lists are gone.  Opening an older database for the first time (schema 101
+or before) turns each list into a tag on its tasks — its emoji kept — and
+each list group into a tag on the tasks of its lists; an empty list leaves
+nothing.  The old per-task favourite star is dropped: favorites are tags
+now.
 
 A task written as an action item in a note shows "From note: …" in its
 editor.  Its title, completion and due date stay in step with the note's
@@ -154,7 +167,7 @@ line; deleting it here makes Notes drop the item mark from the line.
 Settings → Appearance → **Show the note's context before Notes action
 items' titles** (on by default) shows the name of the note's folder before
 such an item's title wherever tasks are listed — the list, the Kanban, the
-3-Day Forecast, Action Items, the day planner, reminders — and the search matches it: an
+3-Day Forecast, any tag, the day planner, reminders — and the search matches it: an
 item in a note in "Captain's Log" reads "Captain's Log - lock down my diet
 RE keto".  It is display only: the stored title, the note's line, the
 editor's title field and Google Calendar keep the plain title.  A title that
@@ -198,7 +211,7 @@ written by the app; comments are not preserved), apart from the backup
 settings, which live in the shared database so that Notes follows them too.
 The Settings window (⌘,) holds the appearance options (bold titles, Kanban
 shadows, business-day forecast, the note-context title prefix), New Tasks
-(the default list, and whether Quick Task's ⌃⌥⌘T works from any app),
+(the default tag, and whether Quick Task's ⌃⌥⌘T works from any app),
 the database's health
 and fingerprint, the backups, notifications and Google Calendar; the View
 menu holds the rest.  Every key and its default is listed in
@@ -208,9 +221,8 @@ menu holds the rest.  Every key and its default is listed in
 
 | Shortcut | Action |
 |---|---|
-| ⌘N | New Task (in the selected list; with a group, a view or a tag selected, in the default list — given the tag, for a tag; disabled in Action Items, which only Notes fills) |
-| ⌃⌥⌘T | Quick Task — a task in the default list whatever is selected, its editor in the lower-right corner of the screen; works from any app while Tasks is running |
-| ⇧⌘N | New List… |
+| ⌘N | New Task (with the selected tag; with a view selected, the default tag) |
+| ⌃⌥⌘T | Quick Task — a task with the default tag whatever is selected, its editor in the lower-right corner of the screen; works from any app while Tasks is running |
 | ⌘I | Info… — open the task editor |
 | ⌘⌫ | Delete the selected task(s) |
 | ⌘F | Find — search the selected view |

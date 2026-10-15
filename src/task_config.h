@@ -44,10 +44,11 @@
                                                                * context (task_display_title) */
 
 /* New tasks (Settings window) */
-#define TASK_CFG_DEFAULT_LIST        "default_list_id"         /* int list id; none = no default.
-                                                               * New Task uses it when no list
-                                                               * is selected, Quick Task always
-                                                               * (task_ops_default_list) */
+#define TASK_CFG_DEFAULT_TAG         "default_tag"             /* string tag name; none = no
+                                                               * default.  New Task gives it
+                                                               * when no tag is selected,
+                                                               * Quick Task always
+                                                               * (task_ops_default_tag) */
 #define TASK_CFG_QUICK_TASK_HOTKEY   "quick_task_hotkey"       /* bool, 1: Quick Task's shortcut
                                                                * works from any app (hotkey.h) */
 
@@ -55,7 +56,8 @@
 #define TASK_CFG_SHOW_COMPLETED      "show_completed"        /* bool, 1 */
 #define TASK_CFG_KANBAN_VIEW         "kanban_view"           /* bool, 0 */
 #define TASK_CFG_COMPACT             "compact_layout"        /* bool, 0 */
-#define TASK_CFG_SIDEBAR_VISIBLE     "sidebar_visible"       /* bool, 1 */
+#define TASK_CFG_SIDEBAR_VISIBLE     "sidebar_visible"       /* bool, 1: the tag sidebar */
+#define TASK_CFG_FAVORITES_BAR_VISIBLE "favorites_bar_visible" /* bool, 1 */
 #define TASK_CFG_SIDEBAR_WIDTH       "sidebar_width"         /* int points; none = fit content */
 #define TASK_CFG_WIN_X               "win_x"                 /* int; none = centred */
 #define TASK_CFG_WIN_Y               "win_y"                 /* int; none = centred */

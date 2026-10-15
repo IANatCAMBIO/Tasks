@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The most lines one row can have: title, "in <list>", notes, attachments,
+/* The most lines one row can have: title, tags, notes, attachments,
  * the subtask lines and "+N more". */
 #define ROW_MAX_LINES (5 + TASK_ROW_MAX_SUBTASKS)
 
@@ -190,37 +190,41 @@ notes_preview(const gchar *notes)
 /*
  * lines_build — fill a row's lines from its task.
  *
- * The prefix glyphs stack outwards from the title: a star for a favourite,
- * then a siren for high priority, then an arrow for a subtask shown in a
- * virtual view.
+ * The prefix glyphs stack outwards from the title: a siren for high
+ * priority, then an arrow for a subtask shown on a row of its own.
  *
  * Inputs:
  *   row       — the row being built (lines allocated, line_count 0)
  *   t         — the task
- *   list_name — the owning list's name, or NULL when the view IS that list
+ *   tags      — the task's tags (GPtrArray of TaskTag*), or NULL for none
  *   att_count — the task's attachment count
  *   subs      — the task's visible subtasks (GPtrArray of Task*), or NULL
  *   ctx       — the refresh's context: the bold_task_titles setting, and
  *               the note_context_titles one for the subtask lines
  */
 static void
-lines_build(task_row_t *row, const Task *t, const gchar *list_name,
+lines_build(task_row_t *row, const Task *t, const GPtrArray *tags,
             gint att_count, GPtrArray *subs, const TaskRowCtx *ctx)
 {
     task_row_line_t *title = line_add(row, task_row_line_title,
-        text_printf("%s%s%s",
+        text_printf("%s%s",
                     t->parent_id != 0 ? "\xe2\x86\xb3 " : "",
-                    t->priority ? "\xf0\x9f\x9a\xa8  " : "",
-                    t->pinned ? "\xe2\xad\x90\xef\xb8\x8f  " : ""),
+                    t->priority ? "\xf0\x9f\x9a\xa8  " : ""),
         text_printf("%s", row->title), TASK_ROW_ALPHA_FULL);
     title->bold   = ctx->bold;
     title->strike = t->status == TASK_STATUS_DONE;
 
-    if (list_name != NULL) {
-        char *name = text_valid(list_name);
-        line_add(row, task_row_line_list, text_printf("%s", ""),
-                 text_printf("in %s", name), TASK_ROW_ALPHA_LIST)->italic = true;
-        free(name);
+    if (tags != NULL && tags->len > 0) {
+        GString *joined = g_string_new("");
+        for (guint i = 0; i < tags->len; i++) {
+            gchar *label = task_tag_label(g_ptr_array_index(tags, i));
+            if (i > 0) g_string_append(joined, TASK_ROW_TAG_SEPARATOR);
+            g_string_append(joined, label);
+            g_free(label);
+        }
+        line_add(row, task_row_line_tags, text_printf("%s", ""),
+                 text_valid(joined->str), TASK_ROW_ALPHA_TAGS)->italic = true;
+        g_string_free(joined, TRUE);
     }
 
     char *preview = notes_preview(t->notes);
@@ -259,12 +263,12 @@ lines_build(task_row_t *row, const Task *t, const gchar *list_name,
 
 /*
  * task_row_ctx_init — gather the shared lookups of one refresh.  Subtasks
- * come as ONE query grouped in memory, not one query per top-level row;
- * list names are loaded only for the virtual views.
+ * come as ONE query grouped in memory, not one query per top-level row,
+ * and so do the tags.
  * Inputs are documented in task_rows.h.
  */
 void
-task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx, gboolean virtual_view)
+task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx)
 {
     ctx->att_counts = task_db_attachment_counts(app->db);
     ctx->all_subs   = task_db_subtasks_all_visible(app->db);
@@ -282,20 +286,7 @@ task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx, gboolean virtual_view)
         }
         g_ptr_array_add(bucket, s);
     }
-    ctx->list_names = NULL;
-    if (virtual_view) {
-        ctx->list_names = g_hash_table_new_full(g_direct_hash,
-                                                g_direct_equal,
-                                                NULL, g_free);
-        GPtrArray *lists = task_db_lists(app->db, FALSE);
-        for (guint i = 0; i < lists->len; i++) {
-            TaskList *l = g_ptr_array_index(lists, i);
-            g_hash_table_insert(ctx->list_names,
-                                GINT_TO_POINTER(l->id),
-                                g_strdup(l->name));
-        }
-        task_ptr_array_free_lists(lists);
-    }
+    ctx->tags_by_task = task_db_tags_by_task(app->db);
     ctx->bold      = task_config_get_bool(TASK_CFG_BOLD_TITLES);
     ctx->show_done = task_config_get_bool(TASK_CFG_SHOW_COMPLETED);
     ctx->note_context = task_config_get_bool(TASK_CFG_NOTE_CONTEXT);
@@ -311,7 +302,7 @@ task_row_ctx_clear(TaskRowCtx *ctx)
     g_hash_table_destroy(ctx->att_counts);
     g_hash_table_destroy(ctx->subs_by_parent);
     task_ptr_array_free_tasks(ctx->all_subs);
-    if (ctx->list_names != NULL) g_hash_table_destroy(ctx->list_names);
+    g_hash_table_destroy(ctx->tags_by_task);
 }
 
 /*
@@ -343,12 +334,10 @@ task_row_describe(const Task *t, const TaskRowCtx *ctx)
     row->title  = text_valid(*shown != '\0' ? shown : UNTITLED_TASK);
     g_free(shown);
 
-    const gchar *list_name = ctx->list_names != NULL
-        ? g_hash_table_lookup(ctx->list_names, GINT_TO_POINTER(t->list_id))
-        : NULL;
+    const GPtrArray *tags = g_hash_table_lookup(ctx->tags_by_task, GINT_TO_POINTER(t->id));
     gint att_count = GPOINTER_TO_INT(
         g_hash_table_lookup(ctx->att_counts, GINT_TO_POINTER(t->id)));
-    lines_build(row, t, list_name, att_count, task_row_ctx_subtasks(ctx, t),
+    lines_build(row, t, tags, att_count, task_row_ctx_subtasks(ctx, t),
                 ctx);
 
     /* The due cell carries its time of day only when that is not the 17:00

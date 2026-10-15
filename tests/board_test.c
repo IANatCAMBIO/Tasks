@@ -136,7 +136,7 @@ on_status(TaskApp *app, const gchar *message, gpointer data)
 static void
 test_build(void)
 {
-    task_sel_t       sel        = { task_sel_list, 900 };
+    task_sel_t       sel        = { task_sel_tag, 900 };
     const int64_t    ids[]      = { 1, 2, 3, 4, 5, 6, 7 };
     const TaskStatus statuses[] = {
         TASK_STATUS_NEW, TASK_STATUS_DONE, TASK_STATUS_IN_PROGRESS, TASK_STATUS_NEW,
@@ -180,7 +180,7 @@ test_build(void)
     task_board_free(board);
 
     /* The order belongs to the selection it was saved for. */
-    task_sel_t other = { task_sel_list, 901 };
+    task_sel_t other = { task_sel_tag, 901 };
     board = task_board_build(other, &rows, SIZE_MAX);
     check(lane_is(board, TASK_STATUS_NEW, (int64_t[]){ 1, 4, 6 }, 3),
           "build: another selection does not see that order");
@@ -195,7 +195,7 @@ test_build(void)
 static void
 test_find(void)
 {
-    task_sel_t       sel        = { task_sel_list, 900 };
+    task_sel_t       sel        = { task_sel_tag, 900 };
     const int64_t    ids[]      = { 1, 2, 3, 4 };
     const TaskStatus statuses[] = {
         TASK_STATUS_NEW, TASK_STATUS_DONE, TASK_STATUS_NEW, TASK_STATUS_DONE,
@@ -243,7 +243,7 @@ test_slot(void)
 static void
 test_reorder(void)
 {
-    task_sel_t       sel        = { task_sel_list, 900 };
+    task_sel_t       sel        = { task_sel_tag, 900 };
     const int64_t    ids[]      = { A, B, C, D, E, F };
     const TaskStatus statuses[] = {
         TASK_STATUS_NEW, TASK_STATUS_NEW, TASK_STATUS_NEW,
@@ -436,17 +436,18 @@ saved_is(const char *key, const char *want)
 static void
 test_drop(TaskApp *app)
 {
-    int64_t    list = task_db_list_create(app->db, "Board", NULL);
-    task_sel_t sel  = { task_sel_list, list };
     char       key[64];
     char       want[128];
     guint      listener = task_app_listen_status(app, on_status, NULL);
 
-    snprintf(key, sizeof key, "kanban_order_list_%lld", (long long)list);
-    task_db_task_create(app->db, list, 0, "One");
-    task_db_task_create(app->db, list, 0, "Two");
-    task_db_task_create(app->db, list, 0, "Three");
-    task_db_task_create(app->db, list, 0, "");
+    task_db_task_create(app->db, 0, "One", "Board");
+    task_db_task_create(app->db, 0, "Two", "Board");
+    task_db_task_create(app->db, 0, "Three", "Board");
+    task_db_task_create(app->db, 0, "", "Board");
+    TaskTag   *tag = task_db_tag_find(app->db, "Board");
+    task_sel_t sel = { task_sel_tag, tag->id };
+    snprintf(key, sizeof key, "kanban_order_tag_%lld", (long long)tag->id);
+    task_tag_free(tag);
 
     /* The four cards as the board shows them, top to bottom. */
     task_pane_content_t *content;

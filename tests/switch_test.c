@@ -51,12 +51,12 @@ make_database(const char *path)
         fprintf(stderr, "cannot create %s\n", path);
         exit(2);
     }
-    task_db_list_create(db, "Elsewhere", "");
+    task_db_task_create(db, 0, "Elsewhere", "probe");
     task_db_close(db);
 }
 
 /*
- * list_count — how many lists the app's open database has.
+ * tag_count — how many tags the app's open database has.
  *
  * Inputs:
  *   app — the context
@@ -65,12 +65,12 @@ make_database(const char *path)
  *   the count.
  */
 static int
-list_count(TaskApp *app)
+tag_count(TaskApp *app)
 {
-    gint tasks = 0, lists = 0;
+    gint tasks = 0, tags = 0;
 
-    task_db_totals(app->db, &tasks, &lists);
-    return lists;
+    task_db_totals(app->db, &tasks, &tags);
+    return tags;
 }
 
 /*
@@ -157,7 +157,7 @@ test_refusals(TaskApp *app, const char *scratch)
     free(why);
     unsetenv("XDG_DATA_HOME");
 
-    check(list_count(app) == 0, "refusals: the open database still answers");
+    check(tag_count(app) == 0, "refusals: the open database still answers");
 }
 
 /*
@@ -182,7 +182,7 @@ test_switch(TaskApp *app, const char *scratch)
     check(task_switch_check(app, path, &why) == task_switch_can_open && why == NULL,
           "check: a sound database elsewhere can be opened");
     check(task_switch_database(app, path, &why) && why == NULL &&
-          strcmp(shared_db_file(app->db->shared), path) == 0 && list_count(app) == 1,
+          strcmp(shared_db_file(app->db->shared), path) == 0 && tag_count(app) == 1,
           "switch: the app's database is now the one picked");
 
     /* Make Default is offered for a file that is not the default (here
@@ -196,7 +196,7 @@ test_switch(TaskApp *app, const char *scratch)
           "default: the module refuses while CAMBIO_SHARED_DB names the database, saying why");
     free(why);
 
-    check(task_switch_database(app, first, &why) && list_count(app) == 0,
+    check(task_switch_database(app, first, &why) && tag_count(app) == 0,
           "switch: and back again");
 }
 

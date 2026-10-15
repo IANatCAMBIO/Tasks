@@ -132,12 +132,12 @@ test_outside_changes(TaskApp *app)
     check(!task_app_check_outside(app) && calls[4] == before,
           "outside: nothing changed, nothing fired");
 
-    task_db_list_create(app->db, "Own write", "");
+    task_db_task_create(app->db, 0, "Own write", "probe");
     check(!task_app_check_outside(app) && calls[4] == before,
           "outside: the app's own write is not an outside change");
 
     TaskDatabase *other = task_db_open(shared_db_file(app->db->shared), NULL);
-    task_db_list_create(other, "Written elsewhere", "");
+    task_db_task_create(other, 0, "Written elsewhere", "probe");
     check(task_app_check_outside(app) && calls[4] == before + 1,
           "outside: another connection's commit fires the full refresh");
     check(!task_app_check_outside(app) && calls[4] == before + 1,
@@ -150,7 +150,7 @@ test_outside_changes(TaskApp *app)
 
     task_app_watch_start(app);
     check(app->watch_timer != 0, "outside: the watch is armed");
-    task_db_list_create(other, "Seen by the timer", "");
+    task_db_task_create(other, 0, "Seen by the timer", "probe");
     for (int i = 0; i < 40 && calls[4] == before + 1; i++) check_spin(0.05);
     check(calls[4] == before + 2, "outside: the watch finds a change by itself");
     task_app_watch_stop(app);
@@ -203,11 +203,11 @@ test_forecast_span(void)
 }
 
 /*
- * due_task — a task in a list, due at a given local midnight.
+ * due_task — a task with a tag, due at a given local midnight.
  *
  * Inputs:
  *   app   — the context
- *   list  — the list
+ *   tag   — the tag
  *   title — the title
  *   due   — local midnight, or 0 for no date
  *
@@ -215,9 +215,9 @@ test_forecast_span(void)
  *   the task's id.
  */
 static gint64
-due_task(TaskApp *app, gint64 list, const char *title, gint64 due)
+due_task(TaskApp *app, const char *tag, const char *title, gint64 due)
 {
-    gint64 id = task_db_task_create(app->db, list, 0, title);
+    gint64 id = task_db_task_create(app->db, 0, title, tag);
     Task  *t  = task_db_task_get(app->db, id);
     Task   after = *t;
     after.due = due;
@@ -263,7 +263,7 @@ test_forecast_view(TaskApp *app)
     check(task_config_get_bool(TASK_CFG_FORECAST_BUSINESS_DAYS),
           "forecast: business days are counted by default");
 
-    gint64 list = task_db_list_create(app->db, "Forecast", NULL);
+    const char *list = "Forecast";
     gint64 lo, hi;
     task_day_bounds(-30, &lo, &hi);
     gint64 overdue = due_task(app, list, "Long overdue", lo);
@@ -301,8 +301,7 @@ test_forecast_view(TaskApp *app)
 static void
 test_recurrence_timer(TaskApp *app)
 {
-    gint64 list = task_db_list_create(app->db, "Repeats", NULL);
-    gint64 id   = task_db_task_create(app->db, list, 0, "Every minute");
+    gint64 id   = task_db_task_create(app->db, 0, "Every minute", "Repeats");
     gint64 now  = (gint64)time(NULL);
 
     Task *t     = task_db_task_get(app->db, id);

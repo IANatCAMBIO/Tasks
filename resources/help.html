@@ -23,15 +23,14 @@
 <h1>Tasks Help</h1>
 
 <h2>The window</h2>
-<p>The sidebar on the left lists the views (Favorites, All Tasks, 3-Day
-Forecast, Action Items), then your lists and groups of lists, then your
-tags.  Favorites appears only while something is starred, and Action Items
-only while there are items from Notes.  The pane on the right shows
-the tasks of whatever is selected there, as a list or as a Kanban board.
-The bar along the bottom says how many tasks are showing and, for a few
-seconds, what the last action did.</p>
-<p>A new task goes into the selected list, so select a list first: a view
-or a group has no one list to put it in.</p>
+<p>The sidebar on the left lists three views — <b>Favorites</b> (every task
+with a favorite tag), <b>All Tasks</b> and the <b>3-Day Forecast</b> — then
+every tag.  The button at the far left of the toolbar (⌃⌘S) hides and shows
+it.  Above the tasks, the <b>Favorites bar</b> has a button for each favorite
+tag (View &gt; Hide Favorites Bar).  The pane shows the tasks of whatever is
+selected, as a list or as a Kanban board; each task says what it is
+tagged.  The bar along the bottom says how many tasks are showing and, for a
+few seconds, what the last action did.</p>
 
 <h2>Searching</h2>
 <p>The search field narrows the selected view; it does not search the whole
@@ -52,14 +51,12 @@ would lose their places.</p>
 <p>A line marked as an action item in a note is a task here too.  Its
 editor says which note it came from, and its title, completion and due date
 stay in step with the line in the note.</p>
-<p>The <b>Action Items</b> view, after the 3-Day Forecast, lists every task
-that came from a note, whichever list you have since moved it to.  It is
-shown only while there is at least one, and appears by itself when Notes
-writes the first.</p>
+<p>Every task that came from a note carries the tag <b>❗ Action
+Items</b>, beside any others you give it.</p>
 <p>Settings &gt; Appearance &gt; <b>Show the note’s context before Notes
 action items’ titles</b> shows the name of the folder the note is in before
 the item's title, wherever the task is listed: the list, the Kanban board,
-the 3-Day Forecast, Action Items, the day planner and reminders.  An item written in a
+the 3-Day Forecast, any tag, the day planner and reminders.  An item written in a
 note in the folder “Captain’s Log” then reads “Captain’s Log - lock down my
 diet RE keto”.  This only changes what is shown: the title you edit, the
 line in the note and what goes to Google Calendar stay as they are.  A
@@ -68,26 +65,25 @@ as it is, and an item from a note at the top level (not in a folder) has no
 context to show.  The option is on until you turn it off.</p>
 
 <h2>Tags</h2>
-<p>The <b>Tags</b> field in a task's editor, below Status, gives the task
-any number of tags.  As you type, the tags that already exist are offered:
-choose one with the arrow keys or a click.  Press Return to make what you
-typed a tag; if no tag has that name, a new one is created.  Names ignore
-case, so “work” is the same tag as “Work”.  To take a tag off, delete its
-token.</p>
-<p>Each tag has a 🏷️ button after your lists.  It shows every task carrying
-the tag, from whichever list, just as a list shows its tasks.  New Task
-there adds the task to the default list and gives it the tag.  A tag lasts
-only while a task carries it: when the last one loses it, or is deleted,
-the tag and its button go.</p>
+<p>Tasks are organised by tags alone.  Every task has at least one, and can
+have any number.  The <b>Tags</b> field in a task's editor gives it its
+tags.  As you type, the tags that already exist are offered: choose one with
+the arrow keys or a click.  Press Return to make what you typed a tag; if no
+tag has that name, a new one is created.  Names ignore case, so “work” is
+the same tag as “Work”.  To take a tag off, delete its token — a task keeps
+its last one.  A subtask starts with its parent's tags.</p>
+<p>To tag several tasks at once, select them, right-click and choose a tag
+under <b>Add Tag</b>.</p>
+<p>Right-click a tag in the sidebar and choose <b>Edit Tag…</b> to give it
+an emoji, or to put it in the Favorites bar (or take it out).  A tag's name
+does not change.  A tag lasts only while a task carries it: when the last
+one loses it, or is deleted, the tag goes.</p>
 
 <h2>New tasks and Quick Task</h2>
-<p>New Task (⌘N) adds a task to the selected list.  With a group, a tag or
-a view such as All Tasks selected, it goes to the <b>default list</b> (and,
-for a tag, gets that tag), which you
-choose in Settings under New Tasks; with no default list, select a list
-first.  New Task is not offered in Action Items: those come only from
-Notes.</p>
-<p><b>Quick Task</b> (⌃⌥⌘T) always adds its task to the default list,
+<p>New Task (⌘N) gives its task the selected tag.  With a view such as All
+Tasks selected, it gives the <b>default tag</b>, which you choose in
+Settings under New Tasks; with no default tag, select a tag first.</p>
+<p><b>Quick Task</b> (⌃⌥⌘T) always gives its task the default tag,
 whatever is selected, and opens the task's editor in the lower-right corner
 of the screen.  The shortcut works from any app while Tasks is running;
 turn that off in Settings if another app needs the keys.  Cancel (or
@@ -95,10 +91,11 @@ Escape) throws the new task away.</p>
 
 <h2>Compact Controls</h2>
 <p>View &gt; Compact Controls shrinks the window to a small size it
-remembers, hides the sidebar and the toolbar, and floats the New Task and
+remembers, hides the sidebar, the Favorites bar and the toolbar, and floats
+the New Task and
 Delete Task buttons at the bottom-right of the tasks.  It also clears any
 search, since the search field is hidden.  View &gt; Full Controls puts
-the window back as it was, with the sidebar showing.</p>
+the window back as it was, with the sidebar and the Favorites bar showing.</p>
 
 <h2>Opening another database</h2>
 <p>Notes and Tasks keep their data in one shared database file, so a task
@@ -150,7 +147,6 @@ sign-in is kept in the macOS keychain; <b>Sign Out</b> removes it.</p>
 <table>
 <tr><td>⌘N</td><td>New Task</td></tr>
 <tr><td>⌃⌥⌘T</td><td>Quick Task — from any app</td></tr>
-<tr><td>⇧⌘N</td><td>New List…</td></tr>
 <tr><td>⌘I</td><td>Info… — open the selected task</td></tr>
 <tr><td>⌘⌫</td><td>Delete the selected tasks</td></tr>
 <tr><td>⌘F</td><td>Find — search the selected view</td></tr>

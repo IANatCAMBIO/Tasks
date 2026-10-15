@@ -7,14 +7,12 @@
  * lives all belong to the shared module (shared_db.h); task_db_open is a
  * connection to it, and this module is Tasks' queries over Tasks' tables:
  *
- *   list_groups  id, name, position              (local-only)
- *   lists        id, name, emoji, position, group_id (FK → list_groups.id;
- *                NULL = ungrouped), updated_at, deleted
- *   tasks        id, list_id, parent_id (NULL = top-level; ONE level of
+ *   tasks        id, list_id (STORAGE only: Tasks shows no lists — see
+ *                below), parent_id (NULL = top-level; ONE level of
  *                nesting only — a subtask can never be a parent),
  *                title, notes, due (unix local midnight; 0 = none),
  *                due_time (the time of day that date means, minutes past
- *                local midnight), status (TaskStatus), pinned, priority
+ *                local midnight), status (TaskStatus), priority
  *                (sorts first in every view), position, updated_at,
  *                deleted, completed_at,
  *                recur_interval / recur_unit / recur_time / recur_lead /
@@ -22,11 +20,20 @@
  *                scheduled_start / scheduled_duration (the day planner)
  *   attachments  id, task_id, path, added_at
  *   sync_state   key, value
- *   task_tag_names id, name (UNIQUE, compared case-insensitively)
- *   task_tags    task_id, tag_id — the tags a task carries.  A tag exists
- *                only while a live task carries it: the shared schema's
- *                triggers drop a tombstoned task's tags, and a tag with
- *                them when it was the last (shared_db.c, TASK_TAGS_SQL).
+ *   task_tag_names id, name (UNIQUE, compared case-insensitively; never
+ *                renamed), emoji, favorite
+ *   task_tags    task_id, tag_id — the tags a task carries.
+ *
+ * TAGS ARE THE ONLY ORGANISATION.  Every live task carries at least one
+ * tag, and a tag exists only while a live task carries it; the shared
+ * schema's triggers hold both for every writer (shared_db.c, TASK_TAGS_SQL
+ * and TAG_META_SQL), and tag a task Notes writes "Action Items".  The
+ * shared `lists` and `list_groups` tables are STORAGE: a task's list_id
+ * must name a live list (Notes files its items in its managed list; Tasks
+ * files a new top-level task in the lowest-id live list, making one when
+ * there is none, and a subtask in its parent's), but nothing here shows,
+ * edits or orders by a list.  The schema's 102 step turned the old lists
+ * and groups into tags.
  *
  * NOTHING belonging to a particular INTEGRATION is here.  An integration
  * keeps its per-row state in its own SIDE TABLE keyed by row id: the
@@ -160,24 +167,6 @@ typedef enum {
  * hours" means 9, 12, 3); the lead is a CEILING, task_recur_lead_default
  * takes the lesser of it and half the repeat period.                       */
 
-/* One task list.  Strings are owned by the struct.                         */
-typedef struct {
-    gint64    id;
-    gchar    *name;
-    gchar    *emoji;                 /* optional display prefix ("")        */
-    gint64    updated_at;
-    gint      position;
-    gint64    group_id;              /* 0 = ungrouped                       */
-    gboolean  deleted;
-} TaskList;
-
-/* One list group (local-only; never synced to Google).  Strings owned.     */
-typedef struct {
-    gint64  id;
-    gchar  *name;
-    gint    position;
-} TaskGroup;
-
 /* One task or subtask.  Strings are owned by the struct.
  *
  * There is nothing here belonging to a particular INTEGRATION.  A sync's
@@ -202,10 +191,9 @@ typedef struct {
     TaskStatus status;             /* New / In Progress / Done — DONE is
                                       * what every "is it complete?" test
                                       * asks for                            */
-    gboolean  pinned;
-    gboolean  priority;              /* high priority — local-only, like
-                                      * pinned (Google has no priority);
-                                      * sorts to the top of every view      */
+    gboolean  priority;              /* high priority — local-only (Google
+                                      * has no priority); sorts to the top
+                                      * of every view                       */
     gint      position;
     gint64    updated_at;
     gboolean  deleted;
@@ -256,7 +244,6 @@ typedef struct {
     gchar    *path;                  /* absolute file path (owned)          */
 } TaskAttachment;
 
-void task_list_free(TaskList *l);
 void task_free(Task *t);
 
 /* ---------------------------------------------------------------------------
@@ -397,8 +384,6 @@ void task_db_health_record(TaskDatabase *db, TaskDbHealth *verdict);
  * ------------------------------------------------------------------------- */
 gchar *task_db_file_sha256(const gchar *path);
 
-/* --------------------------------- lists --------------------------------- */
-
 /* Every write below that returns gboolean returns TRUE when its change was
  * committed and FALSE when it was not (logged): above all when another
  * writer held the file past the busy timeout (SHARED_DB_BUSY_TIMEOUT_MS).
@@ -406,95 +391,52 @@ gchar *task_db_file_sha256(const gchar *path);
  * the editor keeps its edit and retries, the list and board toggles say so
  * and show the database's true state.                                     */
 
-/* All lists — alphabetical (case-insensitive) by DEFAULT; once the user
- * drag-reorders the sidebar (sync_state "lists_custom_order" set by
- * task_db_lists_reorder) the stored positions rule, name-tiebroken.
- * include_deleted also returns tombstoned rows (sync).  Returns TaskList*
- * elements; free the array with g_ptr_array_free after task_list_free-ing
- * elements (or use task_ptr_array_free_lists).                             */
-GPtrArray *task_db_lists(TaskDatabase *db, gboolean include_deleted);
-
-/* Persist a sidebar drag-reorder: position = index of each id in `ids`
- * (one transaction) and switch task_db_lists to custom-order mode.  The
- * order is local-only — Google tasklists have no ordering — so rows are
- * NOT dirtied for sync.                                                    */
-gboolean task_db_lists_reorder(TaskDatabase *db, const gint64 *ids, gsize n);
-
-TaskList  *task_db_list_get(TaskDatabase *db, gint64 id);
-
-/* Create a list.  `emoji` is the optional local-only display prefix
- * (NULL/"" for none) — it is never part of the synced name.                */
-gint64   task_db_list_create(TaskDatabase *db, const gchar *name,
-                             const gchar *emoji);
-
-/* Update a list's name + emoji (stamps updated_at; a changed name syncs
- * to Google, the emoji never does).                                        */
-gboolean task_db_list_update(TaskDatabase *db, gint64 id, const gchar *name,
-                             const gchar *emoji);
-
-/* Tombstone the list AND every live task in it (they must disappear from
- * the remote side too), in one transaction; already-deleted tasks keep
- * their own updated_at (SHARED_DB_SQL_TOMBSTONE_WHERE).                    */
-gboolean task_db_list_delete(TaskDatabase *db, gint64 id);
-
 /* --------------------------------- tasks --------------------------------- */
 
 Task    *task_db_task_get(TaskDatabase *db, gint64 id);
 
-/* Visible top-level tasks of one list, ordered by position.                */
-GPtrArray *task_db_tasks_toplevel(TaskDatabase *db, gint64 list_id);
-
 /* Visible subtasks of one task, ordered by position.                       */
 GPtrArray *task_db_subtasks(TaskDatabase *db, gint64 parent_id);
 
-/* ALL visible subtasks (every list), ordered by parent then position —
+/* ALL visible subtasks, ordered by parent then position —
  * one query for the task pane instead of one per top-level row.  Their
  * `notes` come back EMPTY: the pane and the search read a subtask's title
  * and status only, and the notes are the bulk of a task's bytes.          */
 GPtrArray *task_db_subtasks_all_visible(TaskDatabase *db);
 
-/* Visible pinned tasks across all lists (any level), pinned order = list
- * then position.                                                           */
-GPtrArray *task_db_tasks_pinned(TaskDatabase *db);
-
-/* TRUE when any non-tombstoned task is pinned.  Drives the sidebar's
- * Favorites row visibility.                                                */
-gboolean task_db_has_pinned(TaskDatabase *db);
-
-/* Every live task Notes wrote — one a note_task row names — of any level
- * and wherever it is filed now (the "Action Items" view), ordered like
- * task_db_tasks_pinned.  Done ones are included; the rows layer applies
- * the show_completed setting as for every view.                           */
-GPtrArray *task_db_tasks_action_items(TaskDatabase *db);
-
-/* TRUE when any live task is a Notes action item.  Drives the sidebar's
- * Action Items row visibility.                                             */
-gboolean task_db_has_action_items(TaskDatabase *db);
-
-/* Visible top-level tasks across ALL lists (the "All Tasks" meta list),
- * ordered by list then position.                                           */
+/* Every visible top-level task (the "All Tasks" view), high priority
+ * first, then by position.                                                 */
 GPtrArray *task_db_tasks_all_visible(TaskDatabase *db);
 
-/* Visible top-level tasks of every list in one GROUP, ordered by list then
- * position — the same shape as task_db_tasks_all_visible, narrowed to the
- * group's lists.  A tombstoned list contributes nothing.  An empty group
- * (or an id naming no group) yields the empty array, never NULL.           */
-GPtrArray *task_db_tasks_in_group(TaskDatabase *db, gint64 group_id);
+/* Every visible task, of any level, carrying at least one FAVORITE tag
+ * (the "Favorites" view), ordered like task_db_tasks_all_visible.  Done
+ * ones are included; the rows layer applies show_completed.               */
+GPtrArray *task_db_tasks_favorite(TaskDatabase *db);
 
 /* Visible tasks (any level) with lo <= due < hi, soonest first; open_only
  * leaves the Done ones out (the notification worker's question).           */
 GPtrArray *task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi,
                                      gboolean open_only);
 
-/* Every task row of ONE list, including subtasks and tombstones, parents
- * before subtasks.                                                         */
-GPtrArray *task_db_tasks_in_list_all(TaskDatabase *db, gint64 list_id);
-
-/* Create a task ('' title allowed).  parent_id = 0 for top-level; the
- * parent must itself be top-level (one nesting level — enforced here).
- * Returns the new id, or 0 on constraint failure.                          */
-gint64 task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
-                           const gchar *title);
+/* ---------------------------------------------------------------------------
+ * task_db_task_create() — create a task with its tags, in one transaction
+ * (the caller's when one is open): every live task carries a tag.
+ *
+ *   db        — the connection
+ *   parent_id — 0 for a top-level task; else the parent, which must be a
+ *               live top-level task (one nesting level — enforced here).
+ *               A subtask goes in its parent's (storage) list and gets
+ *               every tag its parent carries
+ *   title     — the title ('' allowed)
+ *   tag       — the tag's name (task_db_task_tag_add: an existing tag in
+ *               any case, else a new one).  REQUIRED for a top-level task;
+ *               for a subtask NULL adds nothing to the parent's tags
+ *
+ * Returns the new id, or 0 when refused (no tag for a top-level task, a
+ * bad parent) or a write failed (logged); nothing is written then.
+ * ------------------------------------------------------------------------- */
+gint64 task_db_task_create(TaskDatabase *db, gint64 parent_id, const gchar *title,
+                           const gchar *tag);
 
 /* ---------------------------------------------------------------------------
  * task_db_task_update() — write the EDITABLE fields in which `after`
@@ -504,11 +446,11 @@ gint64 task_db_task_create(TaskDatabase *db, gint64 list_id, gint64 parent_id,
  * change is never written, so a change another app or connection made to
  * it in the meantime survives.  Nothing differing writes nothing.
  *
- * The editable fields: title, notes, due, due_time, status, pinned,
+ * The editable fields: title, notes, due, due_time, status,
  * priority and the recurrence schedule (recur_interval, recur_unit,
  * recur_time, recur_lead, recur_next, recur_start).  updated_at is stamped
  * only when a SYNCED field is among them (title, notes, due, due_time,
- * status), never for the local-only ones (pinned, priority, the
+ * status), never for the local-only ones (priority, the
  * schedule).  completed_at is stamped when status ENTERS Done (the CASE
  * reads the stored row), and a parent moves from New to In Progress when
  * a subtask enters Done — in the same transaction (the caller's when one
@@ -552,14 +494,13 @@ gchar *task_display_title(const Task *t, gboolean with_context);
 /* Field setters used by the list-view toggles.  `status` is the
  * successor of a SYNCED field, so EVERY change to it stamps updated_at
  * and dirties the row — including New ↔ In Progress, which neither
- * Google nor Notes can represent.  `pinned` and `priority` are
- * LOCAL-ONLY and never stamp (see the .c banners).  set_status moves a New
+ * Google nor Notes can represent.  `priority` is LOCAL-ONLY and never
+ * stamps (see the .c banners).  set_status moves a New
  * parent to In Progress when a subtask enters Done, in the same
  * transaction (the caller's when one is open): one busy wait under a held
  * lock, and FALSE with nothing written when either write fails.  Each
  * returns TRUE when written.                                               */
 gboolean task_db_task_set_status(TaskDatabase *db, gint64 id, TaskStatus status);
-gboolean task_db_task_set_pinned(TaskDatabase *db, gint64 id, gboolean pinned);
 gboolean task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priority);
 
 /* ---------------------------------------------------------------------------
@@ -581,7 +522,7 @@ gboolean task_db_task_set_priority(TaskDatabase *db, gint64 id, gboolean priorit
  *
  * task_db_task_recur_set_next() — store recur_next ALONE, with NO
  * updated_at bump.  The next-occurrence stamp is local bookkeeping (the
- * same rule pinned and priority follow): seeding it, or advancing past an
+ * same rule priority follows): seeding it, or advancing past an
  * occurrence that changed nothing, must not dirty the row for sync.
  * ------------------------------------------------------------------------- */
 GPtrArray *task_db_tasks_recurring(TaskDatabase *db);
@@ -606,10 +547,10 @@ GPtrArray *task_db_tasks_scheduled_for_day(TaskDatabase *db, gint64 lo, gint64 h
  * updated_at).                                                             */
 gboolean task_db_task_delete(TaskDatabase *db, gint64 id);
 
-/* Tombstone every completed top-level task of a list and their subtasks,
- * in ONE statement (SHARED_DB_SQL_TOMBSTONE_WHERE).  Returns how many
- * top-level tasks went.                                                    */
-guint task_db_tasks_delete_done(TaskDatabase *db, gint64 list_id);
+/* Tombstone every completed top-level task carrying a tag, and their
+ * subtasks, in ONE statement (SHARED_DB_SQL_TOMBSTONE_WHERE).  Returns how
+ * many top-level tasks went.                                               */
+guint task_db_tasks_delete_done(TaskDatabase *db, gint64 tag_id);
 
 /* A transaction round several writes that belong together (a drop that
  * changes the status of five cards): one journalled write instead of
@@ -627,10 +568,6 @@ gboolean task_db_transaction_end(TaskDatabase *db, gboolean ok);
  * updated_at is not stamped.                                               */
 gboolean task_db_subtask_move(TaskDatabase *db, gint64 id, gint direction);
 
-/* Move a top-level task (and its subtasks) to another list, appended at
- * the end; stamps updated_at.                                              */
-gboolean task_db_task_move_list(TaskDatabase *db, gint64 id, gint64 dest_list);
-
 /* ------------------------------ attachments ------------------------------ */
 
 GPtrArray *task_db_attachments(TaskDatabase *db, gint64 task_id);
@@ -645,14 +582,26 @@ GHashTable *task_db_attachment_counts(TaskDatabase *db);
 
 /* --------------------------------- tags ---------------------------------- */
 
-/* One tag.  The name is owned by the struct.                               */
+/* One tag.  Strings are owned by the struct.                               */
 typedef struct {
     gint64    id;
-    gchar    *name;
+    gchar    *name;                  /* never renamed                       */
+    gchar    *emoji;                 /* display prefix, "" for none         */
+    gboolean  favorite;              /* in the Favorites bar and view       */
 } TaskTag;
 
 void task_tag_free(TaskTag *tag);
 void task_ptr_array_free_tags(GPtrArray *a);
+
+/* task_tag_label() — what a tag is called wherever it is shown: its emoji,
+ * two spaces, its name; the name alone when it has no emoji.  Returns a new
+ * string (g_free).                                                         */
+gchar *task_tag_label(const TaskTag *tag);
+
+/* Every live task's tags, as one query: task id → GPtrArray of TaskTag*
+ * (alphabetical; the arrays own their tags).  Free with
+ * g_hash_table_destroy.                                                    */
+GHashTable *task_db_tags_by_task(TaskDatabase *db);
 
 /* Every tag, alphabetical (case-insensitive) — each is carried by at least
  * one live task (the schema's triggers delete the rest).  TaskTag*
@@ -662,6 +611,15 @@ GPtrArray *task_db_tags(TaskDatabase *db);
 /* One tag, or NULL when no tag has that id (it has gone).  Free with
  * task_tag_free.                                                           */
 TaskTag   *task_db_tag_get(TaskDatabase *db, gint64 id);
+
+/* The tag of a name (trimmed, compared case-insensitively), or NULL when
+ * there is none.  Free with task_tag_free.                                 */
+TaskTag   *task_db_tag_find(TaskDatabase *db, const gchar *name);
+
+/* Set a tag's emoji ("" or NULL for none) or its favorite flag.  A tag's
+ * name never changes.  Each returns TRUE when written.                     */
+gboolean   task_db_tag_set_emoji(TaskDatabase *db, gint64 id, const gchar *emoji);
+gboolean   task_db_tag_set_favorite(TaskDatabase *db, gint64 id, gboolean favorite);
 
 /* The tags one task carries, alphabetical (case-insensitive).  TaskTag*
  * elements (task_ptr_array_free_tags); never NULL.                         */
@@ -683,31 +641,34 @@ GPtrArray *task_db_task_tags(TaskDatabase *db, gint64 task_id);
  * ------------------------------------------------------------------------- */
 gint64     task_db_task_tag_add(TaskDatabase *db, gint64 task_id, const gchar *name);
 
-/* Take a tag off a task.  The tag itself is deleted when no other task
- * carries it (the schema's trigger).  Returns TRUE when written (also when
- * the task did not carry it).                                              */
-gboolean   task_db_task_tag_remove(TaskDatabase *db, gint64 task_id, gint64 tag_id);
+/* ---------------------------------------------------------------------------
+ * task_db_task_tag_remove() — take a tag off a task.  The tag itself is
+ * deleted when no other task carries it (the schema's trigger).  A live
+ * task's LAST tag is never taken off (the schema refuses it).
+ *
+ * Returns 1 when written (also when the task did not carry it), 0 when
+ * refused because it is the task's last tag, -1 when the write failed
+ * (logged).
+ * ------------------------------------------------------------------------- */
+gint       task_db_task_tag_remove(TaskDatabase *db, gint64 task_id, gint64 tag_id);
 
-/* Every live task carrying a tag, of any level and in whatever list it is
- * filed — a tag's proto-list — ordered like task_db_tasks_pinned.  Done
+/* Every live task carrying a tag, of any level — a tag's view — ordered like task_db_tasks_all_visible.  Done
  * ones are included; the rows layer applies show_completed.               */
 GPtrArray *task_db_tasks_tagged(TaskDatabase *db, gint64 tag_id);
 
 /* -------------------------------- vitals --------------------------------- */
 
-/* Live totals for the About dialog: non-tombstoned task and list counts.
+/* Live totals for the About dialog: non-tombstoned tasks, and tags.
  * Either out-pointer may be NULL; a failed query leaves 0.                 */
-void task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_lists);
+void task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_tags);
 
 /* ---------------------------------------------------------------------------
- * task_db_list_purge() / task_db_task_purge() — physically remove a list
- * and its tasks, or a task and its subtasks, in one transaction.  REFUSED,
- * deleting nothing, when any task they would remove is a Notes action item
- * (a note_task row names it): Tasks never purges one of those — deleting
- * such a task is a tombstone (task_db_task_delete), which Notes answers by
- * unmarking the line.  Returns TRUE when the rows were removed.
+ * task_db_task_purge() — physically remove a task and its subtasks, in one
+ * transaction.  REFUSED, deleting nothing, when either is a Notes action
+ * item (a note_task row names it): Tasks never purges one of those —
+ * deleting such a task is a tombstone (task_db_task_delete), which Notes
+ * answers by unmarking the line.  Returns TRUE when the rows were removed.
  * ------------------------------------------------------------------------- */
-gboolean task_db_list_purge(TaskDatabase *db, gint64 id);
 gboolean task_db_task_purge(TaskDatabase *db, gint64 id);
 
 /* ---------------------------------------------------------------------------
@@ -719,33 +680,7 @@ gboolean task_db_task_purge(TaskDatabase *db, gint64 id);
 gchar *task_db_task_note(TaskDatabase *db, gint64 task_id);
 
 /* Free helper for the GPtrArrays above.                                    */
-void task_ptr_array_free_lists(GPtrArray *a);
 void task_ptr_array_free_tasks(GPtrArray *a);
 void task_ptr_array_free_attachments(GPtrArray *a);
-
-/* --------------------------------- groups -------------------------------- */
-
-void      task_group_free(TaskGroup *g);
-void      task_ptr_array_free_groups(GPtrArray *a);
-
-/* All groups, ordered by position then name.                               */
-GPtrArray *task_db_groups(TaskDatabase *db);
-
-/* One group row, or NULL when no group has that id.  Free with
- * task_group_free.                                                         */
-TaskGroup *task_db_group_get(TaskDatabase *db, gint64 id);
-
-/* Create a group.  Returns the new id, or 0 on failure.                    */
-gint64    task_db_group_create(TaskDatabase *db, const gchar *name);
-
-/* Delete a group: un-groups all its lists (sets group_id = NULL).          */
-gboolean  task_db_group_delete(TaskDatabase *db, gint64 id);
-
-/* Rename a group.                                                          */
-gboolean  task_db_group_rename(TaskDatabase *db, gint64 id, const gchar *name);
-
-/* Move a list into a group (group_id 0 = ungrouped → sets NULL).           */
-gboolean  task_db_list_set_group(TaskDatabase *db, gint64 list_id,
-                                 gint64 group_id);
 
 #endif /* TASK_DB_H */

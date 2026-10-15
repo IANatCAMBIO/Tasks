@@ -3,15 +3,16 @@
 #import "editor_window.h"
 #import "kanban.h"
 #import "look.h"
-#import "lists_bar.h"
+#import "favorites_bar.h"
 #import "notify_window.h"
 #import "settings_window.h"
+#import "sidebar.h"
 #import "task_list.h"
 #import "ui_util.h"
 
 #include "task_config.h"
 #include "task_ops.h"
-#include "task_sidebar.h"
+#include "task_order.h"
 #include "task_switch.h"
 #include "task_view.h"
 
@@ -37,7 +38,9 @@ static NSString * const search_tooltip       =
 @interface TasksLibraryWindow () <NSWindowDelegate, NSToolbarDelegate,
                                   NSToolbarItemValidation, NSSearchFieldDelegate,
                                   NSSplitViewDelegate>
-@property (nonatomic, strong) TasksListsBar *lists_bar;
+@property (nonatomic, strong) TasksSidebar      *sidebar;
+@property (nonatomic, strong) NSLayoutConstraint *sidebar_width;  /* 0 while hidden */
+@property (nonatomic, strong) TasksFavoritesBar *favorites_bar;
 @property (nonatomic, strong) TasksTaskList *task_list;
 @property (nonatomic, strong) TasksKanban *kanban;
 @property (nonatomic, strong) TasksDayPlanner *day_planner;
@@ -64,11 +67,9 @@ static NSString * const search_tooltip       =
 @property (nonatomic, assign) guint listen_tasks;
 @property (nonatomic, assign) guint listen_notes;
 @property (nonatomic, assign) guint listen_status;
-/* Which views had a sidebar row at its last rebuild (task_view_shown_mask),
- * and which tags (tag_ids): the light task event rebuilds the sidebar only
- * when either changes. */
-@property (nonatomic, assign) guint64 shown_views;
-@property (nonatomic, copy)   NSArray<NSNumber *> *shown_tags;
+/* The tags as the sidebar and the Favorites bar last showed them
+ * (tag_rows): the light task event rebuilds them only when that changes. */
+@property (nonatomic, copy)   NSArray<NSArray *> *shown_tags;
 @property (nonatomic, assign) BOOL is_shut_down;
 
 /* Declared here because the C listeners below call it before its
@@ -80,26 +81,29 @@ static NSString * const search_tooltip       =
 /* ── App-event listeners (C callbacks; user_data is the window) ─────── */
 
 /*
- * tag_ids — the ids of every tag, in the bar's order: what decides whether
- * a task change added or removed a tag's button.
+ * tag_rows — every tag as the sidebar and the Favorites bar show it: its
+ * id, its emoji and its favorite flag, alphabetically.  What decides
+ * whether a task change (a tag first used, or used for the last time) or
+ * an Edit Tag needs them rebuilt.
  *
  * Inputs:
  *   app — the application context
  *
  * Output:
- *   the ids.
+ *   one @[@(id), emoji, @(favorite)] per tag.
  */
-static NSArray<NSNumber *> *
-tag_ids(TaskApp *app)
+static NSArray<NSArray *> *
+tag_rows(TaskApp *app)
 {
-    GPtrArray                 *tags = task_db_tags(app->db);
-    NSMutableArray<NSNumber *> *ids = [NSMutableArray arrayWithCapacity:tags->len];
+    GPtrArray                *tags = task_db_tags(app->db);
+    NSMutableArray<NSArray *> *rows = [NSMutableArray arrayWithCapacity:tags->len];
 
     for (guint i = 0; i < tags->len; i++) {
-        [ids addObject:@(((const TaskTag *)g_ptr_array_index(tags, i))->id)];
+        const TaskTag *tag = g_ptr_array_index(tags, i);
+        [rows addObject:@[@(tag->id), tasks_string(tag->emoji), @(tag->favorite)]];
     }
     task_ptr_array_free_tags(tags);
-    return ids;
+    return rows;
 }
 
 /*
@@ -119,10 +123,8 @@ on_app_changed(TaskApp *app, gpointer data)
 /*
  * on_app_tasks — the app's light event: the task pane, the day planner and
  * the reminders' titles.  One exception: a task change can add or remove
- * a view's row (a favourite flag the Favorites row, the last Notes action
- * item deleted the Action Items row) or a tag's (the first task given a
- * new tag, the last one losing it), so the sidebar is rebuilt when the set
- * of shown views or of tags changed.
+ * a tag (the first task given a new one, the last one losing it), so the
+ * sidebar and the Favorites bar are rebuilt when the tags changed.
  *
  * Inputs:
  *   app  — the application context
@@ -133,10 +135,7 @@ on_app_tasks(TaskApp *app, gpointer data)
 {
     TasksLibraryWindow *window = (__bridge TasksLibraryWindow *)data;
 
-    if (task_view_shown_mask(app) != window.shown_views ||
-        ![tag_ids(app) isEqualToArray:window.shown_tags]) {
-        [window refresh_sidebar];
-    }
+    if (![tag_rows(app) isEqualToArray:window.shown_tags]) [window refresh_sidebar];
     [window refresh_tasks];
     if (!window.day_planner.hidden) [window.day_planner reload];
     tasks_notify_retitle();
@@ -468,19 +467,21 @@ build_float_bar:(NSView *)pane
 }
 
 /*
- * build_layout — the window's content: a split view running from the
- * toolbar to the status bar's separator, its left half a lists bar over the
- * task pane and its right half the day planner, which therefore stands the
- * full height.  The task pane holds BOTH presentations, the list and the
- * board, of which apply_pane_mode shows one.  NSStackView collapses the bar
- * when hidden, so the pane fills the left half.
+ * build_layout — the window's content: the tag sidebar at the left, then a
+ * split view running from the toolbar to the status bar's separator, its
+ * left half the Favorites bar over the task pane and its right half the
+ * day planner, which therefore stands the full height.  The task pane
+ * holds BOTH presentations, the list and the board, of which
+ * apply_pane_mode shows one.  NSStackView collapses the bar when hidden,
+ * so the pane fills the left half; a hidden sidebar has no width.
  */
 - (void)
 build_layout
 {
     NSView *content = self.window.contentView;
 
-    self.lists_bar = [[TasksListsBar alloc] init_with_library:self];
+    self.sidebar       = [[TasksSidebar alloc] init_with_library:self];
+    self.favorites_bar = [[TasksFavoritesBar alloc] init_with_library:self];
     self.task_list     = [[TasksTaskList alloc] init_with_library:self];
     self.kanban        = [[TasksKanban alloc] init_with_library:self];
 
@@ -491,13 +492,13 @@ build_layout
     pin_edges(self.kanban);
     [self build_float_bar:pane];
 
-    [self.lists_bar.heightAnchor
-        constraintEqualToConstant:tasks_look_lists_bar_h].active = YES;
+    [self.favorites_bar.heightAnchor
+        constraintEqualToConstant:tasks_look_favorites_bar_h].active = YES;
 
-    /* The split's left half: the lists bar over the task pane.  A plain
+    /* The split's left half: the Favorites bar over the task pane.  A plain
      * container owns the stack so the split view manages a frame-based
      * subview, as it does the day planner. */
-    NSStackView *left_stack = [NSStackView stackViewWithViews:@[self.lists_bar, pane]];
+    NSStackView *left_stack = [NSStackView stackViewWithViews:@[self.favorites_bar, pane]];
     left_stack.orientation  = NSUserInterfaceLayoutOrientationVertical;
     left_stack.spacing      = 0;
     left_stack.distribution = NSStackViewDistributionFill;
@@ -541,13 +542,28 @@ build_layout
     split.autoresizingMask = NSViewNotSizable;
     [split_host addSubview:split];
 
-    for (NSView *v in @[split_host, rule, self.status_left, self.status_right]) {
+    /* Taller than wide, so the separator is a VERTICAL one: a separator
+     * box takes its orientation from its frame, and a horizontal one hugs
+     * a height of one point, which would squeeze the window to fit it. */
+    NSBox *edge  = [[NSBox alloc] initWithFrame:NSMakeRect(0, 0, 1, 100)];
+    edge.boxType = NSBoxSeparator;
+    for (NSView *v in @[self.sidebar, edge, split_host, rule, self.status_left, self.status_right]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:v];
     }
+    self.sidebar_width = [self.sidebar.widthAnchor constraintEqualToConstant:tasks_look_sidebar_w];
     [NSLayoutConstraint activateConstraints:@[
+        [self.sidebar.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [self.sidebar.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [self.sidebar.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
+        self.sidebar_width,
+        [edge.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [edge.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
+        [edge.leadingAnchor constraintEqualToAnchor:self.sidebar.trailingAnchor],
+        [edge.widthAnchor constraintEqualToConstant:1.0],
+
         [split_host.topAnchor constraintEqualToAnchor:content.topAnchor],
-        [split_host.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [split_host.leadingAnchor constraintEqualToAnchor:edge.trailingAnchor],
         [split_host.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
         [split_host.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
 
@@ -599,6 +615,8 @@ static NSArray<NSToolbarItemIdentifier> *
 toolbar_idents(void)
 {
     return @[
+        tasks_command_spec(TasksCommandToggleSidebar)->ident,
+        NSToolbarSpaceItemIdentifier,
         tasks_command_spec(TasksCommandNewTask)->ident,
         tasks_command_spec(TasksCommandDeleteTask)->ident,
         NSToolbarSpaceItemIdentifier,
@@ -701,27 +719,27 @@ validateToolbarItem:(NSToolbarItem *)item
 }
 
 /*
- * acts_on_group — whether a command's parameter is the group it acts on.
- * Such a command sent without one (from the main menu) means the group
- * selected in the sidebar (commands.h).
+ * acts_on_tag — whether a command's parameter is the tag it acts on.  Such
+ * a command sent without one (from the main menu) means the tag selected
+ * in the sidebar (commands.h).
  *
  * Inputs:
  *   command — the command
  *
  * Output:
- *   YES for Rename Group... and Remove Group.
+ *   YES for Edit Tag....
  */
 static BOOL
-acts_on_group(TasksCommand command)
+acts_on_tag(TasksCommand command)
 {
-    return command == TasksCommandRenameGroup || command == TasksCommandDeleteGroup;
+    return command == TasksCommandEditTag;
 }
 
 /*
  * validateMenuItem: — AppKit asks whether a command's menu item is enabled;
  * the answer also sets its title and check mark.  An item carrying a
- * parameter keeps the title it was built with (commands.h).  A group
- * command carrying none needs a group to be selected.
+ * parameter keeps the title it was built with (commands.h).  A tag
+ * command carrying none needs a tag to be selected.
  *
  * Inputs:
  *   item — a command item made by tasks_command_menu_item
@@ -737,7 +755,7 @@ validateMenuItem:(NSMenuItem *)item
 
     if (item.representedObject) {
         state.title = item.title;
-    } else if (acts_on_group(command) && self.selection.kind != task_sel_group) {
+    } else if (acts_on_tag(command) && self.selection.kind != task_sel_tag) {
         state.enabled = NO;
     }
     tasks_command_apply(state, item);
@@ -863,7 +881,7 @@ apply_pane_mode
 
 /*
  * update_window_title — set the window title from the current selection:
- * "Tasks — Name" for a list, group, view or tag; the plain app name
+ * "Tasks — Name" for a view or a tag; the plain app name
  * otherwise.
  */
 - (void)
@@ -872,21 +890,13 @@ update_window_title
     NSString   *suffix = nil;
     task_sel_t  sel    = _selection;
 
-    if (sel.kind == task_sel_list) {
-        TaskList *list = task_db_list_get(self.app->db, sel.id);
-        if (list) { suffix = tasks_string(list->name); task_list_free(list); }
-    } else if (sel.kind == task_sel_group) {
-        TaskGroup *group = task_db_group_get(self.app->db, sel.id);
-        if (group) { suffix = tasks_string(group->name); task_group_free(group); }
-    } else if (sel.kind == task_sel_view) {
+    if (sel.kind == task_sel_view) {
         const TaskView *view = task_view_nth((guint)sel.id);
         if (view) suffix = tasks_string(view->label);
     } else if (sel.kind == task_sel_tag) {
         TaskTag *tag = task_db_tag_get(self.app->db, sel.id);
         if (tag) {
-            char *label = task_sidebar_tag_label(tag);
-            suffix = tasks_string(label);
-            free(label);
+            suffix = tasks_tag_title(tag);
             task_tag_free(tag);
         }
     }
@@ -897,7 +907,7 @@ update_window_title
 }
 
 /*
- * select: — the lists bar selection changed.
+ * select: — the sidebar or the Favorites bar selection changed.
  * Inputs are documented in library_window.h.
  */
 - (void)
@@ -908,7 +918,8 @@ select:(task_sel_t)selection
         [self.task_list view_changed];
         [self.kanban view_changed];
         [self update_window_title];
-        [self.lists_bar update_selection];
+        [self.sidebar update_selection];
+        [self.favorites_bar update_selection];
     }
     [self refresh_tasks];
 }
@@ -931,16 +942,27 @@ refresh_tasks
 }
 
 /*
- * refresh_sidebar — rebuild the lists bar from the database.
+ * refresh_sidebar — rebuild the sidebar and the Favorites bar from the
+ * database.  A tag no task carries any more has gone for good (its id is
+ * never reused), so its saved orders are dropped (task_order_drop).
  */
 - (void)
 refresh_sidebar
 {
     if (self.is_shut_down) return;
 
-    [self.lists_bar reload];
-    self.shown_views = task_view_shown_mask(self.app);
-    self.shown_tags  = tag_ids(self.app);
+    NSArray<NSArray *> *rows = tag_rows(self.app);
+    NSMutableSet       *live = [NSMutableSet set];
+    for (NSArray *row in rows) [live addObject:row[0]];
+    for (NSArray *row in self.shown_tags) {
+        if (![live containsObject:row[0]]) {
+            task_order_drop((task_sel_t){ task_sel_tag, [row[0] longLongValue] });
+        }
+    }
+    self.shown_tags = rows;
+
+    [self.sidebar reload];
+    [self.favorites_bar reload];
 }
 
 /*
@@ -1099,8 +1121,7 @@ resizeSubviewsWithOldSize:(NSSize)old_sz
 /* ── Task context menu ───────────────────────────────────────────────── */
 
 /*
- * titled_item — a command item wearing its own title (a destination list
- * or group).
+ * titled_item — a command item wearing its own title (a tag).
  *
  * Inputs:
  *   command — the command
@@ -1121,63 +1142,33 @@ titled_item:(TasksCommand)command param:(NSNumber *)param title:(NSString *)titl
 }
 
 /*
- * add_list_destinations: — the lists the selected tasks can move to: every
- * list, less the one a single selected task is already in.
- *
- * Inputs:
- *   menu — the submenu to add to
- */
-- (void)
-add_list_destinations:(NSMenu *)menu
-{
-    NSArray<NSNumber *> *ids = [self selected_task_ids];
-    Task      *only  = ids.count == 1 ? task_db_task_get(self.app->db, ids[0].longLongValue) : NULL;
-    GPtrArray *lists = task_db_lists(self.app->db, FALSE);
-
-    for (guint i = 0; i < lists->len; i++) {
-        const TaskList *list = g_ptr_array_index(lists, i);
-        if (only != NULL && list->id == only->list_id) continue;
-        [menu addItem:[self titled_item:TasksCommandMoveToList param:@(list->id)
-                                  title:tasks_list_title(list)]];
-    }
-    task_ptr_array_free_lists(lists);
-    task_free(only);
-}
-
-/*
- * add_group_destinations: — the groups the selected list can move to.
- *
- * Inputs:
- *   menu — the submenu to add to
- */
-- (void)
-add_group_destinations:(NSMenu *)menu
-{
-    GPtrArray *groups = task_db_groups(self.app->db);
-
-    for (guint i = 0; i < groups->len; i++) {
-        const TaskGroup *group = g_ptr_array_index(groups, i);
-        [menu addItem:[self titled_item:TasksCommandMoveToGroup param:@(group->id)
-                                  title:tasks_string(group->name)]];
-    }
-    task_ptr_array_free_groups(groups);
-}
-
-/*
- * fill_menu:with_destinations_of: — rebuild a "Move to" submenu.
+ * fill_menu:with_destinations_of: — rebuild the "Add Tag" submenu: every
+ * tag, less those a single selected task already carries.
  * Inputs are documented in library_window.h.
  */
 - (void)
 fill_menu:(NSMenu *)menu with_destinations_of:(TasksCommand)command
 {
     [menu removeAllItems];
-    if (self.is_shut_down) return;
+    if (self.is_shut_down || command != TasksCommandAddTag) return;
 
-    if (command == TasksCommandMoveToList) {
-        [self add_list_destinations:menu];
-    } else if (command == TasksCommandMoveToGroup) {
-        [self add_group_destinations:menu];
+    NSArray<NSNumber *> *ids  = [self selected_task_ids];
+    GPtrArray *carried = ids.count == 1 ? task_db_task_tags(self.app->db, ids[0].longLongValue)
+                                        : NULL;
+    GPtrArray *tags    = task_db_tags(self.app->db);
+
+    for (guint i = 0; i < tags->len; i++) {
+        const TaskTag *tag = g_ptr_array_index(tags, i);
+        BOOL           has = NO;
+        for (guint k = 0; carried != NULL && k < carried->len && !has; k++) {
+            has = ((const TaskTag *)g_ptr_array_index(carried, k))->id == tag->id;
+        }
+        if (has) continue;
+        [menu addItem:[self titled_item:TasksCommandAddTag param:@(tag->id)
+                                  title:tasks_tag_title(tag)]];
     }
+    task_ptr_array_free_tags(tags);
+    task_ptr_array_free_tags(carried);
 }
 
 /*
@@ -1206,33 +1197,27 @@ task_context_menu
         [menu addItem:tasks_command_flag_item(TasksCommandMarkDone,
                                               task->status != TASK_STATUS_DONE, NO, self)];
         [menu addItem:NSMenuItem.separatorItem];
-        [menu addItem:tasks_command_flag_item(TasksCommandSetPinned, !task->pinned, NO, self)];
         [menu addItem:tasks_command_flag_item(TasksCommandSetPriority, !task->priority, NO, self)];
     } else {
         [menu addItem:tasks_command_flag_item(TasksCommandMarkDone, YES, YES, self)];
         [menu addItem:tasks_command_flag_item(TasksCommandMarkDone, NO, YES, self)];
         [menu addItem:NSMenuItem.separatorItem];
-        [menu addItem:tasks_command_flag_item(TasksCommandSetPinned, YES, YES, self)];
-        [menu addItem:tasks_command_flag_item(TasksCommandSetPinned, NO, YES, self)];
         [menu addItem:tasks_command_flag_item(TasksCommandSetPriority, YES, YES, self)];
         [menu addItem:tasks_command_flag_item(TasksCommandSetPriority, NO, YES, self)];
     }
     [menu addItem:NSMenuItem.separatorItem];
 
-    /* Move to List: left out for a lone subtask (subtasks travel with their
-     * parent) and when there is nowhere to move to. */
-    if (task == NULL || task->parent_id == 0) {
-        NSMenu *move = [[NSMenu alloc] initWithTitle:@""];
-        [self fill_menu:move with_destinations_of:TasksCommandMoveToList];
-        if (move.numberOfItems > 0) {
-            NSMenuItem *holder = [[NSMenuItem alloc]
-                initWithTitle:tasks_command_spec(TasksCommandMoveToList)->title
-                       action:NULL
-                keyEquivalent:@""];
-            holder.submenu = move;
-            [menu addItem:holder];
-            [menu addItem:NSMenuItem.separatorItem];
-        }
+    /* Add Tag: every tag, left out when there is none to add. */
+    NSMenu *tags = [[NSMenu alloc] initWithTitle:@""];
+    [self fill_menu:tags with_destinations_of:TasksCommandAddTag];
+    if (tags.numberOfItems > 0) {
+        NSMenuItem *holder = [[NSMenuItem alloc]
+            initWithTitle:tasks_command_spec(TasksCommandAddTag)->title
+                   action:NULL
+            keyEquivalent:@""];
+        holder.submenu = tags;
+        [menu addItem:holder];
+        [menu addItem:NSMenuItem.separatorItem];
     }
 
     [menu addItem:tasks_command_menu_item(TasksCommandDeleteTask, nil, self)];
@@ -1246,9 +1231,9 @@ task_context_menu
  * run_command: — the action every command control sends.
  * Inputs are documented in library_window.h.
  *
- * A group command whose control names no group (the main menu's) is given
- * the group selected in the sidebar; validateMenuItem: has it disabled
- * when there is none.
+ * A tag command whose control names no tag (the main menu's) is given the
+ * tag selected in the sidebar; validateMenuItem: has it disabled when
+ * there is none.
  */
 - (void)
 run_command:(id)sender
@@ -1257,8 +1242,8 @@ run_command:(id)sender
     NSNumber    *param   = [sender isKindOfClass:NSMenuItem.class]
         ? ((NSMenuItem *)sender).representedObject : nil;
 
-    if (param == nil && acts_on_group(command)) {
-        if (self.selection.kind != task_sel_group) return;
+    if (param == nil && acts_on_tag(command)) {
+        if (self.selection.kind != task_sel_tag) return;
         param = @(self.selection.id);
     }
     [self perform_command:command param:param];
@@ -1280,78 +1265,67 @@ plural(NSUInteger count)
 }
 
 /*
- * create_task_in:tag:quick: — create an empty task in a list, give it a
- * tag when one is named, and open its editor (the variant with Cancel,
- * which deletes the task again).
+ * create_task_tagged:quick: — create an empty task with a tag and open its
+ * editor (the variant with Cancel, which deletes the task again).
  *
  * Inputs:
- *   list_id — the list; not 0
- *   tag_id  — the tag the task is given (New Task in a tag's proto-list,
- *             so the task shows where it was made); 0 for none
- *   quick   — YES for Quick Task: the editor opens in the corner of the
- *             screen the user is on, and the app comes forward with it
- *             (the shortcut may have been pressed in another app)
+ *   tag   — the tag's name (made when no task carries it yet); not NULL
+ *   quick — YES for Quick Task: the editor opens in the corner of the
+ *           screen the user is on, and the app comes forward with it (the
+ *           shortcut may have been pressed in another app)
  */
 - (void)
-create_task_in:(int64_t)list_id tag:(int64_t)tag_id quick:(BOOL)quick
+create_task_tagged:(const char *)tag quick:(BOOL)quick
 {
-    int64_t task_id = task_db_task_create(self.app->db, list_id, 0, "New Task");
+    int64_t task_id = task_db_task_create(self.app->db, 0, "New Task", tag);
     if (task_id == 0) {
         task_app_status(self.app, "Could not create the task");
         return;
     }
-    TaskTag *tag = tag_id != 0 ? task_db_tag_get(self.app->db, tag_id) : NULL;
-    if (tag != NULL && task_db_task_tag_add(self.app->db, task_id, tag->name) == 0) {
-        task_app_status(self.app, "Could not tag the new task \xe2\x80\x9c%s\xe2\x80\x9d",
-                        tag->name);
-    }
-    task_tag_free(tag);
     [self full_refresh];
     tasks_editor_open_new(self.app, task_id, quick);
     if (quick) [NSApp activate];
 }
 
 /*
- * new_task — New Task: a task in the selected list or, when a group, a tag
- * or a view is selected, in the default list (task_sel_new_task_list); in
- * a tag's proto-list the task is given the tag.  With no default list the
- * status bar says how to get one.  Action Items refuses new tasks (the
- * command is disabled there).
+ * new_task — New Task: a task with the selected tag or, when a view is
+ * selected, with the default tag (task_sel_new_task_tag).  With no default
+ * tag the status bar says how to get one.
  */
 - (void)
 new_task
 {
-    int64_t list_id = task_sel_new_task_list(self.app, self.selection);
-    if (list_id == 0) {
-        if (task_sel_takes_new_tasks(self.selection)) {
-            task_app_status(self.app, "Select a list, or choose a default list in Settings");
-        }
+    gchar *tag = task_sel_new_task_tag(self.app, self.selection);
+    if (tag == NULL) {
+        task_app_status(self.app, "Select a tag, or choose a default tag in Settings");
         return;
     }
-    [self create_task_in:list_id tag:task_sel_tag_id(self.selection) quick:NO];
+    [self create_task_tagged:tag quick:NO];
+    g_free(tag);
 }
 
 /*
  * quick_task — Quick Task (the menu item or the system-wide shortcut): a
- * task in the default list whatever is selected, its editor in the lower-
- * right corner of the screen.  With no default list it says so and opens
+ * task with the default tag whatever is selected, its editor in the lower-
+ * right corner of the screen.  With no default tag it says so and opens
  * Settings, where one is chosen.
  */
 - (void)
 quick_task
 {
-    int64_t list_id = task_ops_default_list(self.app);
-    if (list_id == 0) {
+    gchar *tag = task_ops_default_tag(self.app);
+    if (tag == NULL) {
         TaskApp *app = self.app;
         [NSApp activate];
-        tasks_ui_notice(nil, @"Choose a default list first",
-                        @"Quick Task files its task in the default list. "
+        tasks_ui_notice(nil, @"Choose a default tag first",
+                        @"Quick Task gives its task the default tag. "
                         @"Choose one in Settings, under New Tasks.", ^{
             tasks_settings_window_open(app);
         });
         return;
     }
-    [self create_task_in:list_id tag:0 quick:YES];
+    [self create_task_tagged:tag quick:YES];
+    g_free(tag);
 }
 
 /*
@@ -1396,27 +1370,28 @@ delete_tasks
 }
 
 /*
- * clear_completed — ask, then remove the selected list's completed tasks.
+ * clear_completed — ask, then remove the completed tasks carrying the
+ * selected tag (from every tag they carry: they are deleted).
  */
 - (void)
 clear_completed
 {
-    int64_t list_id = task_sel_list_id(self.selection);
-    TaskList *list  = list_id != 0 ? task_db_list_get(self.app->db, list_id) : NULL;
-    if (list == NULL) {
-        task_app_status(self.app, "Select a list to clear its completed tasks");
+    int64_t  tag_id = task_sel_tag_id(self.selection);
+    TaskTag *tag    = tag_id != 0 ? task_db_tag_get(self.app->db, tag_id) : NULL;
+    if (tag == NULL) {
+        task_app_status(self.app, "Select a tag to clear its completed tasks");
         return;
     }
-    NSString *title = [NSString stringWithFormat:@"Remove all completed tasks from “%@”?",
-                       tasks_string(list->name)];
-    task_list_free(list);
+    NSString *title = [NSString stringWithFormat:@"Delete every completed task tagged “%@”?",
+                       tasks_string(tag->name)];
+    task_tag_free(tag);
 
     __weak TasksLibraryWindow *ws = self;
     tasks_ui_confirm(self.window, title, @"You cannot undo this action.", @"Clear", YES,
                      ^(BOOL confirmed) {
         TasksLibraryWindow *s = ws;
         if (!s || s.is_shut_down || !confirmed) return;
-        guint cleared = task_ops_clear_completed(s.app, list_id);
+        guint cleared = task_ops_clear_completed(s.app, tag_id);
         [s full_refresh];
         task_app_status(s.app, "Cleared %u completed task%s", cleared, plural(cleared));
     });
@@ -1424,12 +1399,11 @@ clear_completed
 
 /*
  * set_flag:on: — apply one of the context menu's flags to every selected
- * task, then refresh everything (the Favorites row and the sort order can
- * both change) and say what was done — or that it was not saved.
+ * task, then refresh everything (the sort order can change) and say what
+ * was done — or that it was not saved.
  *
  * Inputs:
- *   command — TasksCommandMarkDone, TasksCommandSetPinned or
- *             TasksCommandSetPriority
+ *   command — TasksCommandMarkDone or TasksCommandSetPriority
  *   on      — the direction.  For MarkDone: YES is Done, NO is In Progress
  *             (the checkbox's two verbs — a task that was ticked has been
  *             worked on, so it does not go back to New)
@@ -1446,8 +1420,6 @@ set_flag:(TasksCommand)command on:(BOOL)on
         if (command == TasksCommandMarkDone) {
             ok = task_db_task_set_status(self.app->db, id,
                                          on ? TASK_STATUS_DONE : TASK_STATUS_IN_PROGRESS);
-        } else if (command == TasksCommandSetPinned) {
-            ok = task_db_task_set_pinned(self.app->db, id, on);
         } else {
             ok = task_db_task_set_priority(self.app->db, id, on);
         }
@@ -1464,9 +1436,6 @@ set_flag:(TasksCommand)command on:(BOOL)on
     } else if (command == TasksCommandMarkDone) {
         task_app_status(self.app, "Marked %lu task%s %s", count, plural(count),
                         on ? "complete" : "incomplete");
-    } else if (command == TasksCommandSetPinned) {
-        task_app_status(self.app, "%s %lu task%s",
-                        on ? "Added to Favorites" : "Removed from Favorites", count, plural(count));
     } else {
         task_app_status(self.app, "%s high priority on %lu task%s", on ? "Set" : "Cleared",
                         count, plural(count));
@@ -1474,47 +1443,108 @@ set_flag:(TasksCommand)command on:(BOOL)on
 }
 
 /*
- * move_to_list: — move every selected top-level task to another list.
- * Subtasks travel with their parents; one selected on its own cannot move.
+ * add_tag: — give every selected task a tag (Add Tag in the context menu),
+ * then say how many it was added to — or that it was not saved.
  *
  * Inputs:
- *   list_id — the destination list
+ *   tag_id — the tag
  */
 - (void)
-move_to_list:(int64_t)list_id
+add_tag:(int64_t)tag_id
 {
-    NSUInteger moved = 0;
+    TaskTag *tag = task_db_tag_get(self.app->db, tag_id);
+    if (tag == NULL) return;
 
-    for (NSNumber *task_id in [self selected_task_ids]) {
-        if (task_ops_move_to_list(self.app, task_id.longLongValue, list_id)) moved++;
+    NSArray<NSNumber *> *ids    = [self selected_task_ids];
+    gboolean             began  = task_db_transaction_begin(self.app->db);
+    gboolean             ok     = TRUE;
+    for (NSNumber *task_id in ids) {
+        ok = task_db_task_tag_add(self.app->db, task_id.longLongValue, tag->name) != 0 && ok;
     }
-    if (moved == 0) {
-        task_app_status(self.app, "Nothing to move (subtasks move with their parent task)");
-        return;
-    }
+    if (began) ok = task_db_transaction_end(self.app->db, ok);
     [self full_refresh];
-    task_app_status(self.app, "Moved %lu task%s", (unsigned long)moved, plural(moved));
+
+    unsigned long count = (unsigned long)ids.count;
+    if (!ok) {
+        gchar *what = g_strdup_printf("The tag \xe2\x80\x9c%s\xe2\x80\x9d", tag->name);
+        task_app_write_failed(self.app, what);
+        g_free(what);
+    } else {
+        task_app_status(self.app, "Tagged %lu task%s \xe2\x80\x9c%s\xe2\x80\x9d", count,
+                        plural(count), tag->name);
+    }
+    task_tag_free(tag);
 }
 
 /*
- * toggle_sidebar — slide the lists bar in or out and remember the choice.
+ * show_sidebar:animated: — show or hide the tag sidebar: a hidden sidebar
+ * has no width, so the task pane takes the room.
+ *
+ * Inputs:
+ *   show     — YES to show it
+ *   animated — YES to slide it
+ */
+- (void)
+show_sidebar:(BOOL)show animated:(BOOL)animated
+{
+    CGFloat width = show ? tasks_look_sidebar_w : 0.0;
+
+    if (!animated) {
+        self.sidebar.hidden          = !show;
+        self.sidebar_width.constant  = width;
+        return;
+    }
+    self.sidebar.hidden = NO;
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+        ctx.duration = 0.15;
+        ctx.allowsImplicitAnimation = YES;
+        self.sidebar_width.animator.constant = width;
+    } completionHandler:^{
+        self.sidebar.hidden = !show;
+    }];
+}
+
+/*
+ * toggle_sidebar — slide the tag sidebar in or out and remember the choice.
+ * The window's least width follows; a window too narrow for the sidebar
+ * and the pane together widens, keeping its left edge.
  */
 - (void)
 toggle_sidebar
 {
-    BOOL show = self.lists_bar.hidden;
+    BOOL show = self.sidebar_width.constant == 0.0;
+
+    task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, show);
+    NSSize least = [self content_min_size];
+    self.window.contentMinSize = least;
+    NSRect content = [self.window contentRectForFrameRect:self.window.frame];
+    if (NSWidth(content) < least.width) {
+        content.size.width = least.width;
+        [self.window setFrame:[self.window frameRectForContentRect:content] display:YES animate:YES];
+    }
+    [self show_sidebar:show animated:YES];
+}
+
+/*
+ * toggle_favorites_bar — show or hide the Favorites bar and remember the
+ * choice.
+ */
+- (void)
+toggle_favorites_bar
+{
+    BOOL show = self.favorites_bar.hidden;
 
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
         ctx.duration = 0.15;
-        self.lists_bar.animator.hidden = !show;
+        self.favorites_bar.animator.hidden = !show;
     }];
-    task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, show);
+    task_config_set_bool(TASK_CFG_FAVORITES_BAR_VISIBLE, show);
 }
 
 /*
  * content_min_size — the least content size of the mode in force: the task
- * pane alone in Compact; in full mode the pane plus the day planner when
- * that is shown.
+ * pane alone in Compact; in full mode the pane plus the sidebar and the
+ * day planner, each while it is shown.
  *
  * Output:
  *   the size, for the window's contentMinSize.
@@ -1526,6 +1556,9 @@ content_min_size
         return NSMakeSize(tasks_look_pane_min_w, tasks_look_compact_min_h);
     }
     CGFloat width = tasks_look_pane_min_w;
+    if (task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE)) {
+        width += tasks_look_sidebar_w + 1.0;      /* and its edge */
+    }
     if (!self.day_planner.hidden) {
         width += self.main_split.dividerThickness + tasks_look_day_planner_min_w;
     }
@@ -1612,8 +1645,8 @@ toggle_day_planner
  * size, the search (which Compact mode ends, because the field that would
  * show and clear it is hidden) and the window's size.
  *
- * In full mode the sidebar follows the sidebar_visible setting; in Compact
- * mode it is always hidden.  The resize keeps the window's top-left corner
+ * In full mode the sidebar and the Favorites bar follow their settings; in
+ * Compact mode both are always hidden.  The resize keeps the window's top-left corner
  * where it is, so the title bar does not move under the pointer.
  *
  * Inputs:
@@ -1626,7 +1659,8 @@ toggle_day_planner
 apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
 {
     BOOL   compact  = task_config_get_bool(TASK_CFG_COMPACT);
-    BOOL   collapse = compact || !task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE);
+    BOOL   no_side  = compact || !task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE);
+    BOOL   no_bar   = compact || !task_config_get_bool(TASK_CFG_FAVORITES_BAR_VISIBLE);
     NSSize least    = [self content_min_size];
     NSRect old      = self.window.frame;
 
@@ -1643,7 +1677,8 @@ apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
     frame = [self.window constrainFrameRect:frame toScreen:self.window.screen];
 
     if (!animated) {
-        self.lists_bar.hidden = collapse;
+        self.favorites_bar.hidden = no_bar;
+        [self show_sidebar:!no_side animated:NO];
         [self.window setFrame:frame display:NO];
         return;
     }
@@ -1651,11 +1686,12 @@ apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
     self.compact_animating = YES;
     __weak TasksLibraryWindow *ws = self;
     [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
-        self.lists_bar.animator.hidden = collapse;
+        self.favorites_bar.animator.hidden = no_bar;
         [self.window.animator setFrame:frame display:YES];
     } completionHandler:^{
         ws.compact_animating = NO;
     }];
+    [self show_sidebar:!no_side animated:YES];
 }
 
 /*
@@ -1664,7 +1700,8 @@ apply_compact_layout_at:(NSSize)content animated:(BOOL)animated
  * saved for the next time that mode is entered, and the window goes to the
  * size remembered for the mode being entered (compact_w/h for Compact,
  * compact_pre_w/h — the size it had before going Compact — for full).
- * Leaving Compact always brings the sidebar back, and records that.
+ * Leaving Compact always brings the sidebar and the Favorites bar back,
+ * and records that.
  */
 - (void)
 toggle_compact
@@ -1679,6 +1716,7 @@ toggle_compact
     } else {
         save_size(TASK_CFG_COMPACT_W, TASK_CFG_COMPACT_H, now);
         task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, TRUE);
+        task_config_set_bool(TASK_CFG_FAVORITES_BAR_VISIBLE, TRUE);
     }
     task_config_set_bool(TASK_CFG_COMPACT, compact);
 
@@ -1869,6 +1907,9 @@ perform_shell_command:(TasksCommand)command param:(NSNumber *)param
     case TasksCommandToggleSidebar:
         [self toggle_sidebar];
         break;
+    case TasksCommandToggleFavoritesBar:
+        [self toggle_favorites_bar];
+        break;
     case TasksCommandToggleDayPlanner:
         [self toggle_day_planner];
         break;
@@ -1884,12 +1925,11 @@ perform_shell_command:(TasksCommand)command param:(NSNumber *)param
         [self focus_task_pane];
         break;
     case TasksCommandMarkDone:
-    case TasksCommandSetPinned:
     case TasksCommandSetPriority:
         [self set_flag:command on:param.boolValue];
         break;
-    case TasksCommandMoveToList:
-        [self move_to_list:param.longLongValue];
+    case TasksCommandAddTag:
+        [self add_tag:param.longLongValue];
         break;
     default:
         break;                      /* not one of the window's own commands */
@@ -1912,7 +1952,7 @@ perform_command:(TasksCommand)command param:(NSNumber *)param
         [self perform_shell_command:command param:param];
         break;
     case TasksCommandOwnerSidebar:
-        [self.lists_bar perform_command:command param:param];
+        [self.sidebar perform_command:command param:param];
         break;
     case TasksCommandOwnerTaskList:
         [self.task_list perform_command:command param:param];
@@ -1950,16 +1990,12 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
         state.enabled = selected == 1;
         break;
     case TasksCommandMarkDone:
-    case TasksCommandSetPinned:
     case TasksCommandSetPriority:
-    case TasksCommandMoveToList:
+    case TasksCommandAddTag:
         state.enabled = selected > 0;
         break;
-    case TasksCommandNewTask:
-        state.enabled = task_sel_takes_new_tasks(self.selection);
-        break;
     case TasksCommandClearCompleted:
-        state.enabled = task_sel_list_id(self.selection) != 0;
+        state.enabled = task_sel_tag_id(self.selection) != 0;
         break;
     /* The toggles: the command table holds each one's first face; only the
      * other face is spelled here. */
@@ -1972,10 +2008,15 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
         break;
         break;
     case TasksCommandToggleSidebar:
-        if (self.lists_bar.hidden) {
-            state.title   = @"Show Lists Bar";
-            state.tooltip = @"Show the lists bar";
+        if (self.sidebar_width.constant == 0.0) {
+            state.title   = @"Show Sidebar";
+            state.tooltip = @"Show the sidebar";
         }
+        break;
+    case TasksCommandToggleFavoritesBar:
+        if (self.favorites_bar.hidden) state.title = @"Show Favorites Bar";
+        /* Compact mode hides the bar whatever the setting. */
+        state.enabled = !task_config_get_bool(TASK_CFG_COMPACT);
         break;
     case TasksCommandToggleDayPlanner:
         if (self.day_planner.hidden) {
@@ -2023,8 +2064,7 @@ state_of_command:(TasksCommand)command
         [self update_shell_state:state for_command:command];
         break;
     case TasksCommandOwnerSidebar:
-        [self.lists_bar update_state:state for_command:command];
-        break;
+        break;                      /* validateMenuItem: decides (acts_on_tag) */
     case TasksCommandOwnerTaskList:
         [self.task_list update_state:state for_command:command];
         break;
@@ -2097,7 +2137,8 @@ shut_down
     [self.kanban cancel_drag];
     tasks_editor_close_all();
 
-    [self.lists_bar shut_down];
+    [self.sidebar shut_down];
+    [self.favorites_bar shut_down];
     [self.task_list shut_down];
     [self.kanban shut_down];
     [self.day_planner shut_down];

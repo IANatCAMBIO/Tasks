@@ -3,7 +3,7 @@
 
 /*
  * settings_window — the Settings window: Appearance, New Tasks (the
- * default list, Quick Task's system-wide shortcut), notifications, the
+ * default tag, Quick Task's system-wide shortcut), notifications, the
  * database health plate, rotating backups, Google Calendar.
  *
  * Every control is write-through: a change lands in the config at once

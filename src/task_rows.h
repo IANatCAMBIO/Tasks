@@ -2,7 +2,7 @@
  * task_rows — what a task row SAYS, as a toolkit-neutral description.
  *
  * A "task row" in this app is not a line of text.  It is a tall cell
- * carrying the title, a glyph stack, an "in <list>" line, a notes preview,
+ * carrying the title, a glyph stack, the task's tags, a notes preview,
  * an attachment count and up to four subtasks.  Both panes that show tasks
  * — the task list and the Kanban cards — show exactly this content.
  *
@@ -17,8 +17,8 @@
  * string needs before it reaches a text system, and the blank-line gate
  * that keeps a one-space note from silently making a row taller.
  *
- * PERFORMANCE.  The expensive lookups — attachment counts, subtasks, list
- * names — are gathered ONCE per refresh into a TaskRowCtx and shared by
+ * PERFORMANCE.  The expensive lookups — attachment counts, subtasks, every
+ * task's tags — are gathered ONCE per refresh into a TaskRowCtx and shared by
  * every row, because the alternative is a query per row.
  *
  * The description types are plain C (malloc/free, no GLib).  TaskRowCtx
@@ -39,7 +39,7 @@
  * emphasis. */
 typedef enum {
     task_row_line_title = 0,        /* glyph stack + title; always first  */
-    task_row_line_list,             /* "in <list>" (virtual views only)   */
+    task_row_line_tags,             /* the task's tags, labelled          */
     task_row_line_notes,            /* first non-blank notes line, capped */
     task_row_line_attachments,      /* "📎 N attachments"                 */
     task_row_line_subtask,          /* "☐ title" / "☑ title", at most 4   */
@@ -49,11 +49,11 @@ typedef enum {
 /*
  * task_row_line_t — one line of a row.
  *
- *   prefix    — glyphs drawn before the text ("🚨  ⭐️  ", "☑ "): never
+ *   prefix    — glyphs drawn before the text ("🚨  ", "☑ "): never
  *               bold, struck or dimmed.  "" when there are none.
  *   text      — the line's text, valid UTF-8, never NULL.
  *   bold      — title only, per the bold_task_titles setting.
- *   italic    — the "in <list>" line.
+ *   italic    — the tags line.
  *   strike    — a Done task's title, a Done subtask's title.
  *   small     — every line but the title.
  *   alpha_pct — opacity of `text`, 100 = full.  Dimming is ALWAYS opacity,
@@ -72,7 +72,10 @@ typedef struct {
 
 /* The alpha values in use, so the renderer and the tests name them once. */
 #define TASK_ROW_ALPHA_FULL      100
-#define TASK_ROW_ALPHA_LIST       60    /* the "in <list>" line           */
+#define TASK_ROW_ALPHA_TAGS       60    /* the tags line                  */
+
+/* Between two tags' labels on the tags line. */
+#define TASK_ROW_TAG_SEPARATOR "   "
 #define TASK_ROW_ALPHA_DETAIL     65    /* notes, attachments, "+N more"  */
 #define TASK_ROW_ALPHA_SUB_DONE   55    /* a completed subtask's title    */
 
@@ -136,7 +139,7 @@ typedef struct {
     GHashTable *att_counts;         /* task id -> attachment count        */
     GPtrArray  *all_subs;           /* owns the subtask rows below        */
     GHashTable *subs_by_parent;     /* parent id -> GPtrArray, borrowed   */
-    GHashTable *list_names;         /* list id -> name; NULL in list views */
+    GHashTable *tags_by_task;       /* task id -> GPtrArray of TaskTag*   */
     gboolean    bold;               /* the bold_task_titles setting       */
     gboolean    show_done;          /* the show_completed setting         */
     gboolean    note_context;       /* the note_context_titles setting    */
@@ -146,12 +149,10 @@ typedef struct {
  * task_row_ctx_init — gather the lookups for one refresh.
  *
  * Inputs:
- *   app          — the application context (database must be open)
- *   ctx          — the context to fill (typically on the caller's stack)
- *   virtual_view — TRUE when rows should carry their "in <list>" line: a
- *                  view gathering tasks from several lists
+ *   app — the application context (database must be open)
+ *   ctx — the context to fill (typically on the caller's stack)
  */
-void task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx, gboolean virtual_view);
+void task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx);
 
 /*
  * task_row_ctx_clear — release what task_row_ctx_init gathered.

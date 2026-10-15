@@ -43,15 +43,16 @@ tasks_title_string(const Task *task, NSString *untitled)
 }
 
 /*
- * tasks_list_title — a list's emoji and name, for a menu item.
+ * tasks_tag_title — a tag's label, for a menu item or a button.
  * Inputs/output are documented in ui_util.h.
  */
 NSString *
-tasks_list_title(const TaskList *list)
+tasks_tag_title(const TaskTag *tag)
 {
-    return *list->emoji != '\0'
-        ? [NSString stringWithFormat:@"%@  %@", tasks_string(list->emoji), tasks_string(list->name)]
-        : tasks_string(list->name);
+    gchar    *label = task_tag_label(tag);
+    NSString *title = tasks_string(label);
+    g_free(label);
+    return title;
 }
 
 /* ── Images ─────────────────────────────────────────────────────────── */

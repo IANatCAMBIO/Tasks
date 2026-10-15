@@ -171,9 +171,8 @@ store_checks(TaskDatabase *db)
     g_ptr_array_free(none, TRUE);
     check(!gcal_store_dirty(db), "store: an empty planner is clean");
 
-    gint64 list = task_db_list_create(db, "Work", NULL);
-    gint64 a    = task_db_task_create(db, list, 0, "Write report");
-    gint64 b    = task_db_task_create(db, list, 0, "Review");
+    gint64 a    = task_db_task_create(db, 0, "Write report", "Work");
+    gint64 b    = task_db_task_create(db, 0, "Review", "Work");
     task_db_task_set_scheduled(db, a, 1791550800, 60);
     check(gcal_store_dirty(db), "dirty: a scheduled, unbound task");
 
