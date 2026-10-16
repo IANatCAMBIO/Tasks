@@ -119,7 +119,6 @@ typedef NS_ENUM(NSInteger, TasksColor) {
     TasksColorRowStripe = 0,        /* even list rows (not over selection) */
     TasksColorHeaderFill,           /* the list's column headers           */
     TasksColorDragRow,              /* the row held during a manual drag   */
-    TasksColorLink,                 /* "Advanced", "Show all N completed"  */
     TasksColorLaneFill,             /* a Kanban lane's tint                */
     TasksColorLaneBorder,
     TasksColorLaneTarget,           /* the lane a drag would land in       */

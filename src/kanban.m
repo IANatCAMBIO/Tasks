@@ -692,7 +692,7 @@ show_link:(NSString *)title
     self.link.attributedTitle = [[NSAttributedString alloc]
         initWithString:title
             attributes:@{ NSFontAttributeName: [NSFont systemFontOfSize:tasks_look_row_small_font],
-                          NSForegroundColorAttributeName: tasks_color(TasksColorLink),
+                          NSForegroundColorAttributeName: shared_ui_color(shared_look_link),
                           NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle) }];
     [self.link sizeToFit];
 }

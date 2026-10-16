@@ -21,7 +21,6 @@ static const color_spec_t color_specs[TasksColorCount] = {
     [TasksColorRowStripe]         = { color_fixed,  { 0.953, 0.953, 0.953, 1.00 }, { 0.145, 0.145, 0.145, 1.00 } },
     [TasksColorHeaderFill]        = { color_fixed,  { 0.957, 0.957, 0.957, 1.00 }, { 0.173, 0.173, 0.173, 1.00 } },
     [TasksColorDragRow]           = { color_fixed,  { 0.992, 0.902, 0.541, 1.00 }, { 0.478, 0.384, 0.125, 1.00 } },
-    [TasksColorLink]              = { color_fixed,  { 0.110, 0.443, 0.847, 1.00 }, { 0.471, 0.682, 0.929, 1.00 } },
     [TasksColorLaneFill]          = { color_fixed,  { 0.0, 0.0, 0.0, 0.05 },       { 1.0, 1.0, 1.0, 0.05 } },
     [TasksColorLaneBorder]        = { color_fixed,  { 0.0, 0.0, 0.0, 0.20 },       { 1.0, 1.0, 1.0, 0.20 } },
     [TasksColorLaneTarget]        = { color_accent, { 0.0, 0.0, 0.0, 0.22 },       { 0.0, 0.0, 0.0, 0.0 } },

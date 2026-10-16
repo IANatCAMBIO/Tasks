@@ -24,8 +24,6 @@
 /* The About panel's credits: the app's motto (carried from the GTK build),
  * then two links. */
 static NSString * const about_motto       = @"Gettin' shit done since 2026!";
-static NSString * const about_site_url    = @"https://camb.io";
-static NSString * const about_license_url = @"https://opensource.org/license/bsd-3-clause";
 
 /* The help page in Contents/Resources (resources/help.html). */
 static NSString * const help_page_name = @"help";
@@ -448,43 +446,6 @@ validateMenuItem:(NSMenuItem *)item
 }
 
 /*
- * about_credits — the About panel's credits, centred in the small system
- * font: the motto, then "camb.io · BSD License", each a link.
- *
- * Output:
- *   attributed string for NSAboutPanelOptionCredits.
- */
-static NSAttributedString *
-about_credits(void)
-{
-    NSMutableParagraphStyle *centred = [[NSMutableParagraphStyle alloc] init];
-    centred.alignment = NSTextAlignmentCenter;
-    NSDictionary *plain = @{
-        NSFontAttributeName:            [NSFont systemFontOfSize:NSFont.smallSystemFontSize],
-        NSForegroundColorAttributeName: NSColor.labelColor,
-        NSParagraphStyleAttributeName:  centred,
-    };
-    NSArray<NSArray<NSString *> *> *links = @[
-        @[@"camb.io",     about_site_url],
-        @[@"BSD License", about_license_url],
-    ];
-
-    NSMutableAttributedString *credits = [[NSMutableAttributedString alloc]
-        initWithString:[about_motto stringByAppendingString:@"\n\n"] attributes:plain];
-    for (NSArray<NSString *> *link in links) {
-        if (link != links.firstObject) {
-            [credits appendAttributedString:
-                [[NSAttributedString alloc] initWithString:@"  ·  " attributes:plain]];
-        }
-        NSMutableDictionary *attrs = [plain mutableCopy];
-        attrs[NSLinkAttributeName] = [NSURL URLWithString:link[1]];
-        [credits appendAttributedString:
-            [[NSAttributedString alloc] initWithString:link[0] attributes:attrs]];
-    }
-    return credits;
-}
-
-/*
  * show_about — the standard About panel.  Its version line reads
  * "Version <VERSION> (built <date>)": the version comes from Info.plist and
  * the date from its TasksBuildDate key, both written by the Makefile.  The
@@ -494,22 +455,7 @@ about_credits(void)
 - (void)
 show_about
 {
-    NSMutableDictionary *options = [NSMutableDictionary dictionary];
-    options[NSAboutPanelOptionCredits] = about_credits();
-
-    NSImage *icon = tasks_app_icon(app_icon_size);
-    if (icon) options[NSAboutPanelOptionApplicationIcon] = icon;
-
-    NSString *stamp = NSBundle.mainBundle.infoDictionary[build_date_key];
-    NSDate *built   = stamp ? [[[NSISO8601DateFormatter alloc] init] dateFromString:stamp] : nil;
-    if (built) {
-        options[NSAboutPanelOptionApplicationVersion] =
-            [@"built " stringByAppendingString:
-                [NSDateFormatter localizedStringFromDate:built
-                                               dateStyle:NSDateFormatterMediumStyle
-                                               timeStyle:NSDateFormatterShortStyle]];
-    }
-    [NSApp orderFrontStandardAboutPanelWithOptions:options];
+    shared_ui_show_about(about_motto, tasks_app_icon(app_icon_size), build_date_key);
 }
 
 /*

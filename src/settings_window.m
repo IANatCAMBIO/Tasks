@@ -45,10 +45,9 @@ static const NSUInteger sha_tail = 4;
 /* The backup schedule's interval field.  The interval is in minutes, 0
  * meaning "only when Back Up Now is pressed"; its range and step are the
  * shared module's (SHARED_BACKUP_INTERVAL_MIN_MAX / _STEP). */
-static const CGFloat   interval_field_w     = 56.0;  /* five digits  */
+static const CGFloat   number_field_w       = 52.0;  /* a number field, as Notes' */
 /* The calendar sync's interval: up to a day, a minute at a time. */
 static const NSInteger gcal_interval_max    = 1440;
-static const CGFloat   keep_field_w         = 44.0;  /* three digits */
 static const CGFloat   stepper_gap          = 2.0;   /* a field to its stepper */
 
 /* ── The Appearance options ─────────────────────────────────────────── */
@@ -92,26 +91,8 @@ form_content_w(void)
 }
 
 /*
- * section_label — a bold section heading.
- *
- * Inputs:
- *   title — heading text
- *
- * Output:
- *   configured label.
- */
-static NSTextField *
-section_label(NSString *title)
-{
-    NSTextField *label = [NSTextField labelWithString:title];
-
-    label.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
-    return label;
-}
-
-/*
- * small_label — a one-line label in the small system font: the plate's
- * text.
+ * plate_label — a one-line label of the Database plate, in a colour (the
+ * window's text size, shared_ui_use_ui_font).
  *
  * Inputs:
  *   text  — the text
@@ -121,35 +102,11 @@ section_label(NSString *title)
  *   configured label.
  */
 static NSTextField *
-small_label(NSString *text, NSColor *color)
+plate_label(NSString *text, NSColor *color)
 {
     NSTextField *label = [NSTextField labelWithString:text];
 
-    label.font      = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     label.textColor = color;
-    return label;
-}
-
-/*
- * wrapping_label — small text that wraps at a given width.  The width is
- * stated because a wrapping label has no fitting height without one, and
- * the window is sized from its content's fitting height.
- *
- * Inputs:
- *   color — its colour
- *   width — where it wraps, in points
- *
- * Output:
- *   configured, empty label.
- */
-static NSTextField *
-wrapping_label(NSColor *color, CGFloat width)
-{
-    NSTextField *label = [NSTextField wrappingLabelWithString:@""];
-
-    label.font                    = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    label.textColor               = color;
-    label.preferredMaxLayoutWidth = width;
     return label;
 }
 
@@ -163,34 +120,11 @@ wrapping_label(NSColor *color, CGFloat width)
 static NSTextField *
 plate_value(void)
 {
-    NSTextField *label = wrapping_label(NSColor.labelColor, plate_value_w);
+    NSTextField *label = shared_ui_note(@"", plate_value_w);
 
+    label.textColor  = NSColor.labelColor;
     label.selectable = YES;
     return label;
-}
-
-/*
- * copy_link — a borderless, link-coloured "copy" button to sit beside a
- * value, as in Files' Get Info.
- *
- * Inputs:
- *   target — receives the action
- *   action — sent on a click
- *
- * Output:
- *   configured button.
- */
-static NSButton *
-copy_link(id target, SEL action)
-{
-    NSButton *button = [NSButton buttonWithTitle:@"" target:target action:action];
-
-    button.bordered        = NO;
-    button.attributedTitle = [[NSAttributedString alloc] initWithString:@"copy" attributes:@{
-        NSForegroundColorAttributeName: tasks_color(TasksColorLink),
-        NSFontAttributeName:            [NSFont systemFontOfSize:NSFont.labelFontSize],
-    }];
-    return button;
 }
 
 /*
@@ -279,12 +213,8 @@ number_stepper(NSInteger lo, NSInteger hi, NSInteger step, id target, SEL action
 static NSStackView *
 button_row(NSArray<NSButton *> *buttons)
 {
-    NSView *spacer = [[NSView alloc] initWithFrame:NSZeroRect];
-
-    [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow - 1
-                       forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSStackView *row =
-        [NSStackView stackViewWithViews:[@[spacer] arrayByAddingObjectsFromArray:buttons]];
+        [NSStackView stackViewWithViews:[@[shared_ui_spacer()] arrayByAddingObjectsFromArray:buttons]];
     row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     [row.widthAnchor constraintEqualToConstant:form_content_w()].active = YES;
     return row;
@@ -305,32 +235,6 @@ copy_to_pasteboard(NSString *text)
     [board clearContents];
     [board setString:text forType:NSPasteboardTypeString];
 }
-
-/*
- * TasksSettingsForm — the scroll view's document: a view whose origin is
- * its TOP-left corner, so that the form starts at the top of the window
- * and a form taller than the window scrolls down from there.  (A plain
- * view's origin is bottom-left, and a scroll view would open on the form's
- * last rows.)
- */
-@interface TasksSettingsForm : NSView
-@end
-
-@implementation TasksSettingsForm
-
-/*
- * isFlipped — y grows downwards in this view.
- *
- * Output:
- *   YES.
- */
-- (BOOL)
-isFlipped
-{
-    return YES;
-}
-
-@end
 
 /* ── The window ─────────────────────────────────────────────────────── */
 
@@ -513,20 +417,24 @@ on_backup_done(TaskApp *app, gboolean ok, const gchar *message, gpointer data)
 - (instancetype)
 init_with_app:(TaskApp *)app
 {
-    NSWindow *window = [[NSWindow alloc]
+    /* A utility panel with the apps' text size, as Notes' Settings. */
+    NSPanel *window = [[NSPanel alloc]
         initWithContentRect:NSMakeRect(0, 0, tasks_look_settings_w, tasks_look_settings_max_h)
-                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                            NSWindowStyleMaskUtilityWindow
                     backing:NSBackingStoreBuffered
                       defer:YES];
 
     self = [super initWithWindow:window];
     if (!self) return nil;
 
-    _app            = app;
-    window.title    = @"Settings";
-    window.delegate = self;
+    _app                     = app;
+    window.title             = @"Settings";
+    window.hidesOnDeactivate = NO;
+    window.delegate          = self;
 
     [self build_form];
+    shared_ui_use_ui_font(self.form);
     [self refresh_gcal];
     _gcal_listener = task_app_listen_tasks(app, on_gcal_tasks, NULL);
     [self refresh_backup];
@@ -546,7 +454,7 @@ init_with_app:(TaskApp *)app
 - (NSArray<NSView *> *)
 appearance_rows
 {
-    NSMutableArray<NSView *> *rows = [NSMutableArray arrayWithObject:section_label(@"Appearance")];
+    NSMutableArray<NSView *> *rows = [NSMutableArray arrayWithObject:shared_ui_heading(@"Appearance")];
 
     for (NSUInteger i = 0; i < APPEARANCE_OPTION_COUNT; i++) {
         NSButton *box = [NSButton checkboxWithTitle:appearance_options[i].title
@@ -578,27 +486,27 @@ database_plate
 {
     NSColor *dim = NSColor.secondaryLabelColor;
 
-    self.health_light = small_label(@"●", NSColor.tertiaryLabelColor);
-    self.health_label = small_label(@"", NSColor.labelColor);
+    self.health_light = plate_label(@"●", NSColor.tertiaryLabelColor);
+    self.health_label = plate_label(@"", NSColor.labelColor);
     self.path_label   = plate_value();
     self.data_label   = plate_value();
     self.size_label   = plate_value();
 
     /* The digest is shown shortened, so it is not selectable (a selection
      * would copy the short form); its "copy" link copies the whole of it. */
-    self.sha_label      = small_label(@"—", NSColor.labelColor);
-    self.sha_label.font = [NSFont monospacedSystemFontOfSize:NSFont.smallSystemFontSize
+    self.sha_label      = plate_label(@"—", NSColor.labelColor);
+    self.sha_label.font = [NSFont monospacedSystemFontOfSize:shared_look_ui_font
                                                       weight:NSFontWeightRegular];
-    self.sha_copy       = copy_link(self, @selector(copy_sha:));
+    self.sha_copy       = shared_ui_copy_link(self, @selector(copy_sha:));
 
     NSGridView *grid = [NSGridView gridViewWithViews:@[
-        @[small_label(@"Health:", dim),
+        @[plate_label(@"Health:", dim),
           value_row(@[self.health_light, self.health_label])],
-        @[small_label(@"Current database:", dim),
-          value_row(@[self.path_label, copy_link(self, @selector(copy_path:))])],
-        @[small_label(@"Data:", dim),         self.data_label],
-        @[small_label(@"Size on disk:", dim), self.size_label],
-        @[small_label(@"SHA-256:", dim),
+        @[plate_label(@"Current database:", dim),
+          value_row(@[self.path_label, shared_ui_copy_link(self, @selector(copy_path:))])],
+        @[plate_label(@"Data:", dim),         self.data_label],
+        @[plate_label(@"Size on disk:", dim), self.size_label],
+        @[plate_label(@"SHA-256:", dim),
           value_row(@[self.sha_label, self.sha_copy])],
     ]];
     grid.columnSpacing = plate_col_gap;
@@ -609,7 +517,7 @@ database_plate
     NSBox *plate = [[NSBox alloc] initWithFrame:NSZeroRect];
     plate.boxType            = NSBoxCustom;
     plate.titlePosition      = NSNoTitle;
-    plate.fillColor          = NSColor.textBackgroundColor;
+    plate.fillColor          = NSColor.controlBackgroundColor;
     plate.borderColor        = NSColor.separatorColor;
     plate.borderWidth        = 1.0;
     plate.cornerRadius       = plate_radius;
@@ -651,7 +559,7 @@ database_rows
         @"against this database, then re-count its tasks and tags and re-read its size and "
         @"SHA-256.";
 
-    return @[section_label(@"Database"), [self database_plate],
+    return @[shared_ui_heading(@"Database"), [self database_plate],
              button_row(@[self.update_button])];
 }
 
@@ -667,11 +575,11 @@ database_rows
 - (NSStackView *)
 schedule_row
 {
-    self.interval_field   = number_field(interval_field_w, self, @selector(interval_changed:));
+    self.interval_field   = number_field(number_field_w, self, @selector(interval_changed:));
     self.interval_stepper = number_stepper(0, SHARED_BACKUP_INTERVAL_MIN_MAX,
                                            SHARED_BACKUP_INTERVAL_MIN_STEP,
                                            self, @selector(interval_changed:));
-    self.keep_field       = number_field(keep_field_w, self, @selector(keep_changed:));
+    self.keep_field       = number_field(number_field_w, self, @selector(keep_changed:));
     self.keep_stepper     = number_stepper(SHARED_BACKUP_KEEP_MIN, SHARED_BACKUP_KEEP_MAX, 1,
                                            self, @selector(keep_changed:));
 
@@ -715,8 +623,7 @@ schedule_row
 - (NSArray<NSView *> *)
 backup_rows
 {
-    CGFloat  text_w = form_content_w();
-    NSColor *dim    = NSColor.secondaryLabelColor;
+    CGFloat text_w = form_content_w();
 
     self.backup_box = [NSButton checkboxWithTitle:@"Back up the database automatically"
                                            target:self
@@ -727,11 +634,12 @@ backup_rows
         @"settings. Worth pointing at a disk independent of wherever the database itself "
         @"lives, so one mishap cannot take both.";
 
-    self.folder_label  = wrapping_label(dim, text_w);
-    self.fate_label    = wrapping_label(dim, text_w);
-    self.backup_status = wrapping_label(dim, text_w);
-    self.last_label    = wrapping_label(dim, text_w);
-    self.error_label   = wrapping_label(NSColor.systemRedColor, text_w);
+    self.folder_label  = shared_ui_note(@"", text_w);
+    self.fate_label    = shared_ui_note(@"", text_w);
+    self.backup_status = shared_ui_note(@"", text_w);
+    self.last_label    = shared_ui_note(@"", text_w);
+    self.error_label   = shared_ui_note(@"", text_w);
+    self.error_label.textColor = NSColor.systemRedColor;
     self.fate_label.stringValue = @"⚠ alongside the database — change it to survive "
                                   @"losing that folder";
     self.backup_status.hidden   = YES;
@@ -743,7 +651,7 @@ backup_rows
                                             target:self
                                             action:@selector(back_up_now:)];
 
-    return @[section_label(@"Backups"), self.backup_box, [self schedule_row],
+    return @[shared_ui_heading(@"Backups"), self.backup_box, [self schedule_row],
              self.folder_label, self.fate_label, self.last_label, self.error_label,
              button_row(@[self.choose_button, self.backup_button]), self.backup_status];
 }
@@ -778,13 +686,12 @@ new_task_rows
     hotkey.state = task_config_get_bool(TASK_CFG_QUICK_TASK_HOTKEY) ? NSControlStateValueOn
                                                                       : NSControlStateValueOff;
 
-    NSTextField *note = wrapping_label(NSColor.secondaryLabelColor, form_content_w());
-    note.stringValue =
+    NSTextField *note = shared_ui_note(
         @"Every task has a tag. New Task gives the default tag when a view is selected "
         @"rather than a tag. Quick Task always gives it, and opens its editor in the "
-        @"lower-right corner of the screen.";
+        @"lower-right corner of the screen.", form_content_w());
 
-    return @[section_label(@"New Tasks"), tag_row, hotkey, note];
+    return @[shared_ui_heading(@"New Tasks"), tag_row, hotkey, note];
 }
 
 /*
@@ -887,17 +794,14 @@ notification_rows
     self.notif_tasks_btn.tag  = 0;
     self.notif_native_btn.tag = 1;
 
-    self.notif_tasks_btn.state  = native ? NSControlStateValueOff : NSControlStateValueOn;
-    self.notif_native_btn.state = native ? NSControlStateValueOn  : NSControlStateValueOff;
+    shared_ui_select_radio(@[self.notif_tasks_btn, self.notif_native_btn],
+                           native ? self.notif_native_btn : self.notif_tasks_btn);
 
-    NSTextField *note = [NSTextField wrappingLabelWithString:
+    NSTextField *note = shared_ui_note(
         @"Tasks notifications appear in the lower-right corner. "
-        @"macOS Notification Center alerts require permission from macOS."];
-    note.font      = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    note.textColor = NSColor.secondaryLabelColor;
-    note.preferredMaxLayoutWidth = form_content_w();
+        @"macOS Notification Center alerts require permission from macOS.", form_content_w());
 
-    return @[section_label(@"Notifications"),
+    return @[shared_ui_heading(@"Notifications"),
              self.notif_tasks_btn, self.notif_native_btn, note];
 }
 
@@ -915,8 +819,7 @@ notif_mode_changed:(NSButton *)sender
     BOOL native = sender.tag == 1;
 
     /* Keep the pair in sync — only the clicked button fires the action. */
-    self.notif_tasks_btn.state  = native ? NSControlStateValueOff : NSControlStateValueOn;
-    self.notif_native_btn.state = native ? NSControlStateValueOn  : NSControlStateValueOff;
+    shared_ui_select_radio(@[self.notif_tasks_btn, self.notif_native_btn], sender);
 
     task_config_set(TASK_CFG_NOTIF_MODE,
                     native ? TASK_NOTIF_MODE_NATIVE : TASK_NOTIF_MODE_TASKS);
@@ -953,7 +856,7 @@ gcal_box_view(void)
 - (NSStackView *)
 gcal_interval_row
 {
-    self.gcal_interval_field   = number_field(interval_field_w, self,
+    self.gcal_interval_field   = number_field(number_field_w, self,
                                               @selector(gcal_interval_changed:));
     self.gcal_interval_stepper = number_stepper(0, gcal_interval_max, 1, self,
                                                 @selector(gcal_interval_changed:));
@@ -994,7 +897,7 @@ gcal_rows
         @"stretching or removing them changes the event. Events moved or deleted in Google "
         @"Calendar change the planner too. Events from the calendars you show are drawn in "
         @"the planner so you can schedule around them.";
-    return @[section_label(@"Google Calendar"), self.gcal_box, self.gcal_switch,
+    return @[shared_ui_heading(@"Google Calendar"), self.gcal_box, self.gcal_switch,
              [self gcal_interval_row], self.gcal_calendars_box];
 }
 
@@ -1073,13 +976,12 @@ gcal_calendar_rows:(GPtrArray *)cals into:(NSMutableArray<NSView *> *)rows
 - (void)
 refresh_gcal
 {
-    NSColor  *dim      = NSColor.secondaryLabelColor;
     CGFloat   text_w   = form_content_w();
     BOOL      client   = task_oauth_have_client();
     BOOL      signed_in = task_oauth_authenticated();
     NSMutableArray<NSView *> *rows = [NSMutableArray array];
 
-    NSTextField *status = wrapping_label(dim, text_w);
+    NSTextField *status = shared_ui_note(@"", text_w);
     if (!client) {
         status.stringValue = @"No Google OAuth client is configured for this build. Put the "
                              @"Google Cloud console's Desktop-app client file (" @TASK_OAUTH_CLIENT_FILE
@@ -1301,7 +1203,7 @@ build_form
      * corner only: its height is its content's, and fit_window sizes the
      * document and the window to that. */
     [form.widthAnchor constraintEqualToConstant:tasks_look_settings_w].active = YES;
-    TasksSettingsForm *document = [[TasksSettingsForm alloc] initWithFrame:NSZeroRect];
+    SharedFlippedView *document = [[SharedFlippedView alloc] initWithFrame:NSZeroRect];
     form.translatesAutoresizingMaskIntoConstraints = NO;
     [document addSubview:form];
     [form.leadingAnchor constraintEqualToAnchor:document.leadingAnchor].active = YES;

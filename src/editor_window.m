@@ -66,24 +66,6 @@ static NSString * const advanced_to_fold = @"Advanced ▴";
 /* ── View factories ─────────────────────────────────────────────────── */
 
 /*
- * heading_label — a bold section heading ("Notes", "Subtasks").
- *
- * Inputs:
- *   title — the heading
- *
- * Output:
- *   new label.
- */
-static NSTextField *
-heading_label(NSString *title)
-{
-    NSTextField *label = [NSTextField labelWithString:title];
-
-    label.font = [NSFont boldSystemFontOfSize:tasks_look_row_font];
-    return label;
-}
-
-/*
  * form_label — a short non-editable label for a form row, at the same font
  * size as the list and entry fields.
  *
@@ -99,29 +81,6 @@ form_label(NSString *title)
     NSTextField *label = [NSTextField labelWithString:title];
 
     label.font = [NSFont systemFontOfSize:tasks_look_row_small_font];
-    return label;
-}
-
-/*
- * note_label — small secondary text that wraps at the form's width.  The
- * explicit wrap width is what gives it a height before the first layout
- * pass, which the window's fit depends on.
- *
- * Inputs:
- *   text — the text; may be empty and set later
- *
- * Output:
- *   new label.
- */
-static NSTextField *
-note_label(NSString *text)
-{
-    NSTextField *label = [NSTextField wrappingLabelWithString:text];
-
-    label.font                    = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    label.textColor               = NSColor.secondaryLabelColor;
-    label.selectable              = NO;
-    label.preferredMaxLayoutWidth = form_w;
     return label;
 }
 
@@ -381,7 +340,7 @@ list_section(NSString *title, NSScrollView *scroll, NSArray<NSView *> *buttons)
     line.alignment    = NSLayoutAttributeTop;
 
     NSStackView *section = column_stack(tasks_look_form_spacing);
-    add_row(section, heading_label(title));
+    add_row(section, shared_ui_heading(title));
     add_row(section, line);
     return section;
 }
@@ -772,7 +731,7 @@ build_fields:(NSStackView *)form
     add_row(form, self.title_field);
 
     /* Shown for a Notes action item only (show_task fills it). */
-    self.source_label = note_label(@"");
+    self.source_label = shared_ui_note(@"", form_w);
     self.source_label.toolTip =
         @"This task is an action item written in Notes. Its title, completion and due date "
         @"stay in step with the line in the note.";
@@ -843,7 +802,7 @@ build_fields:(NSStackView *)form
 
     [form setCustomSpacing:tasks_look_form_spacing * 2.5 afterView:flags_row];
     [form setCustomSpacing:tasks_look_form_spacing * 2.5 afterView:self.completed_label];
-    add_row(form, heading_label(@"Notes"));
+    add_row(form, shared_ui_heading(@"Notes"));
     add_row(form, [self build_notes]);
 
     if (self.parent_id != 0) {
@@ -1028,18 +987,18 @@ build_recurrence
     /* The lead is a different question about the same schedule. */
     [grid rowAtIndex:2].topPadding = tasks_look_form_spacing;
 
-    self.recur_summary = note_label(@"");
+    self.recur_summary = shared_ui_note(@"", form_w);
     self.recur_body = column_stack(tasks_look_form_spacing);
     add_row(self.recur_body, grid);
     add_row(self.recur_body, self.recur_summary);
     self.recur_body.hidden = YES;
 
     NSStackView *section = column_stack(tasks_look_form_spacing);
-    add_row(section, heading_label(@"Recurrence"));
-    add_row(section, note_label(
+    add_row(section, shared_ui_heading(@"Recurrence"));
+    add_row(section, shared_ui_note(
         @"Recurrence will change the Due Date of your task to the next specified iteration "
         @"date and time.  Additionally, completed tasks will be set to New X (defaults to a "
-        @"week, or less on a shorter repeat) before that Due Date to give you lead time."));
+        @"week, or less on a shorter repeat) before that Due Date to give you lead time.", form_w));
     add_row(section, self.recur_check);
     add_row(section, self.recur_body);
     return section;
@@ -1791,7 +1750,7 @@ refresh_advanced_button
     self.advanced_button.attributedTitle = [[NSAttributedString alloc]
         initWithString:self.advanced_shown ? advanced_to_fold : advanced_to_show
             attributes:@{
-                NSForegroundColorAttributeName: tasks_color(TasksColorLink),
+                NSForegroundColorAttributeName: shared_ui_color(shared_look_link),
                 NSUnderlineStyleAttributeName:  @(NSUnderlineStyleSingle),
                 NSFontAttributeName:            [NSFont systemFontOfSize:tasks_look_row_small_font],
             }];
