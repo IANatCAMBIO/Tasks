@@ -408,23 +408,27 @@ check_utilities(TaskApp *app)
     check(weak_sheet == nil, "utilities: the sheet is released when it ends");
 
     /* Questions and notices are tool panels, never system alerts: Return's
-     * button answers, Escape is no answer (Cancel for a confirmation), and
-     * each completion runs once and the panel goes away. */
+     * button is Cancel in a confirmation (it never destroys), Escape is no
+     * answer (Cancel too), and each completion runs once and the panel goes
+     * away. */
     __block int answers = 0, confirmed = -1;
     tasks_ui_confirm(nil, @"Delete 3 tasks?", @"You cannot undo this action.", @"Delete", YES,
                      ^(BOOL ok) { answers++; confirmed = ok; });
     check_spin(0.2);
     check(tool_panel() != nil &&
-          [button_tagged(tool_panel().contentView, 0).title isEqualToString:@"Delete"] &&
-          button_tagged(tool_panel().contentView, 0).hasDestructiveAction,
-          "utilities: a confirmation is a tool panel, its action button destructive");
+          [button_tagged(tool_panel().contentView, 0).title isEqualToString:@"Cancel"] &&
+          [button_tagged(tool_panel().contentView, 0).keyEquivalent isEqualToString:@"\r"] &&
+          [button_tagged(tool_panel().contentView, 1).title isEqualToString:@"Delete"] &&
+          button_tagged(tool_panel().contentView, 1).hasDestructiveAction &&
+          !button_tagged(tool_panel().contentView, 0).hasDestructiveAction,
+          "utilities: a confirmation is a tool panel, Cancel its default, the action destructive");
     [tool_panel() cancelOperation:nil];
     check_spin(0.2);
     check(tool_panel() == nil && answers == 1 && confirmed == 0,
           "utilities: Escape closes a confirmation as Cancel, once");
     tasks_ui_confirm(nil, @"Clear?", nil, @"Clear", NO, ^(BOOL ok) { answers++; confirmed = ok; });
     check_spin(0.2);
-    answer_panel(0);
+    answer_panel(1);
     check(tool_panel() == nil && answers == 2 && confirmed == 1,
           "utilities: the action button confirms");
     tasks_ui_notice(nil, @"Saved", nil, ^{ answers++; });
@@ -954,7 +958,7 @@ check_open_database(TaskApp *app)
               "open database: ... and the panes show its tasks");
         check(find_text(tool_panel().contentView, @"Make this the default database?") != nil,
               "open database: ... and it is offered as the default");
-        answer_panel(0);
+        answer_panel(1);                  /* Make Default; [0] is Cancel */
         check(find_text(tool_panel().contentView, @"not changed from a sandboxed run") != nil,
               "open database: ... Make Default shows the shared module's refusal while CAMBIO_SHARED_DB is set");
         answer_panel(0);
