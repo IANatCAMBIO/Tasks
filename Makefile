@@ -56,6 +56,15 @@ ifeq ($(wildcard $(SHARED_SRC)),)
 $(error $(SHARED_SRC) not found: check out shared_data beside this repository or set SHARED_DATA_DIR)
 endif
 
+# The interface elements Notes and Tasks share (the tool panel, the
+# sidebar's split view, the table, the status labels, ...) live in the
+# shared_ui repository beside this one and are compiled in from source.
+SHARED_UI_DIR ?= $(CURDIR)/../shared_ui
+SHARED_UI_SRCS = $(wildcard $(SHARED_UI_DIR)/src/*.m)
+ifeq ($(SHARED_UI_SRCS),)
+$(error $(SHARED_UI_DIR)/src has no sources: check out shared_ui beside this repository or set SHARED_UI_DIR)
+endif
+
 # ── Dependencies ─────────────────────────────────────────────────────────
 # GLib (core utilities, kept for this phase) and SQLite, both from MacPorts
 # via pkg-config.  MacPorts installs pkg-config in /opt/local/bin, which is
@@ -111,7 +120,7 @@ DEFS     = -DTASKS_APP_NAME='"$(APP_NAME)"' \
            -DTASKS_BUNDLE_ID='"$(BUNDLE_ID)"' \
            -DTASKS_DATA_DIR_NAME='"$(DATA_DIR_NAME)"'
 COMMON   = -O2 -Wall -Wextra -Werror=unguarded-availability \
-           -mmacosx-version-min=$(DEPLOY_TARGET) -I src -I $(SHARED_DATA_DIR)/src \
+           -mmacosx-version-min=$(DEPLOY_TARGET) -I src -I $(SHARED_DATA_DIR)/src -I $(SHARED_UI_DIR)/src \
            -MMD -MP $(DEFS) $(PKG_CFLAGS)
 # The core is plain C11 and builds with every -Wextra warning on.
 CFLAGS   = -std=c11 $(COMMON)
@@ -151,7 +160,8 @@ build/oauth.o: CFLAGS += $(if $(GOOGLE_CLIENT_ID),-DTASK_GOOGLE_CLIENT_ID='"$(GO
 CORE_SRCS = $(wildcard src/*.c)
 UI_SRCS   = $(wildcard src/*.m)
 CORE_OBJS = $(patsubst src/%.c,build/%.o,$(CORE_SRCS)) build/shared_db.o
-UI_OBJS   = $(patsubst src/%.m,build/%.o,$(UI_SRCS))
+UI_OBJS   = $(patsubst src/%.m,build/%.o,$(UI_SRCS)) \
+            $(patsubst $(SHARED_UI_DIR)/src/%.m,build/%.o,$(SHARED_UI_SRCS))
 OBJS      = $(CORE_OBJS) $(UI_OBJS)
 
 .PHONY: all run seed install clean test ui-check
@@ -196,6 +206,10 @@ build/%.o: src/%.c Makefile | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 build/%.o: src/%.m Makefile | build
+	$(CC) $(OBJCFLAGS) -c -o $@ $<
+
+# The shared interface module, compiled with the app's Objective-C flags.
+build/%.o: $(SHARED_UI_DIR)/src/%.m Makefile | build
 	$(CC) $(OBJCFLAGS) -c -o $@ $<
 
 build/shared_db.o: $(SHARED_SRC) Makefile | build

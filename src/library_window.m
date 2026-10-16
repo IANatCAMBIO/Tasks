@@ -61,7 +61,7 @@ static NSString * const search_tooltip       =
 @property (nonatomic, assign) BOOL compact_animating;
 /* Bumped by every status message, so only the latest one's timer fades it. */
 @property (nonatomic, assign) NSUInteger status_message_id;
-/* Timer that fires after tasks_look_status_hold to begin the fade; at most
+/* Timer that fires after shared_look_status_hold to begin the fade; at most
  * one at a time (invalidated when the next message arrives). */
 @property (nonatomic, strong) NSTimer *status_timer;
 /* Subscriptions to the app's four events; 0 once dropped. */
@@ -291,60 +291,6 @@ didAddSubview:(NSView *)view
 
 @end
 
-/*
- * TasksSplitController — the split view controller for sidebar | the rest
- * (the standard divider, drag and collapse), which also remembers the
- * sidebar's width: every time the divider moves while the sidebar shows,
- * the width is saved (TASK_CFG_SIDEBAR_WIDTH) for the next launch and the
- * window's least size follows it.  The same as Notes' NotesSplitController.
- */
-@interface TasksSplitController : NSSplitViewController
-@property (nonatomic, weak) TasksLibraryWindow *library;
-@end
-
-@implementation TasksSplitController
-
-/*
- * splitViewDidResizeSubviews: — the divider moved: save the sidebar's
- * width, unless the sidebar is collapsed (its width is then no width).
- *
- * Inputs:
- *   note — the notification
- */
-- (void)
-splitViewDidResizeSubviews:(NSNotification *)note
-{
-    [super splitViewDidResizeSubviews:note];
-    NSSplitViewItem *sidebar = self.splitViewItems.firstObject;
-    if (sidebar.collapsed) return;
-    gint width = (gint)round(NSWidth(sidebar.viewController.view.frame));
-    if (width < tasks_look_sidebar_min_w || width == task_config_get_int(TASK_CFG_SIDEBAR_WIDTH)) return;
-    task_config_set_int(TASK_CFG_SIDEBAR_WIDTH, width);
-    self.library.window.contentMinSize = [self.library content_min_size];
-}
-
-@end
-
-/*
- * pane_item — a split-view item around a pane's view.
- *
- * Inputs:
- *   view      — the pane
- *   min_width — the narrowest it may be dragged
- *
- * Output:
- *   the item.
- */
-static NSSplitViewItem *
-pane_item(NSView *view, CGFloat min_width)
-{
-    NSViewController *controller = [[NSViewController alloc] init];
-    controller.view = view;
-    NSSplitViewItem *item = [NSSplitViewItem splitViewItemWithViewController:controller];
-    item.minimumThickness = min_width;
-    return item;
-}
-
 @implementation TasksLibraryWindow
 
 /* ── Construction ────────────────────────────────────────────────────── */
@@ -447,50 +393,6 @@ place_window
 }
 
 /*
- * status_label — one of the status bar's two labels.
- *
- * Inputs:
- *   alignment — left for the count, right for the event message
- *
- * Output:
- *   new label, small and secondary, truncating rather than wrapping.
- */
-static NSTextField *
-status_label(NSTextAlignment alignment)
-{
-    NSTextField *label = [NSTextField labelWithString:@""];
-
-    label.font          = [NSFont systemFontOfSize:tasks_look_status_font];
-    label.textColor     = NSColor.secondaryLabelColor;
-    label.alignment     = alignment;
-    label.lineBreakMode = NSLineBreakByTruncatingMiddle;   /* as Notes': a path keeps both ends */
-    label.translatesAutoresizingMaskIntoConstraints = NO;
-    [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
-                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
-    return label;
-}
-
-/*
- * pin_edges — make a view fill its superview.
- *
- * Inputs:
- *   view — a view already added to its superview
- */
-static void
-pin_edges(NSView *view)
-{
-    NSView *host = view.superview;
-
-    view.translatesAutoresizingMaskIntoConstraints = NO;
-    [NSLayoutConstraint activateConstraints:@[
-        [view.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
-        [view.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
-        [view.topAnchor constraintEqualToAnchor:host.topAnchor],
-        [view.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
-    ]];
-}
-
-/*
  * build_float_bar: — Compact mode's floating controls: New Task and Delete
  * Task on a plate, tasks_look_float_margin in from the bottom-right corner
  * of the task pane and above both of its presentations.  Hidden until
@@ -517,7 +419,8 @@ build_float_bar:(NSView *)pane
     self.float_bar = [[TasksFloatPlate alloc] initWithFrame:NSZeroRect];
     self.float_bar.translatesAutoresizingMaskIntoConstraints = NO;
     [self.float_bar addSubview:buttons];
-    pin_edges(buttons);
+    buttons.translatesAutoresizingMaskIntoConstraints = NO;
+    shared_ui_pin_edges(buttons, self.float_bar);
 
     [pane addSubview:self.float_bar positioned:NSWindowAbove relativeTo:nil];
     [NSLayoutConstraint activateConstraints:@[
@@ -551,8 +454,10 @@ build_layout
     NSView *pane = [[NSView alloc] initWithFrame:NSZeroRect];
     [pane addSubview:self.task_list];
     [pane addSubview:self.kanban];
-    pin_edges(self.task_list);
-    pin_edges(self.kanban);
+    for (NSView *v in @[self.task_list, self.kanban]) {
+        v.translatesAutoresizingMaskIntoConstraints = NO;
+        shared_ui_pin_edges(v, pane);
+    }
     [self build_float_bar:pane];
 
 
@@ -575,9 +480,6 @@ build_layout
 
     NSBox *rule   = [[NSBox alloc] initWithFrame:NSZeroRect];
     rule.boxType  = NSBoxSeparator;
-    self.status_left  = status_label(NSTextAlignmentCenter);
-    self.status_right = status_label(NSTextAlignmentRight);
-
     /* The split view sits in a container that sizes it by hand (TasksSplitHost)
      * and carries NO autoresizing link to it.  Pinned to the window by
      * constraints, or tied to its container by a flexible autoresizing mask,
@@ -594,23 +496,34 @@ build_layout
     /* The sidebar and the rest in a split view controller: the system's
      * thin divider, drag and collapse; the sidebar holds its width, the
      * rest absorbs a resize. */
-    TasksSplitController *outer = [[TasksSplitController alloc] init];
-    outer.library     = self;
+    SharedSplitController *outer = [[SharedSplitController alloc] init];
+    __weak TasksLibraryWindow *ws = self;
+    outer.width_changed = ^(NSInteger width) {
+        if (width == task_config_get_int(TASK_CFG_SIDEBAR_WIDTH)) return;
+        task_config_set_int(TASK_CFG_SIDEBAR_WIDTH, (gint)width);
+        ws.window.contentMinSize = [ws content_min_size];
+    };
     self.split        = outer;
-    self.sidebar_item = pane_item(self.sidebar, tasks_look_sidebar_min_w);
+    self.sidebar_item = shared_ui_pane_item(self.sidebar, shared_look_sidebar_min_w);
     self.sidebar_item.canCollapse     = YES;
     self.sidebar_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;
     [self.split addSplitViewItem:self.sidebar_item];
-    [self.split addSplitViewItem:pane_item(split_host, tasks_look_pane_min_w)];
+    [self.split addSplitViewItem:shared_ui_pane_item(split_host, tasks_look_pane_min_w)];
     self.split.splitView.dividerStyle = NSSplitViewDividerStyleThin;
     NSView *panes = self.split.view;
 
-    for (NSView *v in @[self.favorites_bar, panes, rule, self.status_left, self.status_right]) {
+    for (NSView *v in @[self.favorites_bar, panes, rule]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:v];
     }
+    /* The status band: from under the rule to the window's bottom edge,
+     * its labels centred on their capitals (as Notes'). */
+    NSLayoutGuide *band = [[NSLayoutGuide alloc] init];
+    [content addLayoutGuide:band];
+    self.status_left  = shared_ui_status_label(content, band.centerYAnchor, NSTextAlignmentCenter);
+    self.status_right = shared_ui_status_label(content, band.centerYAnchor, NSTextAlignmentRight);
     self.favorites_height = [self.favorites_bar.heightAnchor
-                                constraintEqualToConstant:tasks_look_favorites_bar_h + 1.0];  /* + its rule */
+                                constraintEqualToConstant:shared_look_favorites_bar_h + 1.0];  /* + its rule */
     NSLayoutYAxisAnchor *below_bar = self.favorites_bar.bottomAnchor;
     [NSLayoutConstraint activateConstraints:@[
         [self.favorites_bar.topAnchor constraintEqualToAnchor:content.topAnchor],
@@ -627,20 +540,19 @@ build_layout
         [rule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
         [rule.heightAnchor constraintEqualToConstant:1.0],
         [rule.bottomAnchor constraintEqualToAnchor:content.bottomAnchor
-                                          constant:-tasks_look_status_h],
+                                          constant:-shared_look_status_h],
 
         [self.status_left.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
         [self.status_left.leadingAnchor
             constraintGreaterThanOrEqualToAnchor:content.leadingAnchor
-                                        constant:tasks_look_status_inset],
+                                        constant:shared_look_status_inset],
         [self.status_left.trailingAnchor
             constraintLessThanOrEqualToAnchor:self.status_right.leadingAnchor
-                                     constant:-tasks_look_status_inset],
-        [self.status_left.centerYAnchor constraintEqualToAnchor:content.bottomAnchor
-                                                       constant:-tasks_look_status_h / 2.0],
+                                     constant:-shared_look_status_inset],
+        [band.topAnchor constraintEqualToAnchor:rule.bottomAnchor],
+        [band.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
         [self.status_right.trailingAnchor constraintEqualToAnchor:content.trailingAnchor
-                                                         constant:-tasks_look_status_inset],
-        [self.status_right.centerYAnchor constraintEqualToAnchor:self.status_left.centerYAnchor],
+                                                         constant:-shared_look_status_inset],
     ]];
 
     /* The sidebar's width, set once the split view has its frame (a
@@ -752,8 +664,8 @@ willBeInsertedIntoToolbar:(BOOL)flag
         /* No focus ring on a toolbar field: a focused field is slightly
          * wider, which can push toolbar items into the overflow menu. */
         field.focusRingType     = NSFocusRingTypeNone;
-        item.preferredWidthForSearchField = tasks_look_toolbar_search_w;
-        [field.widthAnchor constraintLessThanOrEqualToConstant:tasks_look_toolbar_search_w].active = YES;
+        item.preferredWidthForSearchField = shared_look_toolbar_search_w;
+        [field.widthAnchor constraintLessThanOrEqualToConstant:shared_look_toolbar_search_w].active = YES;
         self.search_field = field;
         return item;
     }
@@ -1065,7 +977,7 @@ set_status_alpha:(CGFloat)alpha over:(NSTimeInterval)duration then:(void (^)(voi
 
 /*
  * show_status_message: — put an event message in the status bar, hold it
- * for tasks_look_status_hold, then fade it out over tasks_look_status_fade
+ * for shared_look_status_hold, then fade it out over shared_look_status_fade
  * and clear it.  A newer message replaces it at once, at full strength,
  * whatever stage this one had reached.
  *
@@ -1085,13 +997,13 @@ show_status_message:(NSString *)message
 
     NSUInteger message_id = self.status_message_id;
     __weak TasksLibraryWindow *ws = self;
-    self.status_timer = [NSTimer scheduledTimerWithTimeInterval:tasks_look_status_hold
+    self.status_timer = [NSTimer scheduledTimerWithTimeInterval:shared_look_status_hold
                                                         repeats:NO
                                                           block:^(NSTimer *t) {
         TasksLibraryWindow *s = ws;
         if (!s || s.status_message_id != message_id) return;
         s.status_timer = nil;
-        [s set_status_alpha:0.0 over:tasks_look_status_fade then:^{
+        [s set_status_alpha:0.0 over:shared_look_status_fade then:^{
             TasksLibraryWindow *faded = ws;
             if (!faded || faded.status_message_id != message_id) return;
             faded.status_right.stringValue = @"";
@@ -1381,7 +1293,7 @@ quick_task
     if (tag == NULL) {
         TaskApp *app = self.app;
         [NSApp activate];
-        tasks_ui_notice(nil, @"Choose a default tag first",
+        shared_ui_notice(nil, @"Choose a default tag first",
                         @"Quick Task gives its task the default tag. "
                         @"Choose one in Settings, under New Tasks.", ^{
             tasks_settings_window_open(app);
@@ -1420,7 +1332,7 @@ delete_tasks
     }
 
     __weak TasksLibraryWindow *ws = self;
-    tasks_ui_confirm(self.window, title, @"You cannot undo this action.", @"Delete", YES,
+    shared_ui_confirm(self.window, title, @"You cannot undo this action.", @"Delete", YES,
                      ^(BOOL confirmed) {
         TasksLibraryWindow *s = ws;
         if (!s || s.is_shut_down || !confirmed) return;
@@ -1451,7 +1363,7 @@ clear_completed
     task_tag_free(tag);
 
     __weak TasksLibraryWindow *ws = self;
-    tasks_ui_confirm(self.window, title, @"You cannot undo this action.", @"Clear", YES,
+    shared_ui_confirm(self.window, title, @"You cannot undo this action.", @"Clear", YES,
                      ^(BOOL confirmed) {
         TasksLibraryWindow *s = ws;
         if (!s || s.is_shut_down || !confirmed) return;
@@ -1595,7 +1507,7 @@ show_sidebar:(BOOL)show animated:(BOOL)animated
 
 /*
  * sidebar_extent — the shown sidebar's width: the one it was last dragged
- * to, at least tasks_look_sidebar_min_w; tasks_look_sidebar_w until the
+ * to, at least shared_look_sidebar_min_w; shared_look_sidebar_w until the
  * first drag.
  *
  * Output:
@@ -1605,8 +1517,8 @@ show_sidebar:(BOOL)show animated:(BOOL)animated
 sidebar_extent
 {
     gint saved = task_config_get_int(TASK_CFG_SIDEBAR_WIDTH);
-    if (saved == 0) return tasks_look_sidebar_w;
-    return MAX((CGFloat)saved, tasks_look_sidebar_min_w);
+    if (saved == 0) return shared_look_sidebar_w;
+    return MAX((CGFloat)saved, shared_look_sidebar_min_w);
 }
 
 /*
@@ -1619,7 +1531,7 @@ sidebar_extent
 - (void)
 show_favorites_bar:(BOOL)show animated:(BOOL)animated
 {
-    [self slide:self.favorites_bar size:self.favorites_height to:tasks_look_favorites_bar_h + 1.0
+    [self slide:self.favorites_bar size:self.favorites_height to:shared_look_favorites_bar_h + 1.0
            show:show animated:animated];
 }
 
@@ -1877,7 +1789,7 @@ report_database_health
     const TaskDbHealth *health = task_db_health(self.app->db);
     NSString *lead = health->ran ? @"The database integrity check found issues:"
                                  : @"The database integrity check did not complete:";
-    tasks_ui_notice(self.window, @"Database Integrity Check",
+    shared_ui_notice(self.window, @"Database Integrity Check",
                     [NSString stringWithFormat:@"%@\n\n%@", lead,
                         tasks_string(health->detail != NULL ? health->detail : "?")],
                     nil);
@@ -1900,7 +1812,7 @@ offer_default_database:(NSString *)path
     if (!task_switch_can_be_default(path.fileSystemRepresentation)) return;
 
     __weak TasksLibraryWindow *ws = self;
-    tasks_ui_confirm(self.window, @"Make this the default database?",
+    shared_ui_confirm(self.window, @"Make this the default database?",
                      [NSString stringWithFormat:
                          @"%@\n\nNotes and " @TASKS_APP_NAME @" will open it at every launch.  "
                          @"Cancel keeps it open in " @TASKS_APP_NAME @" for this session only.",
@@ -1916,7 +1828,7 @@ offer_default_database:(NSString *)path
         if (shared_db_set_default_path(file, &why) == 0) {
             task_app_status(s.app, "Default database set to %s", file);
         } else {
-            tasks_ui_notice(s.window, @"Could not make it the default",
+            shared_ui_notice(s.window, @"Could not make it the default",
                             tasks_string(why), nil);
         }
         free(why);
@@ -1953,7 +1865,7 @@ open_database:(NSString *)path
             return;
         }
     }
-    tasks_ui_notice(self.window, @"Could not open the database",
+    shared_ui_notice(self.window, @"Could not open the database",
                     [NSString stringWithFormat:@"%@\n\n%@", path, tasks_string(why)], nil);
     free(why);
 }
@@ -1966,8 +1878,8 @@ open_database:(NSString *)path
 pick_database
 {
     __weak TasksLibraryWindow *ws = self;
-    tasks_ui_pick_path(self.window, TasksPickFile, @"Choose a shared Notes and Tasks database to open.",
-                       @"Open", @[@"db"], nil, ^(NSString *path) {
+    shared_ui_pick_path(SharedPickOpenFile, @"Choose a shared Notes and Tasks database to open.",
+                        @"Open", @[[UTType typeWithFilenameExtension:@"db"]], nil, ^(NSString *path) {
         if (!path) return;
         /* On the next pass: the panel's sheet is still coming down, and
          * what follows may put up a sheet of its own. */

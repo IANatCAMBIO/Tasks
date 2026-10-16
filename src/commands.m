@@ -251,8 +251,8 @@ tasks_command_apply(TasksCommandState *state, id item)
     NSImage *icon = nil;
     if (state.icon) {
         icon = [item isKindOfClass:NSToolbarItem.class]
-            ? tasks_symbol(state.icon)
-            : tasks_icon(state.icon, tasks_look_toolbar_icon);
+            ? shared_ui_symbol(state.icon, 0.0)
+            : shared_ui_symbol(state.icon, tasks_look_toolbar_icon);
     }
     if ([item image] != icon) [item setImage:icon];
     NSString *tooltip = [item toolTip];

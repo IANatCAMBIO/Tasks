@@ -1,7 +1,6 @@
 #import "sidebar.h"
 #import "library_window.h"
 #import "look.h"
-#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "task_config.h"
@@ -20,7 +19,7 @@ static const CGFloat    count_gap     = 4.0;                /* text to count    
 
 @interface TasksSidebar () <NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate>
 @property (nonatomic, weak)   TasksLibraryWindow *library;
-@property (nonatomic, strong) TasksTable         *table;
+@property (nonatomic, strong) SharedTable         *table;
 @property (nonatomic, strong) NSMutableData      *rows;      /* task_sel_t[], on screen */
 @property (nonatomic, copy)   NSArray<NSString *> *titles;   /* one per row             */
 @property (nonatomic, copy)   NSDictionary<NSNumber *, NSNumber *> *counts; /* tag id → open
@@ -54,12 +53,12 @@ init_with_library:(TasksLibraryWindow *)library
     back.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     back.translatesAutoresizingMaskIntoConstraints = NO;
 
-    self.table = [[TasksTable alloc] initWithFrame:NSZeroRect];
+    self.table = [[SharedTable alloc] initWithFrame:NSZeroRect];
     NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:cell_id];
     [self.table addTableColumn:column];
     self.table.style            = NSTableViewStyleSourceList;
     self.table.headerView       = nil;
-    self.table.rowHeight        = tasks_look_sidebar_row_h;
+    self.table.rowHeight        = shared_look_sidebar_row_h;
     self.table.backgroundColor  = NSColor.clearColor;
     self.table.dataSource       = self;
     self.table.delegate         = self;
@@ -326,12 +325,12 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
         [cell addSubview:count];
         [NSLayoutConstraint activateConstraints:@[
             [text.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor
-                                                constant:tasks_look_sidebar_text_pad],
+                                                constant:shared_look_sidebar_text_pad],
             [text.trailingAnchor constraintLessThanOrEqualToAnchor:count.leadingAnchor
                                                             constant:-count_gap],
             [text.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
             [count.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor
-                                                 constant:-tasks_look_sidebar_count_pad],
+                                                 constant:-shared_look_sidebar_count_pad],
             [count.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
@@ -346,7 +345,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
     cell.textField.font = header ? [NSFont boldSystemFontOfSize:NSFont.smallSystemFontSize]
                                  : [NSFont systemFontOfSize:NSFont.systemFontSize];
     cell.textField.textColor = header ? NSColor.secondaryLabelColor : NSColor.labelColor;
-    NSString *name = tasks_label_name(self.titles[(NSUInteger)row]);
+    NSString *name = shared_ui_label_name(self.titles[(NSUInteger)row]);
     cell.accessibilityValue = n != nil ? [NSString stringWithFormat:@"%@, %@", name, n] : name;
     return cell;
 }
@@ -367,7 +366,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
 - (NSString *)
 tableView:(NSTableView *)table typeSelectStringForTableColumn:(NSTableColumn *)column row:(NSInteger)row
 {
-    return tasks_label_name(self.titles[(NSUInteger)row]);
+    return shared_ui_label_name(self.titles[(NSUInteger)row]);
 }
 
 /*
@@ -421,8 +420,8 @@ show_tag_panel:(int64_t)tag_id
     TaskTag            *tag     = library != nil ? task_db_tag_get(library.app->db, tag_id) : NULL;
     if (tag == NULL) return;
 
-    NSFont      *font  = [NSFont systemFontOfSize:tasks_look_ui_font];
-    NSTextField *emoji = tasks_emoji_field(tasks_string(tag->emoji));
+    NSFont      *font  = [NSFont systemFontOfSize:shared_look_ui_font];
+    NSTextField *emoji = shared_ui_emoji_field(tasks_string(tag->emoji));
     emoji.identifier   = @"tag-emoji";
 
     NSButton *favorite = [NSButton checkboxWithTitle:@"Show in the Favorites bar"
@@ -437,7 +436,7 @@ show_tag_panel:(int64_t)tag_id
         return l;
     };
     NSTextField *name = label(tasks_string(tag->name));
-    name.font    = [NSFont boldSystemFontOfSize:tasks_look_ui_font];
+    name.font    = [NSFont boldSystemFontOfSize:shared_look_ui_font];
     name.toolTip = @"A tag keeps its name: it is the same tag on every task carrying it.";
     task_tag_free(tag);
 
@@ -446,13 +445,13 @@ show_tag_panel:(int64_t)tag_id
         @[label(@"Emoji (optional):"), emoji],
         @[label(@"Favorite:"),         favorite],
     ]];
-    grid.rowSpacing    = tasks_look_tool_btn_gap;
-    grid.columnSpacing = tasks_look_tool_btn_gap;
+    grid.rowSpacing    = shared_look_tool_btn_gap;
+    grid.columnSpacing = shared_look_tool_btn_gap;
     [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
     for (NSInteger r = 0; r < grid.numberOfRows; r++) [grid rowAtIndex:r].yPlacement = NSGridCellPlacementCenter;
 
     __weak TasksSidebar *ws = self;
-    TasksToolPanel *panel = [TasksToolPanel
+    SharedToolPanel *panel = [SharedToolPanel
         panel_with_title:@"Edit Tag" hero_title:@"Edit Tag"
                 subtitle:@"The emoji shows in Notes and Tasks; a tag's name never changes."
                   symbol:@"tag" content:grid buttons:@[@"OK", @"Cancel"] destructive:-1

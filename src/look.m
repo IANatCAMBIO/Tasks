@@ -1,4 +1,5 @@
 #import "look.h"
+#import "shared_ui.h"
 
 /* How a colour is defined. */
 enum {
@@ -20,9 +21,6 @@ static const color_spec_t color_specs[TasksColorCount] = {
     [TasksColorRowStripe]         = { color_fixed,  { 0.953, 0.953, 0.953, 1.00 }, { 0.145, 0.145, 0.145, 1.00 } },
     [TasksColorHeaderFill]        = { color_fixed,  { 0.957, 0.957, 0.957, 1.00 }, { 0.173, 0.173, 0.173, 1.00 } },
     [TasksColorDragRow]           = { color_fixed,  { 0.992, 0.902, 0.541, 1.00 }, { 0.478, 0.384, 0.125, 1.00 } },
-    [TasksColorDueOverdue]        = { color_fixed,  { 0.753, 0.110, 0.157, 1.00 }, { 0.965, 0.380, 0.318, 1.00 } },
-    [TasksColorDueToday]          = { color_fixed,  { 0.820, 0.604, 0.000, 1.00 }, { 0.973, 0.894, 0.361, 1.00 } },
-    [TasksColorDueAhead]          = { color_fixed,  { 0.149, 0.635, 0.412, 1.00 }, { 0.341, 0.890, 0.537, 1.00 } },
     [TasksColorLink]              = { color_fixed,  { 0.110, 0.443, 0.847, 1.00 }, { 0.471, 0.682, 0.929, 1.00 } },
     [TasksColorLaneFill]          = { color_fixed,  { 0.0, 0.0, 0.0, 0.05 },       { 1.0, 1.0, 1.0, 0.05 } },
     [TasksColorLaneBorder]        = { color_fixed,  { 0.0, 0.0, 0.0, 0.20 },       { 1.0, 1.0, 1.0, 0.20 } },
@@ -32,9 +30,6 @@ static const color_spec_t color_specs[TasksColorCount] = {
     [TasksColorCardSelected]      = { color_accent, { 0.0, 0.0, 0.0, 0.16 },       { 0.0, 0.0, 0.0, 0.0 } },
     [TasksColorCardShadow]        = { color_fixed,  { 0.0, 0.0, 0.0, 0.38 },       { 0.0, 0.0, 0.0, 0.60 } },
     [TasksColorBadge]             = { color_fixed,  { 0.184, 0.365, 0.753, 0.95 }, { 0.184, 0.365, 0.753, 0.95 } },
-    [TasksColorHero]              = { color_fixed,  { 0.000, 0.447, 0.776, 1.00 }, { 0.000, 0.447, 0.776, 1.00 } },
-    [TasksColorHeroSubtitle]      = { color_fixed,  { 0.880, 0.880, 0.880, 1.00 }, { 0.880, 0.880, 0.880, 1.00 } },
-    [TasksColorHeroProblem]       = { color_fixed,  { 1.000, 0.920, 0.550, 1.00 }, { 1.000, 0.920, 0.550, 1.00 } },
 };
 
 /*
@@ -126,9 +121,9 @@ NSColor *
 tasks_due_color(task_due_urgency_t urgency)
 {
     switch (urgency) {
-    case task_due_overdue: return tasks_color(TasksColorDueOverdue);
-    case task_due_today:   return tasks_color(TasksColorDueToday);
-    case task_due_ahead:   return tasks_color(TasksColorDueAhead);
+    case task_due_overdue: return shared_ui_color(shared_look_due_overdue);
+    case task_due_today:   return shared_ui_color(shared_look_due_today);
+    case task_due_ahead:   return shared_ui_color(shared_look_due_ahead);
     case task_due_none:    break;
     }
     return NSColor.labelColor;

@@ -3,7 +3,6 @@
 #import "kanban.h"
 #import "look.h"
 #import "task_list.h"
-#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "db.h"
@@ -1432,7 +1431,7 @@ pick_displayed_date:(id)sender
     [picker.heightAnchor constraintEqualToConstant:size.height].active = YES;
 
     __weak TasksDayPlanner *ws = self;
-    TasksToolPanel *panel = [TasksToolPanel
+    SharedToolPanel *panel = [SharedToolPanel
         panel_with_title:@"Go to Date" hero_title:@"Go to Date" subtitle:@"" symbol:@"calendar"
                  content:picker buttons:@[@"Go", @"Cancel"] destructive:-1
                  handler:^NSString *(NSInteger index) {

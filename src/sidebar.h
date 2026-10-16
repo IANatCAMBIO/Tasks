@@ -10,7 +10,7 @@
  * tag, alphabetically, as a source list.  While TASK_CFG_SIDEBAR_COUNTS is
  * on, each tag shows how many open tasks carry it, at the row's right.  Selecting a row selects it in
  * the window through [library select:]; a row is selected on mouse-down
- * (TasksTable).
+ * (SharedTable).
  *
  * The sidebar OWNS the Edit Tag panel (TasksCommandEditTag): a tag's
  * emoji and its favorite flag.  A tag's NAME never changes, and a tag is

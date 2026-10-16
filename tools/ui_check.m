@@ -64,7 +64,6 @@
 #import "settings_window.h"
 #import "favorites_bar.h"
 #import "sidebar.h"
-#import "tool_panel.h"
 #import "task_list.h"
 #import "ui_util.h"
 
@@ -316,7 +315,7 @@ static NSWindow *
 tool_panel(void)
 {
     for (NSWindow *window in NSApp.windows) {
-        if (window.visible && [window isKindOfClass:NSClassFromString(@"TasksToolWindow")]) {
+        if (window.visible && [window isKindOfClass:NSClassFromString(@"SharedToolWindow")]) {
             return window;
         }
     }
@@ -368,11 +367,11 @@ answer_panel(NSInteger index)
 static void
 check_utilities(TaskApp *app)
 {
-    NSImage *symbol = tasks_icon(@"plus", 16.0);
+    NSImage *symbol = shared_ui_symbol(@"plus", 16.0);
     check(symbol != nil && symbol.template,
           "utilities: a command icon is a template image (it follows light and dark)");
-    check(tasks_icon(@"plus", 16.0) == symbol, "utilities: icons are cached");
-    check(tasks_icon(@"no-such-symbol", 16.0) == nil, "utilities: a missing icon is nil");
+    check(shared_ui_symbol(@"plus", 16.0) == symbol, "utilities: icons are cached");
+    check(shared_ui_symbol(@"no-such-symbol", 16.0) == nil, "utilities: a missing icon is nil");
 
     NSImage *icon = tasks_app_icon(64.0);
     NSBitmapImageRep *rep = (NSBitmapImageRep *)icon.representations.firstObject;
@@ -381,7 +380,7 @@ check_utilities(TaskApp *app)
     check(icon.representations.count == 1 && rep.pixelsWide == 128,
           "utilities: ... holding one small bitmap, not the 512 px source");
 
-    NSImageView *view = tasks_image_view(icon, 16.0);
+    NSImageView *view = shared_ui_image_view(icon, 16.0, 16.0);
     check(NSEqualSizes(view.frame.size, NSMakeSize(16, 16)) && view.image == icon,
           "utilities: an image view is framed at its final size");
 
@@ -400,7 +399,7 @@ check_utilities(TaskApp *app)
 
         NSTextField *field = [NSTextField textFieldWithString:@"New list"];
         [field.widthAnchor constraintEqualToConstant:240].active = YES;
-        TasksToolPanel *panel = [TasksToolPanel
+        SharedToolPanel *panel = [SharedToolPanel
             panel_with_title:@"Probe" hero_title:@"Probe" subtitle:@"" symbol:nil content:field
                      buttons:@[@"Create", @"Cancel"] destructive:-1
                      handler:^NSString *(NSInteger index) {
@@ -428,7 +427,7 @@ check_utilities(TaskApp *app)
      * answer (Cancel too), and each completion runs once and the panel goes
      * away. */
     __block int answers = 0, confirmed = -1;
-    tasks_ui_confirm(nil, @"Delete 3 tasks?", @"You cannot undo this action.", @"Delete", YES,
+    shared_ui_confirm(nil, @"Delete 3 tasks?", @"You cannot undo this action.", @"Delete", YES,
                      ^(BOOL ok) { answers++; confirmed = ok; });
     check_spin(0.2);
     check(tool_panel() != nil &&
@@ -442,12 +441,12 @@ check_utilities(TaskApp *app)
     check_spin(0.2);
     check(tool_panel() == nil && answers == 1 && confirmed == 0,
           "utilities: Escape closes a confirmation as Cancel, once");
-    tasks_ui_confirm(nil, @"Clear?", nil, @"Clear", NO, ^(BOOL ok) { answers++; confirmed = ok; });
+    shared_ui_confirm(nil, @"Clear?", nil, @"Clear", NO, ^(BOOL ok) { answers++; confirmed = ok; });
     check_spin(0.2);
     answer_panel(1);
     check(tool_panel() == nil && answers == 2 && confirmed == 1,
           "utilities: the action button confirms");
-    tasks_ui_notice(nil, @"Saved", nil, ^{ answers++; });
+    shared_ui_notice(nil, @"Saved", nil, ^{ answers++; });
     check_spin(0.2);
     answer_panel(0);
     check(tool_panel() == nil && answers == 3, "utilities: OK closes a notice and runs its block");
@@ -862,15 +861,15 @@ check_status_message(TaskApp *app)
         check(label != nil && label.alphaValue == 1.0, "status: a message shows at once");
 
         /* Into the fade, then a second message. */
-        check_spin(tasks_look_status_hold + tasks_look_status_fade / 2.0);
+        check_spin(shared_look_status_hold + shared_look_status_fade / 2.0);
         check([label.stringValue isEqualToString:@"first message"],
               "status: it is still there while it fades");
         task_app_status(app, "second message");
-        check_spin(tasks_look_status_fade);
+        check_spin(shared_look_status_fade);
         check([label.stringValue isEqualToString:@"second message"] && label.alphaValue == 1.0,
               "status: a newer message replaces a fading one, at full strength");
 
-        check_spin(tasks_look_status_hold + 0.5);
+        check_spin(shared_look_status_hold + 0.5);
         check([label.stringValue isEqualToString:@""] && label.alphaValue == 0.0,
               "status: a message fades out and is cleared after its hold");
         [library close];
@@ -1628,7 +1627,7 @@ check_task_list(TaskApp *app, NSString *dir)
         for (NSUInteger row = wide_rows.location; row < NSMaxRange(wide_rows); row++)
             [wide_heights addObject:@(NSHeight([table rectOfRow:(NSInteger)row]))];
         began = CFAbsoluteTimeGetCurrent();
-        CGFloat side = task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE) ? tasks_look_sidebar_w + 1.0 : 0.0;
+        CGFloat side = task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE) ? shared_look_sidebar_w + 1.0 : 0.0;
         [window setContentSize:NSMakeSize(side + tasks_look_pane_min_w + 100.0, full_size.height)];
         double resize = settle(began);
         BOOL same = wide_heights.count > 0;
@@ -1753,10 +1752,11 @@ check_task_list(TaskApp *app, NSString *dir)
         [library refresh_tasks];
         settle(0);
 
-        /* Return opens the editor of the one selected task. */
+        /* Return opens the editor of the one selected task (the table's own
+         * activation, SharedTable). */
         [table selectRowIndexes:[NSIndexSet indexSetWithIndex:1] byExtendingSelection:NO];
         NSUInteger open_before = visible_windows();
-        [list keyDown:[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+        [table keyDown:[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
                                   modifierFlags:0 timestamp:0 windowNumber:window.windowNumber
                                         context:nil characters:@"\r"
                     charactersIgnoringModifiers:@"\r" isARepeat:NO keyCode:36]];
@@ -2169,8 +2169,8 @@ check_editor_window(TaskApp *app, NSString *dir)
                   "quick task: gets the default tag, not the selected one");
             NSRect area = NSScreen.mainScreen.visibleFrame;
             check(editor_win != nil &&
-                  fabs(NSMaxX(editor_win.frame) - (NSMaxX(area) - tasks_look_screen_margin)) < 1 &&
-                  fabs(NSMinY(editor_win.frame) - (NSMinY(area) + tasks_look_screen_margin)) < 1,
+                  fabs(NSMaxX(editor_win.frame) - (NSMaxX(area) - shared_look_screen_margin)) < 1 &&
+                  fabs(NSMinY(editor_win.frame) - (NSMinY(area) + shared_look_screen_margin)) < 1,
                   "quick task: its editor opens in the screen's lower-right corner");
             if (editor_win) send_escape(editor_win);
             check_spin(0.2);

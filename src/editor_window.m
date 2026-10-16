@@ -1,6 +1,5 @@
 #import "editor_window.h"
 #import "look.h"
-#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "recur.h"
@@ -471,9 +470,9 @@ same_attachments(const GPtrArray *a, const GPtrArray *b)
  * TasksEditorTable — the subtask list.  A table normally makes a row's
  * text field wait for a second click on an already-selected row before it
  * edits; here a subtask's title is edited by clicking it, like any field.
- * (Selecting on mouse-down comes from TasksTable.)
+ * (Selecting on mouse-down comes from SharedTable.)
  */
-@interface TasksEditorTable : TasksTable
+@interface TasksEditorTable : SharedTable
 @end
 
 @implementation TasksEditorTable
@@ -944,7 +943,7 @@ build_subtasks
 - (NSView *)
 build_attachments
 {
-    self.attachment_table = [[TasksTable alloc] initWithFrame:NSZeroRect];
+    self.attachment_table = [[SharedTable alloc] initWithFrame:NSZeroRect];
     NSScrollView *scroll = list_scroll(self.attachment_table, self);
 
     self.attachment_table.target       = self;
@@ -2294,7 +2293,7 @@ reload_attachments
 attachment_cell
 {
     NSTableCellView *cell  = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
-    NSImageView     *icon  = tasks_image_view(nil, list_icon);
+    NSImageView     *icon  = shared_ui_image_view(nil, list_icon, list_icon);
     NSTextField     *label = [NSTextField labelWithString:@""];
 
     label.lineBreakMode = NSLineBreakByTruncatingMiddle;
@@ -2330,13 +2329,13 @@ attachment_cell
 add_attachment:(id)sender
 {
     __weak TasksEditorWindow *ws = self;
-    tasks_ui_pick_path(self.window, TasksPickFile, @"Choose a file to attach to this task.",
-                       @"Attach", nil, nil, ^(NSString *path) {
+    shared_ui_pick_path(SharedPickOpenFile, @"Choose a file to attach to this task.",
+                        @"Attach", nil, nil, ^(NSString *path) {
         TasksEditorWindow *s = ws;
         if (!s || s.is_shut_down || path == nil) return;
 
         if (task_path_is_live_data(path.fileSystemRepresentation)) {
-            tasks_ui_notice(s.window, @"That file cannot be attached",
+            shared_ui_notice(s.window, @"That file cannot be attached",
                             @"It is in the data folder of the other Tasks app, which this "
                             @"app does not touch.", nil);
             return;
@@ -2502,7 +2501,7 @@ pick_date_for:(NSTextField *)field
 
     NSString *what = field == self.due_field ? @"Due Date" : @"Start Date";
     __weak TasksEditorWindow *ws = self;
-    TasksToolPanel *panel = [TasksToolPanel
+    SharedToolPanel *panel = [SharedToolPanel
         panel_with_title:what hero_title:what subtitle:self.window.title symbol:@"calendar"
                  content:picker buttons:@[@"Set", @"Clear", @"Cancel"] destructive:-1
                  handler:^NSString *(NSInteger index) {
@@ -2777,7 +2776,7 @@ save_action:(id)sender
 - (void)
 unsaved_notice
 {
-    tasks_ui_notice(self.window, @"Your changes could not be saved",
+    shared_ui_notice(self.window, @"Your changes could not be saved",
                     @"The changes are still in this window. Close it, or press Save, to try "
                     @"again in a moment. (The cause: " TASK_APP_WRITE_FAILED_REASON @".)", nil);
 }
@@ -2854,7 +2853,7 @@ shut_down
              * once the close is over. */
             NSString *title = self.title_field.stringValue;
             dispatch_async(dispatch_get_main_queue(), ^{
-                tasks_ui_notice(nil, [NSString stringWithFormat:
+                shared_ui_notice(nil, [NSString stringWithFormat:
                                       @"Changes to \u201C%@\u201D could not be saved", title],
                                 @"The cause: " TASK_APP_WRITE_FAILED_REASON @".", nil);
             });
@@ -2917,7 +2916,7 @@ open_editor(TaskApp *app, int64_t task_id, BOOL is_new, BOOL corner)
     if (task != NULL && !task->deleted) {
         editor = [[TasksEditorWindow alloc] init_with_app:app task:task is_new:is_new];
         editors()[@(task_id)] = editor;
-        if (corner) tasks_ui_place_lower_right(editor.window, NSScreen.mainScreen);
+        if (corner) shared_ui_place_lower_right(editor.window, NSScreen.mainScreen);
         [editor present:YES];
     }
     task_free(task);

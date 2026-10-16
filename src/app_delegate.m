@@ -1,7 +1,6 @@
 #import "app_delegate.h"
 #import "commands.h"
 #import "hotkey.h"
-#import "tool_panel.h"
 #import "library_window.h"
 #import "settings_window.h"
 #import "task_notify.h"
@@ -150,7 +149,7 @@ ask_welcome:(NSString *)default_path
         default_path.lastPathComponent];
 
     __weak TasksAppDelegate *ws = self;
-    [TasksToolPanel show_message:@"Welcome to " @TASKS_APP_NAME message:message
+    [SharedToolPanel show_message:@"Welcome to " @TASKS_APP_NAME message:message
                           symbol:@"tray.full.fill"
                          buttons:@[@"Open Existing Database\u2026", @"Create New Database", @"Quit"]
                      destructive:-1 over:nil
@@ -165,17 +164,15 @@ ask_welcome:(NSString *)default_path
             return;
         }
         /* The file chooser is the system's: there is no app-drawn one. */
-        NSOpenPanel *panel = [NSOpenPanel openPanel];
-        panel.message                 = @"Choose a shared Notes and Tasks database to open.";
-        panel.allowedContentTypes     = @[[UTType typeWithFilenameExtension:@"db"]];
-        panel.canChooseFiles          = YES;
-        panel.canChooseDirectories    = NO;
-        panel.allowsMultipleSelection = NO;
-        if ([panel runModal] == NSModalResponseOK && panel.URL) {
-            [s finish_launch_at:panel.URL.path choice:TasksWelcomeOpen];
-        } else {
-            [s ask_welcome:default_path];
-        }
+        shared_ui_pick_path(SharedPickOpenFile, @"Choose a shared Notes and Tasks database to open.",
+                            @"Open", @[[UTType typeWithFilenameExtension:@"db"]], nil,
+                            ^(NSString *path) {
+            if (path) {
+                [s finish_launch_at:path choice:TasksWelcomeOpen];
+            } else {
+                [s ask_welcome:default_path];
+            }
+        });
     }];
 }
 
@@ -221,7 +218,7 @@ applicationDidFinishLaunching:(NSNotification *)note
     char     *default_path = NULL;
     NSString *config_err   = [self start_config:&default_path];
     if (config_err) {
-        tasks_ui_notice(nil, @"Could not start", config_err, ^{
+        shared_ui_notice(nil, @"Could not start", config_err, ^{
             [NSApp terminate:nil];
         });
         return;
@@ -271,7 +268,7 @@ finish_launch_at:(NSString *)open_path choice:(TasksWelcomeChoice)choice
     BOOL for_session_only = db_err == nil && choice == TasksWelcomeOpen && !made_default;
 
     if (db_err) {
-        tasks_ui_notice(nil, @"Could not open the database", db_err, ^{
+        shared_ui_notice(nil, @"Could not open the database", db_err, ^{
             [NSApp terminate:nil];
         });
         return;

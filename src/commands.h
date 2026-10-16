@@ -93,7 +93,7 @@ typedef NS_ENUM(NSInteger, TasksCommandOwner) {
  *   title   — menu title; for a toggling command, its default face
  *   key     — key equivalent, "" for none
  *   mods    — the shortcut's modifiers, the full mask (as Notes' table)
- *   icon    — SF Symbol name (tasks_icon, ui_util.h) for toolbar/floating
+ *   icon    — SF Symbol name (shared_ui_symbol, ui_util.h) for toolbar/floating
  *             buttons; nil when the command is never a button
  *   tooltip — hover text for buttons; nil when never a button
  */

@@ -162,7 +162,7 @@ init_with_library:(TasksLibraryWindow *)library
     self.scroll.documentView = self.strip;
 
     self.hint           = [NSTextField labelWithString:empty_hint];
-    self.hint.font      = [NSFont systemFontOfSize:tasks_look_ui_font];
+    self.hint.font      = [NSFont systemFontOfSize:shared_look_ui_font];
     self.hint.textColor = NSColor.secondaryLabelColor;
     self.hint.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -264,9 +264,9 @@ reload
 
     for (NSView *v in self.strip.subviews.copy) [v removeFromSuperview];
 
-    NSDictionary *attrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:tasks_look_ui_font] };
+    NSDictionary *attrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:shared_look_ui_font] };
     CGFloat       x     = bar_pad;
-    CGFloat       cy    = tasks_look_favorites_bar_h / 2.0;
+    CGFloat       cy    = shared_look_favorites_bar_h / 2.0;
     GPtrArray    *tags  = task_db_tags(self.library.app->db, TASK_TAGS_CARRIED);
 
     for (guint i = 0; i < tags->len; i++) {
@@ -274,27 +274,27 @@ reload
         if (!tag->favorite) continue;
 
         NSString         *title = tasks_tag_title(tag);
-        CGFloat           w     = MAX(tasks_look_favorite_btn_min_w,
+        CGFloat           w     = MAX(shared_look_favorite_btn_min_w,
                                       ceil([title sizeWithAttributes:attrs].width) + btn_text_pad);
         TasksFavoriteBtn *btn   = [[TasksFavoriteBtn alloc] initWithFrame:
-                                      NSMakeRect(x, cy - tasks_look_favorite_btn_h / 2.0, w, tasks_look_favorite_btn_h)];
+                                      NSMakeRect(x, cy - shared_look_favorite_btn_h / 2.0, w, shared_look_favorite_btn_h)];
         btn.title         = title;
         btn.bezelStyle    = NSBezelStyleAccessoryBar;
         btn.buttonType    = NSButtonTypeToggle;
         btn.imagePosition = NSNoImage;
-        btn.font          = [NSFont systemFontOfSize:tasks_look_ui_font];
+        btn.font          = [NSFont systemFontOfSize:shared_look_ui_font];
         btn.target        = self;
         btn.action        = @selector(btn_clicked:);
         btn.tag_id        = tag->id;
         [self.strip addSubview:btn];
-        x += w + tasks_look_favorite_gap;
+        x += w + shared_look_favorite_gap;
     }
     task_ptr_array_free_tags(tags);
 
     self.hint.hidden = self.strip.subviews.count > 0;
     self.content_w   = x + bar_pad;
     self.strip.frame = NSMakeRect(0, 0, MAX(self.content_w, NSWidth(self.scroll.bounds)),
-                                  tasks_look_favorites_bar_h);
+                                  shared_look_favorites_bar_h);
     [self update_selection];
 }
 

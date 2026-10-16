@@ -25,6 +25,7 @@ xcode-select --install
 | GLib 2 (`glib-2.0`; developed with 2.88) | utilities in the core — strings, arrays, key file, dates | MacPorts `glib2` |
 | SQLite 3 (3.35 or later; developed with 3.53) | storage | MacPorts `sqlite3` |
 | `shared_db` (the shared database module: schema, stamps, path, backups, check) | the database Notes and Tasks share | the `shared_data` repository beside this one, compiled in from source (below) |
+| `shared_ui` (the shared interface module: the tool panel, the sidebar's split view, the table, status labels, the emoji slot, `shared_look.h`) | what Notes and Tasks show the same way | the `shared_ui` repository beside this one, compiled in from source (below) |
 | libcurl, Security | the Google Calendar sync's HTTPS calls; the keychain item holding its sign-in | macOS SDK (the system libcurl, which trusts the keychain's certificates) |
 
 ```sh
@@ -55,6 +56,21 @@ SHARED_DATA_DIR=/path/to/shared_data`).  The build stops with a message when
 `shared_db.c` is not there.  The module is plain C11 and SQLite, the same
 MacPorts SQLite this app links.  After pulling a new `shared_data`, run
 `make clean && make`.
+
+### The shared interface module
+
+`shared_ui/src/*.m` are compiled into the app with this project's
+Objective-C flags (each becomes a `build/*.o` beside the app's own, linked
+into the app and ui-check), and `shared_ui/src` is on the include path.
+The Makefile takes them from
+
+```make
+SHARED_UI_DIR ?= $(CURDIR)/../shared_ui
+```
+
+and stops with a message when the directory has no sources.  The module
+is Objective-C against Cocoa only (`shared_ui/README.md`).  After pulling
+a new `shared_ui`, run `make clean && make`.
 
 Tasks needs `shared_data` at schema version 200: one `tags` table shared
 with Notes (emoji, `favorite_tasks` for Tasks and `favorite_notes` for

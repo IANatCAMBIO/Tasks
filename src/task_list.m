@@ -119,9 +119,9 @@ static const size_t  fit_row_limit  = 2000;     /* rows measured to fit a column
  * TasksListTable — the list's table view.  A subclass for one reason: a
  * row drag may not begin on the checkbox, and AppKit asks the table
  * itself, not its delegate, where a drag may begin.  (Selecting on
- * mouse-down comes from TasksTable.)
+ * mouse-down comes from SharedTable.)
  */
-@interface TasksListTable : TasksTable
+@interface TasksListTable : SharedTable
 @end
 
 @implementation TasksListTable
@@ -1427,37 +1427,12 @@ done_clicked:(NSButton *)sender
 - (void)
 row_double_clicked:(id)sender
 {
-    NSInteger row = self.table.clickedRow;
+    NSIndexSet *rows = shared_ui_activated_rows((SharedTable *)self.table);
+    NSInteger   row  = rows.count == 1 ? (NSInteger)rows.firstIndex : -1;
     TasksLibraryWindow *library = self.library;
 
     if (row < 0 || row >= [self row_count] || !library) return;
     tasks_editor_open(library.app, [self row_at:row]->id);
-}
-
-/*
- * keyDown: — Return (or Enter) opens the selected task's editor, through
- * the same command as Info… so there is one implementation.  The table
- * passes up the keys it has no use for; everything else goes on up.
- *
- * Inputs:
- *   event — the key event
- */
-- (void)
-keyDown:(NSEvent *)event
-{
-    NSEventModifierFlags mods = event.modifierFlags & (NSEventModifierFlagCommand |
-                                                       NSEventModifierFlagControl |
-                                                       NSEventModifierFlagOption |
-                                                       NSEventModifierFlagShift);
-    unichar key = event.charactersIgnoringModifiers.length > 0
-        ? [event.charactersIgnoringModifiers characterAtIndex:0] : 0;
-
-    if ((key == NSCarriageReturnCharacter || key == NSEnterCharacter) && mods == 0 &&
-        self.table.numberOfSelectedRows == 1) {
-        [self.library perform_command:TasksCommandTaskInfo param:nil];
-        return;
-    }
-    [super keyDown:event];
 }
 
 /*

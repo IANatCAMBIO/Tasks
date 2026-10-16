@@ -16,7 +16,6 @@
 #import "notify_window.h"
 #import "editor_window.h"
 #import "look.h"
-#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "db.h"
@@ -58,7 +57,7 @@ initWithTaskId:(int64_t)task_id title:(NSString *)title subtitle:(NSString *)sub
 @property (nonatomic, assign) TaskApp *app;   /* borrowed; outlives the window */
 @property (nonatomic, strong) NSMutableArray<TasksReminderItem *> *items;
 @property (nonatomic, strong) NSTableView   *table;
-@property (nonatomic, strong) TasksHero     *hero;   /* the selected reminder */
+@property (nonatomic, strong) SharedHero     *hero;   /* the selected reminder */
 @property (nonatomic, assign) BOOL           refresh_pending;  /* a show_items is queued */
 
 + (instancetype)shared;
@@ -117,7 +116,7 @@ init_window
     NSView *cv = panel.contentView;
 
     /* ── Hero area ───────────────────────────────────────────────────── */
-    _hero = [[TasksHero alloc] init_with_symbol:@"checklist.checked"];
+    _hero = [[SharedHero alloc] init_with_symbol:@"checklist.checked"];
     [cv addSubview:_hero];
     [NSLayoutConstraint activateConstraints:@[
         [_hero.topAnchor      constraintEqualToAnchor:cv.topAnchor],
@@ -141,22 +140,22 @@ init_window
         [btn_bar.leadingAnchor   constraintEqualToAnchor:cv.leadingAnchor],
         [btn_bar.trailingAnchor  constraintEqualToAnchor:cv.trailingAnchor],
         [btn_bar.bottomAnchor    constraintEqualToAnchor:cv.bottomAnchor],
-        [btn_bar.heightAnchor    constraintEqualToConstant:tasks_look_tool_bar_h],
+        [btn_bar.heightAnchor    constraintEqualToConstant:shared_look_tool_bar_h],
 
         /* Snooze left of Dismiss, both right-aligned, in the tool panels'
-         * bar: the same sizes (tasks_look_tool_btn_w is tighter than a
+         * bar: the same sizes (shared_look_tool_btn_w is tighter than a
          * combo button's own). */
         [dismiss_btn.trailingAnchor  constraintEqualToAnchor:btn_bar.trailingAnchor
-                                                    constant:-tasks_look_tool_btn_margin],
+                                                    constant:-shared_look_tool_btn_margin],
         [dismiss_btn.centerYAnchor   constraintEqualToAnchor:btn_bar.centerYAnchor],
-        [dismiss_btn.widthAnchor     constraintEqualToConstant:tasks_look_tool_btn_w],
-        [dismiss_btn.heightAnchor    constraintEqualToConstant:tasks_look_tool_btn_h],
+        [dismiss_btn.widthAnchor     constraintEqualToConstant:shared_look_tool_btn_w],
+        [dismiss_btn.heightAnchor    constraintEqualToConstant:shared_look_tool_btn_h],
 
         [snooze_btn.trailingAnchor   constraintEqualToAnchor:dismiss_btn.leadingAnchor
-                                                   constant:-tasks_look_tool_btn_gap],
+                                                   constant:-shared_look_tool_btn_gap],
         [snooze_btn.centerYAnchor    constraintEqualToAnchor:btn_bar.centerYAnchor],
-        [snooze_btn.widthAnchor      constraintEqualToConstant:tasks_look_tool_btn_w],
-        [snooze_btn.heightAnchor     constraintEqualToConstant:tasks_look_tool_btn_h],
+        [snooze_btn.widthAnchor      constraintEqualToConstant:shared_look_tool_btn_w],
+        [snooze_btn.heightAnchor     constraintEqualToConstant:shared_look_tool_btn_h],
     ]];
 
     /* Separator above buttons */
@@ -172,7 +171,7 @@ init_window
     ]];
 
     /* ── Table ───────────────────────────────────────────────────────── */
-    _table = [[TasksTable alloc] init];
+    _table = [[SharedTable alloc] init];
     _table.dataSource       = self;
     _table.delegate         = self;
     _table.headerView       = nil;
@@ -231,7 +230,7 @@ make_split_button:(NSString *)title action:(SEL)action menu:(NSMenu *)menu
                                                       target:self
                                                       action:action];
     btn.style = NSComboButtonStyleSplit;
-    btn.font  = [NSFont systemFontOfSize:tasks_look_ui_font];
+    btn.font  = [NSFont systemFontOfSize:shared_look_ui_font];
     return btn;
 }
 
@@ -289,12 +288,12 @@ make_dismiss_button
 
 /*
  * place_lower_right — put the window in the lower-right corner of the
- * primary display (tasks_ui_place_lower_right).  The window keeps its size.
+ * primary display (shared_ui_place_lower_right).  The window keeps its size.
  */
 - (void)
 place_lower_right
 {
-    tasks_ui_place_lower_right(self.window, NSScreen.screens.firstObject);
+    shared_ui_place_lower_right(self.window, NSScreen.screens.firstObject);
 }
 
 /*
@@ -511,7 +510,7 @@ tableView:(NSTableView *)tv
 
         /* Title */
         NSTextField *tf = [NSTextField labelWithString:@""];
-        tf.font          = [NSFont systemFontOfSize:tasks_look_ui_font];
+        tf.font          = [NSFont systemFontOfSize:shared_look_ui_font];
         tf.lineBreakMode = NSLineBreakByTruncatingTail;
         tf.maximumNumberOfLines = 1;
         tf.translatesAutoresizingMaskIntoConstraints = NO;
@@ -520,7 +519,7 @@ tableView:(NSTableView *)tv
 
         /* Status label (right-aligned) */
         NSTextField *st = [NSTextField labelWithString:@""];
-        st.font          = [NSFont systemFontOfSize:tasks_look_ui_font];
+        st.font          = [NSFont systemFontOfSize:shared_look_ui_font];
         st.textColor     = NSColor.secondaryLabelColor;
         st.lineBreakMode = NSLineBreakByTruncatingTail;
         st.maximumNumberOfLines = 1;

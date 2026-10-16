@@ -65,7 +65,7 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 |---|---|
 | `task_…`, `Task…` types, `TASK_…` | the core (carried names: `Task`, `TaskApp`, `TaskTag`, …) |
 | `task_…_t` | NEW core types written for the fork (`task_row_t`, `task_sel_t`) |
-| `tasks_…` | AppKit-layer C functions (`tasks_icon`, `tasks_row_text`) |
+| `tasks_…` | AppKit-layer C functions (`tasks_string`, `tasks_row_text`); `shared_ui_…` / `shared_look_…` / `Shared…` are the module shared with Notes |
 | `Tasks…` | Objective-C classes, `NS_ENUM` types and their members |
 | `tasks_look_…` | look constants |
 
@@ -347,23 +347,26 @@ which adapts to light/dark by itself.  The dark values were chosen for this
 port (GTK had light values only) and are open to the owner's taste.  Add a
 constant there rather than a literal in your file.
 
-**Utilities** (`src/ui_util.h`): `tasks_string`, `tasks_list_title`,
-`tasks_icon`, `tasks_app_icon`, `tasks_image_view`, `tasks_ui_notice`,
-`tasks_ui_confirm`, `tasks_ui_pick_path`, `tasks_ui_place_lower_right`,
-`tasks_emoji_field`.  Every dialog takes a completion block and the call
-returns at once.  **No system alerts and no sheets** (owner decision,
-2026-10-16, as Notes): a notice, a question or a small form is a tool
-panel (`tool_panel.h`, `TasksToolPanel` — the same API as Notes'
-`NotesToolPanel`) — a floating utility window with the blue hero strip —
-never `NSAlert`, an alert sheet, a custom sheet or `runModal`.
-`tasks_ui_notice` and `tasks_ui_confirm` are built on it; Edit Tag and the
-date pickers build their own with `panel_with_title:…`, whose handler
-returns a problem to keep the panel open.  In a tool panel Escape and the
-close box are no answer (Cancel), never the default button, and a
-destructive button is never the default.  The file chooser is the
-system's (`NSOpenPanel`).
-Every table is a `TasksTable` (or a subclass of it), which selects a
-clicked row on mouse-down.
+**Utilities** (`src/ui_util.h`): `tasks_string`, `tasks_title_string`,
+`tasks_tag_title`, `tasks_app_icon` — this app's own.  Everything both
+apps share is in `../shared_ui/src` (`shared_ui.h`,
+`shared_tool_panel.h`, `shared_look.h`), compiled in from
+`SHARED_UI_DIR`: `shared_ui_symbol`, `shared_ui_image_view`,
+`shared_ui_notice`, `shared_ui_confirm`, `shared_ui_pick_path`,
+`shared_ui_place_lower_right`, `shared_ui_emoji_field`, the status
+labels, `SharedTable`, `SharedSplitController`.  Every dialog takes a
+completion block and the call returns at once.  **No system alerts and no
+sheets** (owner decision, 2026-10-16, as Notes): a notice, a question or a
+small form is a tool panel (`SharedToolPanel`) — a floating utility
+window with the blue hero strip — never `NSAlert`, an alert sheet, a
+custom sheet or `runModal`.  `shared_ui_notice` and `shared_ui_confirm`
+are built on it; Edit Tag and the date pickers build their own with
+`panel_with_title:…`, whose handler returns a problem to keep the panel
+open.  In a tool panel Escape and the close box are no answer (Cancel),
+never the default button, and a destructive button is never the default.
+The file chooser is the system's (`shared_ui_pick_path`, app-modal).
+Every table is a `SharedTable` (or a subclass of it), which selects a
+clicked row on mouse-down and opens the selection on Return.
 
 **Focus rings**: `NSFocusRingTypeNone` on toolbar text fields ONLY (the search
 field has it).  Every other field keeps the system ring: use a stock bezeled
@@ -447,14 +450,14 @@ target size: AppKit renders the image's LARGEST representation (1024 × 1024 px
 = 4 MB for a system icon), caches it, and the layer keeps a second copy.  A
 table of such cells cost Files 86–127 MB instead of 11.
 
-- **Every image view is made with `tasks_image_view(image, size)`**
+- **Every image view is made with `shared_ui_image_view(image, width, height)`**
   (`ui_util.h`): framed first, image set last, size constraints included.
   Never `[[NSImageView alloc] init]` or `imageViewWithImage:`.
-- **Bundled icons come from `tasks_icon(name, size)`**, which returns a small
+- **Bundled icons come from `shared_ui_symbol(name, size)`**, which returns a small
   bitmap scaled once to the drawing size (the PNGs are 512 × 512).  Use it for
   buttons, toolbar items and menu items too; never `imageNamed:` for them.
 - A file's icon (attachments): `[NSWorkspace iconForFile:]` handed to
-  `tasks_image_view` at the row's icon size — never to a zero-frame view.
+  `shared_ui_image_view` at the row's icon size — never to a zero-frame view.
 - No unbounded caches: bound with `NSCache.countLimit` or by construction.
 
 ### 9.7 How to check
@@ -534,7 +537,7 @@ Owns: `sidebar.[hm]`, `favorites_bar.[hm]`.  Reference: `sidebar.c`.
 Lists and groups are gone (tags replaced them): a source list of the
 views, the non-selectable Tags header and every tag; selection restored
 across reloads (`task_sidebar_pick`); Edit Tag in a tool panel, with the
-emoji slot (`tasks_emoji_field`); the Favorites bar of favorite tags; the
+emoji slot (`shared_ui_emoji_field`); the Favorites bar of favorite tags; the
 toolbar's sidebar toggle.
 
 ### WP3 — Task list
@@ -635,7 +638,7 @@ flags as a side effect.
 - Window titles: the library window is "Tasks AppKit"; an editor's is its
   task's title; Settings is "Settings".  No "Tasks - " prefix.
 - Dialog buttons are named for their action ("Delete", "Create"), with
-  Cancel; destructive ones use `tasks_ui_confirm(…, destructive:YES)`.
+  Cancel; destructive ones use `shared_ui_confirm(…, destructive:YES)`.
   In a confirm Cancel is the default button (Return), as in Notes: a key
   press never performs the action (owner decision, 2026-10-16).
 - No system alerts (owner decision, 2026-10-13): every message or question
@@ -706,7 +709,7 @@ screenshots the running app where that permission exists.
   because they are the agreed interface for packages not written: the
   config keys for Compact mode, column visibility and the Kanban shadow;
   most `tasks_look_*` constants and `TasksColor` members; `tasks_due_color`,
-  `tasks_ui_pick_path`, `tasks_image_view`; the sidebar and column rows of
+  `shared_ui_pick_path`, `shared_ui_image_view`; the sidebar and column rows of
   the command table; `task_order_*` (tests only so far).  The no-unused-code
   rule applies again at integration: whatever still has no caller then is
   deleted.

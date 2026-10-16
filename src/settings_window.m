@@ -449,7 +449,7 @@ on_signed_in(gboolean ok, const gchar *error, gpointer data)
     if (ok) {
         gcal_sync_settings_changed();
     } else {
-        tasks_ui_notice(settings_window.window, @"Google sign-in failed",
+        shared_ui_notice(settings_window.window, @"Google sign-in failed",
                         tasks_string(error != NULL ? error : "The sign-in did not finish."), nil);
     }
     [settings_window queue_gcal_refresh];
@@ -858,7 +858,7 @@ hotkey_toggled:(NSButton *)sender
 
     sender.state = NSControlStateValueOff;
     task_config_set_bool(TASK_CFG_QUICK_TASK_HOTKEY, FALSE);
-    tasks_ui_notice(self.window, @"The shortcut is in use",
+    shared_ui_notice(self.window, @"The shortcut is in use",
                     @"Another app has already taken \u2303\u2325\u2318T.", nil);
 }
 
@@ -1158,7 +1158,7 @@ gcal_sign_in:(id)sender
     gchar *error = NULL;
     gchar *url   = task_oauth_begin(on_signed_in, NULL, &error);
     if (url == NULL) {
-        tasks_ui_notice(self.window, @"Cannot sign in to Google", tasks_string(error), nil);
+        shared_ui_notice(self.window, @"Cannot sign in to Google", tasks_string(error), nil);
         g_free(error);
         return;
     }
@@ -1743,8 +1743,8 @@ choose_folder:(id)sender
     char *current = task_backup_dir(self.app, &why);
     __weak TasksSettingsWindow *ws = self;
 
-    tasks_ui_pick_path(self.window, TasksPickFolder, @"Choose Backup Folder", @"Select", nil,
-                       tasks_string(current), ^(NSString *path) {
+    shared_ui_pick_path(SharedPickFolder, @"Choose Backup Folder", @"Select", nil,
+                        tasks_string(current), ^(NSString *path) {
         TasksSettingsWindow *s = ws;
         if (!s || s.is_shut_down || !path) return;   /* closed meanwhile, or cancelled */
         [s use_backup_folder:path];
@@ -1771,7 +1771,7 @@ use_backup_folder:(NSString *)path
         [self refresh_backup];
         [self fit_window];
     } else {
-        tasks_ui_notice(self.window, @"Backups cannot go to that folder",
+        shared_ui_notice(self.window, @"Backups cannot go to that folder",
                         tasks_string(reason), nil);
     }
     free(reason);
