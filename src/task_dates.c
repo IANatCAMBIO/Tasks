@@ -176,11 +176,8 @@ task_due_format_iso(gint64 due)
 }
 
 /*
- * task_clock_format — "8:00 AM" for minutes past midnight.
- *
- * "%I:%M %p" with the leading zero dropped BY HAND: GLib's "%l" pads with
- * U+2007 FIGURE SPACE, not an ASCII space, so stripping would leave it and
- * the sentence would read "at  8:00 AM".
+ * task_clock_format — "08:00" for minutes past midnight: the 24-hour clock
+ * Notes shows too.
  * Inputs/output are documented in task_dates.h.
  */
 gchar *
@@ -192,12 +189,10 @@ task_clock_format(gint minutes)
                                     minutes / 60, minutes % 60, 0.0);
     if (dt == NULL) return g_strdup("");
 
-    gchar *clock = g_date_time_format(dt, "%I:%M %p");
+    gchar *clock = g_date_time_format(dt, "%H:%M");
     g_date_time_unref(dt);
     if (clock == NULL) return g_strdup("");
 
-    g_strchomp(clock);
-    if (clock[0] == '0') memmove(clock, clock + 1, strlen(clock));
     return clock;
 }
 

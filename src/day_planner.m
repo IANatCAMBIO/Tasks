@@ -417,14 +417,8 @@ canvas_look(void)
         look.time_h  = time_font.ascender  - time_font.descender  + time_font.leading;
 
         NSMutableArray<NSString *> *labels = [NSMutableArray array];
-        for (NSInteger h = 0; h < 24; h++) {
-            NSString *text;
-            if (h == 0)       text = @"12 AM";
-            else if (h < 12)  text = [NSString stringWithFormat:@"%ld AM", (long)h];
-            else if (h == 12) text = @"12 PM";
-            else              text = [NSString stringWithFormat:@"%ld PM", (long)(h - 12)];
-            [labels addObject:text];
-        }
+        /* The 24-hour clock, as the apps show every time. */
+        for (NSInteger h = 0; h < 24; h++) [labels addObject:[NSString stringWithFormat:@"%02ld:00", (long)h]];
         look.hour_labels  = [labels copy];
         look.hour_label_h = [labels.firstObject sizeWithAttributes:look.label_attrs].height;
 

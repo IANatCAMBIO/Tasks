@@ -15,7 +15,6 @@
 /* ── Timing ─────────────────────────────────────────────────────────── */
 
 /* A text edit is saved this long after the last keystroke. */
-static const NSTimeInterval save_delay = 0.6;
 
 /* How long the window takes to grow or shrink round a fold. */
 static const NSTimeInterval fold_duration = 0.2;
@@ -1574,7 +1573,7 @@ queue_save
     self.save_pending  = YES;
 
     __weak TasksEditorWindow *ws = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(save_delay * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(shared_look_autosave_delay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         TasksEditorWindow *s = ws;
         if (!s || s.save_id != save_id || !s.save_pending) return;   /* gone, or superseded */
@@ -2742,8 +2741,9 @@ unsaved_notice
 
 /*
  * windowShouldClose: — the close button or ⌘W: end the edit in progress and
- * save it first.  When that save fails the window stays open, with the
- * edit in it, and says so — closing would lose it.
+ * save it first.  When that save fails the window stays open with the
+ * edit in it and asks (as Notes' editor does): Close Without Saving loses
+ * the edit, Cancel (the default) keeps the window.
  *
  * Inputs:
  *   sender — the window (unused)
@@ -2757,7 +2757,18 @@ windowShouldClose:(NSWindow *)sender
     if (self.discarded || self.is_shut_down) return YES;
     [self.window makeFirstResponder:nil];
     if (self.save_pending && ![self save_now]) {
-        [self unsaved_notice];
+        __weak TasksEditorWindow *ws = self;
+        shared_ui_confirm(self.window,
+                          [NSString stringWithFormat:@"Could not save \u201C%@\u201D", self.window.title],
+                          @"Your changes are still in the window. Closing it now loses them. "
+                          @"(The cause: " TASK_APP_WRITE_FAILED_REASON @".)",
+                          @"Close Without Saving", YES, ^(BOOL confirmed) {
+            TasksEditorWindow *s = ws;
+            if (!s || !confirmed) return;
+            s.save_pending = NO;
+            s.discarded    = YES;
+            [s close];
+        });
         return NO;
     }
     return YES;

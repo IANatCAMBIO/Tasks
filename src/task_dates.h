@@ -108,7 +108,8 @@ gint64 task_forecast_end(gint days, gboolean business_days);
 gchar *task_due_format(gint64 due);
 
 /*
- * task_clock_format — "8:00 AM" for minutes past local midnight.
+ * task_clock_format — "08:00" (the 24-hour clock, as Notes shows times)
+ * for minutes past local midnight.
  *
  * Inputs:
  *   minutes — 0..1439; out-of-range values clamp into the day

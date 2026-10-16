@@ -467,7 +467,7 @@ test_schedule(void)
     form.recur_time_text = "09:00";
     t = task_edit_schedule(&form, task_edit_reseed(&form, jan10 + noon));
     gchar *summary = task_recur_describe(&t, jan10 + noon);
-    check(strstr(summary, "9:00 AM") != NULL && strstr(summary, "Jan 11, 2026") != NULL,
+    check(strstr(summary, "09:00") != NULL && strstr(summary, "Jan 11, 2026") != NULL,
           "schedule: the summary names the time and the next occurrence");
     g_free(summary);
 }
