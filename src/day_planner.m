@@ -405,8 +405,8 @@ canvas_look(void)
                                                            weight:NSFontWeightRegular];
         look.label_attrs = @{ NSFontAttributeName:            look.label_font,
                               NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
-        NSFont *title_font = [NSFont systemFontOfSize:tasks_look_row_small_font];
-        NSFont *time_font  = [NSFont systemFontOfSize:tasks_look_row_small_font - 1.0];
+        NSFont *title_font = [NSFont systemFontOfSize:shared_look_ui_font];
+        NSFont *time_font  = [NSFont systemFontOfSize:shared_look_ui_font - 1.0];
         look.title_attrs = @{ NSFontAttributeName:            title_font,
                               NSForegroundColorAttributeName: NSColor.labelColor };
         look.time_attrs  = @{ NSFontAttributeName:            time_font,

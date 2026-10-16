@@ -147,74 +147,6 @@ canDragRowsWithIndexes:(NSIndexSet *)indexes atPoint:(NSPoint)point
 @end
 
 /*
- * TasksHeaderCell — column header cell filled with TasksColorHeaderFill,
- * and, for a leading-aligned title, a wider leading inset so the title
- * aligns with the row content below it.
- */
-@interface TasksHeaderCell : NSTableHeaderCell
-@end
-
-@implementation TasksHeaderCell
-
-/*
- * drawWithFrame:inView: — paint the header fill, then let AppKit draw the
- * separators, title and sort indicator over it.
- *
- * The sorted column's cell draws the divider on its left 1pt OUTSIDE its
- * own frame, in the last point of the column to its left, and AppKit
- * draws the header cells right to left: that column's fill, painted next,
- * would cover the divider.  So after drawing, a cell has the column to
- * its right draw again, clipped to that last point, to put the divider
- * back.  (Unsorted, the column to the right draws nothing there.)
- *
- * Inputs:
- *   frame — the cell's rect in view
- *   view  — the table's header view
- */
-- (void)drawWithFrame:(NSRect)frame inView:(NSView *)view
-{
-    static BOOL redrawing_divider = NO;
-
-    [tasks_color(TasksColorHeaderFill) setFill];
-    NSRectFill(frame);
-    [super drawWithFrame:frame inView:view];
-    if (redrawing_divider) return;
-
-    NSTableHeaderView *header = (NSTableHeaderView *)view;
-    NSInteger next = [header columnAtPoint:NSMakePoint(NSMaxX(frame) + 0.5, NSMidY(frame))];
-    if (next < 0) return;
-
-    [NSGraphicsContext saveGraphicsState];
-    NSRectClip(NSMakeRect(NSMaxX(frame) - 1.0, NSMinY(frame), 1.0, NSHeight(frame)));
-    redrawing_divider = YES;
-    [header.tableView.tableColumns[(NSUInteger)next].headerCell
-        drawWithFrame:[header headerRectOfColumn:next] inView:view];
-    redrawing_divider = NO;
-    [NSGraphicsContext restoreGraphicsState];
-}
-
-/*
- * drawInteriorWithFrame:inView: — draw the title, inset when it is not
- * centred.
- *
- * Inputs:
- *   frame — the cell's interior rect in view
- *   view  — the table's header view
- */
-- (void)drawInteriorWithFrame:(NSRect)frame inView:(NSView *)view
-{
-    /* Shift the leading edge inward; right edge stays fixed so the sort
-     * indicator position is unchanged.  A centred title stays centred. */
-    if (self.alignment != NSTextAlignmentCenter) {
-        frame.origin.x   += tasks_look_header_inset;
-        frame.size.width -= tasks_look_header_inset;
-    }
-    [super drawInteriorWithFrame:frame inView:view];
-}
-
-@end
-
-/*
  * TasksListCell — a cell that tells the list when its row's emphasis
  * changes (selected or not, in a key window or not), so the list can redraw
  * what does not follow by itself: the row text's colour and the Due tint.
@@ -387,7 +319,7 @@ accessibilityValue
 static NSFont *
 label_font(void)
 {
-    return [NSFont systemFontOfSize:tasks_look_row_font];
+    return [NSFont systemFontOfSize:shared_look_ui_font];
 }
 
 /*
@@ -512,6 +444,7 @@ make_check_cell(TasksTaskList *list)
                                                   target:list
                                                   action:@selector(done_clicked:)];
 
+    check.controlSize = NSControlSizeSmall;      /* drawn for the apps' text size, as Notes' */
     check.translatesAutoresizingMaskIntoConstraints = NO;
     [cell addSubview:check];
     [NSLayoutConstraint activateConstraints:@[
@@ -543,30 +476,12 @@ estimated_text_height(size_t line_count)
 
     dispatch_once(&once, ^{
         NSLayoutManager *layout = [[NSLayoutManager alloc] init];
-        title_h = [layout defaultLineHeightForFont:[NSFont systemFontOfSize:tasks_look_row_font]];
+        title_h = [layout defaultLineHeightForFont:[NSFont systemFontOfSize:shared_look_ui_font]];
         small_h = [layout defaultLineHeightForFont:
-                      [NSFont systemFontOfSize:tasks_look_row_small_font]] +
+                      [NSFont systemFontOfSize:shared_look_ui_font]] +
                   tasks_look_row_line_gap;
     });
     return ceil(title_h + (line_count > 1 ? line_count - 1 : 0) * small_h);
-}
-
-/*
- * row_background — a row's background: the stripe tint on every second
- * row, the table's own background on the others.  (A selected row draws
- * its selection over it.)
- *
- * Inputs:
- *   table — the table
- *   row   — the row index
- *
- * Output:
- *   the colour.
- */
-static NSColor *
-row_background(NSTableView *table, NSInteger row)
-{
-    return row % 2 == 1 ? tasks_color(TasksColorRowStripe) : table.backgroundColor;
 }
 
 /*
@@ -647,6 +562,7 @@ build_table
     self.table.style                    = NSTableViewStylePlain;
     self.table.rowSizeStyle             = NSTableViewRowSizeStyleCustom;
     self.table.usesAutomaticRowHeights  = YES;
+    self.table.usesAlternatingRowBackgroundColors = YES;   /* the system's stripes, as Notes' */
     /* No spacing: the cells pad themselves (look.h), so a cell is exactly
      * as wide as its column and a row exactly as tall as its Task cell. */
     self.table.intercellSpacing         = NSZeroSize;
@@ -665,18 +581,15 @@ build_table
 
         column.title = column_specs[i].title;
         if (i == col_done) {
-            column.width        = tasks_look_check_col_w;
-            column.minWidth     = tasks_look_check_col_w;
-            column.maxWidth     = tasks_look_check_col_w;
+            column.width        = shared_look_check_col_w;
+            column.minWidth     = shared_look_check_col_w;
+            column.maxWidth     = shared_look_check_col_w;
             column.resizingMask = NSTableColumnNoResizing;
-            column.headerCell   = [[TasksHeaderCell alloc] initTextCell:column.title];
             column.headerCell.alignment = NSTextAlignmentCenter;
         } else if (i == col_task) {
-            column.headerCell   = [[TasksHeaderCell alloc] initTextCell:column.title];
             column.minWidth     = task_col_min_w;
             column.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
         } else {
-            column.headerCell   = [[TasksHeaderCell alloc] initTextCell:column.title];
             column.minWidth     = data_col_min_w;
             column.resizingMask = NSTableColumnUserResizingMask;
         }
@@ -1266,35 +1179,6 @@ note_heights_changed:(NSIndexSet *)rows
     [NSAnimationContext endGrouping];
 }
 
-/*
- * stripe_rows — give every row on screen its background again, after a row
- * moved and the rows between changed from odd to even.
- */
-- (void)
-stripe_rows
-{
-    NSTableView *table = self.table;
-
-    [table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row_view, NSInteger row) {
-        row_view.backgroundColor = row_background(table, row);
-    }];
-}
-
-/*
- * tableView:didAddRowView:forRow: — a row came on screen: stripe it.  Row
- * views are reused, so the background is set either way.
- *
- * Inputs:
- *   table    — the table
- *   row_view — the row's view
- *   row      — the row index
- */
-- (void)
-tableView:(NSTableView *)table didAddRowView:(NSTableRowView *)row_view forRow:(NSInteger)row
-{
-    row_view.backgroundColor = row_background(table, row);
-}
-
 /* ── Header sorting ──────────────────────────────────────────────────── */
 
 /*
@@ -1403,7 +1287,6 @@ done_clicked:(NSButton *)sender
     }
     if (moved_to != row) {
         [self.table moveRowAtIndex:row toIndex:moved_to];
-        [self stripe_rows];
     }
 
     for (NSInteger column = 0; column < col_count; column++) {

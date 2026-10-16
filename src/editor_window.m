@@ -79,7 +79,7 @@ form_label(NSString *title)
 {
     NSTextField *label = [NSTextField labelWithString:title];
 
-    label.font = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    label.font = [NSFont systemFontOfSize:shared_look_ui_font];
     return label;
 }
 
@@ -101,7 +101,7 @@ entry_field(NSString *placeholder, CGFloat width, NSString *tip, id<NSTextFieldD
 {
     NSTextField *field = [NSTextField textFieldWithString:@""];
 
-    field.font               = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    field.font               = [NSFont systemFontOfSize:shared_look_ui_font];
     field.bezelStyle         = NSTextFieldRoundedBezel;
     field.placeholderString  = placeholder;
     field.toolTip            = tip;
@@ -247,7 +247,7 @@ popup_button(NSArray<NSString *> *titles, id target, SEL action)
 {
     NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
 
-    popup.font   = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    popup.font   = [NSFont systemFontOfSize:shared_look_ui_font];
     popup.target = target;
     popup.action = action;
     [popup addItemsWithTitles:titles];
@@ -722,7 +722,7 @@ build_layout
 build_fields:(NSStackView *)form
 {
     self.title_field = [NSTextField textFieldWithString:@""];
-    self.title_field.font               = [NSFont systemFontOfSize:tasks_look_row_font];
+    self.title_field.font               = [NSFont systemFontOfSize:shared_look_ui_font];
     self.title_field.bezelStyle         = NSTextFieldRoundedBezel;
     self.title_field.placeholderString  = @"Task title";
     self.title_field.delegate           = self;
@@ -751,7 +751,7 @@ build_fields:(NSStackView *)form
         NSDatePicker *tp = [[NSDatePicker alloc] initWithFrame:NSZeroRect];
         tp.datePickerStyle    = NSDatePickerStyleTextFieldAndStepper;
         tp.datePickerElements = NSDatePickerElementFlagHourMinute;
-        tp.font               = [NSFont systemFontOfSize:tasks_look_row_small_font];
+        tp.font               = [NSFont systemFontOfSize:shared_look_ui_font];
         tp.toolTip            = @"The time of day this task is due.";
         tp.target             = self;
         tp.action             = @selector(due_time_changed:);
@@ -768,7 +768,7 @@ build_fields:(NSStackView *)form
     /* The tags, as tokens: typing offers the existing tags (completions),
      * Return or a comma makes the typed text a tag, new or not. */
     self.tag_field = [[NSTokenField alloc] initWithFrame:NSZeroRect];
-    self.tag_field.font              = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    self.tag_field.font              = [NSFont systemFontOfSize:shared_look_ui_font];
     self.tag_field.bezelStyle        = NSTextFieldRoundedBezel;
     self.tag_field.placeholderString = @"Add a tag";
     self.tag_field.toolTip           =
@@ -785,7 +785,7 @@ build_fields:(NSStackView *)form
      * under the time picker. */
     self.priority_check = [NSButton checkboxWithTitle:@"High Priority" target:self
                                                action:@selector(flag_changed:)];
-    self.priority_check.font = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    self.priority_check.font = [NSFont systemFontOfSize:shared_look_ui_font];
     NSView *flags_row = row_stack(@[form_label(@"Tags:"), self.tag_field,
                                     self.priority_check]);
     [form setCustomSpacing:tasks_look_form_spacing * 1.2 afterView:status_row];
@@ -834,7 +834,7 @@ build_notes
     self.notes_view.richText             = NO;
     self.notes_view.importsGraphics      = NO;
     self.notes_view.allowsUndo           = YES;
-    self.notes_view.font                 = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    self.notes_view.font                 = [NSFont systemFontOfSize:shared_look_ui_font];
     self.notes_view.textContainerInset   = NSMakeSize(notes_inset, notes_inset);
     self.notes_view.delegate             = self;
 
@@ -928,7 +928,7 @@ build_recurrence
 {
     self.recur_check = [NSButton checkboxWithTitle:@"Repeat this task" target:self
                                             action:@selector(recur_control_changed:)];
-    self.recur_check.font    = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    self.recur_check.font    = [NSFont systemFontOfSize:shared_look_ui_font];
     self.recur_check.toolTip =
         @"Give this task a repeating schedule.  Switching it off leaves the task exactly "
         @"where it is and stops it coming back.";
@@ -1016,13 +1016,13 @@ build_foot
 {
     self.advanced_button = [NSButton buttonWithTitle:advanced_to_show target:self
                                               action:@selector(advanced_action:)];
-    self.advanced_button.font     = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    self.advanced_button.font     = [NSFont systemFontOfSize:shared_look_ui_font];
     self.advanced_button.bordered = NO;
     self.advanced_button.toolTip  =
         @"Show or hide the Recurrence, Subtasks and Attachments sections";
 
     NSButton *save = [NSButton buttonWithTitle:@"Save" target:self action:@selector(save_action:)];
-    save.font          = [NSFont systemFontOfSize:tasks_look_row_small_font];
+    save.font          = [NSFont systemFontOfSize:shared_look_ui_font];
     save.keyEquivalent = @"\r";
 
     NSMutableArray<NSView *> *views = [NSMutableArray arrayWithObjects:
@@ -1030,7 +1030,7 @@ build_foot
     if (self.is_new) {
         NSButton *cancel = [NSButton buttonWithTitle:@"Cancel" target:self
                                               action:@selector(cancel_action:)];
-        cancel.font          = [NSFont systemFontOfSize:tasks_look_row_small_font];
+        cancel.font          = [NSFont systemFontOfSize:shared_look_ui_font];
         cancel.keyEquivalent = @"\e";
         [views addObject:cancel];
     }
@@ -1300,8 +1300,11 @@ indexOfSelectedItem:(NSInteger *)selected
         [found.location == 0 ? starts : inside addObject:name];
     }
     task_ptr_array_free_tags(tags);
-    if (selected != NULL) *selected = -1;
-    return [starts arrayByAddingObjectsFromArray:inside];
+    NSArray<NSString *> *names = [starts arrayByAddingObjectsFromArray:inside];
+    if (names.count > (NSUInteger)shared_look_tag_suggestions_max)
+        names = [names subarrayWithRange:NSMakeRange(0, (NSUInteger)shared_look_tag_suggestions_max)];
+    if (selected != NULL) *selected = names.count > 0 ? 0 : -1;
+    return names;
 }
 
 /*
@@ -1751,7 +1754,7 @@ refresh_advanced_button
             attributes:@{
                 NSForegroundColorAttributeName: shared_ui_color(shared_look_link),
                 NSUnderlineStyleAttributeName:  @(NSUnderlineStyleSingle),
-                NSFontAttributeName:            [NSFont systemFontOfSize:tasks_look_row_small_font],
+                NSFontAttributeName:            [NSFont systemFontOfSize:shared_look_ui_font],
             }];
 }
 

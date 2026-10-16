@@ -56,15 +56,10 @@ static const CGFloat tasks_look_float_pad        = 2.0;    /* plate edge to butt
 
 /* ── Task rows (the list and the cards share row_text.h) ────────────── */
 
-static const CGFloat tasks_look_row_font         = 12.0;   /* the title line      */
-static const CGFloat tasks_look_row_small_font   = 11.0;   /* every other line    */
 static const CGFloat tasks_look_row_line_gap     = 1.0;    /* between lines       */
 static const CGFloat tasks_look_row_pad_v        = 8.0;    /* above and below the
                                                              * text in a list row */
 static const CGFloat tasks_look_row_pad_h        = 4.0;
-static const CGFloat tasks_look_header_inset     = 4.0;    /* extra leading inset
-                                                             * in column headers   */
-static const CGFloat tasks_look_check_col_w      = 28.0;   /* the done checkbox   */
 static const CGFloat tasks_look_drag_rule        = 2.0;    /* row drop marker     */
 
 /* ── Kanban board ───────────────────────────────────────────────────── */
@@ -116,9 +111,7 @@ static const CGFloat    tasks_look_day_planner_time_w      = 2.0;    /* current-
 /* ── Colours ────────────────────────────────────────────────────────── */
 
 typedef NS_ENUM(NSInteger, TasksColor) {
-    TasksColorRowStripe = 0,        /* even list rows (not over selection) */
-    TasksColorHeaderFill,           /* the list's column headers           */
-    TasksColorDragRow,              /* the row held during a manual drag   */
+    TasksColorDragRow = 0,          /* the row held during a manual drag   */
     TasksColorLaneFill,             /* a Kanban lane's tint                */
     TasksColorLaneBorder,
     TasksColorLaneTarget,           /* the lane a drag would land in       */

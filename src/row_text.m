@@ -23,7 +23,7 @@ row_font(BOOL small, BOOL bold, BOOL italic)
     unsigned       which = (small ? 4 : 0) | (bold ? 2 : 0) | (italic ? 1 : 0);
     if (faces[which] != nil) return faces[which];
 
-    CGFloat size = small ? tasks_look_row_small_font : tasks_look_row_font;
+    CGFloat size = shared_look_ui_font;         /* every line the apps' size; a small one is told by its alpha */
     NSFont *font = bold ? [NSFont boldSystemFontOfSize:size] : [NSFont systemFontOfSize:size];
 
     if (italic) {

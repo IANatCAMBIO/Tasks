@@ -2466,11 +2466,11 @@ check_tags(TaskApp *app, NSString *dir)
         check([sidebar_rows(sidebar) containsObject:@"UI Check Tag"],
               "tags: the new tag gets a row in the sidebar");
 
-        NSInteger selected = 0;
+        NSInteger selected = -1;
         NSArray *offered = [editor tokenField:field completionsForSubstring:@"check"
                                  indexOfToken:2 indexOfSelectedItem:&selected];
-        check([offered isEqual:@[@"UI Check Other"]] && selected == -1,
-              "tags: typing offers existing tags it does not carry, none preselected");
+        check([offered isEqual:@[@"UI Check Other"]] && selected == 0,
+              "tags: typing offers existing tags it does not carry, the first preselected");
         added = [editor tokenField:field shouldAddObjects:@[@"ui check other"] atIndex:2];
         check([added isEqual:@[@"UI Check Other"]], "tags: an existing tag, typed in any case, is that tag");
         field.objectValue = @[@"UI Base", @"UI Check Tag", @"UI Check Other"];

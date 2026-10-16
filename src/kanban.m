@@ -134,7 +134,7 @@ grip_glyph(void)
     dispatch_once(&once, ^{
         glyph = [[NSAttributedString alloc]
             initWithString:@"⠿"
-                attributes:@{ NSFontAttributeName: [NSFont systemFontOfSize:tasks_look_row_font],
+                attributes:@{ NSFontAttributeName: [NSFont systemFontOfSize:shared_look_ui_font],
                               NSForegroundColorAttributeName: NSColor.secondaryLabelColor }];
     });
     return glyph;
@@ -195,7 +195,7 @@ lane_heading(TaskStatus status, NSUInteger total)
     NSParagraphStyle *style = centred_style();
     NSMutableAttributedString *text = [[NSMutableAttributedString alloc]
         initWithString:tasks_string(task_status_label(status))
-            attributes:@{ NSFontAttributeName: [NSFont boldSystemFontOfSize:tasks_look_row_font],
+            attributes:@{ NSFontAttributeName: [NSFont boldSystemFontOfSize:shared_look_ui_font],
                           NSForegroundColorAttributeName: NSColor.labelColor,
                           NSParagraphStyleAttributeName: style }];
     NSString *count = [NSString stringWithFormat:@"\n%lu task%@", (unsigned long)total,
@@ -203,7 +203,7 @@ lane_heading(TaskStatus status, NSUInteger total)
 
     [text appendAttributedString:[[NSAttributedString alloc]
         initWithString:count
-            attributes:@{ NSFontAttributeName: [NSFont systemFontOfSize:tasks_look_row_small_font],
+            attributes:@{ NSFontAttributeName: [NSFont systemFontOfSize:shared_look_ui_font],
                           NSForegroundColorAttributeName: NSColor.secondaryLabelColor,
                           NSParagraphStyleAttributeName: style }]];
     return text;
@@ -224,7 +224,7 @@ empty_prompt(void)
 
     dispatch_once(&once, ^{
         NSFont *italic = [NSFontManager.sharedFontManager
-            convertFont:[NSFont systemFontOfSize:tasks_look_row_font]
+            convertFont:[NSFont systemFontOfSize:shared_look_ui_font]
             toHaveTrait:NSItalicFontMask];
         prompt = [[NSAttributedString alloc]
             initWithString:@"Drop a task here"
@@ -249,7 +249,7 @@ draw_badge(NSUInteger count, NSRect ghost)
     NSAttributedString *number = [[NSAttributedString alloc]
         initWithString:[NSString stringWithFormat:@"%lu", (unsigned long)count]
             attributes:@{ NSFontAttributeName:
-                              [NSFont boldSystemFontOfSize:tasks_look_row_small_font],
+                              [NSFont boldSystemFontOfSize:shared_look_ui_font],
                           NSForegroundColorAttributeName: NSColor.whiteColor }];
     NSSize  size  = number.size;
     NSRect  plate = NSMakeRect(NSMaxX(ghost) - badge_from_right,
@@ -691,7 +691,7 @@ show_link:(NSString *)title
 
     self.link.attributedTitle = [[NSAttributedString alloc]
         initWithString:title
-            attributes:@{ NSFontAttributeName: [NSFont systemFontOfSize:tasks_look_row_small_font],
+            attributes:@{ NSFontAttributeName: [NSFont systemFontOfSize:shared_look_ui_font],
                           NSForegroundColorAttributeName: shared_ui_color(shared_look_link),
                           NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle) }];
     [self.link sizeToFit];
