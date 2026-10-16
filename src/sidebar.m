@@ -12,13 +12,12 @@
 static NSString * const cell_id       = @"sidebar.row";
 static NSString * const header_id     = @"sidebar.header";
 static NSString * const header_title  = @"Tags";
-static const CGFloat    row_h         = 26.0;
 static NSString * const count_id      = @"sidebar.count";   /* a tag cell's count label */
+static const CGFloat    count_gap     = 4.0;                /* text to count            */
 
 /* The Edit Tag sheet's emoji slot. */
 static NSString * const emoji_placeholder = @"…";
 static NSString * const emoji_tooltip     = @"Optional emoji — click to pick";
-static const CGFloat    emoji_field_w     = 40.0;
 
 /* ── The emoji field ────────────────────────────────────────────────── */
 
@@ -134,7 +133,7 @@ init_with_library:(TasksLibraryWindow *)library
     [self.table addTableColumn:column];
     self.table.style            = NSTableViewStyleSourceList;
     self.table.headerView       = nil;
-    self.table.rowHeight        = row_h;
+    self.table.rowHeight        = tasks_look_sidebar_row_h;
     self.table.backgroundColor  = NSColor.clearColor;
     self.table.dataSource       = self;
     self.table.delegate         = self;
@@ -400,10 +399,13 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
         [cell addSubview:count];
         [NSLayoutConstraint activateConstraints:@[
-            [text.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:4.0],
-            [text.trailingAnchor constraintLessThanOrEqualToAnchor:count.leadingAnchor constant:-4.0],
+            [text.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor
+                                                constant:tasks_look_sidebar_text_pad],
+            [text.trailingAnchor constraintLessThanOrEqualToAnchor:count.leadingAnchor
+                                                            constant:-count_gap],
             [text.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
-            [count.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-6.0],
+            [count.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor
+                                                 constant:-tasks_look_sidebar_count_pad],
             [count.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
@@ -499,7 +501,7 @@ show_tag_sheet:(int64_t)tag_id
     emoji.placeholderString = emoji_placeholder;
     emoji.toolTip           = emoji_tooltip;
     emoji.alignment         = NSTextAlignmentCenter;
-    [emoji.widthAnchor constraintEqualToConstant:emoji_field_w].active = YES;
+    [emoji.widthAnchor constraintEqualToConstant:tasks_look_tool_emoji_w].active = YES;
 
     NSTextField *name = [NSTextField labelWithString:tasks_string(tag->name)];
     name.toolTip = @"A tag keeps its name: it is the same tag on every task carrying it.";

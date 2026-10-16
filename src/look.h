@@ -39,10 +39,12 @@ static const CGFloat tasks_look_toolbar_icon     = 16.0;   /* symbol point size 
                                                              * Compact mode's
                                                              * floating buttons (the
                                                              * toolbar sizes its own) */
-static const CGFloat tasks_look_search_w         = 220.0;  /* toolbar search field */
+static const CGFloat tasks_look_toolbar_search_w = 220.0;  /* toolbar search field */
 static const CGFloat tasks_look_status_h         = 20.0;   /* status bar; a 1 pt
                                                              * separator above it */
-static const CGFloat tasks_look_status_font      = 11.0;   /* secondaryLabelColor */
+static const CGFloat tasks_look_status_font      = 11.0;   /* secondaryLabelColor;
+                                                             * the Files and Notes
+                                                             * apps' status size  */
 static const CGFloat tasks_look_status_inset     = 8.0;    /* left and right      */
 static const NSTimeInterval tasks_look_status_hold = 3.0;  /* a message stays ... */
 static const NSTimeInterval tasks_look_status_fade = 1.0;  /* ... then fades out  */
@@ -56,12 +58,23 @@ static const CGFloat tasks_look_float_pad        = 2.0;    /* plate edge to butt
 
 /* ── Sidebar and Favorites bar ──────────────────────────────────────── */
 
-static const CGFloat tasks_look_sidebar_w        = 200.0;  /* the tag sidebar, until
-                                                             * it is dragged      */
+static const CGFloat tasks_look_sidebar_w        = 180.0;  /* the tag sidebar, until
+                                                             * it is dragged: the
+                                                             * Files and Notes apps'
+                                                             * initial width      */
 static const CGFloat tasks_look_sidebar_min_w    = 160.0;  /* the narrowest drag  */
 static const CGFloat tasks_look_sidebar_grip_w   = 7.0;    /* its edge's grip, the
                                                              * edge at its centre */
-static const CGFloat tasks_look_favorites_bar_h  = 28.0;   /* bar height           */
+static const CGFloat tasks_look_sidebar_row_h    = 26.0;   /* a sidebar row       */
+static const CGFloat tasks_look_sidebar_text_pad = 4.0;    /* a row's text, from
+                                                             * the left           */
+static const CGFloat tasks_look_sidebar_count_pad = 6.0;   /* its count, from the
+                                                             * right              */
+static const CGFloat tasks_look_favorites_bar_h  = 28.0;   /* the button strip; a
+                                                             * 1 pt rule under it */
+static const CGFloat tasks_look_favorite_btn_h   = 24.0;   /* a favorite's button */
+static const CGFloat tasks_look_favorite_btn_min_w = 60.0;
+static const CGFloat tasks_look_favorite_gap     = 4.0;    /* between buttons     */
 
 /* ── Task rows (the list and the cards share row_text.h) ────────────── */
 
@@ -91,13 +104,20 @@ static const CGFloat tasks_look_badge_radius     = 8.0;    /* multi-drag count  
 static const NSInteger tasks_look_done_cap       = 10;     /* Done lane shows this
                                                              * many until expanded */
 
-/* ── Editor and Settings windows ────────────────────────────────────── */
+/* ── Editor, Settings and Reminders windows ─────────────────────────── */
 
-static const CGFloat tasks_look_screen_margin    = 15.0;   /* a window placed in a
+static const CGFloat tasks_look_ui_font          = 11.0;   /* the app's own small
+                                                             * text, as Notes' every
+                                                             * label: the Favorites
+                                                             * bar, the reminders
+                                                             * window, the hero    */
+static const CGFloat tasks_look_screen_margin    = 12.0;   /* a window placed in a
                                                              * screen's lower-right
                                                              * corner (reminders,
                                                              * Quick Task), from the
-                                                             * work area's edges  */
+                                                             * work area's edges;
+                                                             * Notes places its
+                                                             * editors the same   */
 
 static const CGFloat tasks_look_editor_w         = 490.0;  /* height fits content */
 static const NSInteger tasks_look_editor_notes_lines = 8;
@@ -106,6 +126,13 @@ static const CGFloat tasks_look_settings_max_h   = 600.0;  /* then it scrolls   
 static const CGFloat tasks_look_form_margin      = 16.0;   /* window edge to form */
 static const CGFloat tasks_look_form_spacing     = 6.0;    /* between form rows   */
 static const CGFloat tasks_look_section_gap      = 18.0;   /* between sections    */
+static const CGFloat tasks_look_tool_emoji_w     = 44.0;   /* Edit Tag's emoji slot */
+static const CGFloat tasks_look_reminders_w      = 389.0;  /* the reminders window */
+static const CGFloat tasks_look_reminders_h      = 186.0;
+static const CGFloat tasks_look_reminders_min_w  = 243.0;
+static const CGFloat tasks_look_reminders_min_h  = 154.0;
+static const CGFloat tasks_look_reminders_row_h  = 27.0;   /* one reminder        */
+static const CGFloat tasks_look_reminders_icon   = 14.0;   /* its symbol          */
 
 /* ── Tool panels and the blue hero strip (tool_panel.h) ─────────────── */
 
@@ -114,7 +141,6 @@ static const CGFloat tasks_look_hero_pad         = 16.0;   /* left and right ins
 static const CGFloat tasks_look_hero_gap         = 3.0;    /* title to subtitle   */
 static const CGFloat tasks_look_hero_icon        = 22.0;   /* its symbol          */
 static const CGFloat tasks_look_hero_icon_gap    = 10.0;   /* symbol to the text  */
-static const CGFloat tasks_look_hero_font        = 11.0;   /* title (bold), subtitle */
 static const CGFloat tasks_look_tool_min_w       = 340.0;
 static const CGFloat tasks_look_tool_pad         = 16.0;   /* around the message  */
 static const CGFloat tasks_look_tool_bar_h       = 40.0;   /* the button bar      */

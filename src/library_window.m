@@ -458,7 +458,7 @@ status_label(NSTextAlignment alignment)
     label.font          = [NSFont systemFontOfSize:tasks_look_status_font];
     label.textColor     = NSColor.secondaryLabelColor;
     label.alignment     = alignment;
-    label.lineBreakMode = NSLineBreakByTruncatingTail;
+    label.lineBreakMode = NSLineBreakByTruncatingMiddle;   /* as Notes': a path keeps both ends */
     label.translatesAutoresizingMaskIntoConstraints = NO;
     [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                     forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -600,7 +600,7 @@ build_layout
         [content addSubview:v];
     }
     self.favorites_height = [self.favorites_bar.heightAnchor
-                                constraintEqualToConstant:tasks_look_favorites_bar_h];
+                                constraintEqualToConstant:tasks_look_favorites_bar_h + 1.0];  /* + its rule */
     self.sidebar_width = [self.sidebar.widthAnchor constraintEqualToConstant:[self sidebar_extent]];
     NSLayoutYAxisAnchor *below_bar = self.favorites_bar.bottomAnchor;
     [NSLayoutConstraint activateConstraints:@[
@@ -749,8 +749,8 @@ willBeInsertedIntoToolbar:(BOOL)flag
         /* No focus ring on a toolbar field: a focused field is slightly
          * wider, which can push toolbar items into the overflow menu. */
         field.focusRingType     = NSFocusRingTypeNone;
-        item.preferredWidthForSearchField = tasks_look_search_w;
-        [field.widthAnchor constraintLessThanOrEqualToConstant:tasks_look_search_w].active = YES;
+        item.preferredWidthForSearchField = tasks_look_toolbar_search_w;
+        [field.widthAnchor constraintLessThanOrEqualToConstant:tasks_look_toolbar_search_w].active = YES;
         self.search_field = field;
         return item;
     }
@@ -1639,7 +1639,7 @@ drag_sidebar_to:(CGFloat)width done:(BOOL)done
 - (void)
 show_favorites_bar:(BOOL)show animated:(BOOL)animated
 {
-    [self slide:self.favorites_bar size:self.favorites_height to:tasks_look_favorites_bar_h
+    [self slide:self.favorites_bar size:self.favorites_height to:tasks_look_favorites_bar_h + 1.0
            show:show animated:animated];
 }
 

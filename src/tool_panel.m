@@ -62,9 +62,9 @@ init_with_symbol:(NSString *)symbol
     icon.contentTintColor = NSColor.whiteColor;
     icon.hidden           = sym == nil;
 
-    _title_label    = hero_label([NSFont boldSystemFontOfSize:tasks_look_hero_font],
+    _title_label    = hero_label([NSFont boldSystemFontOfSize:tasks_look_ui_font],
                                  NSColor.whiteColor);
-    _subtitle_label = hero_label([NSFont systemFontOfSize:tasks_look_hero_font],
+    _subtitle_label = hero_label([NSFont systemFontOfSize:tasks_look_ui_font],
                                  tasks_color(TasksColorHeroSubtitle));
     _subtitle_label.hidden = YES;
 

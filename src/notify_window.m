@@ -21,15 +21,8 @@
 
 #include "db.h"
 
-/* ── Layout constants ────────────────────────────────────────────────── */
+/* ── Constants ───────────────────────────────────────────────────────── */
 
-static const CGFloat win_w         = 389.0;
-static const CGFloat win_h         = 186.0;
-static const CGFloat win_min_w     = 243.0;
-static const CGFloat win_min_h     = 154.0;
-static const CGFloat row_h         = 27.0;
-static const CGFloat icon_size     = 14.0;
-static const CGFloat text_size     = 11.0;  /* every label and button title */
 static const NSInteger snooze_default_mins = 10;
 
 /* ── Data model ──────────────────────────────────────────────────────── */
@@ -95,7 +88,7 @@ shared
 - (instancetype)
 init_window
 {
-    NSRect frame = NSMakeRect(0, 0, win_w, win_h);
+    NSRect frame = NSMakeRect(0, 0, tasks_look_reminders_w, tasks_look_reminders_h);
     /* Utility mask: the small tool-window titlebar (no minimize button). */
     NSWindowStyleMask mask = (NSWindowStyleMaskTitled        |
                               NSWindowStyleMaskClosable      |
@@ -111,7 +104,7 @@ init_window
     _items = [[NSMutableArray alloc] init];
 
     panel.title    = @"Reminders";
-    panel.minSize  = NSMakeSize(win_min_w, win_min_h);
+    panel.minSize  = NSMakeSize(tasks_look_reminders_min_w, tasks_look_reminders_min_h);
     panel.becomesKeyOnlyIfNeeded = NO;
     /* A reminder stays in view while another app is in front: above
      * ordinary windows, not hidden when Tasks deactivates, and on every
@@ -183,7 +176,7 @@ init_window
     _table.dataSource       = self;
     _table.delegate         = self;
     _table.headerView       = nil;
-    _table.rowHeight        = row_h;
+    _table.rowHeight        = tasks_look_reminders_row_h;
     _table.intercellSpacing = NSMakeSize(0, 0);
     _table.gridStyleMask    = NSTableViewSolidHorizontalGridLineMask;
     _table.gridColor        = [NSColor separatorColor];
@@ -238,7 +231,7 @@ make_split_button:(NSString *)title action:(SEL)action menu:(NSMenu *)menu
                                                       target:self
                                                       action:action];
     btn.style = NSComboButtonStyleSplit;
-    btn.font  = [NSFont systemFontOfSize:text_size];
+    btn.font  = [NSFont systemFontOfSize:tasks_look_ui_font];
     return btn;
 }
 
@@ -507,7 +500,7 @@ tableView:(NSTableView *)tv
         if (sym) {
             NSImageSymbolConfiguration *cfg =
                 [NSImageSymbolConfiguration
-                    configurationWithPointSize:icon_size
+                    configurationWithPointSize:tasks_look_reminders_icon
                                         weight:NSFontWeightRegular];
             iv.image = [sym imageWithSymbolConfiguration:cfg];
         }
@@ -518,7 +511,7 @@ tableView:(NSTableView *)tv
 
         /* Title */
         NSTextField *tf = [NSTextField labelWithString:@""];
-        tf.font          = [NSFont systemFontOfSize:text_size];
+        tf.font          = [NSFont systemFontOfSize:tasks_look_ui_font];
         tf.lineBreakMode = NSLineBreakByTruncatingTail;
         tf.maximumNumberOfLines = 1;
         tf.translatesAutoresizingMaskIntoConstraints = NO;
@@ -527,7 +520,7 @@ tableView:(NSTableView *)tv
 
         /* Status label (right-aligned) */
         NSTextField *st = [NSTextField labelWithString:@""];
-        st.font          = [NSFont systemFontOfSize:text_size];
+        st.font          = [NSFont systemFontOfSize:tasks_look_ui_font];
         st.textColor     = NSColor.secondaryLabelColor;
         st.lineBreakMode = NSLineBreakByTruncatingTail;
         st.maximumNumberOfLines = 1;
@@ -538,8 +531,8 @@ tableView:(NSTableView *)tv
         [NSLayoutConstraint activateConstraints:@[
             [iv.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:10.0],
             [iv.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
-            [iv.widthAnchor    constraintEqualToConstant:icon_size],
-            [iv.heightAnchor   constraintEqualToConstant:icon_size],
+            [iv.widthAnchor    constraintEqualToConstant:tasks_look_reminders_icon],
+            [iv.heightAnchor   constraintEqualToConstant:tasks_look_reminders_icon],
 
             [st.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-10.0],
             [st.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
@@ -580,7 +573,7 @@ tableView:(NSTableView *)tv
 tableView:(NSTableView *)tv heightOfRow:(NSInteger)row
 {
     (void)tv; (void)row;
-    return row_h;
+    return tasks_look_reminders_row_h;
 }
 
 - (void)
