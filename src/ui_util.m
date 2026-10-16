@@ -52,6 +52,17 @@ tasks_tag_title(const TaskTag *tag)
     return title;
 }
 
+/*
+ * tasks_label_name — the name after a label's "emoji  " prefix.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSString *
+tasks_label_name(NSString *label)
+{
+    NSRange gap = [label rangeOfString:@"  "];
+    return gap.location == NSNotFound ? label : [label substringFromIndex:NSMaxRange(gap)];
+}
+
 /* ── Images ─────────────────────────────────────────────────────────── */
 
 /*

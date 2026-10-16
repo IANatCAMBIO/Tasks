@@ -11,7 +11,7 @@
 /*
  * HOW THE LIST IS BUILT
  *
- * A view-based NSTableView of six columns (column_specs below).  The rows
+ * A view-based NSTableView of five columns (column_specs below).  The rows
  * the window hands over (show_rows:) are never moved: what the table shows
  * is a DISPLAY ORDER over them (task_sort.h) — the saved manual order when
  * manual sorting is on, then the header sort — so everything kept per row
@@ -909,13 +909,17 @@ selected_task_ids
 /*
  * view_changed — another sidebar row was selected: the old view's selection
  * and scroll position do not carry over, and the columns are fitted to the
- * new view's content.
+ * new view's content.  The top is not (0, 0): the column headers float
+ * over the content and the clip view's inset makes room for them, so
+ * scrolling to the origin leaves the first row under the headers.
  */
 - (void)
 view_changed
 {
     [self.table deselectAll:nil];
-    [self.table scrollPoint:NSZeroPoint];
+    [self.scroll layoutSubtreeIfNeeded];
+    NSEdgeInsets insets = self.scroll.contentView.contentInsets;
+    [self.table scrollPoint:NSMakePoint(-insets.left, -insets.top)];
     self.fit_pending = YES;
 }
 
@@ -1181,8 +1185,6 @@ fill_cell:(NSTableCellView *)cell column:(NSInteger)column row:(NSInteger)row
                                                   : tasks_due_color(task->due_urgency);
         }
         break;
-    default:
-        break;                      /* the handle looks the same on every row */
     }
 }
 
@@ -1524,14 +1526,15 @@ menuNeedsUpdate:(NSMenu *)menu
 
 /*
  * tableView:draggingSession:willBeginAtPoint:forRowIndexes: — replace
- * NSTableView's default row-snapshot drag image with a small generic pill
- * at 10% of the table width and 65% opacity.
+ * NSTableView's default drag image with one ghost for the whole drag: a
+ * snapshot of the first dragged row at tasks_look_card_ghost_alpha with a
+ * hairline frame, as the board's card drag shows.
  *
  * Inputs:
  *   table   — the table
  *   session — the new drag session whose items are replaced
  *   point   — starting point in screen coordinates (unused)
- *   indexes — dragged row indices (unused; image is generic)
+ *   indexes — dragged row indices; the first is pictured
  */
 - (void)
 tableView:(NSTableView *)table

@@ -192,7 +192,8 @@ sel_at:(NSInteger)row
 }
 
 /*
- * reload — rebuild the rows: the views, the Tags header, the tags.
+ * reload — rebuild the rows: the views, then the Tags header and the tags
+ * when there are any.
  * Documented in sidebar.h.
  */
 - (void)
@@ -208,11 +209,12 @@ reload
         [self.rows appendBytes:&sel length:sizeof sel];
         [titles addObject:tasks_string(task_view_nth(i)->label)];
     }
-    task_sel_t header = { task_sel_header, 0 };
-    [self.rows appendBytes:&header length:sizeof header];
-    [titles addObject:header_title];
-
     GPtrArray *tags = task_db_tags(self.library.app->db, TASK_TAGS_CARRIED);
+    if (tags->len > 0) {               /* no header over nothing */
+        task_sel_t header = { task_sel_header, 0 };
+        [self.rows appendBytes:&header length:sizeof header];
+        [titles addObject:header_title];
+    }
     for (guint i = 0; i < tags->len; i++) {
         const TaskTag *tag = g_ptr_array_index(tags, i);
         task_sel_t     sel = { task_sel_tag, tag->id };
@@ -356,7 +358,9 @@ tableView:(NSTableView *)table shouldSelectRow:(NSInteger)row
 
 /*
  * tableView:viewForTableColumn:row: — a row's cell: its label and, for a
- * tag while the counts are shown, its open tasks' count at the right.
+ * tag while the counts are shown, its open tasks' count at the right.  To
+ * VoiceOver the cell is one static text — the bare name and the count —
+ * not the emoji, the name and the count apart.
  *
  * Inputs:
  *   table  — the table
@@ -376,8 +380,11 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
     if (cell == nil) {
         cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
         cell.identifier = ident;
+        cell.accessibilityElement = YES;
+        cell.accessibilityRole    = NSAccessibilityStaticTextRole;
         NSTextField *text = [NSTextField labelWithString:@""];
         text.lineBreakMode = NSLineBreakByTruncatingTail;
+        text.accessibilityElement = NO;
         text.translatesAutoresizingMaskIntoConstraints = NO;
         [cell addSubview:text];
         cell.textField = text;
@@ -387,6 +394,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
                                                            weight:NSFontWeightRegular];
         count.textColor  = NSColor.secondaryLabelColor;
         count.alignment  = NSTextAlignmentRight;
+        count.accessibilityElement = NO;
         count.translatesAutoresizingMaskIntoConstraints = NO;
         [count setContentCompressionResistancePriority:NSLayoutPriorityRequired
                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -410,7 +418,28 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
     cell.textField.font = header ? [NSFont boldSystemFontOfSize:NSFont.smallSystemFontSize]
                                  : [NSFont systemFontOfSize:NSFont.systemFontSize];
     cell.textField.textColor = header ? NSColor.secondaryLabelColor : NSColor.labelColor;
+    NSString *name = tasks_label_name(self.titles[(NSUInteger)row]);
+    cell.accessibilityValue = n != nil ? [NSString stringWithFormat:@"%@, %@", name, n] : name;
     return cell;
+}
+
+/*
+ * tableView:typeSelectStringForTableColumn:row: — type-select finds a
+ * row by its bare name, so typing a letter reaches a row whose label
+ * starts with an emoji.
+ *
+ * Inputs:
+ *   table  — the table (unused)
+ *   column — the column (unused)
+ *   row    — the row
+ *
+ * Output:
+ *   the row's name.
+ */
+- (NSString *)
+tableView:(NSTableView *)table typeSelectStringForTableColumn:(NSTableColumn *)column row:(NSInteger)row
+{
+    return tasks_label_name(self.titles[(NSUInteger)row]);
 }
 
 /*

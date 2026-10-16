@@ -65,6 +65,20 @@ NSString *tasks_title_string(const Task *task, NSString *untitled);
  */
 NSString *tasks_tag_title(const TaskTag *tag);
 
+/*
+ * tasks_label_name — the bare name in a label of task_tag_label's form
+ * (a tag's, a view's): what follows the emoji and its two spaces, or the
+ * whole label when it has none.  For type-select and VoiceOver, which
+ * must not start at the emoji.
+ *
+ * Inputs:
+ *   label — the label
+ *
+ * Output:
+ *   the name.
+ */
+NSString *tasks_label_name(NSString *label);
+
 /* ── Images ─────────────────────────────────────────────────────────── */
 
 /*

@@ -15,6 +15,7 @@
 
 #import "notify_window.h"
 #import "editor_window.h"
+#import "look.h"
 #import "tool_panel.h"
 #import "ui_util.h"
 
@@ -26,11 +27,6 @@ static const CGFloat win_w         = 389.0;
 static const CGFloat win_h         = 186.0;
 static const CGFloat win_min_w     = 243.0;
 static const CGFloat win_min_h     = 154.0;
-static const CGFloat btn_bar_h     = 31.0;
-static const CGFloat btn_h         = 25.0;
-static const CGFloat btn_w         = 83.0;   /* tighter than the combo button's own size */
-static const CGFloat btn_gap       = 8.0;
-static const CGFloat btn_margin    = 12.0;
 static const CGFloat row_h         = 27.0;
 static const CGFloat icon_size     = 14.0;
 static const CGFloat text_size     = 11.0;  /* every label and button title */
@@ -152,20 +148,22 @@ init_window
         [btn_bar.leadingAnchor   constraintEqualToAnchor:cv.leadingAnchor],
         [btn_bar.trailingAnchor  constraintEqualToAnchor:cv.trailingAnchor],
         [btn_bar.bottomAnchor    constraintEqualToAnchor:cv.bottomAnchor],
-        [btn_bar.heightAnchor    constraintEqualToConstant:btn_bar_h],
+        [btn_bar.heightAnchor    constraintEqualToConstant:tasks_look_tool_bar_h],
 
-        /* Snooze left of Dismiss, both right-aligned */
+        /* Snooze left of Dismiss, both right-aligned, in the tool panels'
+         * bar: the same sizes (tasks_look_tool_btn_w is tighter than a
+         * combo button's own). */
         [dismiss_btn.trailingAnchor  constraintEqualToAnchor:btn_bar.trailingAnchor
-                                                    constant:-btn_margin],
+                                                    constant:-tasks_look_tool_btn_margin],
         [dismiss_btn.centerYAnchor   constraintEqualToAnchor:btn_bar.centerYAnchor],
-        [dismiss_btn.widthAnchor     constraintEqualToConstant:btn_w],
-        [dismiss_btn.heightAnchor    constraintEqualToConstant:btn_h],
+        [dismiss_btn.widthAnchor     constraintEqualToConstant:tasks_look_tool_btn_w],
+        [dismiss_btn.heightAnchor    constraintEqualToConstant:tasks_look_tool_btn_h],
 
         [snooze_btn.trailingAnchor   constraintEqualToAnchor:dismiss_btn.leadingAnchor
-                                                   constant:-btn_gap],
+                                                   constant:-tasks_look_tool_btn_gap],
         [snooze_btn.centerYAnchor    constraintEqualToAnchor:btn_bar.centerYAnchor],
-        [snooze_btn.widthAnchor      constraintEqualToConstant:btn_w],
-        [snooze_btn.heightAnchor     constraintEqualToConstant:btn_h],
+        [snooze_btn.widthAnchor      constraintEqualToConstant:tasks_look_tool_btn_w],
+        [snooze_btn.heightAnchor     constraintEqualToConstant:tasks_look_tool_btn_h],
     ]];
 
     /* Separator above buttons */

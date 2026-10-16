@@ -35,9 +35,10 @@ static const CGFloat tasks_look_pane_min_w       = 320.0;  /* the task pane; so
                                                              * Compact mode, which
                                                              * shows nothing else */
 static const CGFloat tasks_look_compact_min_h    = 240.0;  /* content, Compact    */
-static const CGFloat tasks_look_toolbar_icon     = 16.0;   /* symbol point size:
-                                                             * toolbar and floating
-                                                             * buttons            */
+static const CGFloat tasks_look_toolbar_icon     = 16.0;   /* symbol point size of
+                                                             * Compact mode's
+                                                             * floating buttons (the
+                                                             * toolbar sizes its own) */
 static const CGFloat tasks_look_search_w         = 220.0;  /* toolbar search field */
 static const CGFloat tasks_look_status_h         = 20.0;   /* status bar; a 1 pt
                                                              * separator above it */
@@ -148,9 +149,6 @@ typedef NS_ENUM(NSInteger, TasksColor) {
     TasksColorDueOverdue,           /* Due cell text: before today         */
     TasksColorDueToday,             /* ... today                           */
     TasksColorDueAhead,             /* ... after today                     */
-    TasksColorSidebarBackground,
-    TasksColorSidebarText,
-    TasksColorSidebarSelection,     /* selected row fill; its text is white */
     TasksColorLink,                 /* "Advanced", "Show all N completed"  */
     TasksColorLaneFill,             /* a Kanban lane's tint                */
     TasksColorLaneBorder,

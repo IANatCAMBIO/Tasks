@@ -1138,32 +1138,6 @@ layout
 /* ── Showing rows ────────────────────────────────────────────────────── */
 
 /*
- * text_for_row: — a card's text from the shared renderer, made under the
- * BOARD'S appearance.  The renderer dims lines with an alpha variant of the
- * label colour, and such a variant is fixed for light or for dark at the
- * moment it is made — it does not follow the appearance the way the label
- * colour itself does.  So the string has to be made under the appearance it
- * will be drawn in, and made again when that changes
- * (viewDidChangeEffectiveAppearance).
- *
- * Inputs:
- *   row — the row
- *
- * Output:
- *   the attributed string, each line cut with an ellipsis, not wrapped.
- */
-- (NSAttributedString *)
-text_for_row:(const task_row_t *)row
-{
-    __block NSAttributedString *text = nil;
-
-    [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
-        text = tasks_row_text(row, NO);
-    }];
-    return text;
-}
-
-/*
  * rebuild — make the board from the rows in hand and show it, reusing every
  * card whose task is still on the board.  Called for each refresh and when
  * the Done lane is expanded or collapsed.
@@ -1189,7 +1163,7 @@ rebuild
             TasksKanbanCard  *card = self.cards[key]
                 ?: [[TasksKanbanCard alloc] init_with_kanban:self task_id:row->id];
 
-            [card show_text:[self text_for_row:row]];
+            [card show_text:tasks_row_text(row, NO)];
             [card show_selected:[self.selection containsObject:key]];
             [card show_dragged:[self.drag_ids containsObject:key]];
             [lane_cards addObject:card];
@@ -1251,18 +1225,6 @@ show_rows:(task_row_list_t *)rows
         for (TasksKanbanLane *lane in self.lanes) [lane show_shadows:shadowed];
     }
     [self rebuild];
-}
-
-/*
- * viewDidChangeEffectiveAppearance — light became dark or the reverse: the
- * cards' text must be made again (see text_for_row:).  Everything else the
- * board draws uses colours that follow the appearance by themselves.
- */
-- (void)
-viewDidChangeEffectiveAppearance
-{
-    [super viewDidChangeEffectiveAppearance];
-    if (_rows != NULL) [self rebuild];
 }
 
 /*
