@@ -265,7 +265,7 @@ windowWillClose:(NSNotification *)note
  */
 void
 tasks_tool_panel_show(NSWindow *parent, NSString *title, NSString *message,
-                      NSString *symbol, NSArray<NSString *> *buttons, BOOL destructive,
+                      NSString *symbol, NSArray<NSString *> *buttons, NSInteger destructive,
                       void (^done)(NSInteger index))
 {
     TasksToolPanel *p = [[TasksToolPanel alloc] init];
@@ -277,13 +277,13 @@ tasks_tool_panel_show(NSWindow *parent, NSString *title, NSString *message,
     for (NSUInteger i = 0; i < buttons.count; i++) {
         NSButton *b = [NSButton buttonWithTitle:buttons[i] target:p
                                          action:@selector(button_clicked:)];
-        b.tag = (NSInteger)i;
+        b.tag                  = (NSInteger)i;
+        b.hasDestructiveAction = (NSInteger)i == destructive;
         b.translatesAutoresizingMaskIntoConstraints = NO;
         [controls addObject:b];
         bar_w += tasks_look_tool_btn_gap + button_w(b);
     }
-    controls.firstObject.keyEquivalent        = @"\r";
-    controls.firstObject.hasDestructiveAction = destructive;
+    controls.firstObject.keyEquivalent = @"\r";
 
     NSView *content = message_view(message ?: @"");
     NSSize  cs      = content.fittingSize;

@@ -262,14 +262,14 @@ mouseDown:(NSEvent *)event
 void
 tasks_ui_notice(NSWindow *parent, NSString *title, NSString *message, void (^done)(void))
 {
-    tasks_tool_panel_show(parent, title, message, @"info.circle.fill", @[@"OK"], NO,
+    tasks_tool_panel_show(parent, title, message, @"info.circle.fill", @[@"OK"], -1,
                           ^(NSInteger index) {
         if (done) done();
     });
 }
 
 /*
- * tasks_ui_confirm — an action / Cancel tool panel.
+ * tasks_ui_confirm — a Cancel (default) / action tool panel.
  * Inputs are documented in ui_util.h.
  */
 void
@@ -278,8 +278,8 @@ tasks_ui_confirm(NSWindow *parent, NSString *title, NSString *message, NSString 
 {
     tasks_tool_panel_show(parent, title, message,
                           destructive ? @"exclamationmark.triangle.fill" : @"questionmark.circle.fill",
-                          @[action, @"Cancel"], destructive, ^(NSInteger index) {
-        done(index == 0);
+                          @[@"Cancel", action], destructive ? 1 : -1, ^(NSInteger index) {
+        done(index == 1);
     });
 }
 

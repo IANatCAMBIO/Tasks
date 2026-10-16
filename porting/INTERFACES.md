@@ -633,6 +633,8 @@ flags as a side effect.
   task's title; Settings is "Settings".  No "Tasks - " prefix.
 - Dialog buttons are named for their action ("Delete", "Create"), with
   Cancel; destructive ones use `tasks_ui_confirm(…, destructive:YES)`.
+  In a confirm Cancel is the default button (Return), as in Notes: a key
+  press never performs the action (owner decision, 2026-10-16).
 - No system alerts (owner decision, 2026-10-13): every message or question
   is a tool panel (§8).
 - No GTK workarounds: no custom tooltips, double-click timers, select-on-press

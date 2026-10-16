@@ -152,7 +152,7 @@ ask_welcome:(NSString *)default_path
     __weak TasksAppDelegate *ws = self;
     tasks_tool_panel_show(nil, @"Welcome to " @TASKS_APP_NAME, message, @"tray.full.fill",
                           @[@"Open Existing Database\u2026", @"Create New Database", @"Quit"],
-                          NO, ^(NSInteger index) {
+                          -1, ^(NSInteger index) {
         TasksAppDelegate *s = ws;
         if (index == 1) {
             [s finish_launch_at:default_path choice:TasksWelcomeCreate];

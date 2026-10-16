@@ -62,12 +62,15 @@
  *                 nil
  *   symbol      — SF Symbols name for the hero icon; may be nil
  *   buttons     — button labels, at least one: [0] is the default (Return)
- *                 and sits rightmost, the rest follow to its left
- *   destructive — YES gives button [0] the destructive look
+ *                 and sits rightmost, the rest follow to its left.  Return
+ *                 must never destroy anything, so a destructive choice is
+ *                 never [0] (tasks_ui_confirm puts Cancel there)
+ *   destructive — index of the button that takes the destructive look;
+ *                 -1 for none
  *   done        — called once, with the index of the clicked button, or -1
  *                 when the panel was dismissed (Escape, the close box)
  *                 without one; may be nil
  */
 void tasks_tool_panel_show(NSWindow *parent, NSString *title, NSString *message,
-                           NSString *symbol, NSArray<NSString *> *buttons, BOOL destructive,
+                           NSString *symbol, NSArray<NSString *> *buttons, NSInteger destructive,
                            void (^done)(NSInteger index));

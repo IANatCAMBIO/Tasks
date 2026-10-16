@@ -185,9 +185,10 @@ void tasks_ui_notice(NSWindow *parent, NSString *title, NSString *message,
 
 /*
  * tasks_ui_confirm — ask before doing something, in a tool panel
- * (tool_panel.h) — never a system alert.  Returns at once.  The default
- * button performs the action and is named for it ("Delete", "Clear"); the
- * other is Cancel.  Escape and the close box count as Cancel.
+ * (tool_panel.h) — never a system alert.  Returns at once.  Cancel is the
+ * default button (Return), as in Notes, so a key press never performs the
+ * action; the action button is named for it ("Delete", "Clear") and sits
+ * to Cancel's left.  Escape and the close box count as Cancel.
  *
  * Inputs:
  *   parent      — window to centre the panel over; nil centres it on the
@@ -196,7 +197,7 @@ void tasks_ui_notice(NSWindow *parent, NSString *title, NSString *message,
  *   message     — the consequence; may be nil
  *   action      — the action button's title
  *   destructive — YES for an action that cannot be undone: a warning
- *                 symbol, and the button takes the destructive look
+ *                 symbol, and the action button takes the destructive look
  *   done        — called with YES when the action button was chosen, NO for
  *                 Cancel, Escape or the close box
  */
