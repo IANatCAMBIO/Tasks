@@ -12,7 +12,7 @@
  * the window through [library select:]; a row is selected on mouse-down
  * (SharedTable).
  *
- * The sidebar OWNS the Edit Tag panel (TasksCommandEditTag): a tag's
+ * The sidebar OWNS the Edit Tag panel (the "edit-tag" command): a tag's
  * emoji and its favorite flag.  A tag's NAME never changes, and a tag is
  * never made or deleted here: it exists while a task carries it.  A
  * right-click on a tag offers Edit Tag…; the command's other callers (the
@@ -68,14 +68,16 @@
 - (void)show_tag_panel:(int64_t)tag_id;
 
 /*
- * perform_command:param: — carry out one of the sidebar's commands.
+ * tasks_sidebar_commands — the sidebar's command handlers (Edit Tag…: its
+ * parameter names the tag; without one it means the tag selected in the
+ * sidebar, and is disabled when none is).  Their target is the sidebar.
  *
  * Inputs:
- *   command — the command
- *   param   — its parameter: the tag (the window gives a command sent
- *             without one the selected tag, commands.h)
+ *   n — receives how many
+ *
+ * Output: the table (static).
  */
-- (void)perform_command:(TasksCommand)command param:(NSNumber *)param;
+const shared_command_handler_t *tasks_sidebar_commands(size_t *n);
 
 /*
  * shut_down — the window is closing: stop responding.  Idempotent.

@@ -35,8 +35,7 @@ static NSString * const search_tooltip       =
     @"Search the selected view's task titles, notes and subtasks.\n"
     @"\"quoted words\" matches the phrase; -word leaves out tasks containing it.";
 
-@interface TasksLibraryWindow () <NSWindowDelegate, NSToolbarDelegate,
-                                  NSToolbarItemValidation, NSSearchFieldDelegate,
+@interface TasksLibraryWindow () <NSWindowDelegate, NSToolbarDelegate, NSSearchFieldDelegate,
                                   NSSplitViewDelegate>
 @property (nonatomic, strong) TasksSidebar      *sidebar;
 @property (nonatomic, strong) NSSplitViewController *split;      /* sidebar | the rest */
@@ -291,7 +290,21 @@ didAddSubview:(NSView *)view
 
 @end
 
-@implementation TasksLibraryWindow
+/* One handler table a command may be in, with the object its handlers
+ * take as their target: the window's own (shell_commands, at the end of
+ * this file), the sidebar's and the task list's. */
+typedef struct {
+    const shared_command_handler_t *table;
+    size_t                          n;
+    __unsafe_unretained id          target;     /* owned by the window */
+} command_table_t;
+#define COMMAND_TABLE_COUNT 3
+
+static const shared_command_handler_t *shell_commands(size_t *n);
+
+@implementation TasksLibraryWindow {
+    command_table_t _command_tables[COMMAND_TABLE_COUNT];
+}
 
 /* ── Construction ────────────────────────────────────────────────────── */
 
@@ -404,10 +417,8 @@ place_window
 - (void)
 build_float_bar:(NSView *)pane
 {
-    self.float_buttons = @[
-        tasks_command_button(TasksCommandNewTask, self),
-        tasks_command_button(TasksCommandDeleteTask, self),
-    ];
+    self.float_buttons = @[ shared_command_button(@"new-task"),
+                            shared_command_button(@"delete-task") ];
 
     NSStackView *buttons = [NSStackView stackViewWithViews:self.float_buttons];
     buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal;
@@ -449,6 +460,12 @@ build_layout
     self.sidebar       = [[TasksSidebar alloc] init_with_library:self];
     self.favorites_bar = [[TasksFavoritesBar alloc] init_with_library:self];
     self.task_list     = [[TasksTaskList alloc] init_with_library:self];
+    _command_tables[0].table = shell_commands(&_command_tables[0].n);
+    _command_tables[0].target = self;
+    _command_tables[1].table = tasks_sidebar_commands(&_command_tables[1].n);
+    _command_tables[1].target = self.sidebar;
+    _command_tables[2].table = tasks_task_list_commands(&_command_tables[2].n);
+    _command_tables[2].target = self.task_list;
     self.kanban        = [[TasksKanban alloc] init_with_library:self];
 
     NSView *pane = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -591,14 +608,14 @@ static NSArray<NSToolbarItemIdentifier> *
 toolbar_idents(void)
 {
     return @[
-        tasks_command_spec(TasksCommandToggleSidebar)->ident,
+        @"toggle-sidebar",
         NSToolbarSpaceItemIdentifier,
-        tasks_command_spec(TasksCommandNewTask)->ident,
-        tasks_command_spec(TasksCommandDeleteTask)->ident,
+        @"new-task",
+        @"delete-task",
         NSToolbarSpaceItemIdentifier,
-        tasks_command_spec(TasksCommandToggleCompleted)->ident,
-        tasks_command_spec(TasksCommandTogglePane)->ident,
-        tasks_command_spec(TasksCommandToggleDayPlanner)->ident,
+        @"toggle-completed",
+        @"toggle-pane",
+        @"toggle-day-planner",
         NSToolbarFlexibleSpaceItemIdentifier,
         search_item_ident,
     ];
@@ -670,72 +687,27 @@ willBeInsertedIntoToolbar:(BOOL)flag
         return item;
     }
 
-    const tasks_command_spec_t *spec = tasks_command_with_ident(ident);
-    return spec ? tasks_command_toolbar_item(spec->command, self) : nil;
+    return shared_command_find(ident) ? shared_command_toolbar_item(ident) : nil;
 }
 
 /*
- * validateToolbarItem: — AppKit asks whether a toolbar button is enabled;
- * the answer also refreshes its icon and tooltip, which is how a toggling
- * button comes to show the action it now offers.
- *
- * Inputs:
- *   item — a command button made by tasks_command_toolbar_item
- *
- * Output:
- *   YES to enable it.
+ * validateUserInterfaceItem: — the answer also sets the item's title,
+ * icon, tooltip and check mark, which is how a toggling control comes to
+ * show the action it now offers.  An item carrying a parameter keeps the
+ * title it was built with (shared_commands.h).
+ * Inputs/output are documented in library_window.h.
  */
 - (BOOL)
-validateToolbarItem:(NSToolbarItem *)item
+validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
 {
-    TasksCommandState *state = [self state_of_command:(TasksCommand)item.tag];
-
-    tasks_command_apply(state, item);
-    return state.enabled;
-}
-
-/*
- * acts_on_tag — whether a command's parameter is the tag it acts on.  Such
- * a command sent without one (from the main menu) means the tag selected
- * in the sidebar (commands.h).
- *
- * Inputs:
- *   command — the command
- *
- * Output:
- *   YES for Edit Tag....
- */
-static BOOL
-acts_on_tag(TasksCommand command)
-{
-    return command == TasksCommandEditTag;
-}
-
-/*
- * validateMenuItem: — AppKit asks whether a command's menu item is enabled;
- * the answer also sets its title and check mark.  An item carrying a
- * parameter keeps the title it was built with (commands.h).  A tag
- * command carrying none needs a tag to be selected.
- *
- * Inputs:
- *   item — a command item made by tasks_command_menu_item
- *
- * Output:
- *   YES to enable it.
- */
-- (BOOL)
-validateMenuItem:(NSMenuItem *)item
-{
-    TasksCommand       command = (TasksCommand)item.tag;
-    TasksCommandState *state   = [self state_of_command:command];
-
-    if (item.representedObject) {
-        state.title = item.title;
-    } else if (acts_on_tag(command) && self.selection.kind != task_sel_tag) {
-        state.enabled = NO;
+    if (self.is_shut_down) return NO;
+    for (int i = 0; i < COMMAND_TABLE_COUNT; i++) {
+        BOOL handled = NO;
+        BOOL enabled = shared_command_validate(_command_tables[i].table, _command_tables[i].n,
+                                               _command_tables[i].target, item, &handled);
+        if (handled) return enabled;
     }
-    tasks_command_apply(state, item);
-    return state.enabled;
+    return NO;
 }
 
 /* ── Search ──────────────────────────────────────────────────────────── */
@@ -1097,36 +1069,15 @@ resizeSubviewsWithOldSize:(NSSize)old_sz
 /* ── Task context menu ───────────────────────────────────────────────── */
 
 /*
- * titled_item — a command item wearing its own title (a tag).
- *
- * Inputs:
- *   command — the command
- *   param   — its parameter; not nil, which is also what makes validation
- *             keep the title
- *   title   — the item's title
- *
- * Output:
- *   new menu item targeting this window.
- */
-- (NSMenuItem *)
-titled_item:(TasksCommand)command param:(NSNumber *)param title:(NSString *)title
-{
-    NSMenuItem *item = tasks_command_menu_item(command, param, self);
-
-    item.title = title;
-    return item;
-}
-
-/*
  * fill_menu:with_destinations_of: — rebuild the "Add Tag" submenu: every
  * tag, less those a single selected task already carries.
  * Inputs are documented in library_window.h.
  */
 - (void)
-fill_menu:(NSMenu *)menu with_destinations_of:(TasksCommand)command
+fill_menu:(NSMenu *)menu with_destinations_of:(NSString *)ident
 {
     [menu removeAllItems];
-    if (self.is_shut_down || command != TasksCommandAddTag) return;
+    if (self.is_shut_down || ![ident isEqualToString:@"add-tag"]) return;
 
     NSArray<NSNumber *> *ids  = [self selected_task_ids];
     GPtrArray *carried = ids.count == 1 ? task_db_task_tags(self.app->db, ids[0].longLongValue)
@@ -1140,8 +1091,11 @@ fill_menu:(NSMenu *)menu with_destinations_of:(TasksCommand)command
             has = ((const TaskTag *)g_ptr_array_index(carried, k))->id == tag->id;
         }
         if (has) continue;
-        [menu addItem:[self titled_item:TasksCommandAddTag param:@(tag->id)
-                                  title:tasks_tag_title(tag)]];
+        /* Its parameter (never nil) is also what makes validation keep
+         * the tag's name as its title. */
+        NSMenuItem *item = shared_command_menu_item(ident, @(tag->id));
+        item.title = tasks_tag_title(tag);
+        [menu addItem:item];
     }
     task_ptr_array_free_tags(tags);
     task_ptr_array_free_tags(carried);
@@ -1165,30 +1119,29 @@ task_context_menu
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
 
     if (single) {
-        [menu addItem:tasks_command_menu_item(TasksCommandTaskInfo, nil, self)];
+        [menu addItem:shared_command_menu_item(@"task-info", nil)];
         [menu addItem:NSMenuItem.separatorItem];
     }
 
     if (task != NULL) {
-        [menu addItem:tasks_command_flag_item(TasksCommandMarkDone,
-                                              task->status != TASK_STATUS_DONE, NO, self)];
+        [menu addItem:tasks_command_flag_item(@"mark-done", task->status != TASK_STATUS_DONE, NO)];
         [menu addItem:NSMenuItem.separatorItem];
-        [menu addItem:tasks_command_flag_item(TasksCommandSetPriority, !task->priority, NO, self)];
+        [menu addItem:tasks_command_flag_item(@"set-priority", !task->priority, NO)];
     } else {
-        [menu addItem:tasks_command_flag_item(TasksCommandMarkDone, YES, YES, self)];
-        [menu addItem:tasks_command_flag_item(TasksCommandMarkDone, NO, YES, self)];
+        [menu addItem:tasks_command_flag_item(@"mark-done", YES, YES)];
+        [menu addItem:tasks_command_flag_item(@"mark-done", NO, YES)];
         [menu addItem:NSMenuItem.separatorItem];
-        [menu addItem:tasks_command_flag_item(TasksCommandSetPriority, YES, YES, self)];
-        [menu addItem:tasks_command_flag_item(TasksCommandSetPriority, NO, YES, self)];
+        [menu addItem:tasks_command_flag_item(@"set-priority", YES, YES)];
+        [menu addItem:tasks_command_flag_item(@"set-priority", NO, YES)];
     }
     [menu addItem:NSMenuItem.separatorItem];
 
     /* Add Tag: every tag, left out when there is none to add. */
     NSMenu *tags = [[NSMenu alloc] initWithTitle:@""];
-    [self fill_menu:tags with_destinations_of:TasksCommandAddTag];
+    [self fill_menu:tags with_destinations_of:@"add-tag"];
     if (tags.numberOfItems > 0) {
         NSMenuItem *holder = [[NSMenuItem alloc]
-            initWithTitle:tasks_command_spec(TasksCommandAddTag)->title
+            initWithTitle:shared_command_find(@"add-tag")->title
                    action:NULL
             keyEquivalent:@""];
         holder.submenu = tags;
@@ -1196,7 +1149,7 @@ task_context_menu
         [menu addItem:NSMenuItem.separatorItem];
     }
 
-    [menu addItem:tasks_command_menu_item(TasksCommandDeleteTask, nil, self)];
+    [menu addItem:shared_command_menu_item(@"delete-task", nil)];
     task_free(task);
     return menu;
 }
@@ -1204,25 +1157,18 @@ task_context_menu
 /* ── Commands ────────────────────────────────────────────────────────── */
 
 /*
- * run_command: — the action every command control sends.
+ * run_command: — carry out an item's command.
  * Inputs are documented in library_window.h.
- *
- * A tag command whose control names no tag (the main menu's) is given the
- * tag selected in the sidebar; validateMenuItem: has it disabled when
- * there is none.
  */
 - (void)
 run_command:(id)sender
 {
-    TasksCommand command = (TasksCommand)[sender tag];
-    NSNumber    *param   = [sender isKindOfClass:NSMenuItem.class]
-        ? ((NSMenuItem *)sender).representedObject : nil;
-
-    if (param == nil && acts_on_tag(command)) {
-        if (self.selection.kind != task_sel_tag) return;
-        param = @(self.selection.id);
+    if (self.is_shut_down) return;
+    for (int i = 0; i < COMMAND_TABLE_COUNT; i++) {
+        if (shared_command_run(_command_tables[i].table, _command_tables[i].n,
+                               _command_tables[i].target, sender)) break;
     }
-    [self perform_command:command param:param];
+    [self.window.toolbar validateVisibleItems];
 }
 
 /*
@@ -1379,21 +1325,22 @@ clear_completed
  * was done — or that it was not saved.
  *
  * Inputs:
- *   command — TasksCommandMarkDone or TasksCommandSetPriority
- *   on      — the direction.  For MarkDone: YES is Done, NO is In Progress
+ *   ident   — "mark-done" or "set-priority"
+ *   on      — the direction.  For mark-done: YES is Done, NO is In Progress
  *             (the checkbox's two verbs — a task that was ticked has been
  *             worked on, so it does not go back to New)
  */
 - (void)
-set_flag:(TasksCommand)command on:(BOOL)on
+set_flag:(NSString *)ident on:(BOOL)on
 {
+    BOOL done = [ident isEqualToString:@"mark-done"];
     NSArray<NSNumber *> *ids    = [self selected_task_ids];
     unsigned long        failed = 0;
 
     for (NSNumber *task_id in ids) {
         int64_t  id = task_id.longLongValue;
         gboolean ok;
-        if (command == TasksCommandMarkDone) {
+        if (done) {
             ok = task_db_task_set_status(self.app->db, id,
                                          on ? TASK_STATUS_DONE : TASK_STATUS_IN_PROGRESS);
         } else {
@@ -1409,7 +1356,7 @@ set_flag:(TasksCommand)command on:(BOOL)on
         gchar *what = g_strdup_printf("The change to %lu task%s", failed, plural(failed));
         task_app_write_failed(self.app, what);
         g_free(what);
-    } else if (command == TasksCommandMarkDone) {
+    } else if (done) {
         task_app_status(self.app, "Marked %lu task%s %s", count, plural(count),
                         on ? "complete" : "incomplete");
     } else {
@@ -1768,7 +1715,7 @@ windowDidUpdate:(NSNotification *)note
     if (self.float_bar.hidden) return;
 
     for (NSButton *button in self.float_buttons) {
-        tasks_command_apply([self state_of_command:(TasksCommand)button.tag], button);
+        shared_command_apply([self state_of_command:shared_command_ident(button)], button);
     }
 }
 
@@ -1892,212 +1839,44 @@ pick_database
 /* ── Command dispatch ────────────────────────────────────────────────── */
 
 /*
- * perform_shell_command:param: — carry out one of the window's own
- * commands.  Every toggle FLIPS its flag: the control that sent it shows
- * the action, not the state, so there is nothing to read back from it.
- *
- * Inputs:
- *   command — a TasksCommandOwnerShell command
- *   param   — its parameter, or nil
+ * toggle_pane — the list or the Kanban board, remembered.
  */
 - (void)
-perform_shell_command:(TasksCommand)command param:(NSNumber *)param
+toggle_pane
 {
-    switch (command) {
-    case TasksCommandNewTask:
-        [self new_task];
-        break;
-    case TasksCommandQuickTask:
-        [self quick_task];
-        break;
-    case TasksCommandDeleteTask:
-        [self delete_tasks];
-        break;
-    case TasksCommandTaskInfo:
-        if ([self selected_task_ids].count > 0) {
-            tasks_editor_open(self.app, [self selected_task_ids][0].longLongValue);
-        }
-        break;
-    case TasksCommandClearCompleted:
-        [self clear_completed];
-        break;
-    case TasksCommandOpenDatabase:
-        [self pick_database];
-        break;
-    case TasksCommandFind:
-        [self.window makeFirstResponder:self.search_field];
-        break;
-    case TasksCommandToggleCompleted:
-        task_config_set_bool(TASK_CFG_SHOW_COMPLETED,
-                             !task_config_get_bool(TASK_CFG_SHOW_COMPLETED));
-        [self refresh_tasks];
-        break;
-    case TasksCommandToggleSidebar:
-        [self toggle_sidebar];
-        break;
-    case TasksCommandToggleFavoritesBar:
-        [self toggle_favorites_bar];
-        break;
-    case TasksCommandToggleDayPlanner:
-        [self toggle_day_planner];
-        break;
-    case TasksCommandToggleCompact:
-        [self toggle_compact];
-        break;
-    case TasksCommandTogglePane:
-        _kanban_on = !_kanban_on;
-        task_config_set_bool(TASK_CFG_KANBAN_VIEW, _kanban_on);
-        [self apply_pane_mode];
-        [self refresh_tasks];
-        /* The keyboard follows the pane: the one it was in is now hidden. */
-        [self focus_task_pane];
-        break;
-    case TasksCommandMarkDone:
-    case TasksCommandSetPriority:
-        [self set_flag:command on:param.boolValue];
-        break;
-    case TasksCommandAddTag:
-        [self add_tag:param.longLongValue];
-        break;
-    default:
-        break;                      /* not one of the window's own commands */
-    }
-    [self.window.toolbar validateVisibleItems];
+    _kanban_on = !_kanban_on;
+    task_config_set_bool(TASK_CFG_KANBAN_VIEW, _kanban_on);
+    [self apply_pane_mode];
+    [self refresh_tasks];
+    /* The keyboard follows the pane: the one it was in is now hidden. */
+    [self focus_task_pane];
 }
 
 /*
- * perform_command:param: — dispatch a command to its owner.
+ * perform_command:param: — a command without an item.
  * Inputs are documented in library_window.h.
  */
 - (void)
-perform_command:(TasksCommand)command param:(NSNumber *)param
+perform_command:(NSString *)ident param:(id)param
 {
-    const tasks_command_spec_t *spec = tasks_command_spec(command);
-    if (spec == NULL || self.is_shut_down) return;
-
-    switch (spec->owner) {
-    case TasksCommandOwnerShell:
-        [self perform_shell_command:command param:param];
-        break;
-    case TasksCommandOwnerSidebar:
-        [self.sidebar perform_command:command param:param];
-        break;
-    case TasksCommandOwnerTaskList:
-        [self.task_list perform_command:command param:param];
-        break;
-    case TasksCommandOwnerApp:
-        break;                      /* the app delegate's; never sent here */
-    }
-}
-
-/*
- * update_shell_state:for_command: — the current look of one of the
- * window's own commands.
- *
- * Inputs:
- *   state   — the table's default state, adjusted in place
- *   command — a TasksCommandOwnerShell command
- */
-- (void)
-update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
-{
-    NSUInteger selected = [self selected_task_ids].count;
-
-    switch (command) {
-    case TasksCommandDeleteTask:
-        /* Not while text is being edited, in any window: its shortcut is
-         * also the text system's "delete to the start of the line", and a
-         * disabled menu item lets the key through to the field. */
-        state.enabled = selected > 0 &&
-                        ![NSApp.keyWindow.firstResponder isKindOfClass:NSText.class];
-        if (selected > 1) {
-            state.title = [NSString stringWithFormat:@"Delete %lu Tasks", (unsigned long)selected];
-        }
-        break;
-    case TasksCommandTaskInfo:
-        state.enabled = selected == 1;
-        break;
-    case TasksCommandMarkDone:
-    case TasksCommandSetPriority:
-    case TasksCommandAddTag:
-        state.enabled = selected > 0;
-        break;
-    case TasksCommandClearCompleted:
-        state.enabled = task_sel_tag_id(self.selection) != 0;
-        break;
-    /* The toggles: the command table holds each one's first face; only the
-     * other face is spelled here. */
-    case TasksCommandToggleCompleted:
-        if (!task_config_get_bool(TASK_CFG_SHOW_COMPLETED)) {
-            state.title   = @"Show Completed";
-            state.icon    = @"eye";
-            state.tooltip = @"Show completed tasks";
-        }
-        break;
-        break;
-    case TasksCommandToggleSidebar:
-        if (self.sidebar_item.collapsed) {
-            state.title   = @"Show Sidebar";
-            state.tooltip = @"Show the sidebar";
-        }
-        break;
-    case TasksCommandToggleFavoritesBar:
-        if (self.favorites_height.constant == 0.0) state.title = @"Show Favorites Bar";
-        /* Compact mode hides the bar whatever the setting. */
-        state.enabled = !task_config_get_bool(TASK_CFG_COMPACT);
-        break;
-    case TasksCommandToggleDayPlanner:
-        if (self.day_planner.hidden) {
-            state.title   = @"Show Day Planner";
-            state.tooltip = @"Show the day planner";
-        }
-        break;
-    case TasksCommandTogglePane:
-        if (self.kanban_on) {
-            state.title   = @"List View";
-            state.icon    = @"list.bullet";
-            state.tooltip = @"Show the tasks as a list";
-        }
-        break;
-    case TasksCommandToggleCompact:
-        if (task_config_get_bool(TASK_CFG_COMPACT)) state.title = @"Full Controls";
-        /* A full-screen window has no size of its own to shrink or restore. */
-        state.enabled = (self.window.styleMask & NSWindowStyleMaskFullScreen) == 0;
-        break;
-    case TasksCommandFind:
-        /* Compact mode hides the search field with the toolbar. */
-        state.enabled = !task_config_get_bool(TASK_CFG_COMPACT);
-        break;
-    default:
-        break;                      /* New Task, Open Database: always available */
-    }
+    [self run_command:shared_command_menu_item(ident, param)];
 }
 
 /*
  * state_of_command: — how a command looks right now.
  * Inputs/output are documented in library_window.h.
  */
-- (TasksCommandState *)
-state_of_command:(TasksCommand)command
+- (SharedCommandState *)
+state_of_command:(NSString *)ident
 {
-    TasksCommandState *state = tasks_command_default_state(command);
-    const tasks_command_spec_t *spec = tasks_command_spec(command);
-
-    if (spec == NULL || self.is_shut_down) {
-        state.enabled = NO;
-        return state;
+    SharedCommandState *state = nil;
+    for (int i = 0; i < COMMAND_TABLE_COUNT && state == nil && !self.is_shut_down; i++) {
+        state = shared_command_state(_command_tables[i].table, _command_tables[i].n,
+                                     _command_tables[i].target, ident);
     }
-    switch (spec->owner) {
-    case TasksCommandOwnerShell:
-        [self update_shell_state:state for_command:command];
-        break;
-    case TasksCommandOwnerSidebar:
-        break;                      /* validateMenuItem: decides (acts_on_tag) */
-    case TasksCommandOwnerTaskList:
-        [self.task_list update_state:state for_command:command];
-        break;
-    case TasksCommandOwnerApp:
-        break;
+    if (state == nil) {
+        state = shared_command_default_state(ident);
+        state.enabled = NO;
     }
     return state;
 }
@@ -2176,3 +1955,447 @@ shut_down
 }
 
 @end
+
+/* ── The window's command handlers ───────────────────────────────────── */
+/* Each takes this window as its target.  A toggle's validate spells only
+ * the face the table does not hold (commands.h). */
+
+/*
+ * run_new_task — New Task.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_new_task(id target, id sender)
+{
+    [(TasksLibraryWindow *)target new_task];
+}
+
+/*
+ * run_quick_task — Quick Task.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_quick_task(id target, id sender)
+{
+    [(TasksLibraryWindow *)target quick_task];
+}
+
+/*
+ * run_delete_task — Delete Task: the selected tasks, after a confirm.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_delete_task(id target, id sender)
+{
+    [(TasksLibraryWindow *)target delete_tasks];
+}
+
+/*
+ * validate_delete_task — one or more tasks selected, and no text being
+ * edited in any window: the shortcut is also the text system's "delete to
+ * the start of the line", and a disabled menu item lets the key through
+ * to the field.  Several tasks are counted in the title.
+ *
+ * Inputs:
+ *   target — the window
+ *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
+ *
+ * Output: whether the command may run.
+ */
+static BOOL
+validate_delete_task(id target, id item, SharedCommandState *state)
+{
+    NSUInteger selected = [(TasksLibraryWindow *)target selected_task_ids].count;
+    if (selected > 1) {
+        state.title = [NSString stringWithFormat:@"Delete %lu Tasks", (unsigned long)selected];
+    }
+    return selected > 0 && ![NSApp.keyWindow.firstResponder isKindOfClass:NSText.class];
+}
+
+/*
+ * run_task_info — Info…: the editor for the one selected task.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_task_info(id target, id sender)
+{
+    TasksLibraryWindow  *lib = target;
+    NSArray<NSNumber *> *ids = [lib selected_task_ids];
+    if (ids.count > 0) tasks_editor_open(lib.app, ids[0].longLongValue);
+}
+
+/*
+ * validate_task_info — exactly one task selected.
+ *
+ * Inputs:
+ *   target — the window
+ *   item   — the item (unused)
+ *   state  — the command's look (unused)
+ *
+ * Output: whether the command may run.
+ */
+static BOOL
+validate_task_info(id target, id item, SharedCommandState *state)
+{
+    return [(TasksLibraryWindow *)target selected_task_ids].count == 1;
+}
+
+/*
+ * validate_selected — at least one task selected (the flags, Add Tag).
+ *
+ * Inputs:
+ *   target — the window
+ *   item   — the item (unused)
+ *   state  — the command's look (unused)
+ *
+ * Output: whether the command may run.
+ */
+static BOOL
+validate_selected(id target, id item, SharedCommandState *state)
+{
+    return [(TasksLibraryWindow *)target selected_task_ids].count > 0;
+}
+
+/*
+ * run_clear_completed — Clear Completed Tasks: the selected tag's.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_clear_completed(id target, id sender)
+{
+    [(TasksLibraryWindow *)target clear_completed];
+}
+
+/*
+ * validate_clear_completed — a tag is selected.
+ *
+ * Inputs:
+ *   target — the window
+ *   item   — the item (unused)
+ *   state  — the command's look (unused)
+ *
+ * Output: whether the command may run.
+ */
+static BOOL
+validate_clear_completed(id target, id item, SharedCommandState *state)
+{
+    return task_sel_tag_id(((TasksLibraryWindow *)target).selection) != 0;
+}
+
+/*
+ * run_open_database — Open Database File…
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_open_database(id target, id sender)
+{
+    [(TasksLibraryWindow *)target pick_database];
+}
+
+/*
+ * run_find — Find…: the keyboard into the search field.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_find(id target, id sender)
+{
+    TasksLibraryWindow *lib = target;
+    [lib.window makeFirstResponder:lib.search_field];
+}
+
+/*
+ * validate_not_compact — not in Compact mode, which hides the toolbar
+ * with its search field, and the Favorites bar whatever its setting.
+ *
+ * Inputs:
+ *   target — the window (unused)
+ *   item   — the item (unused)
+ *   state  — the command's look (unused)
+ *
+ * Output: whether the command may run.
+ */
+static BOOL
+validate_not_compact(id target, id item, SharedCommandState *state)
+{
+    return !task_config_get_bool(TASK_CFG_COMPACT);
+}
+
+/*
+ * run_toggle_completed — Hide / Show Completed.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_toggle_completed(id target, id sender)
+{
+    task_config_set_bool(TASK_CFG_SHOW_COMPLETED, !task_config_get_bool(TASK_CFG_SHOW_COMPLETED));
+    [(TasksLibraryWindow *)target refresh_tasks];
+}
+
+/*
+ * validate_toggle_completed — the other face while they are hidden.
+ *
+ * Inputs:
+ *   target — the window (unused)
+ *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
+ *
+ * Output: YES.
+ */
+static BOOL
+validate_toggle_completed(id target, id item, SharedCommandState *state)
+{
+    if (!task_config_get_bool(TASK_CFG_SHOW_COMPLETED)) {
+        shared_command_state_set(state, @"Show Completed", @"eye", NO);
+        state.tooltip = @"Show completed tasks";
+    }
+    return YES;
+}
+
+/*
+ * run_toggle_sidebar — Hide / Show Sidebar.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_toggle_sidebar(id target, id sender)
+{
+    [(TasksLibraryWindow *)target toggle_sidebar];
+}
+
+/*
+ * validate_toggle_sidebar — the other face while it is collapsed.
+ *
+ * Inputs:
+ *   target — the window
+ *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
+ *
+ * Output: YES.
+ */
+static BOOL
+validate_toggle_sidebar(id target, id item, SharedCommandState *state)
+{
+    if (((TasksLibraryWindow *)target).sidebar_item.collapsed) {
+        shared_command_state_set(state, @"Show Sidebar", nil, NO);
+        state.tooltip = @"Show the sidebar";
+    }
+    return YES;
+}
+
+/*
+ * run_toggle_favorites_bar — Hide / Show Favorites Bar.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_toggle_favorites_bar(id target, id sender)
+{
+    [(TasksLibraryWindow *)target toggle_favorites_bar];
+}
+
+/*
+ * validate_toggle_favorites_bar — the other face while it is hidden; not
+ * in Compact mode.
+ *
+ * Inputs:
+ *   target — the window
+ *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
+ *
+ * Output: whether the command may run.
+ */
+static BOOL
+validate_toggle_favorites_bar(id target, id item, SharedCommandState *state)
+{
+    if (((TasksLibraryWindow *)target).favorites_height.constant == 0.0) {
+        shared_command_state_set(state, @"Show Favorites Bar", nil, NO);
+    }
+    return validate_not_compact(target, item, state);
+}
+
+/*
+ * run_toggle_day_planner — Hide / Show Day Planner.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_toggle_day_planner(id target, id sender)
+{
+    [(TasksLibraryWindow *)target toggle_day_planner];
+}
+
+/*
+ * validate_toggle_day_planner — the other face while it is hidden.
+ *
+ * Inputs:
+ *   target — the window
+ *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
+ *
+ * Output: YES.
+ */
+static BOOL
+validate_toggle_day_planner(id target, id item, SharedCommandState *state)
+{
+    if (((TasksLibraryWindow *)target).day_planner.hidden) {
+        shared_command_state_set(state, @"Show Day Planner", nil, NO);
+        state.tooltip = @"Show the day planner";
+    }
+    return YES;
+}
+
+/*
+ * run_toggle_compact — Compact Controls / Full Controls.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_toggle_compact(id target, id sender)
+{
+    [(TasksLibraryWindow *)target toggle_compact];
+}
+
+/*
+ * validate_toggle_compact — the other face in Compact mode; not in full
+ * screen, where the window has no size of its own to shrink or restore.
+ *
+ * Inputs:
+ *   target — the window
+ *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
+ *
+ * Output: whether the command may run.
+ */
+static BOOL
+validate_toggle_compact(id target, id item, SharedCommandState *state)
+{
+    if (task_config_get_bool(TASK_CFG_COMPACT)) shared_command_state_set(state, @"Full Controls", nil, NO);
+    return (((TasksLibraryWindow *)target).window.styleMask & NSWindowStyleMaskFullScreen) == 0;
+}
+
+/*
+ * run_toggle_pane — Kanban View / List View.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_toggle_pane(id target, id sender)
+{
+    [(TasksLibraryWindow *)target toggle_pane];
+}
+
+/*
+ * validate_toggle_pane — the other face while the board is up.
+ *
+ * Inputs:
+ *   target — the window
+ *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
+ *
+ * Output: YES.
+ */
+static BOOL
+validate_toggle_pane(id target, id item, SharedCommandState *state)
+{
+    if (((TasksLibraryWindow *)target).kanban_on) {
+        shared_command_state_set(state, @"List View", @"list.bullet", NO);
+        state.tooltip = @"Show the tasks as a list";
+    }
+    return YES;
+}
+
+/*
+ * run_set_flag — Mark Complete / Incomplete, Set / Clear High Priority:
+ * the item's parameter is the direction.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item
+ */
+static void
+run_set_flag(id target, id sender)
+{
+    [(TasksLibraryWindow *)target set_flag:shared_command_ident(sender)
+                                        on:[shared_command_param(sender) boolValue]];
+}
+
+/*
+ * run_add_tag — Add Tag: the item's parameter is the tag.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item
+ */
+static void
+run_add_tag(id target, id sender)
+{
+    [(TasksLibraryWindow *)target add_tag:[shared_command_param(sender) longLongValue]];
+}
+
+/*
+ * shell_commands — the window's handler table.
+ *
+ * Inputs:
+ *   n — receives how many
+ *
+ * Output: the table (static).
+ */
+static const shared_command_handler_t *
+shell_commands(size_t *n)
+{
+    static const shared_command_handler_t table[] = {
+        { @"new-task",             run_new_task,             NULL                          },
+        { @"quick-task",           run_quick_task,           NULL                          },
+        { @"delete-task",          run_delete_task,          validate_delete_task          },
+        { @"task-info",            run_task_info,            validate_task_info            },
+        { @"clear-completed",      run_clear_completed,      validate_clear_completed      },
+        { @"open-database",        run_open_database,        NULL                          },
+        { @"find",                 run_find,                 validate_not_compact          },
+        { @"toggle-completed",     run_toggle_completed,     validate_toggle_completed     },
+        { @"toggle-sidebar",       run_toggle_sidebar,       validate_toggle_sidebar       },
+        { @"toggle-favorites-bar", run_toggle_favorites_bar, validate_toggle_favorites_bar },
+        { @"toggle-day-planner",   run_toggle_day_planner,   validate_toggle_day_planner   },
+        { @"toggle-compact",       run_toggle_compact,       validate_toggle_compact       },
+        { @"toggle-pane",          run_toggle_pane,          validate_toggle_pane          },
+        { @"mark-done",            run_set_flag,             validate_selected             },
+        { @"set-priority",         run_set_flag,             validate_selected             },
+        { @"add-tag",              run_add_tag,              validate_selected             },
+    };
+    *n = sizeof table / sizeof table[0];
+    return table;
+}

@@ -11,7 +11,7 @@
  * Clicking a button selects its tag through [library select:]; the button
  * of the selected
  * tag is lit.  A right-click on a button offers Edit Tag… (its emoji and
- * favorite flag, TasksCommandEditTag).  With no favorite tag the bar says
+ * favorite flag, the "edit-tag" command).  With no favorite tag the bar says
  * how to make one.
  *
  * It does NOT own the selection — that lives on the window

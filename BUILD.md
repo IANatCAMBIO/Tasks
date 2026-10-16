@@ -25,7 +25,7 @@ xcode-select --install
 | GLib 2 (`glib-2.0`; developed with 2.88) | utilities in the core — strings, arrays, key file, dates | MacPorts `glib2` |
 | SQLite 3 (3.35 or later; developed with 3.53) | storage | MacPorts `sqlite3` |
 | `shared_db` (the shared database module: schema, stamps, path, backups, check) | the database Notes and Tasks share | the `shared_data` repository beside this one, compiled in from source (below) |
-| `shared_ui` (the shared interface module: the tool panel, the sidebar's split view, the table, status labels, the emoji slot, `shared_look.h`) | what Notes and Tasks show the same way | the `shared_ui` repository beside this one, compiled in from source (below) |
+| `shared_ui` (the shared interface module: the command table and its dispatch, the tool panel, the sidebar's split view, the table, status labels, the emoji slot, `shared_look.h`) | what Notes and Tasks show the same way | the `shared_ui` repository beside this one, compiled in from source (below) |
 | libcurl, Security | the Google Calendar sync's HTTPS calls; the keychain item holding its sign-in | macOS SDK (the system libcurl, which trusts the keychain's certificates) |
 
 ```sh
@@ -230,7 +230,8 @@ src/
   main.m               entry point
   app_delegate.[hm]    launch, menu bar, About, quit
   library_window.[hm]  main window: shared state, refresh, commands (skeleton)
-  commands.[hm]        the command table (menus, toolbar, validation)
+  commands.[hm]        the command table; items, dispatch and validation are
+                       shared_commands.h, the handlers sit with their owners
   look.[hm]            sizes, timings, colours
   ui_util.[hm]         icons, image views, the shared table view, dialogs
   tool_panel.[hm]      the app's own dialog (never a system alert) and its blue hero strip

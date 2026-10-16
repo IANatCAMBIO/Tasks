@@ -266,10 +266,10 @@ snapshot_windows(TaskApp *app, NSString *dir)
         task_ptr_array_free_tags(tags);
 
         BOOL was_kanban = library.kanban_on;
-        [library perform_command:TasksCommandTogglePane param:nil];
+        [library perform_command:@"toggle-pane" param:nil];
         check(library.kanban_on != was_kanban, "command: Kanban View toggles the pane");
         check(snapshot(library.window, dir, @"library-kanban"), "snapshot: library, Kanban view");
-        [library perform_command:TasksCommandTogglePane param:nil];
+        [library perform_command:@"toggle-pane" param:nil];
 
         library.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
         check(snapshot(library.window, dir, @"library-list-dark"), "snapshot: library, dark");
@@ -490,10 +490,10 @@ use_windows(TaskApp *app, TasksLibraryWindow *library, int cycles)
             tasks_settings_window_open(app);
             check_spin(0.02);
 
-            [library perform_command:TasksCommandTogglePane param:nil];
-            [library perform_command:TasksCommandToggleCompleted param:nil];
-            [library perform_command:TasksCommandTogglePane param:nil];
-            [library perform_command:TasksCommandToggleCompleted param:nil];
+            [library perform_command:@"toggle-pane" param:nil];
+            [library perform_command:@"toggle-completed" param:nil];
+            [library perform_command:@"toggle-pane" param:nil];
+            [library perform_command:@"toggle-completed" param:nil];
             task_app_notify_changed(app);
             task_app_status(app, "cycle %d", i);
             check_spin(0.02);
@@ -764,7 +764,7 @@ check_compact(TaskApp *app, NSString *dir)
 
         NSSize full = content.frame.size;
         NSRect before = window.frame;
-        [library perform_command:TasksCommandToggleCompact param:nil];
+        [library perform_command:@"toggle-compact" param:nil];
         check_spin(SLIDE_SECONDS);
 
         check(task_config_get_bool(TASK_CFG_COMPACT) && !window.toolbar.visible,
@@ -783,9 +783,9 @@ check_compact(TaskApp *app, NSString *dir)
         check(task_config_get_int(TASK_CFG_COMPACT_PRE_W) == full.width &&
               task_config_get_int(TASK_CFG_COMPACT_PRE_H) == full.height,
               "compact: ... and remembers the size it had");
-        check([[library state_of_command:TasksCommandToggleCompact].title
+        check([[library state_of_command:@"toggle-compact"].title
                   isEqualToString:@"Full Controls"] &&
-              ![library state_of_command:TasksCommandFind].enabled,
+              ![library state_of_command:@"find"].enabled,
               "compact: the command now offers Full Controls, and Find is unavailable");
 
         [window update];        /* what AppKit does after every event */
@@ -823,7 +823,7 @@ check_compact(TaskApp *app, NSString *dir)
               !find_view(content, plate_class).hiddenOrHasHiddenAncestor,
               "compact: a launch in Compact opens Compact, at that size");
 
-        [library perform_command:TasksCommandToggleCompact param:nil];
+        [library perform_command:@"toggle-compact" param:nil];
         check_spin(SLIDE_SECONDS);
 
         check(!task_config_get_bool(TASK_CFG_COMPACT) && window.toolbar.visible &&
@@ -1000,19 +1000,18 @@ check_open_database(TaskApp *app)
  *
  * Inputs:
  *   menu      — the menu to walk
- *   commands  — receives the commands found
+ *   commands  — receives the identifiers of the commands found
  *   shortcuts — receives one string per shortcut found
  *   repeats   — incremented for each shortcut already in `shortcuts`
  */
 static void
-collect_menu(NSMenu *menu, NSMutableIndexSet *commands, NSMutableSet<NSString *> *shortcuts,
+collect_menu(NSMenu *menu, NSMutableSet<NSString *> *commands, NSMutableSet<NSString *> *shortcuts,
              int *repeats)
 {
-    const tasks_command_spec_t *filled = tasks_command_with_ident(menu.identifier);
-    if (filled) [commands addIndex:(NSUInteger)filled->command];
+    if (menu.identifier && shared_command_find(menu.identifier)) [commands addObject:menu.identifier];
 
     for (NSMenuItem *item in menu.itemArray) {
-        if (item.action == @selector(run_command:)) [commands addIndex:(NSUInteger)item.tag];
+        if (item.action == @selector(run_app_command:)) [commands addObject:shared_command_ident(item)];
         if (item.keyEquivalent.length > 0) {
             NSString *shortcut = [NSString stringWithFormat:@"%lu+%@",
                 (unsigned long)item.keyEquivalentModifierMask, item.keyEquivalent];
@@ -1033,15 +1032,16 @@ check_menu_bar(void)
     TasksAppDelegate *delegate = [[TasksAppDelegate alloc] init];
     [delegate build_menu_bar];
 
-    NSMutableIndexSet        *commands  = [NSMutableIndexSet indexSet];
+    NSMutableSet<NSString *> *commands  = [NSMutableSet set];
     NSMutableSet<NSString *> *shortcuts = [NSMutableSet set];
-    int repeats = 0, missing = 0, total = 0;
+    int repeats = 0, missing = 0;
     collect_menu(NSApp.mainMenu, commands, shortcuts, &repeats);
 
-    for (NSInteger command = TasksCommandAbout; tasks_command_spec(command) != NULL; command++) {
-        total++;
-        if (![commands containsIndex:(NSUInteger)command]) {
-            printf("     not in the menu bar: %s\n", tasks_command_spec(command)->title.UTF8String);
+    size_t total = 0;
+    const shared_command_t *table = shared_commands_table(&total);
+    for (size_t i = 0; i < total; i++) {
+        if (![commands containsObject:table[i].ident]) {
+            printf("     not in the menu bar: %s\n", table[i].title.UTF8String);
             missing++;
         }
     }
@@ -1313,12 +1313,13 @@ check_sidebar(TaskApp *app, NSString *dir)
               "favorites: a button selects its tag, lit in the bar and the sidebar");
         task_tag_free(reading);
         NSMenu *bar_menu = [favorite_button(@"\U0001F91D  Customers") menuForEvent:[NSApp currentEvent]];
-        check(bar_menu.numberOfItems == 1 && bar_menu.itemArray[0].tag == TasksCommandEditTag,
+        check(bar_menu.numberOfItems == 1 &&
+              [shared_command_ident(bar_menu.itemArray[0]) isEqualToString:@"edit-tag"],
               "favorites: a button's menu offers Edit Tag");
 
         /* Edit Tag: an emoji and Favorite, in a tool panel (never a sheet),
          * OK its default button. */
-        [library perform_command:TasksCommandEditTag param:@(errands->id)];
+        [library perform_command:@"edit-tag" param:@(errands->id)];
         check_spin(0.3);
         NSWindow *panel = tool_panel();
         NSTextField *emoji = nil;
@@ -1464,30 +1465,30 @@ check_sidebar(TaskApp *app, NSString *dir)
 
         /* The toggles, and the sidebar button first in the toolbar. */
         check([window.toolbar.items.firstObject.itemIdentifier
-                  isEqualToString:tasks_command_spec(TasksCommandToggleSidebar)->ident],
+                  isEqualToString:@"toggle-sidebar"],
               "toolbar: the sidebar button is at the far left");
-        [library perform_command:TasksCommandToggleSidebar param:nil];
+        [library perform_command:@"toggle-sidebar" param:nil];
         check_spin(SLIDE_SECONDS);
         check(sidebar.hiddenOrHasHiddenAncestor, "toggle: Hide Sidebar hides it");
         check(!task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE), "toggle: ... records it");
-        check([[library state_of_command:TasksCommandToggleSidebar].title isEqualToString:@"Show Sidebar"],
+        check([[library state_of_command:@"toggle-sidebar"].title isEqualToString:@"Show Sidebar"],
               "toggle: ... and offers Show Sidebar");
-        [library perform_command:TasksCommandToggleSidebar param:nil];
+        [library perform_command:@"toggle-sidebar" param:nil];
         check_spin(SLIDE_SECONDS);
         check(!sidebar.hiddenOrHasHiddenAncestor, "toggle: Show Sidebar brings it back");
         check(NSWidth(sidebar.frame) > 100.0, "toggle: ... at its width");
         check(task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE), "toggle: ... and records it");
-        [library perform_command:TasksCommandToggleFavoritesBar param:nil];
+        [library perform_command:@"toggle-favorites-bar" param:nil];
         check_spin(SLIDE_SECONDS);
         [window layoutIfNeeded];
         side_frame = [sidebar convertRect:sidebar.bounds toView:content];
         check(fabs(NSMaxY(side_frame) - NSMaxY(content.bounds)) < 0.5,
               "layout: with the bar hidden, the sidebar starts at the top");
         check(bar.hiddenOrHasHiddenAncestor && !task_config_get_bool(TASK_CFG_FAVORITES_BAR_VISIBLE) &&
-              [[library state_of_command:TasksCommandToggleFavoritesBar].title
+              [[library state_of_command:@"toggle-favorites-bar"].title
                   isEqualToString:@"Show Favorites Bar"],
               "toggle: Hide Favorites Bar hides the bar and records it");
-        [library perform_command:TasksCommandToggleFavoritesBar param:nil];
+        [library perform_command:@"toggle-favorites-bar" param:nil];
         check_spin(SLIDE_SECONDS);
         check(!bar.hiddenOrHasHiddenAncestor, "toggle: Show Favorites Bar brings it back");
 
@@ -1555,10 +1556,10 @@ check_task_list(TaskApp *app, NSString *dir)
          * window set narrower than its minimum (setContentSize: does not
          * hold to it) would leave the pane beside a planner too narrow for
          * any columns.  The user's choice is put back at the end. */
-        if (library.kanban_on) [library perform_command:TasksCommandTogglePane param:nil];
+        if (library.kanban_on) [library perform_command:@"toggle-pane" param:nil];
         BOOL planner_shown = !library.day_planner.hidden;
         if (planner_shown) {
-            [library perform_command:TasksCommandToggleDayPlanner param:nil];
+            [library perform_command:@"toggle-day-planner" param:nil];
             check_spin(0.3);
         }
 
@@ -1672,12 +1673,12 @@ check_task_list(TaskApp *app, NSString *dir)
         /* A column shown from the header menu's command. */
         [table deselectAll:nil];
         [table scrollRowToVisible:0];
-        [library perform_command:TasksCommandColumnStatus param:nil];
+        [library perform_command:@"column-status" param:nil];
         settle(0);
         check(![table tableColumnWithIdentifier:@"status"].hidden && columns_fit() && heights_exact(),
               "list: a column command shows its column and the rest make room");
         check(snapshot(window, dir, @"task-list-sorted"), "snapshot: task list, sorted, Status shown");
-        [library perform_command:TasksCommandColumnStatus param:nil];
+        [library perform_command:@"column-status" param:nil];
 
         /* Sorted by the last column: its bold title and the indicator fit,
          * and the divider on its left survives the header fill. */
@@ -1764,7 +1765,7 @@ check_task_list(TaskApp *app, NSString *dir)
         check(visible_windows() == open_before + 1, "list: Return opens the selected task's editor");
 
         if (planner_shown) {
-            [library perform_command:TasksCommandToggleDayPlanner param:nil];
+            [library perform_command:@"toggle-day-planner" param:nil];
             check_spin(0.3);
         }
         [library close];
@@ -1805,7 +1806,7 @@ check_kanban(TaskApp *app, NSString *dir)
         NSRect    was_frame  = window.frame;
 
         [library showWindow:nil];
-        if (!was_kanban) [library perform_command:TasksCommandTogglePane param:nil];
+        if (!was_kanban) [library perform_command:@"toggle-pane" param:nil];
         [window layoutIfNeeded];
 
         /* Every view of a class under the window, in board order: lane by
@@ -1994,11 +1995,11 @@ check_kanban(TaskApp *app, NSString *dir)
         check(visible_windows() == windows_before + 1, "kanban: a double click opens the editor");
         tasks_editor_close_all();
 
-        [library perform_command:TasksCommandTogglePane param:nil];
-        [library perform_command:TasksCommandTogglePane param:nil];
+        [library perform_command:@"toggle-pane" param:nil];
+        [library perform_command:@"toggle-pane" param:nil];
         check(library.selected_task_ids.count == 0,
               "kanban: hiding the board drops its selection");
-        if (!was_kanban) [library perform_command:TasksCommandTogglePane param:nil];
+        if (!was_kanban) [library perform_command:@"toggle-pane" param:nil];
         [library close];
     }
     check_spin(0.2);
@@ -2162,7 +2163,7 @@ check_editor_window(TaskApp *app, NSString *dir)
 
             [library select:(task_sel_t){ task_sel_tag, selected->id }];
             task_config_set(TASK_CFG_DEFAULT_TAG, fallback->name);
-            [library perform_command:TasksCommandQuickTask param:nil];
+            [library perform_command:@"quick-task" param:nil];
             check_spin(0.1);
             NSWindow *editor_win = new_editor();
             check(count_in(fallback->id) == in_fallback + 1 && count_in(selected->id) == in_selected,
@@ -2179,7 +2180,7 @@ check_editor_window(TaskApp *app, NSString *dir)
             /* With no default tag, Quick Task says so in a tool panel and
              * creates nothing; OK opens Settings, where one is chosen. */
             task_config_set(TASK_CFG_DEFAULT_TAG, NULL);
-            [library perform_command:TasksCommandQuickTask param:nil];
+            [library perform_command:@"quick-task" param:nil];
             check_spin(0.2);
             NSWindow *panel = tool_panel();
             check(panel != nil && find_text(panel.contentView, @"Choose a default tag first") != nil &&
@@ -2196,13 +2197,13 @@ check_editor_window(TaskApp *app, NSString *dir)
             check_spin(0.2);
 
             [library select:task_sel_default()];
-            [library perform_command:TasksCommandNewTask param:nil];
+            [library perform_command:@"new-task" param:nil];
             check_spin(0.1);
             check(new_editor() == nil, "new task: in a view with no default tag, nothing is made");
             task_config_set(TASK_CFG_DEFAULT_TAG, fallback->name);
-            check([library state_of_command:TasksCommandNewTask].enabled,
+            check([library state_of_command:@"new-task"].enabled,
                   "new task: enabled in All Tasks");
-            [library perform_command:TasksCommandNewTask param:nil];
+            [library perform_command:@"new-task" param:nil];
             check_spin(0.1);
             editor_win = new_editor();
             check(count_in(fallback->id) == in_fallback + 1,
@@ -2211,7 +2212,7 @@ check_editor_window(TaskApp *app, NSString *dir)
             check_spin(0.2);
 
             [library select:(task_sel_t){ task_sel_tag, selected->id }];
-            [library perform_command:TasksCommandNewTask param:nil];
+            [library perform_command:@"new-task" param:nil];
             check_spin(0.1);
             editor_win = new_editor();
             check(count_in(selected->id) == in_selected + 1 &&
@@ -2505,7 +2506,7 @@ check_tags(TaskApp *app, NSString *dir)
               !find_drawn(window.contentView, @"ui-check other"),
               "tags: the tag's row lists the tasks carrying it");
 
-        [library perform_command:TasksCommandNewTask param:nil];
+        [library perform_command:@"new-task" param:nil];
         check_spin(0.2);
         NSWindow *new_win = nil;
         for (NSWindow *w in NSApp.windows) {
@@ -2820,7 +2821,7 @@ check_day_planner_calendar(TaskApp *app, NSString *dir)
         [library showWindow:nil];
         BOOL was_hidden = library.day_planner.hidden;
         if (was_hidden) {
-            [library perform_command:TasksCommandToggleDayPlanner param:nil];
+            [library perform_command:@"toggle-day-planner" param:nil];
             check_spin(0.5);
         }
         TasksDayPlanner *planner = library.day_planner;
@@ -2859,7 +2860,7 @@ check_day_planner_calendar(TaskApp *app, NSString *dir)
         check(n_events == 0, "planner: switched off, no events are drawn");
 
         if (was_hidden) {
-            [library perform_command:TasksCommandToggleDayPlanner param:nil];
+            [library perform_command:@"toggle-day-planner" param:nil];
             check_spin(0.5);
         }
         [window close];
@@ -2918,6 +2919,7 @@ main(int argc, const char *argv[])
             return 2;
         }
         task_core_views_init();
+        tasks_commands_install();
         TaskApp *app  = task_app_new();
         char    *path = shared_db_path(NULL);
         app->db = path != NULL && g_file_test(path, G_FILE_TEST_EXISTS)

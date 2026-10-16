@@ -102,7 +102,7 @@
 
 @end
 
-@interface TasksLibraryWindow : NSWindowController <NSMenuItemValidation>
+@interface TasksLibraryWindow : NSWindowController <NSUserInterfaceValidations>
 
 /*
  * init_with_app: — build the window (not yet shown), subscribe to the
@@ -133,7 +133,7 @@
 @property (nonatomic, readonly) const TaskSearch *search;
 
 /* The kanban_view setting: YES while the board is the visible pane.
- * Single writer: TasksCommandTogglePane. */
+ * Single writer: toggle_pane (the "toggle-pane" command). */
 @property (nonatomic, readonly) BOOL kanban_on;
 
 /* The day planner panel; nil until build_layout. */
@@ -214,12 +214,11 @@
  * opens, so it always shows the tags there are now.
  *
  * Inputs:
- *   menu    — the submenu; its items are replaced
- *   command — TasksCommandAddTag: every tag, less those a single selected
- *             task already carries.  Any other command leaves the menu
- *             empty.
+ *   menu  — the submenu; its items are replaced
+ *   ident — "add-tag": every tag, less those a single selected task
+ *           already carries.  Any other command leaves the menu empty.
  */
-- (void)fill_menu:(NSMenu *)menu with_destinations_of:(TasksCommand)command;
+- (void)fill_menu:(NSMenu *)menu with_destinations_of:(NSString *)ident;
 
 /* ── The database ───────────────────────────────────────────────────── */
 
@@ -258,35 +257,50 @@
 /* ── Commands (see commands.h) ──────────────────────────────────────── */
 
 /*
- * run_command: — the action every command control sends.  Reads the
- * command from the sender's tag and its parameter from the sender's
- * representedObject, and performs it.
+ * run_command: — carry out the command an item stands for: the app
+ * delegate hands every command it does not own here.  The handler is
+ * found in the tables of the window, the sidebar and the task list.
  *
  * Inputs:
- *   sender — an NSMenuItem or NSToolbarItem made by commands.h
+ *   sender — an NSMenuItem, NSToolbarItem or button made by commands.h
  */
 - (void)run_command:(id)sender;
 
 /*
- * perform_command:param: — carry out a command, dispatching to its owner.
+ * validateUserInterfaceItem: — whether an item's command can run now (the
+ * app delegate asks for every item it does not own); the answer also
+ * gives the item the command's current look (state_of_command:).
  *
  * Inputs:
- *   command — the command
- *   param   — its parameter, or nil
- */
-- (void)perform_command:(TasksCommand)command param:(NSNumber *)param;
-
-/*
- * state_of_command: — how a command looks right now: the single answer
- * both menu and toolbar validation use.
- *
- * Inputs:
- *   command — the command
+ *   item — an item made from the command table
  *
  * Output:
- *   new state: the table's defaults adjusted by the command's owner.
+ *   YES to enable it.
  */
-- (TasksCommandState *)state_of_command:(TasksCommand)command;
+- (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item;
+
+/*
+ * perform_command:param: — carry out a command without an item (the Quick
+ * Task hotkey, the probe).
+ *
+ * Inputs:
+ *   ident — the command's identifier
+ *   param — its parameter, or nil
+ */
+- (void)perform_command:(NSString *)ident param:(id)param;
+
+/*
+ * state_of_command: — how a command looks right now: what validation
+ * applies to its menu items, toolbar items and buttons.
+ *
+ * Inputs:
+ *   ident — the command's identifier
+ *
+ * Output:
+ *   new state: the table's defaults adjusted by the command's handler;
+ *   disabled for a command no table has, or once the window is shut down.
+ */
+- (SharedCommandState *)state_of_command:(NSString *)ident;
 
 /* ── Lifetime ───────────────────────────────────────────────────────── */
 

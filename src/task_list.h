@@ -34,24 +34,16 @@ extern NSPasteboardType const tasks_row_drag_type;
 - (instancetype)initWithFrame:(NSRect)frame NS_UNAVAILABLE;
 - (instancetype)initWithCoder:(NSCoder *)coder NS_UNAVAILABLE;
 
-/*
- * perform_command:param: — carry out one of the list's commands (the
- * column-visibility toggles, TasksCommandOwnerTaskList).
- *
- * Inputs:
- *   command — the command
- *   param   — unused by the current commands
- */
-- (void)perform_command:(TasksCommand)command param:(NSNumber *)param;
-
-/*
- * update_state:for_command: — adjust the default state of one of the
- * list's commands (the check mark of a visible column).
- *
- * Inputs:
- *   state   — the state to adjust in place
- *   command — the command
- */
-- (void)update_state:(TasksCommandState *)state for_command:(TasksCommand)command;
-
 @end
+
+/*
+ * tasks_task_list_commands — the list's command handlers: the
+ * column-visibility toggles, check-marked while the column shows.  Their
+ * target is the list.
+ *
+ * Inputs:
+ *   n — receives how many
+ *
+ * Output: the table (static).
+ */
+const shared_command_handler_t *tasks_task_list_commands(size_t *n);

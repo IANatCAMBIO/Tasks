@@ -89,7 +89,7 @@ menuForEvent:(NSEvent *)event
     while (view != nil && ![view isKindOfClass:TasksFavoritesBar.class]) view = view.superview;
     TasksLibraryWindow *library = ((TasksFavoritesBar *)view).library;
     if (library != nil) {
-        [menu addItem:tasks_command_menu_item(TasksCommandEditTag, @(self.tag_id), library)];
+        [menu addItem:shared_command_menu_item(@"edit-tag", @(self.tag_id))];
     }
     return menu;
 }

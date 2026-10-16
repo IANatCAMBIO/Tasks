@@ -402,7 +402,7 @@ menuNeedsUpdate:(NSMenu *)menu
     if (row < 0 || self.is_shut_down || !self.library) return;
     task_sel_t sel = [self sel_at:row];
     if (sel.kind != task_sel_tag) return;
-    [menu addItem:tasks_command_menu_item(TasksCommandEditTag, @(sel.id), self.library)];
+    [menu addItem:shared_command_menu_item(@"edit-tag", @(sel.id))];
 }
 
 /* ── Edit Tag ────────────────────────────────────────────────────────── */
@@ -471,19 +471,6 @@ show_tag_panel:(int64_t)tag_id
     [panel.window makeFirstResponder:emoji];
 }
 
-/* ── Commands ────────────────────────────────────────────────────────── */
-
-/*
- * perform_command:param: — carry out a sidebar command.
- * Documented in sidebar.h.
- */
-- (void)
-perform_command:(TasksCommand)command param:(NSNumber *)param
-{
-    if (self.is_shut_down || !self.library || param == nil) return;
-    if (command == TasksCommandEditTag) [self show_tag_panel:param.longLongValue];
-}
-
 /*
  * shut_down — stop responding.
  * Documented in sidebar.h.
@@ -498,3 +485,70 @@ shut_down
 }
 
 @end
+
+/* ── Commands ────────────────────────────────────────────────────────── */
+
+/*
+ * tag_of — the tag an Edit Tag item means: its parameter, else the tag
+ * selected in the sidebar.
+ *
+ * Inputs:
+ *   sidebar — the sidebar
+ *   item    — the item, or nil
+ *
+ * Output: the tag id, or 0 when there is none.
+ */
+static int64_t
+tag_of(TasksSidebar *sidebar, id item)
+{
+    NSNumber *param = shared_command_param(item);
+    if (param != nil) return param.longLongValue;
+    task_sel_t sel = sidebar.library.selection;
+    return sel.kind == task_sel_tag ? sel.id : 0;
+}
+
+/*
+ * run_edit_tag — Edit Tag…
+ *
+ * Inputs:
+ *   target — the sidebar
+ *   sender — the item
+ */
+static void
+run_edit_tag(id target, id sender)
+{
+    TasksSidebar *sidebar = target;
+    int64_t       tag_id  = tag_of(sidebar, sender);
+    if (!sidebar.is_shut_down && sidebar.library != nil && tag_id != 0) {
+        [sidebar show_tag_panel:tag_id];
+    }
+}
+
+/*
+ * validate_edit_tag — there is a tag to edit.
+ *
+ * Inputs:
+ *   target — the sidebar
+ *   item   — the item
+ *   state  — the command's look (unused)
+ *
+ * Output: whether the command may run.
+ */
+static BOOL
+validate_edit_tag(id target, id item, SharedCommandState *state)
+{
+    return tag_of(target, item) != 0;
+}
+
+/*
+ * tasks_sidebar_commands — see sidebar.h.
+ */
+const shared_command_handler_t *
+tasks_sidebar_commands(size_t *n)
+{
+    static const shared_command_handler_t table[] = {
+        { @"edit-tag", run_edit_tag, validate_edit_tag },
+    };
+    *n = sizeof table / sizeof table[0];
+    return table;
+}

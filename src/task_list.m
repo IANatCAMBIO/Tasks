@@ -47,7 +47,6 @@
 enum { col_done = 0, col_task, col_status, col_due, col_completed, col_count };
 
 #define NO_SORT    (-1)                 /* column_spec_t.sort: not sortable    */
-#define NO_COMMAND ((TasksCommand)0)    /* column_spec_t.command: not toggled  */
 
 /*
  * column_spec_t — one column.
@@ -57,26 +56,26 @@ enum { col_done = 0, col_task, col_status, col_due, col_completed, col_count };
  *   sort        — the task_sort_column_t a header click sorts by, or NO_SORT
  *   visible_key — the setting holding its visibility, or NULL for a column
  *                 the user does not toggle
- *   command     — the command that toggles it, or NO_COMMAND
+ *   command     — the command that toggles it, or nil
  */
 typedef struct {
     NSString * __unsafe_unretained ident;
     NSString * __unsafe_unretained title;
     int          sort;
     const char  *visible_key;
-    TasksCommand command;
+    NSString * __unsafe_unretained command;
 } column_spec_t;
 
 static const column_spec_t column_specs[col_count] = {
     [col_done]      = { @"done",      @"✓",         task_sort_done,
-                        TASK_CFG_COL_DONE,      TasksCommandColumnDone },
-    [col_task]      = { @"task",      @"Task",      task_sort_title,     NULL, NO_COMMAND },
+                        TASK_CFG_COL_DONE,      @"column-done" },
+    [col_task]      = { @"task",      @"Task",      task_sort_title,     NULL, nil },
     [col_status]    = { @"status",    @"Status",    task_sort_status,
-                        TASK_CFG_COL_STATUS,    TasksCommandColumnStatus },
+                        TASK_CFG_COL_STATUS,    @"column-status" },
     [col_due]       = { @"due",       @"Due Date",  task_sort_due,
-                        TASK_CFG_COL_DUE,       TasksCommandColumnDue },
+                        TASK_CFG_COL_DUE,       @"column-due" },
     [col_completed] = { @"completed", @"Completed", task_sort_completed,
-                        TASK_CFG_COL_COMPLETED, TasksCommandColumnCompleted },
+                        TASK_CFG_COL_COMPLETED, @"column-completed" },
 };
 
 /* What a manual-sort drag carries: one pasteboard item per dragged row,
@@ -488,16 +487,16 @@ estimated_text_height(size_t line_count)
  * spec_for_command — the column a visibility command toggles.
  *
  * Inputs:
- *   command — a command (never NO_COMMAND, which is not one)
+ *   ident — the command's identifier
  *
  * Output:
  *   the column's spec, or NULL when the command toggles no column.
  */
 static const column_spec_t *
-spec_for_command(TasksCommand command)
+spec_for_command(NSString *ident)
 {
     for (int i = 0; i < col_count; i++) {
-        if (column_specs[i].command == command) return &column_specs[i];
+        if ([column_specs[i].command isEqualToString:ident]) return &column_specs[i];
     }
     return NULL;
 }
@@ -621,11 +620,11 @@ build_menus
     self.table.menu.delegate = self;
 
     /* The items are commands like any other: the window validates them,
-     * which is where their check marks come from (update_state:). */
+     * which is where their check marks come from (validate_column). */
     NSMenu *columns = [[NSMenu alloc] initWithTitle:@""];
     for (int i = 0; i < col_count; i++) {
-        if (column_specs[i].command == NO_COMMAND) continue;
-        [columns addItem:tasks_command_menu_item(column_specs[i].command, nil, self.library)];
+        if (column_specs[i].command == nil) continue;
+        [columns addItem:shared_command_menu_item(column_specs[i].command, nil)];
     }
     self.table.headerView.menu = columns;
 }
@@ -1564,34 +1563,68 @@ dropOperation:(NSTableViewDropOperation)operation
     return moved;
 }
 
-/* ── Commands ────────────────────────────────────────────────────────── */
-
 /*
- * perform_command:param: — show or hide a column and remember the choice.
- * Inputs are documented in task_list.h.
+ * toggle_column: — show or hide a column and remember the choice.
+ *
+ * Inputs:
+ *   spec — the column
  */
 - (void)
-perform_command:(TasksCommand)command param:(NSNumber *)param
+toggle_column:(const column_spec_t *)spec
 {
-    const column_spec_t *spec = spec_for_command(command);
-    if (spec == NULL) return;
-
     task_config_set_bool(spec->visible_key, !task_config_get_bool(spec->visible_key));
     [self apply_settings];
     [self fit_columns_if_pending];
 }
 
-/*
- * update_state:for_command: — a column command is checked while its column
- * is visible.
- * Inputs are documented in task_list.h.
- */
-- (void)
-update_state:(TasksCommandState *)state for_command:(TasksCommand)command
-{
-    const column_spec_t *spec = spec_for_command(command);
+@end
 
-    if (spec != NULL) state.checked = task_config_get_bool(spec->visible_key);
+/* ── Commands ────────────────────────────────────────────────────────── */
+
+/*
+ * run_column — a column-visibility command.
+ *
+ * Inputs:
+ *   target — the list
+ *   sender — the item
+ */
+static void
+run_column(id target, id sender)
+{
+    const column_spec_t *spec = spec_for_command(shared_command_ident(sender));
+    if (spec != NULL) [(TasksTaskList *)target toggle_column:spec];
 }
 
-@end
+/*
+ * validate_column — check-marked while the column is visible.
+ *
+ * Inputs:
+ *   target — the list (unused)
+ *   item   — the item
+ *   state  — the command's look, adjusted here
+ *
+ * Output: YES.
+ */
+static BOOL
+validate_column(id target, id item, SharedCommandState *state)
+{
+    const column_spec_t *spec = spec_for_command(shared_command_ident(item));
+    if (spec != NULL) state.checked = task_config_get_bool(spec->visible_key);
+    return YES;
+}
+
+/*
+ * tasks_task_list_commands — see task_list.h.
+ */
+const shared_command_handler_t *
+tasks_task_list_commands(size_t *n)
+{
+    static const shared_command_handler_t table[] = {
+        { @"column-done",      run_column, validate_column },
+        { @"column-status",    run_column, validate_column },
+        { @"column-due",       run_column, validate_column },
+        { @"column-completed", run_column, validate_column },
+    };
+    *n = sizeof table / sizeof table[0];
+    return table;
+}

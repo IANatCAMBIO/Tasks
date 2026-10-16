@@ -35,7 +35,7 @@ static NSString * const build_date_key = @"TasksBuildDate";
 /* The size of the app icon in the Dock tile and the About panel. */
 static const CGFloat app_icon_size = 128.0;
 
-@interface TasksAppDelegate () <NSMenuItemValidation, NSMenuDelegate>
+@interface TasksAppDelegate () <NSUserInterfaceValidations, NSMenuDelegate>
 /* The application context: the open database and the event bus.  Owned;
  * NULL before start_core succeeds and after tear_down. */
 @property (nonatomic, assign) TaskApp *app;
@@ -44,6 +44,8 @@ static const CGFloat app_icon_size = 128.0;
 /* Delivers SIGTERM on the main queue as a normal quit. */
 @property (nonatomic, strong) dispatch_source_t sigterm_source;
 @end
+
+static const shared_command_handler_t *app_commands(size_t *n);
 
 @implementation TasksAppDelegate
 
@@ -210,6 +212,7 @@ applicationDidFinishLaunching:(NSNotification *)note
 {
     NSImage *icon = tasks_app_icon(app_icon_size);
     if (icon) NSApp.applicationIconImage = icon;
+    tasks_commands_install();
     [self build_menu_bar];
     [self watch_sigterm];
 
@@ -308,7 +311,7 @@ start_hotkey
 {
     __weak TasksAppDelegate *ws = self;
     BOOL ok = tasks_hotkey_start(^{
-        [ws.library perform_command:TasksCommandQuickTask param:nil];
+        [ws.library perform_command:@"quick-task" param:nil];
     });
     if (!ok) {
         task_app_status(self.app, "The Quick Task shortcut is in use by another app");
@@ -395,54 +398,42 @@ applicationWillTerminate:(NSNotification *)note
 /* ── Commands ────────────────────────────────────────────────────────── */
 
 /*
- * run_command: — the action of every main-menu command item.  The app's
- * own commands are carried out here; every other command goes to the
- * library window, whichever window is key.
+ * run_app_command: — the action of every command item (commands.h: all of
+ * them are app scope).  The app's own commands are carried out here; every
+ * other command goes to the library window, whichever window is key.
  *
  * Inputs:
- *   sender — a menu item made by tasks_command_menu_item
+ *   sender — an item made from the command table
  */
 - (void)
-run_command:(id)sender
+run_app_command:(id)sender
 {
-    TasksCommand command = (TasksCommand)[sender tag];
-
-    switch (command) {
-    case TasksCommandAbout:
-        [self show_about];
-        break;
-    case TasksCommandSettings:
-        tasks_settings_window_open(self.app);
-        break;
-    case TasksCommandHelp:
-        [self show_help];
-        break;
-    default:
-        [self.library run_command:sender];
-        break;
-    }
+    size_t n = 0;
+    const shared_command_handler_t *table = app_commands(&n);
+    if (!shared_command_run(table, n, self, sender)) [self.library run_command:sender];
 }
 
 /*
- * validateMenuItem: — enables the main menu's command items.  The app's own
- * commands are available whenever the core is up; the rest are the library
- * window's to answer.  Items with other actions (Quit, Close, the Edit
- * menu) are validated by AppKit and never reach here.
+ * validateUserInterfaceItem: — enables the command items.  The app's own
+ * commands are available whenever the core is up; the rest are the
+ * library window's to answer.  Items with other actions (Quit, Close, the
+ * Edit menu) are validated by AppKit and never reach here.
  *
  * Inputs:
- *   item — a menu item whose target is the delegate
+ *   item — an item whose target is the delegate
  *
  * Output:
  *   YES to enable the item.
  */
 - (BOOL)
-validateMenuItem:(NSMenuItem *)item
+validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item
 {
-    const tasks_command_spec_t *spec = tasks_command_spec((TasksCommand)item.tag);
-
-    if (spec == NULL || self.app == NULL) return NO;
-    if (spec->owner == TasksCommandOwnerApp) return YES;
-    return [self.library validateMenuItem:item];
+    if (self.app == NULL) return NO;
+    size_t n = 0;
+    BOOL   handled = NO;
+    BOOL   enabled = shared_command_validate(app_commands(&n), n, self, item, &handled);
+    if (handled) return enabled;
+    return self.library != nil && [self.library validateUserInterfaceItem:item];
 }
 
 /*
@@ -533,21 +524,21 @@ add_menu(NSMenu *bar, NSString *title)
  * it with.
  *
  * Inputs:
- *   command — TasksCommandAddTag
+ *   ident — "add-tag"
  *
  * Output:
  *   new NSMenuItem holding the submenu.
  */
 - (NSMenuItem *)
-destinations_item:(TasksCommand)command
+destinations_item:(NSString *)ident
 {
-    const tasks_command_spec_t *spec = tasks_command_spec(command);
-    NSMenuItem *holder = [[NSMenuItem alloc] initWithTitle:spec->title
+    const shared_command_t *command = shared_command_find(ident);
+    NSMenuItem *holder = [[NSMenuItem alloc] initWithTitle:command->title
                                                     action:NULL
                                              keyEquivalent:@""];
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:spec->title];
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:command->title];
 
-    menu.identifier = spec->ident;
+    menu.identifier = ident;
     menu.delegate   = self;
     holder.submenu  = menu;
     return holder;
@@ -563,9 +554,9 @@ destinations_item:(TasksCommand)command
 - (void)
 menuNeedsUpdate:(NSMenu *)menu
 {
-    const tasks_command_spec_t *spec = tasks_command_with_ident(menu.identifier);
-
-    if (spec) [self.library fill_menu:menu with_destinations_of:spec->command];
+    if (shared_command_find(menu.identifier)) {
+        [self.library fill_menu:menu with_destinations_of:menu.identifier];
+    }
 }
 
 /*
@@ -596,8 +587,8 @@ menuHasKeyEquivalent:(NSMenu *)menu
  * Edit, View, Window and Help menus.  Every command in the command table
  * is in one of them.
  *
- * Command items come from the command table and target the delegate, so
- * they work whichever window is key.  The Edit menu's items use AppKit's
+ * Command items come from the command table and target the delegate
+ * (run_app_command:), so they work whichever window is key.  The Edit menu's items use AppKit's
  * standard selectors with a nil target: a focused text field's editor gets
  * them, which is what makes Cut/Copy/Paste/Undo work in every field.
  */
@@ -605,15 +596,15 @@ menuHasKeyEquivalent:(NSMenu *)menu
 build_menu_bar
 {
     NSMenu *bar = [[NSMenu alloc] init];
-    NSMenuItem *(^command)(TasksCommand) = ^NSMenuItem *(TasksCommand cmd) {
-        return tasks_command_menu_item(cmd, nil, self);
+    NSMenuItem *(^command)(NSString *) = ^NSMenuItem *(NSString *ident) {
+        return shared_command_menu_item(ident, nil);
     };
 
     /* ── App menu ── */
     NSMenu *app_menu = add_menu(bar, @TASKS_APP_NAME);
-    [app_menu addItem:command(TasksCommandAbout)];
+    [app_menu addItem:command(@"about")];
     [app_menu addItem:NSMenuItem.separatorItem];
-    [app_menu addItem:command(TasksCommandSettings)];
+    [app_menu addItem:command(@"settings")];
     [app_menu addItem:NSMenuItem.separatorItem];
     NSMenuItem *services = [[NSMenuItem alloc] initWithTitle:@"Services" action:NULL keyEquivalent:@""];
     services.submenu     = [[NSMenu alloc] initWithTitle:@"Services"];
@@ -630,16 +621,16 @@ build_menu_bar
     /* ── File menu ── what is created, then the selected task, the selected
      * tag, and the file all of it is kept in. */
     NSMenu *file_menu = add_menu(bar, @"File");
-    [file_menu addItem:command(TasksCommandNewTask)];
-    [file_menu addItem:command(TasksCommandQuickTask)];
+    [file_menu addItem:command(@"new-task")];
+    [file_menu addItem:command(@"quick-task")];
     [file_menu addItem:NSMenuItem.separatorItem];
-    [file_menu addItem:command(TasksCommandTaskInfo)];
-    [file_menu addItem:command(TasksCommandDeleteTask)];
-    [file_menu addItem:command(TasksCommandClearCompleted)];
+    [file_menu addItem:command(@"task-info")];
+    [file_menu addItem:command(@"delete-task")];
+    [file_menu addItem:command(@"clear-completed")];
     [file_menu addItem:NSMenuItem.separatorItem];
-    [file_menu addItem:command(TasksCommandEditTag)];
+    [file_menu addItem:command(@"edit-tag")];
     [file_menu addItem:NSMenuItem.separatorItem];
-    [file_menu addItem:command(TasksCommandOpenDatabase)];
+    [file_menu addItem:command(@"open-database")];
     [file_menu addItem:NSMenuItem.separatorItem];
     [file_menu addItem:standard_item(@"Close Window", @selector(performClose:), @"w", cmd)];
 
@@ -656,30 +647,30 @@ build_menu_bar
     [edit_menu addItem:standard_item(@"Delete", @selector(delete:), @"", cmd)];
     [edit_menu addItem:standard_item(@"Select All", @selector(selectAll:), @"a", cmd)];
     [edit_menu addItem:NSMenuItem.separatorItem];
-    [edit_menu addItem:command(TasksCommandFind)];
+    [edit_menu addItem:command(@"find")];
     [edit_menu addItem:NSMenuItem.separatorItem];
-    for (NSNumber *flag in @[@(TasksCommandMarkDone), @(TasksCommandSetPriority)]) {
-        [edit_menu addItem:tasks_command_flag_item(flag.integerValue, YES, NO, self)];
-        [edit_menu addItem:tasks_command_flag_item(flag.integerValue, NO, NO, self)];
+    for (NSString *flag in @[@"mark-done", @"set-priority"]) {
+        [edit_menu addItem:tasks_command_flag_item(flag, YES, NO)];
+        [edit_menu addItem:tasks_command_flag_item(flag, NO, NO)];
     }
-    [edit_menu addItem:[self destinations_item:TasksCommandAddTag]];
+    [edit_menu addItem:[self destinations_item:@"add-tag"]];
 
     /* ── View menu ── what the task pane shows, then how the window looks. */
     NSMenu *view_menu = add_menu(bar, @"View");
-    [view_menu addItem:command(TasksCommandToggleCompleted)];
+    [view_menu addItem:command(@"toggle-completed")];
     NSMenuItem *columns = [[NSMenuItem alloc] initWithTitle:@"Columns" action:NULL keyEquivalent:@""];
     columns.submenu     = [[NSMenu alloc] initWithTitle:@"Columns"];
-    [columns.submenu addItem:command(TasksCommandColumnDone)];
-    [columns.submenu addItem:command(TasksCommandColumnStatus)];
-    [columns.submenu addItem:command(TasksCommandColumnDue)];
-    [columns.submenu addItem:command(TasksCommandColumnCompleted)];
+    [columns.submenu addItem:command(@"column-done")];
+    [columns.submenu addItem:command(@"column-status")];
+    [columns.submenu addItem:command(@"column-due")];
+    [columns.submenu addItem:command(@"column-completed")];
     [view_menu addItem:columns];
     [view_menu addItem:NSMenuItem.separatorItem];
-    [view_menu addItem:command(TasksCommandToggleSidebar)];
-    [view_menu addItem:command(TasksCommandToggleFavoritesBar)];
-    [view_menu addItem:command(TasksCommandToggleCompact)];
-    [view_menu addItem:command(TasksCommandTogglePane)];
-    [view_menu addItem:command(TasksCommandToggleDayPlanner)];
+    [view_menu addItem:command(@"toggle-sidebar")];
+    [view_menu addItem:command(@"toggle-favorites-bar")];
+    [view_menu addItem:command(@"toggle-compact")];
+    [view_menu addItem:command(@"toggle-pane")];
+    [view_menu addItem:command(@"toggle-day-planner")];
     [view_menu addItem:NSMenuItem.separatorItem];
     [view_menu addItem:standard_item(@"Enter Full Screen", @selector(toggleFullScreen:), @"f",
                                      cmd_ctrl)];
@@ -695,10 +686,71 @@ build_menu_bar
 
     /* ── Help menu ── AppKit adds the menu-search field above the item. */
     NSMenu *help_menu = add_menu(bar, @"Help");
-    [help_menu addItem:command(TasksCommandHelp)];
+    [help_menu addItem:command(@"help")];
     NSApp.helpMenu = help_menu;
 
     NSApp.mainMenu = bar;
 }
 
 @end
+
+/* ── The app's own command handlers ──────────────────────────────────── */
+
+/*
+ * run_about — About.
+ *
+ * Inputs:
+ *   target — the delegate
+ *   sender — the item (unused)
+ */
+static void
+run_about(id target, id sender)
+{
+    [(TasksAppDelegate *)target show_about];
+}
+
+/*
+ * run_settings — Settings…
+ *
+ * Inputs:
+ *   target — the delegate
+ *   sender — the item (unused)
+ */
+static void
+run_settings(id target, id sender)
+{
+    tasks_settings_window_open(((TasksAppDelegate *)target).app);
+}
+
+/*
+ * run_help — the bundled help page.
+ *
+ * Inputs:
+ *   target — the delegate
+ *   sender — the item (unused)
+ */
+static void
+run_help(id target, id sender)
+{
+    [(TasksAppDelegate *)target show_help];
+}
+
+/*
+ * app_commands — the delegate's handler table.
+ *
+ * Inputs:
+ *   n — receives how many
+ *
+ * Output: the table (static).
+ */
+static const shared_command_handler_t *
+app_commands(size_t *n)
+{
+    static const shared_command_handler_t table[] = {
+        { @"about",    run_about,    NULL },
+        { @"settings", run_settings, NULL },
+        { @"help",     run_help,     NULL },
+    };
+    *n = sizeof table / sizeof table[0];
+    return table;
+}
