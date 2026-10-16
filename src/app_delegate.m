@@ -530,6 +530,14 @@ show_help
 
 /* ── Menu bar ────────────────────────────────────────────────────────── */
 
+/* Shorthand for the standard items' modifier masks, as in commands.m. */
+enum {
+    cmd       = NSEventModifierFlagCommand,
+    cmd_shift = NSEventModifierFlagCommand | NSEventModifierFlagShift,
+    cmd_ctrl  = NSEventModifierFlagCommand | NSEventModifierFlagControl,
+    cmd_opt   = NSEventModifierFlagCommand | NSEventModifierFlagOption,
+};
+
 /*
  * standard_item — a menu item for one of AppKit's own actions (Quit, Close,
  * Copy, ...), sent down the responder chain.
@@ -538,7 +546,8 @@ show_help
  *   title  — menu item title
  *   action — AppKit's selector
  *   key    — key equivalent character, @"" for none
- *   mods   — modifiers in addition to Command
+ *   mods   — the shortcut's modifiers, the full mask (as the command
+ *            table's and Notes' make_item)
  *
  * Output:
  *   new NSMenuItem with a nil target.
@@ -548,7 +557,7 @@ standard_item(NSString *title, SEL action, NSString *key, NSEventModifierFlags m
 {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:key];
 
-    item.keyEquivalentModifierMask = NSEventModifierFlagCommand | mods;
+    item.keyEquivalentModifierMask = mods;
     return item;
 }
 
@@ -668,12 +677,12 @@ build_menu_bar
     NSApp.servicesMenu   = services.submenu;
     [app_menu addItem:services];
     [app_menu addItem:NSMenuItem.separatorItem];
-    [app_menu addItem:standard_item(@"Hide " @TASKS_APP_NAME, @selector(hide:), @"h", 0)];
+    [app_menu addItem:standard_item(@"Hide " @TASKS_APP_NAME, @selector(hide:), @"h", cmd)];
     [app_menu addItem:standard_item(@"Hide Others", @selector(hideOtherApplications:), @"h",
-                                    NSEventModifierFlagOption)];
-    [app_menu addItem:standard_item(@"Show All", @selector(unhideAllApplications:), @"", 0)];
+                                    cmd_opt)];
+    [app_menu addItem:standard_item(@"Show All", @selector(unhideAllApplications:), @"", cmd)];
     [app_menu addItem:NSMenuItem.separatorItem];
-    [app_menu addItem:standard_item(@"Quit " @TASKS_APP_NAME, @selector(terminate:), @"q", 0)];
+    [app_menu addItem:standard_item(@"Quit " @TASKS_APP_NAME, @selector(terminate:), @"q", cmd)];
 
     /* ── File menu ── what is created, then the selected task, the selected
      * tag, and the file all of it is kept in. */
@@ -689,20 +698,20 @@ build_menu_bar
     [file_menu addItem:NSMenuItem.separatorItem];
     [file_menu addItem:command(TasksCommandOpenDatabase)];
     [file_menu addItem:NSMenuItem.separatorItem];
-    [file_menu addItem:standard_item(@"Close Window", @selector(performClose:), @"w", 0)];
+    [file_menu addItem:standard_item(@"Close Window", @selector(performClose:), @"w", cmd)];
 
     /* ── Edit menu ── the standard items, then what changes the selected
      * tasks.  Both directions of each flag are offered: the selection may
      * hold tasks in either state. */
     NSMenu *edit_menu = add_menu(bar, @"Edit");
-    [edit_menu addItem:standard_item(@"Undo", @selector(undo:), @"z", 0)];
-    [edit_menu addItem:standard_item(@"Redo", @selector(redo:), @"z", NSEventModifierFlagShift)];
+    [edit_menu addItem:standard_item(@"Undo", @selector(undo:), @"z", cmd)];
+    [edit_menu addItem:standard_item(@"Redo", @selector(redo:), @"z", cmd_shift)];
     [edit_menu addItem:NSMenuItem.separatorItem];
-    [edit_menu addItem:standard_item(@"Cut", @selector(cut:), @"x", 0)];
-    [edit_menu addItem:standard_item(@"Copy", @selector(copy:), @"c", 0)];
-    [edit_menu addItem:standard_item(@"Paste", @selector(paste:), @"v", 0)];
-    [edit_menu addItem:standard_item(@"Delete", @selector(delete:), @"", 0)];
-    [edit_menu addItem:standard_item(@"Select All", @selector(selectAll:), @"a", 0)];
+    [edit_menu addItem:standard_item(@"Cut", @selector(cut:), @"x", cmd)];
+    [edit_menu addItem:standard_item(@"Copy", @selector(copy:), @"c", cmd)];
+    [edit_menu addItem:standard_item(@"Paste", @selector(paste:), @"v", cmd)];
+    [edit_menu addItem:standard_item(@"Delete", @selector(delete:), @"", cmd)];
+    [edit_menu addItem:standard_item(@"Select All", @selector(selectAll:), @"a", cmd)];
     [edit_menu addItem:NSMenuItem.separatorItem];
     [edit_menu addItem:command(TasksCommandFind)];
     [edit_menu addItem:NSMenuItem.separatorItem];
@@ -730,15 +739,15 @@ build_menu_bar
     [view_menu addItem:command(TasksCommandToggleDayPlanner)];
     [view_menu addItem:NSMenuItem.separatorItem];
     [view_menu addItem:standard_item(@"Enter Full Screen", @selector(toggleFullScreen:), @"f",
-                                     NSEventModifierFlagControl)];
+                                     cmd_ctrl)];
 
     /* ── Window menu ── AppKit lists the open windows (the library window,
      * the task editors, Settings) below these and keeps the list current. */
     NSMenu *window_menu = add_menu(bar, @"Window");
-    [window_menu addItem:standard_item(@"Minimize", @selector(performMiniaturize:), @"m", 0)];
-    [window_menu addItem:standard_item(@"Zoom", @selector(performZoom:), @"", 0)];
+    [window_menu addItem:standard_item(@"Minimize", @selector(performMiniaturize:), @"m", cmd)];
+    [window_menu addItem:standard_item(@"Zoom", @selector(performZoom:), @"", cmd)];
     [window_menu addItem:NSMenuItem.separatorItem];
-    [window_menu addItem:standard_item(@"Bring All to Front", @selector(arrangeInFront:), @"", 0)];
+    [window_menu addItem:standard_item(@"Bring All to Front", @selector(arrangeInFront:), @"", cmd)];
     NSApp.windowsMenu = window_menu;
 
     /* ── Help menu ── AppKit adds the menu-search field above the item. */

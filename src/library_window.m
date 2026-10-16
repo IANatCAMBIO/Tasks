@@ -26,7 +26,7 @@
 
 /* The toolbar's own identifiers (command items use the command table's). */
 static NSString * const toolbar_ident        = @"tasks.library";
-static NSString * const search_item_ident    = @"tasks.search";
+static NSString * const search_item_ident    = @"search";   /* as Notes names its */
 
 /* The search field's words.  The placeholder says what is searched: the box
  * narrows the SELECTED view, it does not sweep the database. */

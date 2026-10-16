@@ -88,11 +88,11 @@ typedef NS_ENUM(NSInteger, TasksCommandOwner) {
  *
  *   command — the command
  *   owner   — who performs it
- *   ident   — stable identifier ("tasks.new-task"): the toolbar item
- *             identifier
+ *   ident   — stable identifier ("new-task", as Notes names its
+ *             commands): the toolbar item identifier
  *   title   — menu title; for a toggling command, its default face
- *   key     — key equivalent, "" for none (Command is always added)
- *   mods    — modifiers in addition to Command
+ *   key     — key equivalent, "" for none
+ *   mods    — the shortcut's modifiers, the full mask (as Notes' table)
  *   icon    — SF Symbol name (tasks_icon, ui_util.h) for toolbar/floating
  *             buttons; nil when the command is never a button
  *   tooltip — hover text for buttons; nil when never a button

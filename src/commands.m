@@ -2,69 +2,79 @@
 #import "look.h"
 #import "ui_util.h"
 
-/* The table.  Shortcuts follow Mac conventions.  A toggling command's
- * title, icon and tooltip here are its FIRST face: what it offers while
- * completed tasks are shown, sorting is automatic, the sidebar and the
- * Favorites bar are visible and the list is up.  The library window supplies only the other face
- * (update_shell_state:for_command:). */
-static const tasks_command_spec_t command_specs[] = {
-    { TasksCommandAbout,           TasksCommandOwnerApp,      @"tasks.about",
-      @"About " @TASKS_APP_NAME,   @"",  0, nil, nil },
-    { TasksCommandSettings,        TasksCommandOwnerApp,      @"tasks.settings",
-      @"Settings…",                @",", 0, nil, nil },
-    { TasksCommandHelp,            TasksCommandOwnerApp,      @"tasks.help",
-      @TASKS_APP_NAME @" Help",    @"?", 0, nil, nil },
+/* Shorthand for the table's modifier column, as in Notes' table. */
+enum {
+    cmd       = NSEventModifierFlagCommand,
+    cmd_shift = NSEventModifierFlagCommand | NSEventModifierFlagShift,
+    cmd_ctrl  = NSEventModifierFlagCommand | NSEventModifierFlagControl,
+    ctrl_opt  = NSEventModifierFlagControl | NSEventModifierFlagOption,
+};
 
-    { TasksCommandNewTask,         TasksCommandOwnerShell,    @"tasks.new-task",
-      @"New Task",                 @"n", 0, @"plus",
+/* Backspace as a key equivalent: ⌘⌫ shows as the delete key in the menu. */
+#define KEY_BACKSPACE @"\x08"
+
+/* The table.  Shortcuts follow Mac conventions; the modifier column is the
+ * full mask, as in Notes' table.  A toggling command's title, icon and
+ * tooltip here are its FIRST face: what it offers while completed tasks
+ * are shown, sorting is automatic, the sidebar and the Favorites bar are
+ * visible and the list is up.  The library window supplies only the other
+ * face (update_shell_state:for_command:). */
+static const tasks_command_spec_t command_specs[] = {
+    { TasksCommandAbout,           TasksCommandOwnerApp,      @"about",
+      @"About " @TASKS_APP_NAME,   @"",  0,         nil, nil },
+    { TasksCommandSettings,        TasksCommandOwnerApp,      @"settings",
+      @"Settings…",                @",", cmd,       nil, nil },
+    { TasksCommandHelp,            TasksCommandOwnerApp,      @"help",
+      @TASKS_APP_NAME @" Help",    @"?", cmd,       nil, nil },
+
+    { TasksCommandNewTask,         TasksCommandOwnerShell,    @"new-task",
+      @"New Task",                 @"n", cmd,       @"plus",
       @"Create a task with the selected tag, or else with the default tag" },
     /* The same shortcut is registered system-wide by hotkey.m. */
-    { TasksCommandQuickTask,       TasksCommandOwnerShell,    @"tasks.quick-task",
-      @"Quick Task",               @"t", NSEventModifierFlagControl | NSEventModifierFlagOption,
-      nil, nil },
-    { TasksCommandDeleteTask,      TasksCommandOwnerShell,    @"tasks.delete-task",
-      @"Delete Task",              @"\x08", 0, @"trash", @"Delete the selected task" },
-    { TasksCommandTaskInfo,        TasksCommandOwnerShell,    @"tasks.task-info",
-      @"Info…",                    @"i", 0, nil, nil },
-    { TasksCommandClearCompleted,  TasksCommandOwnerShell,    @"tasks.clear-completed",
-      @"Clear Completed Tasks",    @"",  0, nil, nil },
-    { TasksCommandOpenDatabase,    TasksCommandOwnerShell,    @"tasks.open-database",
-      @"Open Database File…",      @"o", 0, nil, nil },
-    { TasksCommandFind,            TasksCommandOwnerShell,    @"tasks.find",
-      @"Find…",                    @"f", 0, nil, nil },
-    { TasksCommandToggleCompleted, TasksCommandOwnerShell,    @"tasks.toggle-completed",
-      @"Hide Completed",           @"",  0, @"eye.slash", @"Hide completed tasks" },
-    { TasksCommandToggleSidebar,   TasksCommandOwnerShell,    @"tasks.toggle-sidebar",
-      @"Hide Sidebar",             @"s", NSEventModifierFlagControl,
-      @"sidebar.left",             @"Hide the sidebar" },
-    { TasksCommandToggleFavoritesBar, TasksCommandOwnerShell, @"tasks.toggle-favorites-bar",
-      @"Hide Favorites Bar",       @"",  0, nil, nil },
-    { TasksCommandToggleCompact,   TasksCommandOwnerShell,    @"tasks.toggle-compact",
-      @"Compact Controls",         @"",  0, nil, nil },
-    { TasksCommandTogglePane,      TasksCommandOwnerShell,    @"tasks.toggle-pane",
-      @"Kanban View",              @"k", NSEventModifierFlagShift,
-      @"rectangle.split.3x1",      @"Show the tasks as a Kanban board" },
-    { TasksCommandToggleDayPlanner, TasksCommandOwnerShell,  @"tasks.toggle-day-planner",
-      @"Hide Day Planner",          @"d", NSEventModifierFlagShift,
-      @"calendar.badge.clock",      @"Hide the day planner" },
-    { TasksCommandMarkDone,        TasksCommandOwnerShell,    @"tasks.mark-done",
-      @"Mark Complete",            @"",  0, nil, nil },
-    { TasksCommandSetPriority,     TasksCommandOwnerShell,    @"tasks.set-priority",
-      @"Set High Priority",        @"",  0, nil, nil },
-    { TasksCommandAddTag,          TasksCommandOwnerShell,    @"tasks.add-tag",
-      @"Add Tag",                  @"",  0, nil, nil },
+    { TasksCommandQuickTask,       TasksCommandOwnerShell,    @"quick-task",
+      @"Quick Task",               @"t", cmd | ctrl_opt, nil, nil },
+    { TasksCommandDeleteTask,      TasksCommandOwnerShell,    @"delete-task",
+      @"Delete Task",              KEY_BACKSPACE, cmd, @"trash", @"Delete the selected task" },
+    { TasksCommandTaskInfo,        TasksCommandOwnerShell,    @"task-info",
+      @"Info…",                    @"i", cmd,       nil, nil },
+    { TasksCommandClearCompleted,  TasksCommandOwnerShell,    @"clear-completed",
+      @"Clear Completed Tasks",    @"",  0,         nil, nil },
+    { TasksCommandOpenDatabase,    TasksCommandOwnerShell,    @"open-database",
+      @"Open Database File…",      @"o", cmd,       nil, nil },
+    { TasksCommandFind,            TasksCommandOwnerShell,    @"find",
+      @"Find…",                    @"f", cmd,       nil, nil },
+    { TasksCommandToggleCompleted, TasksCommandOwnerShell,    @"toggle-completed",
+      @"Hide Completed",           @"",  0,         @"eye.slash", @"Hide completed tasks" },
+    { TasksCommandToggleSidebar,   TasksCommandOwnerShell,    @"toggle-sidebar",
+      @"Hide Sidebar",             @"s", cmd_ctrl,  @"sidebar.left", @"Hide the sidebar" },
+    { TasksCommandToggleFavoritesBar, TasksCommandOwnerShell, @"toggle-favorites-bar",
+      @"Hide Favorites Bar",       @"",  0,         nil, nil },
+    { TasksCommandToggleCompact,   TasksCommandOwnerShell,    @"toggle-compact",
+      @"Compact Controls",         @"",  0,         nil, nil },
+    { TasksCommandTogglePane,      TasksCommandOwnerShell,    @"toggle-pane",
+      @"Kanban View",              @"k", cmd_shift, @"rectangle.split.3x1",
+      @"Show the tasks as a Kanban board" },
+    { TasksCommandToggleDayPlanner, TasksCommandOwnerShell,   @"toggle-day-planner",
+      @"Hide Day Planner",         @"d", cmd_shift, @"calendar.badge.clock",
+      @"Hide the day planner" },
+    { TasksCommandMarkDone,        TasksCommandOwnerShell,    @"mark-done",
+      @"Mark Complete",            @"",  0,         nil, nil },
+    { TasksCommandSetPriority,     TasksCommandOwnerShell,    @"set-priority",
+      @"Set High Priority",        @"",  0,         nil, nil },
+    { TasksCommandAddTag,          TasksCommandOwnerShell,    @"add-tag",
+      @"Add Tag",                  @"",  0,         nil, nil },
 
-    { TasksCommandEditTag,         TasksCommandOwnerSidebar,  @"tasks.edit-tag",
-      @"Edit Tag…",                @"",  0, nil, nil },
+    { TasksCommandEditTag,         TasksCommandOwnerSidebar,  @"edit-tag",
+      @"Edit Tag…",                @"",  0,         nil, nil },
 
-    { TasksCommandColumnDone,      TasksCommandOwnerTaskList, @"tasks.column-done",
-      @"Done",                     @"",  0, nil, nil },
-    { TasksCommandColumnStatus,    TasksCommandOwnerTaskList, @"tasks.column-status",
-      @"Status",                   @"",  0, nil, nil },
-    { TasksCommandColumnDue,       TasksCommandOwnerTaskList, @"tasks.column-due",
-      @"Due Date",                 @"",  0, nil, nil },
-    { TasksCommandColumnCompleted, TasksCommandOwnerTaskList, @"tasks.column-completed",
-      @"Completion Date",          @"",  0, nil, nil },
+    { TasksCommandColumnDone,      TasksCommandOwnerTaskList, @"column-done",
+      @"Done",                     @"",  0,         nil, nil },
+    { TasksCommandColumnStatus,    TasksCommandOwnerTaskList, @"column-status",
+      @"Status",                   @"",  0,         nil, nil },
+    { TasksCommandColumnDue,       TasksCommandOwnerTaskList, @"column-due",
+      @"Due Date",                 @"",  0,         nil, nil },
+    { TasksCommandColumnCompleted, TasksCommandOwnerTaskList, @"column-completed",
+      @"Completion Date",          @"",  0,         nil, nil },
 };
 #define COMMAND_COUNT (sizeof(command_specs) / sizeof(command_specs[0]))
 
@@ -145,7 +155,7 @@ tasks_command_menu_item(TasksCommand command, NSNumber *param, id target)
                                                   action:@selector(run_command:)
                                            keyEquivalent:spec->key];
 
-    item.keyEquivalentModifierMask = NSEventModifierFlagCommand | spec->mods;
+    item.keyEquivalentModifierMask = spec->mods;
     item.tag               = command;
     item.representedObject = param;
     item.target            = target;
