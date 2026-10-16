@@ -12,7 +12,7 @@
 static NSString * const cell_id       = @"sidebar.row";
 static NSString * const header_id     = @"sidebar.header";
 static NSString * const header_title  = @"Tags";
-static const CGFloat    row_h         = 28.0;
+static const CGFloat    row_h         = 26.0;
 static NSString * const count_id      = @"sidebar.count";   /* a tag cell's count label */
 
 /* The Edit Tag sheet's emoji slot. */
