@@ -57,7 +57,8 @@
 #define TASK_CFG_COMPACT             "compact_layout"        /* bool, 0 */
 #define TASK_CFG_SIDEBAR_VISIBLE     "sidebar_visible"       /* bool, 1: the tag sidebar */
 #define TASK_CFG_FAVORITES_BAR_VISIBLE "favorites_bar_visible" /* bool, 1 */
-#define TASK_CFG_SIDEBAR_WIDTH       "sidebar_width"         /* int points; none = fit content */
+#define TASK_CFG_SIDEBAR_WIDTH       "sidebar_width"         /* int points; none = look.h's
+                                                            * tasks_look_sidebar_w */
 #define TASK_CFG_WIN_X               "win_x"                 /* int; none = centred */
 #define TASK_CFG_WIN_Y               "win_y"                 /* int; none = centred */
 #define TASK_CFG_WIN_W               "win_w"                 /* int, 980 */

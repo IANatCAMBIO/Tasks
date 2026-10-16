@@ -149,7 +149,8 @@ own manual order); each row says what it is tagged.
   make it a favorite or not.  A tag's name never changes.
 - **Favorite** tags have a button each in the **Favorites bar** above the
   task pane (View → Hide/Show Favorites Bar).  The sidebar toggles with the
-  button at the far left of the toolbar (⌃⌘S).
+  button at the far left of the toolbar (⌃⌘S); drag its right edge to
+  make it wider or narrower, and it keeps that width.
 - A subtask is born with its parent's tags.  New Task gives the selected
   tag, or with a view selected the **default tag** chosen in Settings; Quick
   Task always gives the default tag.

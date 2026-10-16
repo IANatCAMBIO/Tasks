@@ -55,7 +55,11 @@ static const CGFloat tasks_look_float_pad        = 2.0;    /* plate edge to butt
 
 /* ── Sidebar and Favorites bar ──────────────────────────────────────── */
 
-static const CGFloat tasks_look_sidebar_w        = 200.0;  /* the tag sidebar      */
+static const CGFloat tasks_look_sidebar_w        = 200.0;  /* the tag sidebar, until
+                                                             * it is dragged      */
+static const CGFloat tasks_look_sidebar_min_w    = 160.0;  /* the narrowest drag  */
+static const CGFloat tasks_look_sidebar_grip_w   = 7.0;    /* its edge's grip, the
+                                                             * edge at its centre */
 static const CGFloat tasks_look_favorites_bar_h  = 28.0;   /* bar height           */
 
 /* ── Task rows (the list and the cards share row_text.h) ────────────── */

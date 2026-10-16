@@ -40,6 +40,7 @@ static NSString * const search_tooltip       =
                                   NSSplitViewDelegate>
 @property (nonatomic, strong) TasksSidebar      *sidebar;
 @property (nonatomic, strong) NSLayoutConstraint *sidebar_width;  /* 0 while hidden */
+@property (nonatomic, strong) NSView            *sidebar_grip;   /* drags its edge */
 @property (nonatomic, strong) TasksFavoritesBar *favorites_bar;
 @property (nonatomic, strong) NSLayoutConstraint *favorites_height; /* 0 while hidden */
 @property (nonatomic, strong) TasksTaskList *task_list;
@@ -77,6 +78,7 @@ static NSString * const search_tooltip       =
  * definition; documented where it is defined. */
 - (void)show_status_message:(NSString *)message;
 - (void)update_window_title;
+- (void)drag_sidebar_to:(CGFloat)width done:(BOOL)done;
 @end
 
 /* ── App-event listeners (C callbacks; user_data is the window) ─────── */
@@ -285,6 +287,55 @@ didAddSubview:(NSView *)view
 {
     [super didAddSubview:view];
     view.frame = self.bounds;
+}
+
+@end
+
+/*
+ * TasksSidebarGrip — the sidebar's edge as a divider: an invisible strip
+ * centred on the edge, wider than its one point so it is easy to catch,
+ * that shows the resize cursor and drags the sidebar's width (as the
+ * divider beside Notes' sidebar does).
+ */
+@interface TasksSidebarGrip : NSView
+@property (nonatomic, weak) TasksLibraryWindow *library;
+@end
+
+@implementation TasksSidebarGrip
+
+/*
+ * resetCursorRects — the resize cursor over the whole grip.
+ */
+- (void)
+resetCursorRects
+{
+    [self addCursorRect:self.bounds cursor:NSCursor.resizeLeftRightCursor];
+}
+
+/*
+ * mouseDown: — follow the drag until the button comes up, the sidebar's
+ * width moving with the pointer; the cursor stays the resize cursor even
+ * where the pointer leaves the grip.
+ *
+ * Inputs:
+ *   event — the mouse-down event
+ */
+- (void)
+mouseDown:(NSEvent *)event
+{
+    TasksLibraryWindow *library = self.library;
+    CGFloat start_x = event.locationInWindow.x;
+    CGFloat start_w = library.sidebar_width.constant;
+    BOOL    done    = NO;
+
+    [NSCursor.resizeLeftRightCursor push];
+    while (!done) {
+        NSEvent *next = [self.window nextEventMatchingMask:NSEventMaskLeftMouseDragged |
+                                                           NSEventMaskLeftMouseUp];
+        done = next.type == NSEventTypeLeftMouseUp;
+        [library drag_sidebar_to:start_w + next.locationInWindow.x - start_x done:done];
+    }
+    [NSCursor pop];
 }
 
 @end
@@ -539,14 +590,18 @@ build_layout
      * a height of one point, which would squeeze the window to fit it. */
     NSBox *edge  = [[NSBox alloc] initWithFrame:NSMakeRect(0, 0, 1, 100)];
     edge.boxType = NSBoxSeparator;
-    for (NSView *v in @[self.favorites_bar, self.sidebar, edge, split_host, rule,
+    TasksSidebarGrip *grip = [[TasksSidebarGrip alloc] initWithFrame:NSZeroRect];
+    grip.library      = self;
+    self.sidebar_grip = grip;
+    /* The grip after the panes, so it lies over the edges of both. */
+    for (NSView *v in @[self.favorites_bar, self.sidebar, edge, split_host, grip, rule,
                         self.status_left, self.status_right]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:v];
     }
     self.favorites_height = [self.favorites_bar.heightAnchor
                                 constraintEqualToConstant:tasks_look_favorites_bar_h];
-    self.sidebar_width = [self.sidebar.widthAnchor constraintEqualToConstant:tasks_look_sidebar_w];
+    self.sidebar_width = [self.sidebar.widthAnchor constraintEqualToConstant:[self sidebar_extent]];
     NSLayoutYAxisAnchor *below_bar = self.favorites_bar.bottomAnchor;
     [NSLayoutConstraint activateConstraints:@[
         [self.favorites_bar.topAnchor constraintEqualToAnchor:content.topAnchor],
@@ -567,6 +622,11 @@ build_layout
         [split_host.leadingAnchor constraintEqualToAnchor:edge.trailingAnchor],
         [split_host.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
         [split_host.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
+
+        [grip.topAnchor constraintEqualToAnchor:below_bar],
+        [grip.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
+        [grip.centerXAnchor constraintEqualToAnchor:edge.centerXAnchor],
+        [grip.widthAnchor constraintEqualToConstant:tasks_look_sidebar_grip_w],
 
         [rule.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [rule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
@@ -1522,8 +1582,51 @@ slide:(NSView *)view size:(NSLayoutConstraint *)size to:(CGFloat)extent show:(BO
 - (void)
 show_sidebar:(BOOL)show animated:(BOOL)animated
 {
-    [self slide:self.sidebar size:self.sidebar_width to:tasks_look_sidebar_w show:show
+    self.sidebar_grip.hidden = !show;
+    [self slide:self.sidebar size:self.sidebar_width to:[self sidebar_extent] show:show
        animated:animated];
+}
+
+/*
+ * sidebar_extent — the shown sidebar's width: the one it was last dragged
+ * to, at least tasks_look_sidebar_min_w; tasks_look_sidebar_w until the
+ * first drag.
+ *
+ * Output:
+ *   the width, in points.
+ */
+- (CGFloat)
+sidebar_extent
+{
+    gint saved = task_config_get_int(TASK_CFG_SIDEBAR_WIDTH);
+    if (saved == 0) return tasks_look_sidebar_w;
+    return MAX((CGFloat)saved, tasks_look_sidebar_min_w);
+}
+
+/*
+ * drag_sidebar_to:done: — the sidebar's edge is being dragged (see
+ * TasksSidebarGrip): give the sidebar a width, held between
+ * tasks_look_sidebar_min_w and what leaves the task pane — and the day
+ * planner, while it shows — their least widths.  At the drag's end the
+ * width is remembered and the window's least size follows it.
+ *
+ * Inputs:
+ *   width — the width the pointer asks for
+ *   done  — YES on the mouse-up that ends the drag
+ */
+- (void)
+drag_sidebar_to:(CGFloat)width done:(BOOL)done
+{
+    CGFloat rest = tasks_look_pane_min_w;
+    if (!self.day_planner.hidden) {
+        rest += self.main_split.dividerThickness + tasks_look_day_planner_min_w;
+    }
+    CGFloat most = NSWidth(self.window.contentView.bounds) - 1.0 - rest;   /* and the edge */
+
+    self.sidebar_width.constant = round(MAX(tasks_look_sidebar_min_w, MIN(width, most)));
+    if (!done) return;
+    task_config_set_int(TASK_CFG_SIDEBAR_WIDTH, (gint)self.sidebar_width.constant);
+    self.window.contentMinSize = [self content_min_size];
 }
 
 /*
@@ -1590,7 +1693,7 @@ content_min_size
     }
     CGFloat width = tasks_look_pane_min_w;
     if (task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE)) {
-        width += tasks_look_sidebar_w + 1.0;      /* and its edge */
+        width += [self sidebar_extent] + 1.0;     /* and its edge */
     }
     if (!self.day_planner.hidden) {
         width += self.main_split.dividerThickness + tasks_look_day_planner_min_w;
