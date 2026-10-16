@@ -63,8 +63,6 @@ static const CGFloat tasks_look_sidebar_w        = 180.0;  /* the tag sidebar, u
                                                              * Files and Notes apps'
                                                              * initial width      */
 static const CGFloat tasks_look_sidebar_min_w    = 160.0;  /* the narrowest drag  */
-static const CGFloat tasks_look_sidebar_grip_w   = 7.0;    /* its edge's grip, the
-                                                             * edge at its centre */
 static const CGFloat tasks_look_sidebar_row_h    = 26.0;   /* a sidebar row       */
 static const CGFloat tasks_look_sidebar_text_pad = 4.0;    /* a row's text, from
                                                              * the left           */

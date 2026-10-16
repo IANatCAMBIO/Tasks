@@ -1469,15 +1469,15 @@ check_sidebar(TaskApp *app, NSString *dir)
               "toolbar: the sidebar button is at the far left");
         [library perform_command:TasksCommandToggleSidebar param:nil];
         check_spin(SLIDE_SECONDS);
-        check(sidebar.hiddenOrHasHiddenAncestor && NSWidth(sidebar.frame) < 1.0 &&
-              !task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE) &&
-              [[library state_of_command:TasksCommandToggleSidebar].title isEqualToString:@"Show Sidebar"],
-              "toggle: Hide Sidebar hides it, records it, and offers Show Sidebar");
+        check(sidebar.hiddenOrHasHiddenAncestor, "toggle: Hide Sidebar hides it");
+        check(!task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE), "toggle: ... records it");
+        check([[library state_of_command:TasksCommandToggleSidebar].title isEqualToString:@"Show Sidebar"],
+              "toggle: ... and offers Show Sidebar");
         [library perform_command:TasksCommandToggleSidebar param:nil];
         check_spin(SLIDE_SECONDS);
-        check(!sidebar.hiddenOrHasHiddenAncestor && NSWidth(sidebar.frame) > 100.0 &&
-              task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE),
-              "toggle: Show Sidebar brings it back");
+        check(!sidebar.hiddenOrHasHiddenAncestor, "toggle: Show Sidebar brings it back");
+        check(NSWidth(sidebar.frame) > 100.0, "toggle: ... at its width");
+        check(task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE), "toggle: ... and records it");
         [library perform_command:TasksCommandToggleFavoritesBar param:nil];
         check_spin(SLIDE_SECONDS);
         [window layoutIfNeeded];

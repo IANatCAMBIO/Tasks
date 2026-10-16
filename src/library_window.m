@@ -39,8 +39,8 @@ static NSString * const search_tooltip       =
                                   NSToolbarItemValidation, NSSearchFieldDelegate,
                                   NSSplitViewDelegate>
 @property (nonatomic, strong) TasksSidebar      *sidebar;
-@property (nonatomic, strong) NSLayoutConstraint *sidebar_width;  /* 0 while hidden */
-@property (nonatomic, strong) NSView            *sidebar_grip;   /* drags its edge */
+@property (nonatomic, strong) NSSplitViewController *split;      /* sidebar | the rest */
+@property (nonatomic, strong) NSSplitViewItem   *sidebar_item;
 @property (nonatomic, strong) TasksFavoritesBar *favorites_bar;
 @property (nonatomic, strong) NSLayoutConstraint *favorites_height; /* 0 while hidden */
 @property (nonatomic, strong) TasksTaskList *task_list;
@@ -78,7 +78,7 @@ static NSString * const search_tooltip       =
  * definition; documented where it is defined. */
 - (void)show_status_message:(NSString *)message;
 - (void)update_window_title;
-- (void)drag_sidebar_to:(CGFloat)width done:(BOOL)done;
+- (NSSize)content_min_size;
 @end
 
 /* ── App-event listeners (C callbacks; user_data is the window) ─────── */
@@ -292,53 +292,58 @@ didAddSubview:(NSView *)view
 @end
 
 /*
- * TasksSidebarGrip — the sidebar's edge as a divider: an invisible strip
- * centred on the edge, wider than its one point so it is easy to catch,
- * that shows the resize cursor and drags the sidebar's width (as the
- * divider beside Notes' sidebar does).
+ * TasksSplitController — the split view controller for sidebar | the rest
+ * (the standard divider, drag and collapse), which also remembers the
+ * sidebar's width: every time the divider moves while the sidebar shows,
+ * the width is saved (TASK_CFG_SIDEBAR_WIDTH) for the next launch and the
+ * window's least size follows it.  The same as Notes' NotesSplitController.
  */
-@interface TasksSidebarGrip : NSView
+@interface TasksSplitController : NSSplitViewController
 @property (nonatomic, weak) TasksLibraryWindow *library;
 @end
 
-@implementation TasksSidebarGrip
+@implementation TasksSplitController
 
 /*
- * resetCursorRects — the resize cursor over the whole grip.
- */
-- (void)
-resetCursorRects
-{
-    [self addCursorRect:self.bounds cursor:NSCursor.resizeLeftRightCursor];
-}
-
-/*
- * mouseDown: — follow the drag until the button comes up, the sidebar's
- * width moving with the pointer; the cursor stays the resize cursor even
- * where the pointer leaves the grip.
+ * splitViewDidResizeSubviews: — the divider moved: save the sidebar's
+ * width, unless the sidebar is collapsed (its width is then no width).
  *
  * Inputs:
- *   event — the mouse-down event
+ *   note — the notification
  */
 - (void)
-mouseDown:(NSEvent *)event
+splitViewDidResizeSubviews:(NSNotification *)note
 {
-    TasksLibraryWindow *library = self.library;
-    CGFloat start_x = event.locationInWindow.x;
-    CGFloat start_w = library.sidebar_width.constant;
-    BOOL    done    = NO;
-
-    [NSCursor.resizeLeftRightCursor push];
-    while (!done) {
-        NSEvent *next = [self.window nextEventMatchingMask:NSEventMaskLeftMouseDragged |
-                                                           NSEventMaskLeftMouseUp];
-        done = next.type == NSEventTypeLeftMouseUp;
-        [library drag_sidebar_to:start_w + next.locationInWindow.x - start_x done:done];
-    }
-    [NSCursor pop];
+    [super splitViewDidResizeSubviews:note];
+    NSSplitViewItem *sidebar = self.splitViewItems.firstObject;
+    if (sidebar.collapsed) return;
+    gint width = (gint)round(NSWidth(sidebar.viewController.view.frame));
+    if (width < tasks_look_sidebar_min_w || width == task_config_get_int(TASK_CFG_SIDEBAR_WIDTH)) return;
+    task_config_set_int(TASK_CFG_SIDEBAR_WIDTH, width);
+    self.library.window.contentMinSize = [self.library content_min_size];
 }
 
 @end
+
+/*
+ * pane_item — a split-view item around a pane's view.
+ *
+ * Inputs:
+ *   view      — the pane
+ *   min_width — the narrowest it may be dragged
+ *
+ * Output:
+ *   the item.
+ */
+static NSSplitViewItem *
+pane_item(NSView *view, CGFloat min_width)
+{
+    NSViewController *controller = [[NSViewController alloc] init];
+    controller.view = view;
+    NSSplitViewItem *item = [NSSplitViewItem splitViewItemWithViewController:controller];
+    item.minimumThickness = min_width;
+    return item;
+}
 
 @implementation TasksLibraryWindow
 
@@ -525,12 +530,13 @@ build_float_bar:(NSView *)pane
 
 /*
  * build_layout — the window's content: the Favorites bar across the whole
- * width under the toolbar; below it the tag sidebar at the left, then a
- * split view down to the status bar's separator, its left half the task
- * pane and its right half the day planner.  The task pane holds BOTH
- * presentations, the list and the board, of which apply_pane_mode shows
- * one.  A hidden bar has no height and a hidden sidebar no width, so what
- * is left fills the room.
+ * width under the toolbar; below it a split view controller (as Notes'
+ * library has) down to the status bar's separator: the tag sidebar at the
+ * left, then a split view whose left half is the task pane and whose
+ * right half is the day planner.  The task pane holds BOTH presentations,
+ * the list and the board, of which apply_pane_mode shows one.  A hidden
+ * bar has no height and a hidden sidebar is a collapsed split item, so
+ * what is left fills the room.
  */
 - (void)
 build_layout
@@ -585,23 +591,26 @@ build_layout
     split.autoresizingMask = NSViewNotSizable;
     [split_host addSubview:split];
 
-    /* Taller than wide, so the separator is a VERTICAL one: a separator
-     * box takes its orientation from its frame, and a horizontal one hugs
-     * a height of one point, which would squeeze the window to fit it. */
-    NSBox *edge  = [[NSBox alloc] initWithFrame:NSMakeRect(0, 0, 1, 100)];
-    edge.boxType = NSBoxSeparator;
-    TasksSidebarGrip *grip = [[TasksSidebarGrip alloc] initWithFrame:NSZeroRect];
-    grip.library      = self;
-    self.sidebar_grip = grip;
-    /* The grip after the panes, so it lies over the edges of both. */
-    for (NSView *v in @[self.favorites_bar, self.sidebar, edge, split_host, grip, rule,
-                        self.status_left, self.status_right]) {
+    /* The sidebar and the rest in a split view controller: the system's
+     * thin divider, drag and collapse; the sidebar holds its width, the
+     * rest absorbs a resize. */
+    TasksSplitController *outer = [[TasksSplitController alloc] init];
+    outer.library     = self;
+    self.split        = outer;
+    self.sidebar_item = pane_item(self.sidebar, tasks_look_sidebar_min_w);
+    self.sidebar_item.canCollapse     = YES;
+    self.sidebar_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;
+    [self.split addSplitViewItem:self.sidebar_item];
+    [self.split addSplitViewItem:pane_item(split_host, tasks_look_pane_min_w)];
+    self.split.splitView.dividerStyle = NSSplitViewDividerStyleThin;
+    NSView *panes = self.split.view;
+
+    for (NSView *v in @[self.favorites_bar, panes, rule, self.status_left, self.status_right]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [content addSubview:v];
     }
     self.favorites_height = [self.favorites_bar.heightAnchor
                                 constraintEqualToConstant:tasks_look_favorites_bar_h + 1.0];  /* + its rule */
-    self.sidebar_width = [self.sidebar.widthAnchor constraintEqualToConstant:[self sidebar_extent]];
     NSLayoutYAxisAnchor *below_bar = self.favorites_bar.bottomAnchor;
     [NSLayoutConstraint activateConstraints:@[
         [self.favorites_bar.topAnchor constraintEqualToAnchor:content.topAnchor],
@@ -609,24 +618,10 @@ build_layout
         [self.favorites_bar.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
         self.favorites_height,
 
-        [self.sidebar.topAnchor constraintEqualToAnchor:below_bar],
-        [self.sidebar.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [self.sidebar.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
-        self.sidebar_width,
-        [edge.topAnchor constraintEqualToAnchor:below_bar],
-        [edge.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
-        [edge.leadingAnchor constraintEqualToAnchor:self.sidebar.trailingAnchor],
-        [edge.widthAnchor constraintEqualToConstant:1.0],
-
-        [split_host.topAnchor constraintEqualToAnchor:below_bar],
-        [split_host.leadingAnchor constraintEqualToAnchor:edge.trailingAnchor],
-        [split_host.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
-        [split_host.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
-
-        [grip.topAnchor constraintEqualToAnchor:below_bar],
-        [grip.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
-        [grip.centerXAnchor constraintEqualToAnchor:edge.centerXAnchor],
-        [grip.widthAnchor constraintEqualToConstant:tasks_look_sidebar_grip_w],
+        [panes.topAnchor constraintEqualToAnchor:below_bar],
+        [panes.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [panes.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [panes.bottomAnchor constraintEqualToAnchor:rule.topAnchor],
 
         [rule.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [rule.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
@@ -647,6 +642,14 @@ build_layout
                                                          constant:-tasks_look_status_inset],
         [self.status_right.centerYAnchor constraintEqualToAnchor:self.status_left.centerYAnchor],
     ]];
+
+    /* The sidebar's width, set once the split view has its frame (a
+     * position set before layout is clamped to a zero width); then
+     * collapsed if it was left hidden, so that showing it again brings
+     * that width back. */
+    [content layoutSubtreeIfNeeded];
+    [self.split.splitView setPosition:[self sidebar_extent] ofDividerAtIndex:0];
+    self.sidebar_item.collapsed = !task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE);
 }
 
 /* ── Toolbar ─────────────────────────────────────────────────────────── */
@@ -1573,7 +1576,8 @@ slide:(NSView *)view size:(NSLayoutConstraint *)size to:(CGFloat)extent show:(BO
 }
 
 /*
- * show_sidebar:animated: — show or hide the tag sidebar.
+ * show_sidebar:animated: — show or hide the tag sidebar: its split item
+ * collapses (the split view controller slides it and remembers its width).
  *
  * Inputs:
  *   show     — YES to show it
@@ -1582,9 +1586,11 @@ slide:(NSView *)view size:(NSLayoutConstraint *)size to:(CGFloat)extent show:(BO
 - (void)
 show_sidebar:(BOOL)show animated:(BOOL)animated
 {
-    self.sidebar_grip.hidden = !show;
-    [self slide:self.sidebar size:self.sidebar_width to:[self sidebar_extent] show:show
-       animated:animated];
+    if (animated) {
+        self.sidebar_item.animator.collapsed = !show;
+    } else {
+        self.sidebar_item.collapsed = !show;
+    }
 }
 
 /*
@@ -1601,32 +1607,6 @@ sidebar_extent
     gint saved = task_config_get_int(TASK_CFG_SIDEBAR_WIDTH);
     if (saved == 0) return tasks_look_sidebar_w;
     return MAX((CGFloat)saved, tasks_look_sidebar_min_w);
-}
-
-/*
- * drag_sidebar_to:done: — the sidebar's edge is being dragged (see
- * TasksSidebarGrip): give the sidebar a width, held between
- * tasks_look_sidebar_min_w and what leaves the task pane — and the day
- * planner, while it shows — their least widths.  At the drag's end the
- * width is remembered and the window's least size follows it.
- *
- * Inputs:
- *   width — the width the pointer asks for
- *   done  — YES on the mouse-up that ends the drag
- */
-- (void)
-drag_sidebar_to:(CGFloat)width done:(BOOL)done
-{
-    CGFloat rest = tasks_look_pane_min_w;
-    if (!self.day_planner.hidden) {
-        rest += self.main_split.dividerThickness + tasks_look_day_planner_min_w;
-    }
-    CGFloat most = NSWidth(self.window.contentView.bounds) - 1.0 - rest;   /* and the edge */
-
-    self.sidebar_width.constant = round(MAX(tasks_look_sidebar_min_w, MIN(width, most)));
-    if (!done) return;
-    task_config_set_int(TASK_CFG_SIDEBAR_WIDTH, (gint)self.sidebar_width.constant);
-    self.window.contentMinSize = [self content_min_size];
 }
 
 /*
@@ -1651,7 +1631,7 @@ show_favorites_bar:(BOOL)show animated:(BOOL)animated
 - (void)
 toggle_sidebar
 {
-    BOOL show = self.sidebar_width.constant == 0.0;
+    BOOL show = self.sidebar_item.collapsed;
 
     task_config_set_bool(TASK_CFG_SIDEBAR_VISIBLE, show);
     NSSize least = [self content_min_size];
@@ -1693,7 +1673,7 @@ content_min_size
     }
     CGFloat width = tasks_look_pane_min_w;
     if (task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE)) {
-        width += [self sidebar_extent] + 1.0;     /* and its edge */
+        width += [self sidebar_extent] + self.split.splitView.dividerThickness;
     }
     if (!self.day_planner.hidden) {
         width += self.main_split.dividerThickness + tasks_look_day_planner_min_w;
@@ -2144,7 +2124,7 @@ update_shell_state:(TasksCommandState *)state for_command:(TasksCommand)command
         break;
         break;
     case TasksCommandToggleSidebar:
-        if (self.sidebar_width.constant == 0.0) {
+        if (self.sidebar_item.collapsed) {
             state.title   = @"Show Sidebar";
             state.tooltip = @"Show the sidebar";
         }
