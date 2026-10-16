@@ -39,11 +39,9 @@ NSString *tasks_string(const char *text);
 
 /*
  * tasks_title_string — the text a label, block or reminder shows for a
- * task: task_display_title (db.h) under the note_context_titles setting,
- * so a Notes action item reads "<context> - <title>" when that is on.  The
- * AppKit layer's one route to it; the rows of the list and the Kanban get
- * the same text from task_rows.  Never for an EDITABLE field: those show
- * the plain title, which is what is saved.
+ * task: its title, or `untitled` when that is empty.  The AppKit layer's
+ * one route to it; the rows of the list and the Kanban get the same text
+ * from task_rows.
  *
  * Inputs:
  *   task     — the task, not NULL

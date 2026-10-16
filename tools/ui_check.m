@@ -252,7 +252,7 @@ snapshot_windows(TaskApp *app, NSString *dir)
         check(snapshot(library.window, dir, @"library-list"), "snapshot: library, list view");
 
         /* One tag's tasks. */
-        GPtrArray *tags = task_db_tags(app->db);
+        GPtrArray *tags = task_db_tags(app->db, TASK_TAGS_CARRIED);
         if (tags->len > 0) {
             task_sel_t first = { task_sel_tag, ((const TaskTag *)g_ptr_array_index(tags, 0))->id };
             /* select: is the sidebar's report of a change; coming from
@@ -1222,7 +1222,7 @@ check_sidebar(TaskApp *app, NSString *dir)
         NSMutableArray<NSString *> *want = [NSMutableArray array];
         for (guint v = 0; v < task_view_count(); v++) [want addObject:tasks_string(task_view_nth(v)->label)];
         [want addObject:@"Tags"];
-        GPtrArray *tags = task_db_tags(app->db);
+        GPtrArray *tags = task_db_tags(app->db, TASK_TAGS_CARRIED);
         for (guint t = 0; t < tags->len; t++) [want addObject:tasks_tag_title(g_ptr_array_index(tags, t))];
         task_ptr_array_free_tags(tags);
         check([rows() isEqualToArray:want] && task_view_count() == 3 &&
@@ -1331,7 +1331,7 @@ check_sidebar(TaskApp *app, NSString *dir)
         task_db_tag_set_emoji(app->db, edited->id, errands->emoji);
         task_db_tag_set_favorite(app->db, edited->id, FALSE);
         task_tag_free(edited);
-        GPtrArray *all = task_db_tags(app->db);
+        GPtrArray *all = task_db_tags(app->db, TASK_TAGS_ALL);
         NSMutableArray<NSNumber *> *were = [NSMutableArray array];
         for (guint t = 0; t < all->len; t++) {
             const TaskTag *tag = g_ptr_array_index(all, t);
@@ -1395,6 +1395,14 @@ check_sidebar(TaskApp *app, NSString *dir)
         }
         check(picked.count == 2 && add.numberOfItems > 0 && errands_item != nil,
               "add tag: the context menu has Add Tag with every tag");
+        /* A tag only a note carries (the seed's "Captain's Log"): offered
+         * here, since the two apps share the tags, but not in the sidebar. */
+        BOOL offered = NO;
+        for (NSMenuItem *item in add.itemArray) {
+            offered = offered || [item.title isEqualToString:@"Captain's Log"];
+        }
+        check(offered && ![rows() containsObject:@"Captain's Log"],
+              "add tag: a tag only a note carries is offered, not listed in the sidebar");
         /* Which of them lacked the tag: those it is taken off again. */
         GPtrArray      *before  = task_db_tasks_tagged(app->db, errands->id);
         NSMutableArray *lacking = [NSMutableArray arrayWithArray:picked];
@@ -2350,134 +2358,6 @@ check_editor_window(TaskApp *app, NSString *dir)
 
 
 /*
- * check_note_context — the Settings box that shows a Notes action item's
- * note context before its title.  A throwaway action item is written the
- * way Notes writes one (a folder, a note in it, a note_task row) on Notes'
- * own connection.  Off, the list shows the plain title; the box turns it
- * on, and the list and the Kanban show "<folder> - <title>" at once while
- * the editor's title field keeps the plain title (it is what is saved); a
- * folder renamed in Notes renames the prefix at the next poll; off again,
- * the title is plain.  Everything it wrote is removed, and the setting and
- * the pane put back.
- *
- * Inputs:
- *   app — the application context
- *   dir — the snapshot folder
- */
-static void
-check_note_context(TaskApp *app, NSString *dir)
-{
-    NSString *const title_text = @"Draft the keto meal plan";
-    NSString *const box_title  = @"Show the note\u2019s context before Notes action items\u2019 titles";
-    gboolean        was_on     = task_config_get_bool(TASK_CFG_NOTE_CONTEXT);
-
-    task_config_set_bool(TASK_CFG_NOTE_CONTEXT, FALSE);
-    @autoreleasepool {
-        gint64   id  = task_db_task_create(app->db, 0, title_text.UTF8String, "UI Context");
-        TaskTag *tag = task_db_tag_find(app->db, "UI Context");
-        gint64   tag_id = tag != NULL ? tag->id : 0;
-        task_tag_free(tag);
-
-        TaskDatabase *notes_app = task_db_open_existing(shared_db_file(app->db->shared), NULL);
-        sqlite3      *sq        = notes_app != NULL ? shared_db_handle(notes_app->shared) : NULL;
-        char         *sql       = sqlite3_mprintf(
-            "INSERT INTO folders (name) VALUES ('Ui Check Log');"
-            "INSERT INTO notes (folder_id, title, created_at, updated_at)"
-            "  VALUES (last_insert_rowid(), 'Ui check note', 0, 0);"
-            "INSERT INTO note_task (task_id, note_id, ord, seen_title)"
-            "  VALUES (%lld, last_insert_rowid(), 0, %Q);"
-            "UPDATE action_uid_seq SET next = (SELECT max(uid) + 1 FROM note_task);",
-            (long long)id, title_text.UTF8String);
-        check(sqlite3_exec(sq, sql, NULL, NULL, NULL) == SQLITE_OK,
-              "context: (a Notes action item in a folder is written)");
-        sqlite3_free(sql);
-        task_app_check_outside(app);
-
-        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
-        NSWindow           *window  = library.window;
-        BOOL                was_kanban = library.kanban_on;
-        [library showWindow:nil];
-        if (was_kanban) [library perform_command:TasksCommandTogglePane param:nil];
-        [library select:(task_sel_t){ task_sel_tag, tag_id }];
-        check_spin(0.3);
-
-        NSString *prefixed = [@"Ui Check Log" TASK_CONTEXT_SEPARATOR stringByAppendingString:title_text];
-        check(find_drawn(window.contentView, title_text) &&
-              !find_drawn(window.contentView, prefixed),
-              "context: turned off, the list shows the plain title");
-
-        tasks_settings_window_open(app);
-        check_spin(0.2);
-        NSWindow *settings = nil;
-        for (NSWindow *open in NSApp.windows) {
-            if (open.visible && [open.title isEqualToString:@"Settings"]) settings = open;
-        }
-        NSButton *box = find_button(settings.contentView, box_title);
-        check(box != nil && box.state == NSControlStateValueOff,
-              "context: Settings has the box, showing the setting off");
-        [box performClick:nil];
-        check_spin(0.3);
-        check(task_config_get_bool(TASK_CFG_NOTE_CONTEXT) &&
-              find_drawn(window.contentView, prefixed),
-              "context: ticking it shows the folder before the title in the list at once");
-        check(snapshot(window, dir, @"list-note-context"), "context: snapshot, list");
-
-        [library perform_command:TasksCommandTogglePane param:nil];
-        check_spin(0.3);
-        check(library.kanban_on && find_drawn(window.contentView, prefixed),
-              "context: ... and on the Kanban card");
-        [library perform_command:TasksCommandTogglePane param:nil];
-        check_spin(0.2);
-
-        tasks_editor_open(app, id);
-        check_spin(0.2);
-        NSWindow *editor_win = nil;
-        for (NSWindow *w in NSApp.windows) {
-            if (w.visible && [w.title isEqualToString:title_text]) editor_win = w;
-        }
-        NSTextField *field = find_text(editor_win.contentView, title_text);
-        check(field != nil && field.editable && [field.stringValue isEqualToString:title_text],
-              "context: the editor's title field keeps the plain title");
-        tasks_editor_close(id);
-        check_spin(0.1);
-        Task *stored = task_db_task_get(app->db, id);
-        check(stored != NULL && strcmp(stored->title, title_text.UTF8String) == 0,
-              "context: the stored title is never prefixed");
-        task_free(stored);
-
-        sqlite3_exec(sq, "UPDATE folders SET name = 'Ui Check Journal' WHERE name = 'Ui Check Log'",
-                     NULL, NULL, NULL);
-        task_app_check_outside(app);
-        check_spin(0.3);
-        check(find_drawn(window.contentView,
-                         [@"Ui Check Journal" TASK_CONTEXT_SEPARATOR stringByAppendingString:title_text]),
-              "context: a folder renamed in Notes renames the prefix at the next poll");
-
-        [box performClick:nil];
-        check_spin(0.3);
-        check(!task_config_get_bool(TASK_CFG_NOTE_CONTEXT) &&
-              find_drawn(window.contentView, title_text) &&
-              !find_drawn(window.contentView, @"Ui Check Journal" TASK_CONTEXT_SEPARATOR),
-              "context: unticking it shows the plain title again");
-
-        [settings performClose:nil];
-        if (was_kanban) [library perform_command:TasksCommandTogglePane param:nil];
-        [library close];
-        check_spin(0.1);
-
-        sql = sqlite3_mprintf("DELETE FROM note_task WHERE task_id = %lld;"
-                              "DELETE FROM notes WHERE title = 'Ui check note';"
-                              "DELETE FROM folders WHERE name = 'Ui Check Journal';",
-                              (long long)id);
-        sqlite3_exec(sq, sql, NULL, NULL, NULL);
-        sqlite3_free(sql);
-        task_db_close(notes_app);
-        task_app_check_outside(app);
-    }
-    task_config_set_bool(TASK_CFG_NOTE_CONTEXT, was_on);
-}
-
-/*
  * policy — one backup-policy value as the shared module applies it
  * (shared_backup_policy_get), as the Settings window shows it.
  *
@@ -2711,7 +2591,7 @@ check_settings(TaskApp *app, NSString *dir)
             @"Show task titles in bold":                         @TASK_CFG_BOLD_TITLES,
             @"Show drop shadows on Kanban cards":                @TASK_CFG_KANBAN_SHADOW,
             @"Count only business days (Mon\u2013Fri) in the 3-Day Forecast": @TASK_CFG_FORECAST_BUSINESS_DAYS,
-            @"Show the note\u2019s context before Notes action items\u2019 titles": @TASK_CFG_NOTE_CONTEXT,
+            @"Show task counts next to tags in the sidebar":    @TASK_CFG_SIDEBAR_COUNTS,
         };
         BOOL boxes_write = YES;
         for (NSString *title in boxes) {
@@ -3029,7 +2909,6 @@ main(int argc, const char *argv[])
         check_kanban(app, dir);
         check_editor_window(app, dir);
         check_settings(app, dir);
-        check_note_context(app, dir);
         check_day_planner_calendar(app, dir);
         check_memory_and_ownership(app);
 

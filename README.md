@@ -153,29 +153,27 @@ own manual order); each row says what it is tagged.
 - A subtask is born with its parent's tags.  New Task gives the selected
   tag, or with a view selected the **default tag** chosen in Settings; Quick
   Task always gives the default tag.
-- A tag exists only while a task carries it: when the last one loses it —
-  untagged or deleted — the tag goes.
+- **Tags are shared with Notes**: a note can carry the same tags (its Tags
+  field and its `#tags`), and an emoji set in either app shows in both.
+  The sidebar and the Favorites bar show the tags your tasks carry;
+  wherever you choose a tag (the Tags field, Add Tag, the default tag)
+  every tag is offered, Notes' too.  Favorites are each app's own.
+- A tag exists while a task or a note carries it: when the last one lets
+  go — untagged or deleted — the tag goes.
 - A task Notes writes carries the tag **❗ Action Items**.
 
-Lists are gone.  Opening an older database for the first time (schema 101
-or before) turns each list into a tag on its tasks — its emoji kept — and
-each list group into a tag on the tasks of its lists; an empty list leaves
-nothing.  The old per-task favourite star is dropped: favorites are tags
-now.
+Lists are gone, and so are Notes' folders.  Opening an older database for
+the first time (schema 100) makes a verified backup, then turns each list
+into a tag on its tasks — its emoji kept — each list group into a tag on
+the tasks of its lists, and every folder into a tag on the notes in it.
+Each action item written in a note in a folder gets the folder's name
+written before its title once ("Captain's Log - lock down my diet RE
+keto") unless the title already starts with it; from then on titles are
+yours.  The old per-task favourite star is dropped: favorites are tags.
 
 A task written as an action item in a note shows "From note: …" in its
 editor.  Its title, completion and due date stay in step with the note's
 line; deleting it here makes Notes drop the item mark from the line.
-Settings → Appearance → **Show the note's context before Notes action
-items' titles** (on by default) shows the name of the note's folder before
-such an item's title wherever tasks are listed — the list, the Kanban, the
-3-Day Forecast, any tag, the day planner, reminders — and the search matches it: an
-item in a note in "Captain's Log" reads "Captain's Log - lock down my diet
-RE keto".  It is display only: the stored title, the note's line, the
-editor's title field and Google Calendar keep the plain title.  A title that
-already starts with the folder's name and a "-" or ":" is left as it is; a
-note at the top level gives no context.  While it is on, a folder renamed
-in Notes renames the prefix within a second.
 
 **Backups** are on by default: every hour a verified copy of the shared
 database is written to `backups/` in the database file's own folder (or a
@@ -212,7 +210,7 @@ Settings are changed in the app and stored in `tasks.ini` (group `[tasks]`,
 written by the app; comments are not preserved), apart from the backup
 settings, which live in the shared database so that Notes follows them too.
 The Settings window (⌘,) holds the appearance options (bold titles, Kanban
-shadows, business-day forecast, the note-context title prefix), New Tasks
+shadows, business-day forecast, the sidebar's tag counts), New Tasks
 (the default tag, and whether Quick Task's ⌃⌥⌘T works from any app),
 the database's health
 and fingerprint, the backups, notifications and Google Calendar; the View

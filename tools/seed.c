@@ -3,7 +3,7 @@
  * has something to show: a few dozen tasks covering due dates (overdue,
  * today, ahead, with and without a time), recurrence, subtasks, notes,
  * completed and in-progress work, high priority, attachments, Notes action
- * items (in a folder and not), and tags — each task's area, the wider area
+ * items (in a tagged note and not), and tags — each task's area, the wider area
  * it belongs to, a few extra tags across areas, emojis, two favorites.
  *
  * Run through `make seed`, which empties the sandbox first and sets
@@ -130,19 +130,20 @@ static const seed_task_t seed_tasks[] = {
     /* 40 */ { "Someday", NO_PARENT, "Learn to sail", "", NO_DUE, 0, TASK_STATUS_NEW, 0, 0, 0, TASK_RECUR_DAY },
     /* 41 */ { "Someday", NO_PARENT, "Build a workbench", "", NO_DUE, 0, TASK_STATUS_NEW, 0, 0, 0, TASK_RECUR_DAY },
     /* 42 */ { "Someday", NO_PARENT, "Digitise the photo albums", "", NO_DUE, 0, TASK_STATUS_NEW, 0, 0, 0, TASK_RECUR_DAY },
-    /* 43 */ { "Someday", NO_PARENT, "lock down my diet RE keto", "", NO_DUE, 0, TASK_STATUS_NEW, 0, 0, 0, TASK_RECUR_DAY },
+    /* 43 */ { "Someday", NO_PARENT, "Captain's Log - lock down my diet RE keto", "", NO_DUE, 0, TASK_STATUS_NEW, 0, 0, 0, TASK_RECUR_DAY },
     /* 44 */ { "Customers", NO_PARENT, "Quad - Ian to create a diagram", "", 6, 0, TASK_STATUS_NEW, 0, 0, 0, TASK_RECUR_DAY },
     /* 45 */ { "Errands", NO_PARENT, "Pick up the dry cleaning", "", NO_DUE, 0, TASK_STATUS_NEW, 0, 0, 0, TASK_RECUR_DAY },
 };
 
 /* Notes action items: tasks of the table above that a note "wrote", as
  * Notes links them (a note, and a note_task row naming the task), so the
- * "From note" line and the note-context title prefix have something to
- * show.  One in a folder, one whose title already starts with its
- * folder's name, one in a note at the top level (no context). */
+ * "From note" line and the action tag have something to show.  Two notes
+ * carry a tag of their own (a tag Tasks offers but, until a task carries
+ * it, does not show), one carries none. */
 typedef struct {
     int         task;               /* table position of the task (1-based) */
-    const char *folder;             /* the note's folder, NULL = top level  */
+    const char *tag;                /* the note's tag (its Tags field), or
+                                     * NULL for none                        */
     const char *note;               /* the note's title                     */
 } seed_link_t;
 
@@ -284,9 +285,9 @@ seed_one(TaskApp *app, const seed_task_t *spec, gint64 parent_id,
 
 /*
  * seed_link — make a seeded task a Notes action item, as Notes writes one:
- * a folder (when given), a note in it, and the note_task row naming the
+ * a note (with its tag, when given), and the note_task row naming the
  * task, with the uid sequence moved past it.  The note's content is left
- * empty: Tasks reads only the link, the note's title and its folder.
+ * empty: Tasks reads only the link and the note's title.
  *
  * Inputs:
  *   app     — the context
@@ -299,25 +300,27 @@ seed_one(TaskApp *app, const seed_task_t *spec, gint64 parent_id,
 static int
 seed_link(TaskApp *app, const seed_link_t *link, gint64 task_id)
 {
-    char *folder = link->folder != NULL
-        ? sqlite3_mprintf("INSERT INTO folders (name) VALUES (%Q);", link->folder)
+    char *tag = link->tag != NULL
+        ? sqlite3_mprintf("INSERT OR IGNORE INTO tags (name) VALUES (%Q);"
+                          "INSERT INTO note_tags (note_id, tag_id, in_field)"
+                          " SELECT (SELECT MAX(id) FROM notes), id, 1 FROM tags"
+                          " WHERE name = %Q;", link->tag, link->tag)
         : sqlite3_mprintf("%s", "");
     char *sql = sqlite3_mprintf(
+        "INSERT INTO notes (title, created_at, updated_at)"
+        " VALUES (%Q, strftime('%%s','now'), strftime('%%s','now'));"
         "%s"
-        "INSERT INTO notes (folder_id, title, created_at, updated_at)"
-        " VALUES (%s, %Q, strftime('%%s','now'), strftime('%%s','now'));"
         "INSERT INTO note_task (task_id, note_id, ord, seen_title)"
-        " SELECT %lld, last_insert_rowid(), 0, title FROM tasks WHERE id = %lld;"
+        " SELECT %lld, (SELECT MAX(id) FROM notes), 0, title FROM tasks WHERE id = %lld;"
         "UPDATE action_uid_seq SET next = (SELECT max(uid) + 1 FROM note_task);",
-        folder, link->folder != NULL ? "last_insert_rowid()" : "NULL", link->note,
-        (long long)task_id, (long long)task_id);
+        link->note, tag, (long long)task_id, (long long)task_id);
     char *err = NULL;
     int   rc  = sqlite3_exec(shared_db_handle(app->db->shared), sql, NULL, NULL, &err);
 
     if (rc != SQLITE_OK) fprintf(stderr, "seed: linking a note item: %s\n", err);
     sqlite3_free(err);
     sqlite3_free(sql);
-    sqlite3_free(folder);
+    sqlite3_free(tag);
     return rc == SQLITE_OK ? 0 : -1;
 }
 

@@ -39,9 +39,6 @@
 #define TASK_CFG_KANBAN_SHADOW       "kanban_shadow"           /* bool, 1 */
 #define TASK_CFG_FORECAST_BUSINESS_DAYS "forecast_business_days" /* bool, 1: the 3-Day
                                                                * Forecast counts Mon-Fri */
-#define TASK_CFG_NOTE_CONTEXT        "note_context_titles"     /* bool, 1: a Notes action item's
-                                                               * title is SHOWN after its note
-                                                               * context (task_display_title) */
 #define TASK_CFG_SIDEBAR_COUNTS      "sidebar_tag_counts"      /* bool, 1: each tag in the sidebar
                                                                * shows its open tasks' count */
 

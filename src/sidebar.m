@@ -212,7 +212,7 @@ reload
     [self.rows appendBytes:&header length:sizeof header];
     [titles addObject:header_title];
 
-    GPtrArray *tags = task_db_tags(self.library.app->db);
+    GPtrArray *tags = task_db_tags(self.library.app->db, TASK_TAGS_CARRIED);
     for (guint i = 0; i < tags->len; i++) {
         const TaskTag *tag = g_ptr_array_index(tags, i);
         task_sel_t     sel = { task_sel_tag, tag->id };

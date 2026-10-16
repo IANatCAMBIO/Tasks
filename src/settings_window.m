@@ -70,11 +70,6 @@ static const option_spec_t appearance_options[] = {
     { @"Count only business days (Mon\u2013Fri) in the 3-Day Forecast",
       TASK_CFG_FORECAST_BUSINESS_DAYS,
       @"On a Friday the forecast runs to Tuesday; past-due tasks are always shown." },
-    { @"Show the note\u2019s context before Notes action items\u2019 titles",
-      TASK_CFG_NOTE_CONTEXT,
-      @"An action item written in a note in the folder \u201CCaptain\u2019s Log\u201D "
-      @"reads \u201CCaptain\u2019s Log - lock down my diet\u201D. Display only: the "
-      @"title itself, and the line in the note, are unchanged." },
     { @"Show task counts next to tags in the sidebar",
       TASK_CFG_SIDEBAR_COUNTS,
       @"How many open tasks (not Done) carry each tag." },
@@ -814,7 +809,7 @@ menuNeedsUpdate:(NSMenu *)menu
     [menu addItem:NSMenuItem.separatorItem];
 
     NSMenuItem *selected = none;
-    GPtrArray  *tags     = task_db_tags(self.app->db);
+    GPtrArray  *tags     = task_db_tags(self.app->db, TASK_TAGS_ALL);
     for (guint i = 0; i < tags->len; i++) {
         const TaskTag *tag  = g_ptr_array_index(tags, i);
         NSMenuItem    *item = [menu addItemWithTitle:tasks_tag_title(tag) action:NULL
@@ -1361,8 +1356,7 @@ fit_window
  * toggle_option: — an Appearance checkbox changed: write its setting and
  * have the task pane redraw.  The panes re-read their settings on every
  * refresh (the Kanban shadow included), and the same event reloads the
- * day planner and retitles the reminders (the note-context prefix), so
- * the one event is all it takes.
+ * day planner and the reminders, so the one event is all it takes.
  *
  * Inputs:
  *   sender — the checkbox; its tag is its index in appearance_options

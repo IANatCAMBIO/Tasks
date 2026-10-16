@@ -248,14 +248,15 @@ test_back_up_now(TaskApp *app)
     snprintf(path, sizeof path, "%s/%s", dir, name);
     char      *why  = NULL;
     shared_db *copy = shared_db_open_readonly(path, &why);
-    gint lists = 0;
+    gint tasks = 0;
     if (copy != NULL) {
         sqlite3_stmt *st = NULL;
-        sqlite3_prepare_v2(shared_db_handle(copy), "SELECT count(*) FROM lists", -1, &st, NULL);
-        if (sqlite3_step(st) == SQLITE_ROW) lists = sqlite3_column_int(st, 0);
+        sqlite3_prepare_v2(shared_db_handle(copy),
+                           "SELECT count(*) FROM tasks WHERE title = 'Backed up'", -1, &st, NULL);
+        if (sqlite3_step(st) == SQLITE_ROW) tasks = sqlite3_column_int(st, 0);
         sqlite3_finalize(st);
     }
-    check(copy != NULL && lists == 1, "now: the backup is a shared database holding the data");
+    check(copy != NULL && tasks == 1, "now: the backup is a shared database holding the data");
     shared_db_close(copy);
     free(why);
     int64_t last_at = 0;

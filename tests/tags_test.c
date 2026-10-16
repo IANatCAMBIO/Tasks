@@ -36,7 +36,7 @@ tag_names(TaskApp *app, gint64 task_id)
 }
 
 /*
- * tag_count — how many tags exist.
+ * tag_count — how many tags the tasks carry.
  *
  * Inputs:
  *   app — the fixture
@@ -47,7 +47,7 @@ tag_names(TaskApp *app, gint64 task_id)
 static guint
 tag_count(TaskApp *app)
 {
-    GPtrArray *tags = task_db_tags(app->db);
+    GPtrArray *tags = task_db_tags(app->db, TASK_TAGS_CARRIED);
     guint      n    = tags->len;
 
     task_ptr_array_free_tags(tags);

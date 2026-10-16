@@ -1333,7 +1333,7 @@ indexOfSelectedItem:(NSInteger *)selected
     NSArray<NSString *>        *have    = [self stored_tag_names];
     NSMutableArray<NSString *> *starts  = [NSMutableArray array];
     NSMutableArray<NSString *> *inside  = [NSMutableArray array];
-    GPtrArray                  *tags    = task_db_tags(self.app->db);
+    GPtrArray                  *tags    = task_db_tags(self.app->db, TASK_TAGS_ALL);
 
     for (guint i = 0; i < tags->len; i++) {
         NSString *name  = tasks_string(((const TaskTag *)g_ptr_array_index(tags, i))->name);

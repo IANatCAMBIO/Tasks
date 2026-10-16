@@ -3,8 +3,8 @@
  * (task_db_task_update) that keeps two writers from losing each other's
  * changes, and its stamping rules; and Notes action items (a note_task row
  * names the task) — the "Action Items" tag the schema gives them, the
- * editor's note lookup, the note context every read
- * carries (action_items_ctx), ordinary deletion, and the purge Tasks
+ * editor's note lookup, the tags Notes shares, ordinary deletion, and the
+ * purge Tasks
  * refuses; which outside changes refresh the app (a change to
  * Tasks' data refreshes, one to Notes' data re-reads only the editors'
  * note lines, its own writes never count, and an outside commit landing
@@ -216,90 +216,73 @@ row_int(TaskApp *app, const char *sql)
 }
 
 /*
- * context_of — the note context a fresh read of a task carries.
+ * tag_listed — is a tag of this name among task_db_tags(scope)?
  *
  * Inputs:
- *   app     — the fixture
- *   task_id — the task
+ *   app   — the fixture
+ *   scope — TASK_TAGS_CARRIED or TASK_TAGS_ALL
+ *   name  — the tag's name (exact spelling)
  *
  * Output:
- *   new string (g_free): Task.context, or NULL when the task is gone.
+ *   TRUE when listed.
  */
-static gchar *
-context_of(TaskApp *app, gint64 task_id)
+static gboolean
+tag_listed(TaskApp *app, TaskTagScope scope, const char *name)
 {
-    Task  *t   = task_db_task_get(app->db, task_id);
-    gchar *ctx = t != NULL ? g_strdup(t->context) : NULL;
-    task_free(t);
-    return ctx;
+    GPtrArray *tags  = task_db_tags(app->db, scope);
+    gboolean   found = FALSE;
+    for (guint i = 0; i < tags->len && !found; i++)
+        found = strcmp(((const TaskTag *)g_ptr_array_index(tags, i))->name, name) == 0;
+    task_ptr_array_free_tags(tags);
+    return found;
 }
 
 /*
- * test_note_context — every task read carries its note context: the
- * folder of the note it was written in (action_items_ctx.context), ""
- * for a note at the top level and for a task not born in Notes, and the
- * folder's new name once Notes renames it.  View loads carry it too.
+ * test_shared_tags — the tags are Notes' too: a tag only a note carries is
+ * offered (TASK_TAGS_ALL) but not shown (TASK_TAGS_CARRIED); tagging a task
+ * with it, in any case, uses the note's spelling; the tag outlives the
+ * task's letting go while the note carries it; Tasks' favorite flag is its
+ * own.
  *
  * Inputs:
  *   app — the fixture
  */
 static void
-test_note_context(TaskApp *app)
+test_shared_tags(TaskApp *app)
 {
-    gint64 filed  = task_db_task_create(app->db, 0, "lock down my diet RE keto", "Context");
-    gint64 loose  = task_db_task_create(app->db, 0, "Top-level note item", "Context");
-    gint64 plain  = task_db_task_create(app->db, 0, "Typed in Tasks", "Context");
-    char  *sql    = sqlite3_mprintf(
-        "INSERT INTO folders (name) VALUES ('Captain''s Log');"
-        "INSERT INTO notes (folder_id, title, created_at, updated_at)"
-        " VALUES (last_insert_rowid(), 'Log', 0, 0);"
-        "INSERT INTO note_task (task_id, note_id, ord) VALUES (%lld, last_insert_rowid(), 0);"
-        "UPDATE action_uid_seq SET next = (SELECT max(uid) + 1 FROM note_task);",
-        (long long)filed);
-    sqlite3_exec(shared_db_handle(app->db->shared), sql, NULL, NULL, NULL);
-    sqlite3_free(sql);
-    link_to_note(app, loose, "Loose note");
-
-    gchar *ctx = context_of(app, filed);
-    check(ctx != NULL && strcmp(ctx, "Captain's Log") == 0,
-          "context: a note in a folder gives its items the folder's name");
-    g_free(ctx);
-    ctx = context_of(app, loose);
-    check(ctx != NULL && *ctx == '\0', "context: a note at the top level gives none");
-    g_free(ctx);
-    ctx = context_of(app, plain);
-    check(ctx != NULL && *ctx == '\0', "context: a task not born in Notes has none");
-    g_free(ctx);
-
-    TaskTag   *tag   = task_db_tag_find(app->db, "Context");
-    GPtrArray *rows  = task_db_tasks_tagged(app->db, tag->id);
-    task_tag_free(tag);
-    guint      with  = 0;               /* rows carrying any context      */
-    gboolean   right = FALSE;           /* the filed one carries its own  */
-    for (guint i = 0; i < rows->len; i++) {
-        const Task *t = g_ptr_array_index(rows, i);
-        if (*t->context != '\0') with++;
-        if (t->id == filed) right = strcmp(t->context, "Captain's Log") == 0;
-    }
-    check(rows->len == 3 && with == 1 && right,
-          "context: a tag's load carries it on each row, and only on those");
-    task_ptr_array_free_tasks(rows);
-
-    Task  *t     = task_db_task_get(app->db, filed);
-    gchar *shown = t != NULL ? task_display_title(t, TRUE) : NULL;
-    check(shown != NULL && strcmp(shown, "Captain's Log - lock down my diet RE keto") == 0 &&
-          strcmp(t->title, "lock down my diet RE keto") == 0,
-          "context: shown before the title, the stored title untouched");
-    g_free(shown);
-    task_free(t);
-
     sqlite3_exec(shared_db_handle(app->db->shared),
-                 "UPDATE folders SET name = 'Ship''s Log' WHERE name = 'Captain''s Log'",
+                 "INSERT INTO notes (title, created_at, updated_at) VALUES ('Plan', 0, 0);"
+                 "INSERT INTO tags (name, favorite_notes) VALUES ('Stride', 1);"
+                 "INSERT INTO note_tags (note_id, tag_id, in_field)"
+                 " SELECT (SELECT MAX(id) FROM notes), id, 1 FROM tags WHERE name = 'Stride';",
                  NULL, NULL, NULL);
-    ctx = context_of(app, filed);
-    check(ctx != NULL && strcmp(ctx, "Ship's Log") == 0,
-          "context: a folder renamed in Notes is reflected at the next read");
-    g_free(ctx);
+    check(tag_listed(app, TASK_TAGS_ALL, "Stride") &&
+          !tag_listed(app, TASK_TAGS_CARRIED, "Stride"),
+          "shared tags: a note's tag is offered, not shown");
+
+    gint64   id  = task_db_task_create(app->db, 0, "rerun the reports", "Shared");
+    TaskTag *tag = task_db_tag_find(app->db, "STRIDE");
+    check(id > 0 && tag != NULL && task_db_task_tag_add(app->db, id, "stride") == tag->id &&
+          tag_listed(app, TASK_TAGS_CARRIED, "Stride"),
+          "shared tags: a task takes the note's tag, its spelling kept, and shows it");
+    check(task_db_tag_set_favorite(app->db, tag->id, TRUE), "shared tags: favorite in Tasks");
+    task_tag_free(tag);
+    tag = task_db_tag_find(app->db, "Stride");
+    check(tag != NULL && tag->favorite, "shared tags: Tasks' favorite flag reads back");
+    sqlite3_stmt *st = NULL;
+    gint          notes_flag = -1;
+    if (sqlite3_prepare_v2(shared_db_handle(app->db->shared),
+                           "SELECT favorite_notes FROM tags WHERE name = 'Stride'", -1, &st,
+                           NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW)
+        notes_flag = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    check(notes_flag == 1, "shared tags: Notes' favorite flag is its own");
+
+    check(tag != NULL && task_db_task_tag_remove(app->db, id, tag->id) == 1 &&
+          !tag_listed(app, TASK_TAGS_CARRIED, "Stride") &&
+          tag_listed(app, TASK_TAGS_ALL, "Stride"),
+          "shared tags: the task lets go; the note still carries it");
+    task_tag_free(tag);
 }
 
 /*
@@ -774,7 +757,7 @@ main(int argc, char **argv)
     test_stamps(app);
     test_action_tag(app);
     test_note_items(app);
-    test_note_context(app);
+    test_shared_tags(app);
     test_refresh_rev(app);
     test_tombstones(app);
     test_busy(app, argv[0]);

@@ -6,9 +6,7 @@
  * once per row, and the task pane can hold thousands.
  *
  * WHAT IS SEARCHED — the task's TITLE, its NOTES, and the TITLES of its
- * subtasks, as one haystack.  A title is searched AS SHOWN
- * (task_display_title): with the note-context setting on, a search for a
- * Notes folder's name finds the action items written in it.  A subtask match surfaces its PARENT, which
+ * subtasks, as one haystack.  A subtask match surfaces its PARENT, which
  * is the only thing it could do: the task pane lists top-level tasks, and
  * a subtask has no row of its own to select.
  *
@@ -68,8 +66,6 @@ void task_search_free(TaskSearch *q);
  *   t    — the task, whose title and notes are searched.  Must not be NULL.
  *   subs — its subtasks (borrowed Task*, as the row context groups them),
  *          whose TITLES are searched too.  NULL for a task with none.
- *   with_context — the note_context_titles setting: titles are matched
- *          as task_display_title shows them.
  *
  * Returns TRUE when every non-negated term appears in that text and no
  * negated one does.  The fields are joined with newlines before matching,
@@ -77,6 +73,6 @@ void task_search_free(TaskSearch *q);
  * notes under it.
  * ------------------------------------------------------------------------- */
 gboolean task_search_matches(const TaskSearch *q, const Task *t,
-                             GPtrArray *subs, gboolean with_context);
+                             GPtrArray *subs);
 
 #endif /* TASK_SEARCH_H */

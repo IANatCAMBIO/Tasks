@@ -338,8 +338,8 @@ test_config(const char *scratch)
     check(!task_config_get_bool(TASK_CFG_COMPACT), "config: compact_layout defaults off");
     check(task_config_get_bool(TASK_CFG_KANBAN_SHADOW), "config: kanban_shadow defaults on");
     check(!task_config_get_bool(TASK_CFG_COL_STATUS), "config: the Status column defaults hidden");
-    check(task_config_get_bool(TASK_CFG_NOTE_CONTEXT),
-          "config: the note-context title prefix defaults on");
+    check(task_config_get_bool(TASK_CFG_SIDEBAR_COUNTS),
+          "config: the sidebar's tag counts default on");
     check(task_config_get_int(TASK_CFG_GCAL_INTERVAL_MIN) == 5,
           "config: the calendar sync interval defaults to 5");
     check(task_config_get_int(TASK_CFG_WIN_W) == 980 &&
@@ -352,7 +352,7 @@ test_config(const char *scratch)
 
     /* Write-through. */
     task_config_set_bool(TASK_CFG_SHOW_COMPLETED, FALSE);
-    task_config_set_bool(TASK_CFG_NOTE_CONTEXT, FALSE);
+    task_config_set_bool(TASK_CFG_SIDEBAR_COUNTS, FALSE);
     task_config_set_int(TASK_CFG_WIN_W, 1234);
     task_config_set("manual_order_list_7", "3,1,2");
     check(stat(ini, &sb) == 0, "config: a change writes the file");
@@ -364,8 +364,8 @@ test_config(const char *scratch)
     check(task_config_path() == NULL, "config: closed");
     check(task_config_init(), "config: init again");
     check(!task_config_get_bool(TASK_CFG_SHOW_COMPLETED), "config: bool survives a reload");
-    check(!task_config_get_bool(TASK_CFG_NOTE_CONTEXT),
-          "config: turning the note-context setting off survives a reload (tasks.ini)");
+    check(!task_config_get_bool(TASK_CFG_SIDEBAR_COUNTS),
+          "config: turning a default-on setting off survives a reload (tasks.ini)");
     check(task_config_get_int(TASK_CFG_WIN_W) == 1234, "config: int survives a reload");
     gchar *order = task_config_get("manual_order_list_7");
     check(order != NULL && strcmp(order, "3,1,2") == 0, "config: string survives a reload");

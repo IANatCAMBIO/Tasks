@@ -1,7 +1,6 @@
 /*
  * core_test.c — the logic tests carried from the GTK build: search-query
- * parsing, recurrence arithmetic, and the database schema; and the
- * display title (task_display_title, the note-context prefix).
+ * parsing, recurrence arithmetic, and the database schema.
  *
  * Links against the core objects only (no AppKit).  Still on GLib's g_test
  * harness this phase; the tests written for the fork (the other
@@ -89,8 +88,8 @@ test_search_basic_match(void)
     Task *yes = make_task("Buy groceries", NULL);
     Task *no  = make_task("Call dentist",  NULL);
 
-    g_assert_true(task_search_matches(q, yes, NULL, FALSE));
-    g_assert_false(task_search_matches(q, no,  NULL, FALSE));
+    g_assert_true(task_search_matches(q, yes, NULL));
+    g_assert_false(task_search_matches(q, no,  NULL));
 
     task_free(yes);
     task_free(no);
@@ -107,7 +106,7 @@ test_search_case_insensitive(void)
     g_assert_nonnull(q);
 
     Task *t = make_task("Buy groceries", NULL);
-    g_assert_true(task_search_matches(q, t, NULL, FALSE));
+    g_assert_true(task_search_matches(q, t, NULL));
     task_free(t);
     task_search_free(q);
 }
@@ -124,8 +123,8 @@ test_search_multi_term_and(void)
     Task *both = make_task("Buy milk and bread", NULL);
     Task *one  = make_task("Buy bread",          NULL);
 
-    g_assert_true(task_search_matches(q, both, NULL, FALSE));
-    g_assert_false(task_search_matches(q, one,  NULL, FALSE));
+    g_assert_true(task_search_matches(q, both, NULL));
+    g_assert_false(task_search_matches(q, one,  NULL));
 
     task_free(both);
     task_free(one);
@@ -144,8 +143,8 @@ test_search_exclude(void)
     Task *included = make_task("Buy bread",       NULL);
     Task *excluded = make_task("Buy milk and bread", NULL);
 
-    g_assert_true(task_search_matches(q, included, NULL, FALSE));
-    g_assert_false(task_search_matches(q, excluded, NULL, FALSE));
+    g_assert_true(task_search_matches(q, included, NULL));
+    g_assert_false(task_search_matches(q, excluded, NULL));
 
     task_free(included);
     task_free(excluded);
@@ -164,110 +163,12 @@ test_search_notes_field(void)
     Task *in_notes = make_task("Weekly review", "urgent: prepare agenda");
     Task *absent   = make_task("Weekly review", "nothing special");
 
-    g_assert_true(task_search_matches(q, in_notes, NULL, FALSE));
-    g_assert_false(task_search_matches(q, absent,   NULL, FALSE));
+    g_assert_true(task_search_matches(q, in_notes, NULL));
+    g_assert_false(task_search_matches(q, absent,   NULL));
 
     task_free(in_notes);
     task_free(absent);
     task_search_free(q);
-}
-
-/*
- * test_search_note_context — with the note-context setting on, a search
- * for a Notes folder's name finds the action items written in it; with it
- * off it does not.
- */
-static void
-test_search_note_context(void)
-{
-    TaskSearch *q = task_search_parse("captain");
-    g_assert_nonnull(q);
-
-    Task *t    = make_task("lock down my diet RE keto", "");
-    t->context = g_strdup("Captain's Log");
-
-    g_assert_true(task_search_matches(q, t, NULL, TRUE));
-    g_assert_false(task_search_matches(q, t, NULL, FALSE));
-
-    task_free(t);
-    task_search_free(q);
-}
-
-/* ---------------------------------------------------------------------------
- * Display title tests (task_display_title)
- * ------------------------------------------------------------------------- */
-
-/*
- * shown — task_display_title of a throwaway task, compared with `want`.
- *
- * Inputs:
- *   title, context — the task's fields (context NULL for none)
- *   with_context   — the setting
- *   want           — the expected display title
- */
-static void
-shown(const gchar *title, const gchar *context, gboolean with_context,
-      const gchar *want)
-{
-    Task *t    = make_task(title, "");
-    t->context = g_strdup(context);
-    gchar *got = task_display_title(t, with_context);
-    g_assert_cmpstr(got, ==, want);
-    g_free(got);
-    task_free(t);
-}
-
-/*
- * test_display_prefix — the context goes before the title, with the one
- * separator, only when the setting is on; the title itself is untouched.
- */
-static void
-test_display_prefix(void)
-{
-    shown("lock down my diet RE keto", "Captain's Log", TRUE,
-          "Captain's Log" TASK_CONTEXT_SEPARATOR "lock down my diet RE keto");
-    shown("lock down my diet RE keto", "Captain's Log", FALSE,
-          "lock down my diet RE keto");
-
-    Task *t    = make_task("plain", "");
-    t->context = g_strdup("Work");
-    g_free(task_display_title(t, TRUE));
-    g_assert_cmpstr(t->title, ==, "plain");
-    task_free(t);
-}
-
-/*
- * test_display_empty_context — no context (a top-level note, a task not
- * from Notes, a NULL one) and an empty title get no prefix.
- */
-static void
-test_display_empty_context(void)
-{
-    shown("Top-level item", "", TRUE, "Top-level item");
-    shown("Typed in Tasks", NULL, TRUE, "Typed in Tasks");
-    shown("", "Work", TRUE, "");
-}
-
-/*
- * test_display_already_prefixed — a title that already starts with its
- * context and a '-' or ':' separator (spaces optional) is left as it is,
- * case-insensitively; anything else is prefixed.
- */
-static void
-test_display_already_prefixed(void)
-{
-    shown("Quad - Ian to create a diagram", "Quad", TRUE, "Quad - Ian to create a diagram");
-    shown("quad: Ian to create a diagram",  "Quad", TRUE, "quad: Ian to create a diagram");
-    shown("QUAD-Ian to create a diagram",   "Quad", TRUE, "QUAD-Ian to create a diagram");
-    shown("Quad   :  agenda",               "Quad", TRUE, "Quad   :  agenda");
-    shown("\xc3\x89T\xc3\x89 - plan",        "\xc3\xa9t\xc3\xa9", TRUE,
-          "\xc3\x89T\xc3\x89 - plan");
-    /* The context must be followed by a separator ... */
-    shown("Quadrant review", "Quad", TRUE, "Quad - Quadrant review");
-    shown("Quad review",     "Quad", TRUE, "Quad - Quad review");
-    /* ... and is compared whole: a shorter older prefix does not count. */
-    shown("Quad - Ian to create a diagram", "Quad Health", TRUE,
-          "Quad Health - Quad - Ian to create a diagram");
 }
 
 /* ---------------------------------------------------------------------------
@@ -550,7 +451,7 @@ test_db_create_read_task(void)
     g_assert_no_error(err);
     g_assert_nonnull(db);
 
-    /* A task needs a tag; it is filed in a storage list made for it. */
+    /* A task needs a tag. */
     g_assert_cmpint(task_db_task_create(db, 0, "Untagged", NULL), ==, 0);
     g_assert_cmpint(task_db_task_create(db, 0, "Untagged", "  "), ==, 0);
     gint64 task_id = task_db_task_create(db, 0, "Walk the dog", "Test");
@@ -560,7 +461,6 @@ test_db_create_read_task(void)
     Task *t = task_db_task_get(db, task_id);
     g_assert_nonnull(t);
     g_assert_cmpstr(t->title, ==, "Walk the dog");
-    g_assert_cmpint(t->list_id, >, 0);
     g_assert_cmpint(t->parent_id, ==, 0);
     g_assert_cmpint(t->status, ==, TASK_STATUS_NEW);
     g_assert_cmpint(t->updated_at, >, 0);   /* stamped on create */
@@ -660,10 +560,6 @@ main(int argc, char **argv)
     g_test_add_func("/search/multi_term_and",       test_search_multi_term_and);
     g_test_add_func("/search/exclude",              test_search_exclude);
     g_test_add_func("/search/notes_field",          test_search_notes_field);
-    g_test_add_func("/search/note_context",         test_search_note_context);
-    g_test_add_func("/display/prefix",              test_display_prefix);
-    g_test_add_func("/display/empty_context",       test_display_empty_context);
-    g_test_add_func("/display/already_prefixed",    test_display_already_prefixed);
 
     /* Recurrence */
     g_test_add_func("/recur/advance_daily",         test_recur_advance_daily);

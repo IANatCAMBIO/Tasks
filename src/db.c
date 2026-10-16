@@ -212,7 +212,6 @@ task_free(Task *t)
         return;
     g_free(t->title);
     g_free(t->notes);
-    g_free(t->context);
     g_free(t);
 }
 
@@ -224,51 +223,7 @@ task_dup(const Task *t)
     *copy       = *t;
     copy->title = g_strdup(t->title != NULL ? t->title : "");
     copy->notes = g_strdup(t->notes != NULL ? t->notes : "");
-    copy->context = g_strdup(t->context != NULL ? t->context : "");
     return copy;
-}
-
-/*
- * title_has_context — does a title already begin with its note context?
- * That is: the context, compared with Unicode case folding, then optional
- * spaces, then a '-' or ':' separator.
- *
- * Inputs:
- *   title   — the task's title, not NULL
- *   context — the note context, not NULL and not empty
- *
- * Output:
- *   TRUE when the title already carries the context.
- */
-static gboolean
-title_has_context(const gchar *title, const gchar *context)
-{
-    gchar   *ft  = g_utf8_casefold(title, -1);
-    gchar   *fc  = g_utf8_casefold(context, -1);
-    gboolean has = FALSE;
-
-    if (g_str_has_prefix(ft, fc)) {
-        const gchar *p = ft + strlen(fc);
-        while (*p == ' ')
-            p++;
-        has = *p == '-' || *p == ':';
-    }
-    g_free(ft);
-    g_free(fc);
-    return has;
-}
-
-/* task_display_title() — the title a task is shown with (see db.h).        */
-gchar *
-task_display_title(const Task *t, gboolean with_context)
-{
-    const gchar *title   = t->title != NULL ? t->title : "";
-    const gchar *context = t->context != NULL ? t->context : "";
-
-    if (!with_context || *context == '\0' || *title == '\0' ||
-        title_has_context(title, context))
-        return g_strdup(title);
-    return g_strconcat(context, TASK_CONTEXT_SEPARATOR, title, NULL);
 }
 
 /* task_status_label() — the user-facing status name (see db.h).  The
@@ -639,23 +594,12 @@ tombstone_each(TaskDatabase *db, const gchar *parents, gint64 owner, const gchar
  * read_task() — build a Task from the standard tasks SELECT.
  * ------------------------------------------------------------------------- */
 #define TASK_COLS_WITH(notes) \
-                  "id, list_id, COALESCE(parent_id, 0), title, " notes ", due, " \
+                  "id, COALESCE(parent_id, 0), title, " notes ", due, " \
                   "status, position, updated_at, deleted, "\
                   "completed_at, priority, "\
                   "recur_interval, recur_unit, recur_time, recur_lead, "\
                   "recur_next, recur_start, due_time, "\
-                  "scheduled_start, scheduled_duration, " \
-                  TASK_CONTEXT_COL
-/* The note context (Task.context), from the shared schema's
- * action_items_ctx view — its ONE definition — found through the task's
- * note_task row (note_task.task_id is UNIQUE, uid is the view's key).  A
- * correlated subquery rather than a join, so it rides along in every
- * existing "FROM tasks" statement: one statement per load, an index probe
- * per row, and NULL ("" once read) for any task Notes did not write.      */
-#define TASK_CONTEXT_COL \
-                  "(SELECT c.context FROM action_items_ctx c " \
-                  " WHERE c.uid = (SELECT nt.uid FROM note_task nt " \
-                  "                WHERE nt.task_id = tasks.id))"
+                  "scheduled_start, scheduled_duration"
 #define TASK_COLS       TASK_COLS_WITH("notes")
 /* The same shape with the notes left out (an empty string in their
  * place), for a query whose rows are read for their titles alone: the
@@ -667,48 +611,45 @@ read_task(sqlite3_stmt *st)
 {
     Task *t = g_new0(Task, 1);
     t->id           = sqlite3_column_int64(st, 0);
-    t->list_id      = sqlite3_column_int64(st, 1);
-    t->parent_id    = sqlite3_column_int64(st, 2);
-    t->title        = column_text_dup(st, 3);
-    t->notes        = column_text_dup(st, 4);
-    t->due          = sqlite3_column_int64(st, 5);
-    t->status       = (TaskStatus)sqlite3_column_int(st, 6);
-    t->position     = sqlite3_column_int(st, 7);
-    t->updated_at   = sqlite3_column_int64(st, 8);
-    t->deleted      = sqlite3_column_int(st, 9) != 0;
-    t->completed_at = sqlite3_column_int64(st, 10);
-    t->priority     = sqlite3_column_int(st, 11) != 0;
-    t->recur_interval = sqlite3_column_int(st, 12);
+    t->parent_id    = sqlite3_column_int64(st, 1);
+    t->title        = column_text_dup(st, 2);
+    t->notes        = column_text_dup(st, 3);
+    t->due          = sqlite3_column_int64(st, 4);
+    t->status       = (TaskStatus)sqlite3_column_int(st, 5);
+    t->position     = sqlite3_column_int(st, 6);
+    t->updated_at   = sqlite3_column_int64(st, 7);
+    t->deleted      = sqlite3_column_int(st, 8) != 0;
+    t->completed_at = sqlite3_column_int64(st, 9);
+    t->priority     = sqlite3_column_int(st, 10) != 0;
+    t->recur_interval = sqlite3_column_int(st, 11);
     /* Clamped on the way IN rather than at every reader: recur_unit is an
      * enum index into the unit tables in recur.c and the editor's combo,
      * and a hand-edited or future-version value must not index off the end
      * of either.  Minutes is the safe floor for the same reason New is
      * TaskStatus's (see editor_status_get).                                */
     {
-        gint u = sqlite3_column_int(st, 13);
+        gint u = sqlite3_column_int(st, 12);
         t->recur_unit = (u >= 0 && u < TASK_RECUR_N_UNITS)
                         ? (TaskRecurUnit)u : TASK_RECUR_MINUTE;
     }
-    t->recur_time   = sqlite3_column_int(st, 14);
-    t->recur_lead   = sqlite3_column_int(st, 15);
-    t->recur_next   = sqlite3_column_int64(st, 16);
-    t->recur_start  = sqlite3_column_int64(st, 17);
+    t->recur_time   = sqlite3_column_int(st, 13);
+    t->recur_lead   = sqlite3_column_int(st, 14);
+    t->recur_next   = sqlite3_column_int64(st, 15);
+    t->recur_start  = sqlite3_column_int64(st, 16);
     /* Clamped on the way IN, like recur_unit above: a hand-edited or
      * out-of-range value would otherwise format as a nonsense clock time
      * on every row that shows one.                                       */
     {
-        gint m = sqlite3_column_int(st, 18);
+        gint m = sqlite3_column_int(st, 17);
         t->due_time = (m >= 0 && m <= 23 * 60 + 59) ? m
                                                     : SHARED_DB_TASK_DUE_TIME_DEFAULT;
     }
-    t->scheduled_start    = sqlite3_column_int64(st, 19);
-    t->scheduled_duration = sqlite3_column_int(st, 20);
+    t->scheduled_start    = sqlite3_column_int64(st, 18);
+    t->scheduled_duration = sqlite3_column_int(st, 19);
     if (t->scheduled_duration <= 0)
         t->scheduled_duration = SHARED_DB_TASK_SCHEDULED_DURATION_DEFAULT;
-    t->context = column_text_dup(st, 21);
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
-    if (t->context == NULL) t->context = g_strdup("");
     return t;
 }
 
@@ -776,8 +717,8 @@ task_db_subtasks_all_visible(TaskDatabase *db)
 }
 
 /* The order of every view: high priority first, then by position — one
- * sequence across all top-level tasks (the schema's 102 step renumbered
- * the per-list positions into it).  A subtask shown on a row of its own
+ * sequence across all top-level tasks (the shared schema's migration from
+ * version 100 renumbered the per-list positions into it).  A subtask shown on a row of its own
  * (a tag or Favorites gathers any level) sorts right after its parent, by
  * its position among its siblings.                                         */
 #define VIEW_ORDER \
@@ -811,8 +752,8 @@ task_db_tasks_favorite(TaskDatabase *db)
 {
     return task_query(db,
         "SELECT " TASK_COLS " FROM tasks WHERE deleted = 0 AND id IN "
-        "(SELECT tt.task_id FROM task_tags tt JOIN task_tag_names n "
-        " ON n.id = tt.tag_id WHERE n.favorite <> 0)" VIEW_ORDER,
+        "(SELECT tt.task_id FROM task_tags tt JOIN tags n "
+        " ON n.id = tt.tag_id WHERE n.favorite_tasks <> 0)" VIEW_ORDER,
         0, 0, 0);
 }
 
@@ -837,10 +778,8 @@ task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi, gboolean open_
 
 /*
  * task_db_task_create — a task and its tags, in one transaction (see
- * db.h).  A top-level task goes in the lowest-id live list (made when
- * there is none: lists are storage) at the end of the one top-level order;
- * a subtask in its parent's list at the end of its siblings, with every
- * tag its parent carries.
+ * db.h).  A top-level task goes at the end of the one top-level order; a
+ * subtask at the end of its siblings, with every tag its parent carries.
  *
  * Inputs:
  *   db        — the connection
@@ -871,18 +810,12 @@ task_db_task_create(TaskDatabase *db, gint64 parent_id, const gchar *title,
     gboolean own;
     if (!txn_join(db, &own))
         return 0;
-    gboolean ok = parent_id != 0 || exec(db,
-        "INSERT INTO lists (name, updated_at) SELECT 'Tasks', strftime('%s', 'now') "
-        "WHERE NOT EXISTS (SELECT 1 FROM lists WHERE deleted = 0)");
-
+    gboolean      ok = TRUE;
     sqlite3_stmt *st = NULL;
     gint64        id = 0;            /* the new rowid                       */
-    if (ok && sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "INSERT INTO tasks(list_id, parent_id, title, position, updated_at) "
-            "VALUES(CASE WHEN ?1 IS NULL "
-            "            THEN (SELECT MIN(id) FROM lists WHERE deleted = 0) "
-            "            ELSE (SELECT list_id FROM tasks WHERE id = ?1) END, "
-            "       ?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks "
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
+            "INSERT INTO tasks(parent_id, title, position, updated_at) "
+            "VALUES(?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks "
             "                WHERE parent_id IS ?1), ?3)", -1,
             &st, NULL) == SQLITE_OK) {
         if (parent_id != 0)
@@ -897,7 +830,7 @@ task_db_task_create(TaskDatabase *db, gint64 parent_id, const gchar *title,
         ok = step_done(db, st, "task create", NULL);
         if (ok)
             id = sqlite3_last_insert_rowid(shared_db_handle(db->shared));
-    } else if (ok) {
+    } else {
         ok = step_done(db, NULL, "task create", NULL);
     }
     sqlite3_finalize(st);
@@ -1586,15 +1519,29 @@ tag_query(TaskDatabase *db, const gchar *sql, gint64 param)
     return out;
 }
 
-/* The columns tag_query reads, over task_tag_names aliased n.            */
-#define TAG_COLS "n.id, n.name, n.emoji, n.favorite"
+/* The columns tag_query reads, over the shared tags table aliased n.     */
+#define TAG_COLS "n.id, n.name, n.emoji, n.favorite_tasks"
 
-/* task_db_tags() — every tag, alphabetical (see db.h).                     */
+/*
+ * task_db_tags — the tags of a scope, alphabetical (see db.h).  A task's
+ * task_tags rows go when it is tombstoned, so a row names a live task.
+ *
+ * Inputs:
+ *   db    — the connection
+ *   scope — TASK_TAGS_CARRIED or TASK_TAGS_ALL
+ *
+ * Output:
+ *   GPtrArray of TaskTag* (task_ptr_array_free_tags); never NULL.
+ */
 GPtrArray *
-task_db_tags(TaskDatabase *db)
+task_db_tags(TaskDatabase *db, TaskTagScope scope)
 {
-    return tag_query(db, "SELECT " TAG_COLS " FROM task_tag_names n "
-                         "ORDER BY n.name COLLATE NOCASE, n.id", 0);
+    return tag_query(db, scope == TASK_TAGS_ALL
+                         ? "SELECT " TAG_COLS " FROM tags n "
+                           "ORDER BY n.name COLLATE NOCASE, n.id"
+                         : "SELECT " TAG_COLS " FROM tags n WHERE EXISTS "
+                           "(SELECT 1 FROM task_tags tt WHERE tt.tag_id = n.id) "
+                           "ORDER BY n.name COLLATE NOCASE, n.id", 0);
 }
 
 /*
@@ -1618,7 +1565,7 @@ first_tag(GPtrArray *a)
 TaskTag *
 task_db_tag_get(TaskDatabase *db, gint64 id)
 {
-    return first_tag(tag_query(db, "SELECT " TAG_COLS " FROM task_tag_names n "
+    return first_tag(tag_query(db, "SELECT " TAG_COLS " FROM tags n "
                                    "WHERE n.id = ?", id));
 }
 
@@ -1639,7 +1586,7 @@ task_db_tag_find(TaskDatabase *db, const gchar *name)
     sqlite3_stmt *st    = NULL;
     gint64        id    = 0;
     if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "SELECT id FROM task_tag_names WHERE name = ?", -1, &st, NULL) == SQLITE_OK) {
+            "SELECT id FROM tags WHERE name = ?", -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, clean, -1, SQLITE_TRANSIENT);
         if (sqlite3_step(st) == SQLITE_ROW)
             id = sqlite3_column_int64(st, 0);
@@ -1666,7 +1613,7 @@ gboolean
 task_db_tag_set_emoji(TaskDatabase *db, gint64 id, const gchar *emoji)
 {
     gchar *clean = g_strstrip(g_strdup(emoji != NULL ? emoji : ""));
-    gchar *sql   = sqlite3_mprintf("UPDATE task_tag_names SET emoji = %Q WHERE id = %lld",
+    gchar *sql   = sqlite3_mprintf("UPDATE tags SET emoji = %Q WHERE id = %lld",
                                    clean, (long long)id);
     gboolean ok = exec(db, sql);
     sqlite3_free(sql);
@@ -1689,7 +1636,7 @@ task_db_tag_set_emoji(TaskDatabase *db, gint64 id, const gchar *emoji)
 gboolean
 task_db_tag_set_favorite(TaskDatabase *db, gint64 id, gboolean favorite)
 {
-    gchar *sql = sqlite3_mprintf("UPDATE task_tag_names SET favorite = %d WHERE id = %lld",
+    gchar *sql = sqlite3_mprintf("UPDATE tags SET favorite_tasks = %d WHERE id = %lld",
                                  favorite ? 1 : 0, (long long)id);
     gboolean ok = exec(db, sql);
     sqlite3_free(sql);
@@ -1742,7 +1689,7 @@ task_db_tags_by_task(TaskDatabase *db)
     sqlite3_stmt *st  = NULL;
     if (sqlite3_prepare_v2(shared_db_handle(db->shared),
             "SELECT " TAG_COLS ", tt.task_id FROM task_tags tt "
-            "JOIN task_tag_names n ON n.id = tt.tag_id "
+            "JOIN tags n ON n.id = tt.tag_id "
             "JOIN tasks t ON t.id = tt.task_id WHERE t.deleted = 0 "
             "ORDER BY tt.task_id, n.name COLLATE NOCASE, n.id", -1, &st, NULL) == SQLITE_OK) {
         while (sqlite3_step(st) == SQLITE_ROW) {
@@ -1766,7 +1713,7 @@ GPtrArray *
 task_db_task_tags(TaskDatabase *db, gint64 task_id)
 {
     return tag_query(db, "SELECT " TAG_COLS " FROM task_tags tt "
-                         "JOIN task_tag_names n ON n.id = tt.tag_id "
+                         "JOIN tags n ON n.id = tt.tag_id "
                          "WHERE tt.task_id = ? ORDER BY n.name COLLATE NOCASE, n.id",
                      task_id);
 }
@@ -1774,9 +1721,9 @@ task_db_task_tags(TaskDatabase *db, gint64 task_id)
 /*
  * task_db_task_tag_add — give a live task a tag by name (see db.h).  Three
  * statements in one transaction: the name (unless a tag of that name
- * exists), the link, and the tag's id.  Both writes are conditional on the
- * task being live, so a refused add writes nothing: a name row without a
- * link would be a tag no task carries.
+ * exists, made by either app), the link, and the tag's id.  Both writes
+ * are conditional on the task being live, so a refused add writes nothing:
+ * a name row without a link would be a tag nothing carries.
  *
  * Inputs:
  *   db      — the connection
@@ -1790,14 +1737,14 @@ gint64
 task_db_task_tag_add(TaskDatabase *db, gint64 task_id, const gchar *name)
 {
     static const gchar *const steps[] = {
-        "INSERT INTO task_tag_names (name) SELECT ?1 "
+        "INSERT INTO tags (name) SELECT ?1 "
         " WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ?2 AND deleted = 0) "
         "ON CONFLICT (name) DO NOTHING",
         "INSERT OR IGNORE INTO task_tags (task_id, tag_id) "
-        "SELECT ?2, id FROM task_tag_names WHERE name = ?1 "
+        "SELECT ?2, id FROM tags WHERE name = ?1 "
         " AND EXISTS (SELECT 1 FROM tasks WHERE id = ?2 AND deleted = 0)",
         "SELECT tt.tag_id FROM task_tags tt "
-        "JOIN task_tag_names n ON n.id = tt.tag_id "
+        "JOIN tags n ON n.id = tt.tag_id "
         "WHERE tt.task_id = ?2 AND n.name = ?1",
     };
     gchar *clean = g_strstrip(g_strdup(name != NULL ? name : ""));
@@ -1879,7 +1826,8 @@ task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_tags)
         gint        *out;            /* caller's slot (may be NULL)         */
     } q[] = {
         { "SELECT COUNT(*) FROM tasks WHERE deleted = 0", n_tasks },
-        { "SELECT COUNT(*) FROM task_tag_names", n_tags },
+        { "SELECT COUNT(*) FROM tags n WHERE EXISTS "
+          "(SELECT 1 FROM task_tags tt WHERE tt.tag_id = n.id)", n_tags },
     };
     for (gsize i = 0; i < G_N_ELEMENTS(q); i++) {
         if (q[i].out == NULL)

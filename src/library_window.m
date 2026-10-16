@@ -82,8 +82,9 @@ static NSString * const search_tooltip       =
 /* ── App-event listeners (C callbacks; user_data is the window) ─────── */
 
 /*
- * tag_rows — every tag as the sidebar and the Favorites bar show it: its
- * id, its emoji and its favorite flag, alphabetically.  What decides
+ * tag_rows — every tag a task carries, as the sidebar and the Favorites
+ * bar show it: its id, its emoji and its favorite flag, alphabetically.
+ * What decides
  * whether a task change (a tag first used, or used for the last time) or
  * an Edit Tag needs them rebuilt.
  *
@@ -96,7 +97,7 @@ static NSString * const search_tooltip       =
 static NSArray<NSArray *> *
 tag_rows(TaskApp *app)
 {
-    GPtrArray                *tags = task_db_tags(app->db);
+    GPtrArray                *tags = task_db_tags(app->db, TASK_TAGS_CARRIED);
     NSMutableArray<NSArray *> *rows = [NSMutableArray arrayWithCapacity:tags->len];
 
     for (guint i = 0; i < tags->len; i++) {
@@ -149,19 +150,18 @@ on_app_tasks(TaskApp *app, gpointer data)
 
 /*
  * on_app_notes — the app's notes event: Notes' data changed elsewhere, so
- * the open editors' "From note" lines are re-read, and — while titles are
- * shown with their note context — everything on_app_tasks refreshes, since
- * a folder renamed in Notes renames that context.
+ * the open editors' "From note" lines are re-read.
  *
  * Inputs:
- *   app  — the application context
- *   data — the TasksLibraryWindow, unretained
+ *   app  — the application context (unused)
+ *   data — the TasksLibraryWindow, unretained (unused)
  */
 static void
 on_app_notes(TaskApp *app, gpointer data)
 {
+    (void)app;
+    (void)data;
     tasks_editor_refresh_sources();
-    if (task_config_get_bool(TASK_CFG_NOTE_CONTEXT)) on_app_tasks(app, data);
 }
 
 /*
@@ -1156,7 +1156,7 @@ fill_menu:(NSMenu *)menu with_destinations_of:(TasksCommand)command
     NSArray<NSNumber *> *ids  = [self selected_task_ids];
     GPtrArray *carried = ids.count == 1 ? task_db_task_tags(self.app->db, ids[0].longLongValue)
                                         : NULL;
-    GPtrArray *tags    = task_db_tags(self.app->db);
+    GPtrArray *tags    = task_db_tags(self.app->db, TASK_TAGS_ALL);
 
     for (guint i = 0; i < tags->len; i++) {
         const TaskTag *tag = g_ptr_array_index(tags, i);

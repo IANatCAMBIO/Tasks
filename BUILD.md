@@ -56,14 +56,16 @@ SHARED_DATA_DIR=/path/to/shared_data`).  The build stops with a message when
 MacPorts SQLite this app links.  After pulling a new `shared_data`, run
 `make clean && make`.
 
-Tasks needs `shared_data` at schema version 102: tags (`task_tag_names`
-with emoji and favorite, `task_tags`) are its only organisation.  The
-module brings a version-100 or -101 file up to date in place, in one
-transaction, the first time an app opens it read-write — the step to 102
-also turns every list and group into a tag on its tasks — and until then
-read-only tools (the skill's scripts) refuse it.  A file at 102 is refused
-by a Notes or Tasks built against an older `shared_data`, so rebuild Notes
-from the same `shared_data` as well.
+Tasks needs `shared_data` at schema version 200: one `tags` table shared
+with Notes (emoji, `favorite_tasks` for Tasks and `favorite_notes` for
+Notes) and `task_tags` are its only organisation.  The module brings a
+version-100 file up to date in place the first time an app opens it
+read-write — a verified backup, then one transaction that turns every
+list, group and Notes folder into a tag — and until then read-only tools
+(the skill's scripts) refuse it.  A 101 or 102 file (an unreleased
+development version) is refused: reseed the sandbox (`make seed`).  A
+file at 200 is refused by a Notes or Tasks built against an older
+`shared_data`, so build and install Notes from the same `shared_data`.
 
 ## Targets
 
@@ -71,7 +73,7 @@ from the same `shared_data` as well.
 |--------|--------------|
 | `make` | Build `Tasks.app` in the source directory |
 | `make run` | Build, then run the app against the sandbox data in `dev/data` (seeding it first if empty) |
-| `make seed` | Recreate the sandbox test database: 45 tasks with a dozen tags (emojis, two favorites), three of them Notes action items (one in a folder) |
+| `make seed` | Recreate the sandbox test database: 45 tasks with a dozen tags (emojis, two favorites), three of them Notes action items (two in notes with a tag of their own) |
 | `make test` | Build and run the core tests (`tests/*_test.c`); no window is opened |
 | `make ui-check` | Build the real windows in-process against the sandbox: writes PNG snapshots to `dev/snapshots` and checks window ownership and memory |
 | `make install` | Copy the bundle to `~/Applications` (quits and reopens a running copy) |
@@ -160,13 +162,13 @@ The programs, all linked against the core only (no AppKit), include:
 
 | Program | Covers |
 |---|---|
-| `core_test` | the GTK app's cases: search, recurrence arithmetic, opening the shared database and refusing an old v14 file; the display title (`task_display_title`: the note-context prefix, an empty context, an already-prefixed title, case folding, separators) (GLib `g_test`) |
+| `core_test` | the GTK app's cases: search, recurrence arithmetic, opening the shared database and refusing an old v14 file (GLib `g_test`) |
 | `loop_test` | the main-loop service: one-shot and repeating timers, cancellation, background hand-back |
-| `config_test` | the data-folder policy and override, the fence round the GTK app's data, config defaults and write-through (the note-context setting among them) |
-| `shared_test` | the shared database: the column-diff update (two connections change different fields and both survive) and its stamping rules; Notes action items (the Action Items tag the schema gives them, the note lookup, the note context every read carries — a folder, the top level, a task not from Notes, a folder renamed — the tombstone, the purge Tasks refuses); refreshing only on a change to Tasks' data (`change_rev`), never on its own writes; writes failing, and then succeeding, while a second process (this test re-run with `--hold`) holds the write lock past the busy timeout — this test takes about 20 s |
+| `config_test` | the data-folder policy and override, the fence round the GTK app's data, config defaults and write-through |
+| `shared_test` | the shared database: the column-diff update (two connections change different fields and both survive) and its stamping rules; Notes action items (the Action Items tag the schema gives them, the note lookup, the tombstone, the purge Tasks refuses); the tags Notes shares (a note's tag offered but not shown until a task carries it, its spelling kept, the favorite flags apart, the tag outliving a task while a note carries it); refreshing only on a change to Tasks' data (`change_rev`), never on its own writes; writes failing, and then succeeding, while a second process (this test re-run with `--hold`) holds the write lock past the busy timeout — this test takes about 20 s |
 | `backup_test` | backups through the shared module: refused destinations (Tasks' live-data fence and the module's folder checks), Back Up Now and its UTC file name, retention, the periodic poll |
 | `switch_test` | Open Database File: refusals (an old `tasks.db` and an empty file among them, left untouched), a switch, Make Default under the sandbox |
-| `rows_test` | the row description (lines, emphasis, the tags line, notes preview, the note-context prefix) and the pane collection (filters, a search matching the prefix, status line, the Favorites view); which tag New Task gives (the selected tag, else the default tag) |
+| `rows_test` | the row description (lines, emphasis, the tags line, notes preview, a Notes item's plain title) and the pane collection (filters, search, status line, the Favorites view); which tag New Task gives (the selected tag, else the default tag) |
 | `tags_test` | tags: adding by name (any case, trimmed), the refusals, a subtask's inherited tags, removal and the last tag kept, a tag going with its last task, emoji and favorite, a tag's view and its saved order |
 | `sidebar_test` | a tag's label, the selection fallback after a rebuild |
 | `order_test` | saved orders: key spelling, the permutation, dropping keys |

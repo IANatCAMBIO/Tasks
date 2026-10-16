@@ -271,7 +271,7 @@ reload
     NSDictionary *attrs = @{ NSFontAttributeName: [NSFont systemFontOfSize:btn_font] };
     CGFloat       x     = bar_pad;
     CGFloat       cy    = tasks_look_favorites_bar_h / 2.0;
-    GPtrArray    *tags  = task_db_tags(self.library.app->db);
+    GPtrArray    *tags  = task_db_tags(self.library.app->db, TASK_TAGS_CARRIED);
 
     for (guint i = 0; i < tags->len; i++) {
         const TaskTag *tag = g_ptr_array_index(tags, i);

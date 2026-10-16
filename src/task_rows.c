@@ -199,8 +199,7 @@ notes_preview(const gchar *notes)
  *   tags      — the task's tags (GPtrArray of TaskTag*), or NULL for none
  *   att_count — the task's attachment count
  *   subs      — the task's visible subtasks (GPtrArray of Task*), or NULL
- *   ctx       — the refresh's context: the bold_task_titles setting, and
- *               the note_context_titles one for the subtask lines
+ *   ctx       — the refresh's context: the bold_task_titles setting
  */
 static void
 lines_build(task_row_t *row, const Task *t, const GPtrArray *tags,
@@ -244,13 +243,11 @@ lines_build(task_row_t *row, const Task *t, const GPtrArray *tags,
     for (guint i = 0; i < MIN(nsubs, (guint)TASK_ROW_MAX_SUBTASKS); i++) {
         const Task *sub   = g_ptr_array_index(subs, i);
         gboolean    done  = sub->status == TASK_STATUS_DONE;
-        gchar      *shown = task_display_title(sub, ctx->note_context);
         line_add(row, task_row_line_subtask,
                  text_printf("%s", done ? "\xe2\x98\x91 " : "\xe2\x98\x90 "),
-                 text_valid(*shown != '\0' ? shown : UNTITLED_SUBTASK),
+                 text_valid(*sub->title != '\0' ? sub->title : UNTITLED_SUBTASK),
                  done ? TASK_ROW_ALPHA_SUB_DONE : TASK_ROW_ALPHA_FULL)
             ->strike = done;
-        g_free(shown);
     }
     if (nsubs > TASK_ROW_MAX_SUBTASKS) {
         guint more = nsubs - TASK_ROW_MAX_SUBTASKS;
@@ -289,7 +286,6 @@ task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx)
     ctx->tags_by_task = task_db_tags_by_task(app->db);
     ctx->bold      = task_config_get_bool(TASK_CFG_BOLD_TITLES);
     ctx->show_done = task_config_get_bool(TASK_CFG_SHOW_COMPLETED);
-    ctx->note_context = task_config_get_bool(TASK_CFG_NOTE_CONTEXT);
 }
 
 /*
@@ -330,9 +326,7 @@ task_row_describe(const Task *t, const TaskRowCtx *ctx)
 
     row->id     = t->id;
     row->status = t->status;
-    gchar *shown = task_display_title(t, ctx->note_context);
-    row->title  = text_valid(*shown != '\0' ? shown : UNTITLED_TASK);
-    g_free(shown);
+    row->title  = text_valid(*t->title != '\0' ? t->title : UNTITLED_TASK);
 
     const GPtrArray *tags = g_hash_table_lookup(ctx->tags_by_task, GINT_TO_POINTER(t->id));
     gint att_count = GPOINTER_TO_INT(

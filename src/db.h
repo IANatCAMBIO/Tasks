@@ -7,8 +7,7 @@
  * lives all belong to the shared module (shared_db.h); task_db_open is a
  * connection to it, and this module is Tasks' queries over Tasks' tables:
  *
- *   tasks        id, list_id (STORAGE only: Tasks shows no lists — see
- *                below), parent_id (NULL = top-level; ONE level of
+ *   tasks        id, parent_id (NULL = top-level; ONE level of
  *                nesting only — a subtask can never be a parent),
  *                title, notes, due (unix local midnight; 0 = none),
  *                due_time (the time of day that date means, minutes past
@@ -20,28 +19,26 @@
  *                scheduled_start / scheduled_duration (the day planner)
  *   attachments  id, task_id, path, added_at
  *   sync_state   key, value
- *   task_tag_names id, name (UNIQUE, compared case-insensitively; never
- *                renamed), emoji, favorite
+ *   tags         id, name (UNIQUE, compared case-insensitively; never
+ *                renamed), emoji, favorite_tasks — SHARED with Notes
+ *                (its notes carry the same tags; favorite_notes is
+ *                Notes' own flag)
  *   task_tags    task_id, tag_id — the tags a task carries.
  *
- * TAGS ARE THE ONLY ORGANISATION.  Every live task carries at least one
- * tag, and a tag exists only while a live task carries it; the shared
- * schema's triggers hold both for every writer (shared_db.c, TASK_TAGS_SQL
- * and TAG_META_SQL), and tag a task Notes writes "Action Items".  The
- * shared `lists` and `list_groups` tables are STORAGE: a task's list_id
- * must name a live list (Notes files its items in its managed list; Tasks
- * files a new top-level task in the lowest-id live list, making one when
- * there is none, and a subtask in its parent's), but nothing here shows,
- * edits or orders by a list.  The schema's 102 step turned the old lists
- * and groups into tags.
+ * TAGS ARE THE ONLY ORGANISATION; there are no lists.  Every live task
+ * carries at least one tag, and a tag exists while a live task or a note
+ * carries it; the shared schema's triggers hold both for every writer
+ * (shared_db.c, LATE_SQL), and tag a task Notes writes (or revives)
+ * "Action Items".  So Tasks shows the tags ITS tasks carry
+ * (TASK_TAGS_CARRIED) and offers every tag where one is chosen
+ * (TASK_TAGS_ALL): the vocabulary is the two apps' together.
  *
  * NOTHING belonging to a particular INTEGRATION is here.  An integration
  * keeps its per-row state in its own SIDE TABLE keyed by row id: the
  * Google Calendar sync's gcal_* tables are described in gcal_store.h.
  * A task a Notes action item IS has a note_task row naming it (the shared
- * schema); Tasks reads that link (task_db_task_note, and Task.context — the
- * note's folder, from the action_items_ctx view) and never purges such a
- * task.
+ * schema); Tasks reads that link (task_db_task_note) and never purges
+ * such a task.
  *
  * Deletion is a SOFT flag (`deleted` = tombstone): a tombstoned row is
  * hidden everywhere until it is purged.  Every mutation of a task's own
@@ -175,7 +172,6 @@ typedef enum {
  * carries only what a task is.                                            */
 typedef struct {
     gint64    id;
-    gint64    list_id;
     gint64    parent_id;             /* 0 = top-level task                  */
     gchar    *title;
     gchar    *notes;
@@ -227,14 +223,6 @@ typedef struct {
     /* Day planner schedule — LOCAL-ONLY (never synced).                     */
     gint64    scheduled_start;       /* unix seconds; 0 = not scheduled       */
     gint      scheduled_duration;    /* working session length in minutes      */
-
-    /* The NOTE CONTEXT of a Notes action item: the `context` column of the
-     * shared schema's action_items_ctx view (the name of the folder its
-     * note is in), read with the row by every task query.  "" for a task
-     * not born in Notes, for a note at the top level, and for a tombstone
-     * (the view leaves those out).  READ-ONLY and display-only: no write
-     * names it, and task_display_title is the only reader.                */
-    gchar    *context;
 } Task;
 
 /* One file attachment on a task.                                           */
@@ -425,8 +413,9 @@ GPtrArray *task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi,
  *   db        — the connection
  *   parent_id — 0 for a top-level task; else the parent, which must be a
  *               live top-level task (one nesting level — enforced here).
- *               A subtask goes in its parent's (storage) list and gets
- *               every tag its parent carries
+ *               A top-level task goes last in the one top-level order;
+ *               a subtask last among its siblings, with every tag its
+ *               parent carries
  *   title     — the title ('' allowed)
  *   tag       — the tag's name (task_db_task_tag_add: an existing tag in
  *               any case, else a new one).  REQUIRED for a top-level task;
@@ -464,32 +453,6 @@ gint task_db_task_update(TaskDatabase *db, const Task *before, const Task *after
 /* task_dup() — a deep copy of a task (its strings copied too).  Free with
  * task_free.                                                               */
 Task *task_dup(const Task *t);
-
-/* The separator between a note context and the title it is shown before:
- * "Captain's Log - lock down my diet RE keto".                            */
-#define TASK_CONTEXT_SEPARATOR " - "
-
-/* ---------------------------------------------------------------------------
- * task_display_title() — the title a task is SHOWN with: the one helper
- * every row, card, block and label that names a task goes through.
- *
- * With `with_context` (the TASK_CFG_NOTE_CONTEXT setting) and a non-empty
- * t->context, the title is "<context> - <title>" — unless the title
- * already starts with the context (compared case-insensitively, Unicode
- * case folding) followed by optional spaces and a '-' or ':', as items
- * written before the option existed often do ("Quad - Ian to draw it" in
- * folder "Quad").  An empty title stays empty, so the caller's own
- * "Untitled" fallback still applies.
- *
- * DISPLAY ONLY: the result is never written back to tasks.title (it would
- * reach the note's '!' line) nor pushed to Google Calendar.
- *
- *   t            — the task, not NULL; a NULL title or context reads as "".
- *   with_context — whether the note context is shown at all.
- *
- * Returns a new string (g_free), never NULL.
- * ------------------------------------------------------------------------- */
-gchar *task_display_title(const Task *t, gboolean with_context);
 
 /* Field setters used by the list-view toggles.  `status` is the
  * successor of a SYNCED field, so EVERY change to it stamps updated_at
@@ -587,8 +550,18 @@ typedef struct {
     gint64    id;
     gchar    *name;                  /* never renamed                       */
     gchar    *emoji;                 /* display prefix, "" for none         */
-    gboolean  favorite;              /* in the Favorites bar and view       */
+    gboolean  favorite;              /* favorite_tasks: in Tasks' Favorites
+                                      * bar and view                       */
 } TaskTag;
+
+/* Which tags task_db_tags lists.                                           */
+typedef enum {
+    TASK_TAGS_CARRIED,               /* those a live task carries: what
+                                      * Tasks shows (sidebar, Favorites)   */
+    TASK_TAGS_ALL                    /* every tag, Notes' too: what Tasks
+                                      * offers wherever a tag is chosen
+                                      * (completion, Add Tag, Settings)    */
+} TaskTagScope;
 
 void task_tag_free(TaskTag *tag);
 void task_ptr_array_free_tags(GPtrArray *a);
@@ -608,10 +581,9 @@ GHashTable *task_db_tag_open_counts(TaskDatabase *db);
  * g_hash_table_destroy.                                                    */
 GHashTable *task_db_tags_by_task(TaskDatabase *db);
 
-/* Every tag, alphabetical (case-insensitive) — each is carried by at least
- * one live task (the schema's triggers delete the rest).  TaskTag*
- * elements (task_ptr_array_free_tags); never NULL.                         */
-GPtrArray *task_db_tags(TaskDatabase *db);
+/* The tags of `scope`, alphabetical (case-insensitive).  TaskTag* elements
+ * (task_ptr_array_free_tags); never NULL.                                  */
+GPtrArray *task_db_tags(TaskDatabase *db, TaskTagScope scope);
 
 /* One tag, or NULL when no tag has that id (it has gone).  Free with
  * task_tag_free.                                                           */
@@ -648,7 +620,8 @@ gint64     task_db_task_tag_add(TaskDatabase *db, gint64 task_id, const gchar *n
 
 /* ---------------------------------------------------------------------------
  * task_db_task_tag_remove() — take a tag off a task.  The tag itself is
- * deleted when no other task carries it (the schema's trigger).  A live
+ * deleted when no other task and no note carries it (the schema's
+ * trigger).  A live
  * task's LAST tag is never taken off (the schema refuses it).
  *
  * Returns 1 when written (also when the task did not carry it), 0 when
@@ -663,7 +636,8 @@ GPtrArray *task_db_tasks_tagged(TaskDatabase *db, gint64 tag_id);
 
 /* -------------------------------- vitals --------------------------------- */
 
-/* Live totals for the About dialog: non-tombstoned tasks, and tags.
+/* Live totals for the About dialog: non-tombstoned tasks, and the tags
+ * they carry.
  * Either out-pointer may be NULL; a failed query leaves 0.                 */
 void task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_tags);
 
