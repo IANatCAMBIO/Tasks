@@ -5,8 +5,8 @@
 @class TasksLibraryWindow;
 
 /*
- * TasksSidebar — the window's left column: the views (Favorites, All
- * Tasks, 3-Day Forecast — task_view.h), then a "Tags" header and every
+ * TasksSidebar — the window's left column: the views (All Tasks, All
+ * Favorites, 3-Day Forecast — task_view.h), then a "Tags" header and every
  * tag, alphabetically, as a source list.  While TASK_CFG_SIDEBAR_COUNTS is
  * on, each tag shows how many open tasks carry it, at the row's right.  Selecting a row selects it in
  * the window through [library select:]; a row is selected on mouse-down

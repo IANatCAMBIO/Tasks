@@ -37,27 +37,23 @@ row_font(BOOL small, BOOL bold, BOOL italic)
 }
 
 /*
- * paragraph_style — the paragraph style of every line of a row.
- *
- * Inputs:
- *   layout — wrap or truncate
+ * paragraph_style — the paragraph style of every line of a row: one line,
+ * cut short with an ellipsis.
  *
  * Output:
- *   the shared style for that layout.
+ *   the shared style.
  */
 static NSParagraphStyle *
-paragraph_style(TasksRowLayout layout)
+paragraph_style(void)
 {
-    static NSParagraphStyle *styles[2];
-    unsigned which = layout == TasksRowLayoutTruncate ? 1 : 0;
-    if (styles[which] != nil) return styles[which];
+    static NSParagraphStyle *style;
+    if (style != nil) return style;
 
-    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-    style.lineBreakMode    = layout == TasksRowLayoutTruncate ? NSLineBreakByTruncatingTail
-                                                              : NSLineBreakByWordWrapping;
-    style.paragraphSpacing = tasks_look_row_line_gap;
-    styles[which] = [style copy];
-    return styles[which];
+    NSMutableParagraphStyle *made = [[NSMutableParagraphStyle alloc] init];
+    made.lineBreakMode    = NSLineBreakByTruncatingTail;
+    made.paragraphSpacing = tasks_look_row_line_gap;
+    style = [made copy];
+    return style;
 }
 
 /*
@@ -65,10 +61,10 @@ paragraph_style(TasksRowLayout layout)
  * Inputs/output are documented in row_text.h.
  */
 NSAttributedString *
-tasks_row_text(const task_row_t *row, BOOL emphasized, TasksRowLayout layout)
+tasks_row_text(const task_row_t *row, BOOL emphasized)
 {
     NSColor *base = emphasized ? NSColor.alternateSelectedControlTextColor : NSColor.labelColor;
-    NSParagraphStyle *para = paragraph_style(layout);
+    NSParagraphStyle *para = paragraph_style();
     NSMutableAttributedString *text = [[NSMutableAttributedString alloc] init];
 
     for (size_t i = 0; i < row->line_count; i++) {
@@ -103,13 +99,13 @@ tasks_row_text(const task_row_t *row, BOOL emphasized, TasksRowLayout layout)
 }
 
 /*
- * tasks_row_text_height — the height the text needs at a width.
+ * tasks_row_text_height — the height the text needs.
  * Inputs/output are documented in row_text.h.
  */
 CGFloat
-tasks_row_text_height(NSAttributedString *text, CGFloat width)
+tasks_row_text_height(NSAttributedString *text)
 {
-    NSRect bounds = [text boundingRectWithSize:NSMakeSize(width, CGFLOAT_MAX)
+    NSRect bounds = [text boundingRectWithSize:NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX)
                                        options:NSStringDrawingUsesLineFragmentOrigin |
                                                NSStringDrawingUsesFontLeading];
     return ceil(NSHeight(bounds));

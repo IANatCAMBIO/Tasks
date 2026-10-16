@@ -339,17 +339,17 @@ isFlipped
  * nothing, which is what keeps an untouched card from redrawing on refresh.
  *
  * Inputs:
- *   text — the row's text from tasks_row_text(…, TasksRowLayoutTruncate)
+ *   text — the row's text from tasks_row_text
  */
 - (void)
 show_text:(NSAttributedString *)text
 {
     if ([text isEqualToAttributedString:self.text]) return;
 
-    /* A truncating string is one line per paragraph whatever the width
+    /* A row's text is one line per paragraph whatever the width
      * (row_text.h), so the height is measured once, here, not per layout. */
     self.text         = text;
-    self.text_height  = tasks_row_text_height(text, CGFLOAT_MAX);
+    self.text_height  = tasks_row_text_height(text);
     self.needsDisplay = YES;
 }
 
@@ -1158,7 +1158,7 @@ text_for_row:(const task_row_t *)row
     __block NSAttributedString *text = nil;
 
     [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
-        text = tasks_row_text(row, NO, TasksRowLayoutTruncate);
+        text = tasks_row_text(row, NO);
     }];
     return text;
 }

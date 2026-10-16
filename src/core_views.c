@@ -16,7 +16,7 @@
 #include "task_dates.h"
 #include "task_view.h"
 
-/* --- Favorites ----------------------------------------------------------- */
+/* --- All Favorites ------------------------------------------------------- */
 
 /*
  * favorite_query — every live task carrying a favorite tag.
@@ -81,22 +81,22 @@ forecast_query(TaskApp *app, gpointer d)
     return task_db_tasks_due_between(app->db, 1, hi, FALSE);
 }
 
-/* `id` is part of the ini format (task_view.h): "pinned" keeps the saved
- * orders of the view Favorites was before it gathered favorite tags.      */
-static const TaskView core_view_favorites = {
-    .id    = "pinned",
-    .label = "\xe2\xad\x90\xef\xb8\x8f  Favorites",
-    .name  = "Favorites",
-    .sort  = 10,
-    .query = favorite_query,
-};
-
 static const TaskView core_view_all = {
     .id    = "all",
     .label = "\xf0\x9f\x94\xae  All Tasks",
     .name  = "All Tasks",
     .sort  = 20,
     .query = all_query,
+};
+
+/* `id` is part of the ini format (task_view.h): "pinned" keeps the saved
+ * orders of the view All Favorites was before it gathered favorite tags. */
+static const TaskView core_view_favorites = {
+    .id    = "pinned",
+    .label = "\xe2\xad\x90\xef\xb8\x8f  All Favorites",
+    .name  = "All Favorites",
+    .sort  = 30,
+    .query = favorite_query,
 };
 
 static const TaskView core_view_forecast = {
@@ -114,7 +114,7 @@ static const TaskView core_view_forecast = {
 void
 task_core_views_init(void)
 {
-    task_view_register(&core_view_favorites);
     task_view_register(&core_view_all);
+    task_view_register(&core_view_favorites);
     task_view_register(&core_view_forecast);
 }

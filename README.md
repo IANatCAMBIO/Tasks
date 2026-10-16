@@ -132,8 +132,8 @@ it cannot.
 
 **Tags are how tasks are organised**; there are no lists.  Every task has
 at least one tag, and any number.  The sidebar at the left shows three
-views — **Favorites** (every task with a favorite tag), **All Tasks** and
-the **3-Day Forecast** — then every tag, by name, with how many open tasks
+views — **All Tasks**, **All Favorites** (every task with a favorite tag)
+and the **3-Day Forecast** — then every tag, by name, with how many open tasks
 carry it (Settings → Appearance → **Show task counts next to tags in the
 sidebar**, on by default).  Selecting a tag shows
 every task carrying it, the way a list would (sorting, Kanban, search, its

@@ -397,7 +397,7 @@ GPtrArray *task_db_subtasks_all_visible(TaskDatabase *db);
 GPtrArray *task_db_tasks_all_visible(TaskDatabase *db);
 
 /* Every visible task, of any level, carrying at least one FAVORITE tag
- * (the "Favorites" view), ordered like task_db_tasks_all_visible.  Done
+ * (the "All Favorites" view), ordered like task_db_tasks_all_visible.  Done
  * ones are included; the rows layer applies show_completed.               */
 GPtrArray *task_db_tasks_favorite(TaskDatabase *db);
 

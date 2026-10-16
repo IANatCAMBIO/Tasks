@@ -338,10 +338,10 @@ test_collect(TaskApp *app)
           "collect: every row says what it is tagged");
     task_pane_content_free(content);
 
-    /* Favorites: every task carrying a favorite tag, and only those. */
+    /* All Favorites: every task carrying a favorite tag, and only those. */
     task_sel_t fav = { task_sel_view, task_view_index_of(task_view_find("pinned")) };
     content = task_pane_collect(app, fav, NULL);
-    check(content->rows->count == 0 && strcmp(content->status_text, "Favorites - 0 tasks") == 0,
+    check(content->rows->count == 0 && strcmp(content->status_text, "All Favorites - 0 tasks") == 0,
           "favorites: empty while no tag is a favorite");
     task_pane_content_free(content);
     TaskTag *fav_tag = task_db_tag_find(app->db, "Chores");

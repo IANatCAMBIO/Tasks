@@ -1,8 +1,8 @@
 /* ===========================================================================
  * task_view.h — the sidebar's virtual views, as a registry.
  *
- * A "virtual view" is a sidebar row that is NOT a tag: Favorites, All
- * Tasks, 3-Day Forecast.  Each one used to be an SbKind enum member, and
+ * A "virtual view" is a sidebar row that is NOT a tag: All Tasks, All
+ * Favorites, 3-Day Forecast.  Each one used to be an SbKind enum member, and
  * adding one meant editing five places in library_window.c that had to
  * agree — the metas[] literal, its visibility gate, the refresh_tasks
  * switch, kanban_order_key and view_order_key — plus two "that is a

@@ -1,8 +1,8 @@
 /*
  * task_pane — what the task pane shows for a sidebar selection.
  *
- * The sidebar selects ONE row: a registered view (Favorites, All Tasks,
- * 3-Day Forecast — task_view.h) or a tag (every task carrying it).  This module names that
+ * The sidebar selects ONE row: a registered view (All Tasks, All
+ * Favorites, 3-Day Forecast — task_view.h) or a tag (every task carrying it).  This module names that
  * selection (task_sel_t) and collects its content: the tasks, filtered by
  * the search box, with completed ones left out when the setting hides
  * them, described as rows (task_rows.h), plus the status bar's line.

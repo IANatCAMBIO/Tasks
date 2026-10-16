@@ -667,7 +667,7 @@ task_recur_pass(TaskApp *app)
     /* Silent when nothing moved: this runs every few minutes and has
      * nothing to say most times.  A roll-forward changes a due date and
      * possibly a status, so it is the FULL notify — the sidebar's Due
-     * Today and Favorites rows and every open editor all read those.      */
+     * Today and All Favorites rows and every open editor all read those.      */
     if (changed > 0) {
         task_app_notify_changed(app);
         if (reopened > 0)

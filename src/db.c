@@ -719,7 +719,7 @@ task_db_subtasks_all_visible(TaskDatabase *db)
 /* The order of every view: high priority first, then by position — one
  * sequence across all top-level tasks (the shared schema's migration from
  * version 100 renumbered the per-list positions into it).  A subtask shown on a row of its own
- * (a tag or Favorites gathers any level) sorts right after its parent, by
+ * (a tag or All Favorites gathers any level) sorts right after its parent, by
  * its position among its siblings.                                         */
 #define VIEW_ORDER \
     " ORDER BY priority DESC," \
@@ -738,7 +738,7 @@ task_db_tasks_all_visible(TaskDatabase *db)
 }
 
 /*
- * task_db_tasks_favorite — the Favorites view (see db.h).
+ * task_db_tasks_favorite — the All Favorites view (see db.h).
  *
  * Inputs:
  *   db — the connection

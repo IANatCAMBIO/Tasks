@@ -546,7 +546,7 @@ check_row_text(TaskApp *app)
     __block int colors = 0, fixed = 0, dimmed = 0;
 
     for (size_t i = 0; i < content->rows->count; i++) {
-        NSAttributedString *text = tasks_row_text(content->rows->rows[i], NO, TasksRowLayoutWrap);
+        NSAttributedString *text = tasks_row_text(content->rows->rows[i], NO);
         [text enumerateAttribute:NSForegroundColorAttributeName
                          inRange:NSMakeRange(0, text.length)
                          options:0
@@ -1226,10 +1226,10 @@ check_sidebar(TaskApp *app, NSString *dir)
         for (guint t = 0; t < tags->len; t++) [want addObject:tasks_tag_title(g_ptr_array_index(tags, t))];
         task_ptr_array_free_tags(tags);
         check([rows() isEqualToArray:want] && task_view_count() == 3 &&
-              [want[0] hasSuffix:@"Favorites"] && [want[1] hasSuffix:@"All Tasks"] &&
+              [want[0] hasSuffix:@"All Tasks"] && [want[1] hasSuffix:@"All Favorites"] &&
               [want[2] hasSuffix:@"3-Day Forecast"],
-              "sidebar: Favorites, All Tasks, 3-Day Forecast, then Tags and every tag by name");
-        check(table.selectedRow == 1 && library.selection.kind == task_sel_view,
+              "sidebar: All Tasks, All Favorites, 3-Day Forecast, then Tags and every tag by name");
+        check(table.selectedRow == 0 && library.selection.kind == task_sel_view,
               "sidebar: the window starts on All Tasks, selected in the sidebar");
         check(![table.delegate tableView:table shouldSelectRow:3],
               "sidebar: the Tags header cannot be selected");
@@ -1509,8 +1509,8 @@ check_task_list(TaskApp *app, NSString *dir)
             snprintf(title, sizeof title, "Generated task %04d", (i * 7919) % many);
             Task task = {
                 .id = 1000000 + i, .title = title, .priority = i % 7 == 0,
-                .notes = i % 3 == 0 ? "A note long enough that it has to wrap onto a second "
-                                      "line when the window is made narrow, as notes often are."
+                .notes = i % 3 == 0 ? "A note long enough that it is cut short with an ellipsis, "
+                                      "never wrapped, when the window is made narrow."
                                     : "",
                 .due = i % 4 == 0 ? 0 : today + (i % 9 - 4) * 86400,
                 .due_time = SHARED_DB_TASK_DUE_TIME_DEFAULT,
@@ -1554,7 +1554,7 @@ check_task_list(TaskApp *app, NSString *dir)
         NSInteger task_col   = [table columnWithIdentifier:@"task"];
 
         /* Whether every row on screen is exactly as tall as its text needs
-         * at the width its cell really has. */
+         * (one line per line of the row, at any width). */
         BOOL (^heights_exact)(void) = ^{
             NSRange shown = [table rowsInRect:table.visibleRect];
             BOOL    exact = shown.length > 0;
@@ -1562,9 +1562,7 @@ check_task_list(TaskApp *app, NSString *dir)
             for (NSUInteger row = shown.location; row < NSMaxRange(shown); row++) {
                 NSView *cell = [table viewAtColumn:task_col row:(NSInteger)row makeIfNecessary:NO];
                 NSAttributedString *text = [cell valueForKey:@"text"];
-                CGFloat want = tasks_row_text_height(
-                    text, NSWidth(cell.bounds) - 2.0 * tasks_look_row_pad_h) +
-                    2.0 * tasks_look_row_pad_v;
+                CGFloat want = tasks_row_text_height(text) + 2.0 * tasks_look_row_pad_v;
                 if (cell == nil || fabs(NSHeight([table rectOfRow:(NSInteger)row]) - want) > 0.01) {
                     exact = NO;
                 }
@@ -1602,11 +1600,25 @@ check_task_list(TaskApp *app, NSString *dir)
         check(fabs(NSMinY(table.visibleRect) - place) < 0.5, "list: a refresh keeps the scroll position");
 
         NSSize full_size = window.contentView.frame.size;
+        NSRange wide_rows = [table rowsInRect:table.visibleRect];
+        NSMutableArray<NSNumber *> *wide_heights = [NSMutableArray array];
+        for (NSUInteger row = wide_rows.location; row < NSMaxRange(wide_rows); row++)
+            [wide_heights addObject:@(NSHeight([table rectOfRow:(NSInteger)row]))];
         began = CFAbsoluteTimeGetCurrent();
         CGFloat side = task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE) ? tasks_look_sidebar_w + 1.0 : 0.0;
         [window setContentSize:NSMakeSize(side + tasks_look_pane_min_w + 100.0, full_size.height)];
         double resize = settle(began);
-        check(heights_exact(), "list: rows are re-measured when the pane gets narrower");
+        BOOL same = wide_heights.count > 0;
+        for (NSUInteger k = 0; k < wide_heights.count; k++)
+            same = same && fabs(NSHeight([table rectOfRow:(NSInteger)(wide_rows.location + k)]) -
+                                wide_heights[k].doubleValue) < 0.01;
+        NSView *first = [table viewAtColumn:task_col row:(NSInteger)wide_rows.location makeIfNecessary:NO];
+        NSAttributedString *first_text = [first valueForKey:@"text"];
+        NSParagraphStyle   *style = first_text.length
+            ? [first_text attribute:NSParagraphStyleAttributeName atIndex:0 effectiveRange:NULL] : nil;
+        check(heights_exact() && same && style.lineBreakMode == NSLineBreakByTruncatingTail,
+              "list: a narrower pane cuts the lines short with an ellipsis, never wraps them: "
+              "the rows keep their heights");
         check(columns_fit(), "list: ... and the columns still fit");
         check(snapshot(window, dir, @"task-list-narrow"), "snapshot: task list, narrow");
         [window setContentSize:full_size];

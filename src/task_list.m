@@ -24,8 +24,10 @@
  * are measured, exactly, as their cells are filled (the Task cell carries
  * a height constraint), and tableView:heightOfRow: supplies the ESTIMATE
  * for every row that is not — the height a task had when it was last
- * measured, or a guess from its line count.  A refresh, a column resize
- * and a scroll each cost the visible rows only.
+ * measured, or a guess from its line count.  A refresh and a scroll each
+ * cost the visible rows only; a column resize costs nothing, as each line
+ * is cut short with an ellipsis rather than wrapped (row_text.h), so a
+ * row's height does not depend on its width.
  *
  * WHAT CHANGES THE ORDER.  One method, arrange_selecting:, rebuilds the
  * display order and reloads the table, reselecting by task id (a reload
@@ -523,8 +525,8 @@ make_check_cell(TasksTaskList *list)
 /*
  * estimated_text_height — a guess at a row's text height from its line
  * count alone, for a row that has never been laid out: every line taken as
- * one unwrapped line of plain text.  Emoji and wrapped lines make the real
- * height a little more; the row is measured exactly when it is shown.
+ * one line of plain text.  Emoji make the real height a little more; the
+ * row is measured exactly when it is shown.
  *
  * Inputs:
  *   line_count — the row's lines, title included
@@ -966,19 +968,6 @@ apply_settings
 }
 
 /*
- * text_width — the width the row text wraps in: the Task column less the
- * padding either side.
- *
- * Output:
- *   the width in points.
- */
-- (CGFloat)
-text_width
-{
-    return self.table.tableColumns[col_task].width - 2.0 * tasks_look_row_pad_h;
-}
-
-/*
  * fitted_width: — the width a Status, Due Date or Completed column needs
  * to show its header and its widest cell.  Measured text is rounded up: a
  * label a fraction of a point too narrow truncates.
@@ -1176,8 +1165,8 @@ fill_cell:(NSTableCellView *)cell column:(NSInteger)column row:(NSInteger)row
         break;
     case col_task: {
         TasksRowTextCell *text_cell = (TasksRowTextCell *)cell;
-        text_cell.text        = tasks_row_text(task, emphasized, TasksRowLayoutWrap);
-        text_cell.text_height = tasks_row_text_height(text_cell.text, [self text_width]);
+        text_cell.text        = tasks_row_text(task, emphasized);
+        text_cell.text_height = tasks_row_text_height(text_cell.text);
         _heights[_order[row]] = text_cell.text_height;
         break;
     }
@@ -1217,8 +1206,7 @@ cell_emphasis_changed:(NSTableCellView *)cell
     if (column == col_task) {
         /* Emphasis changes the colour only, never the height. */
         ((TasksRowTextCell *)cell).text = tasks_row_text(
-            [self row_at:row], cell.backgroundStyle == NSBackgroundStyleEmphasized,
-            TasksRowLayoutWrap);
+            [self row_at:row], cell.backgroundStyle == NSBackgroundStyleEmphasized);
     } else {
         [self fill_cell:cell column:column row:row];
     }
@@ -1274,36 +1262,6 @@ note_heights_changed:(NSIndexSet *)rows
     NSAnimationContext.currentContext.duration = 0.0;
     [self.table noteHeightOfRowsWithIndexesChanged:rows];
     [NSAnimationContext endGrouping];
-}
-
-/*
- * tableViewColumnDidResize: — the Task column's width changed (the window,
- * the sidebar or another column was resized): the text wraps differently,
- * so the rows on screen are measured again.  Rows off screen are measured
- * when they are shown.
- *
- * Inputs:
- *   note — NSTableViewColumnDidResizeNotification; its user info names the
- *          column
- */
-- (void)
-tableViewColumnDidResize:(NSNotification *)note
-{
-    if (note.userInfo[@"NSTableColumn"] != self.table.tableColumns[col_task]) return;
-
-    NSMutableIndexSet *rows = [NSMutableIndexSet indexSet];
-    NSInteger count = [self row_count];
-    CGFloat   width = [self text_width];
-
-    [self.table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *row_view, NSInteger row) {
-        TasksRowTextCell *cell = [row_view viewAtColumn:col_task];
-        if (cell == nil || row >= count) return;
-
-        cell.text_height = tasks_row_text_height(cell.text, width);
-        self->_heights[self->_order[row]] = cell.text_height;
-        [rows addIndex:(NSUInteger)row];
-    }];
-    [self note_heights_changed:rows];
 }
 
 /*

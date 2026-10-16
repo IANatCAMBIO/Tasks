@@ -6,7 +6,7 @@
 #define TASK_CORE_VIEWS_H
 
 /* ---------------------------------------------------------------------------
- * task_core_views_init() — register Favorites, All Tasks and the 3-Day
+ * task_core_views_init() — register All Tasks, All Favorites and the 3-Day
  * Forecast with the view registry (see task_view.h).  Call ONCE from
  * main(), before the library window is built, and before any other view is
  * registered: views are ordered by their `sort` field, but ties fall back
