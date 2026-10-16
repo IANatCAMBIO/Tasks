@@ -1,6 +1,7 @@
 #import "sidebar.h"
 #import "library_window.h"
 #import "look.h"
+#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "task_config.h"
@@ -14,81 +15,6 @@ static NSString * const header_id     = @"sidebar.header";
 static NSString * const header_title  = @"Tags";
 static NSString * const count_id      = @"sidebar.count";   /* a tag cell's count label */
 static const CGFloat    count_gap     = 4.0;                /* text to count            */
-
-/* The Edit Tag sheet's emoji slot. */
-static NSString * const emoji_placeholder = @"…";
-static NSString * const emoji_tooltip     = @"Optional emoji — click to pick";
-
-/* ── The emoji field ────────────────────────────────────────────────── */
-
-/*
- * TasksEmojiField — the Edit Tag sheet's emoji slot: a small text field
- * that holds at most one character and opens the system's emoji picker
- * when clicked.
- *
- * The picker is the system's Character Viewer, which types into whatever
- * text is being edited, so the slot has to be a real text field; this
- * class adds only what makes it behave like a slot rather than a line of
- * text.  In its compact form (the one Ctrl+Cmd+Space shows) the picker
- * closes itself once an emoji is chosen; the slot then ends its edit, so
- * the expanded Character Viewer window, which has no API to close it,
- * types nowhere until the slot is clicked again.
- */
-@interface TasksEmojiField : NSTextField
-@end
-
-@implementation TasksEmojiField
-
-/*
- * mouseDown: — a click starts editing as usual, selects what is there so
- * that the chosen emoji replaces it, and opens the system's emoji picker
- * over the slot.
- *
- * Inputs:
- *   event — the mouse-down
- */
-- (void)
-mouseDown:(NSEvent *)event
-{
-    [super mouseDown:event];
-    [self.currentEditor selectAll:nil];
-    [NSApp orderFrontCharacterPalette:nil];
-}
-
-/*
- * textDidChange: — keep only the last character entered, then give up the
- * keyboard.
- *
- * "Character" is a composed sequence: an emoji with a skin tone or a flag
- * is several code points and must stay whole.  Editing ends once there is
- * a character because a field that is still being edited does not see the
- * next click (its editor does), and so could not open the picker again.
- * That happens on the next run-loop pass: ending an edit from inside the
- * editor's own change notification re-enters it.
- *
- * Inputs:
- *   note — NSTextDidChangeNotification; its object is the field editor
- */
-- (void)
-textDidChange:(NSNotification *)note
-{
-    NSText   *editor = note.object;
-    NSString *text   = editor.string;
-
-    if (text.length > 0) {
-        NSRange last = [text rangeOfComposedCharacterSequenceAtIndex:text.length - 1];
-        if (last.location > 0) editor.string = [text substringWithRange:last];
-
-        __weak TasksEmojiField *ws = self;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            TasksEmojiField *s = ws;
-            if (s.currentEditor) [s.window makeFirstResponder:nil];
-        });
-    }
-    [super textDidChange:note];
-}
-
-@end
 
 /* ── The sidebar ─────────────────────────────────────────────────────── */
 
@@ -483,56 +409,67 @@ menuNeedsUpdate:(NSMenu *)menu
 /* ── Edit Tag ────────────────────────────────────────────────────────── */
 
 /*
- * show_tag_sheet: — the Edit Tag sheet.
+ * show_tag_panel: — the Edit Tag panel: the same grid as Notes' (Tag:,
+ * Emoji (optional):, Favorite:), OK and Cancel, a problem reported in the
+ * hero strip.
  * Documented in sidebar.h.
  */
 - (void)
-show_tag_sheet:(int64_t)tag_id
+show_tag_panel:(int64_t)tag_id
 {
     TasksLibraryWindow *library = self.library;
     TaskTag            *tag     = library != nil ? task_db_tag_get(library.app->db, tag_id) : NULL;
     if (tag == NULL) return;
 
-    NSTextField *title = [NSTextField labelWithString:@"Edit Tag"];
-    title.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
-
-    TasksEmojiField *emoji = [[TasksEmojiField alloc] initWithFrame:NSZeroRect];
-    emoji.stringValue       = tasks_string(tag->emoji);
-    emoji.placeholderString = emoji_placeholder;
-    emoji.toolTip           = emoji_tooltip;
-    emoji.alignment         = NSTextAlignmentCenter;
-    [emoji.widthAnchor constraintEqualToConstant:tasks_look_tool_emoji_w].active = YES;
-
-    NSTextField *name = [NSTextField labelWithString:tasks_string(tag->name)];
-    name.toolTip = @"A tag keeps its name: it is the same tag on every task carrying it.";
+    NSFont      *font  = [NSFont systemFontOfSize:tasks_look_ui_font];
+    NSTextField *emoji = tasks_emoji_field(tasks_string(tag->emoji));
+    emoji.identifier   = @"tag-emoji";
 
     NSButton *favorite = [NSButton checkboxWithTitle:@"Show in the Favorites bar"
                                               target:nil action:NULL];
-    favorite.state = tag->favorite ? NSControlStateValueOn : NSControlStateValueOff;
+    favorite.font       = font;
+    favorite.identifier = @"tag-favorite";
+    favorite.state      = tag->favorite ? NSControlStateValueOn : NSControlStateValueOff;
+
+    NSTextField *(^label)(NSString *) = ^NSTextField *(NSString *text) {
+        NSTextField *l = [NSTextField labelWithString:text];
+        l.font = font;
+        return l;
+    };
+    NSTextField *name = label(tasks_string(tag->name));
+    name.font    = [NSFont boldSystemFontOfSize:tasks_look_ui_font];
+    name.toolTip = @"A tag keeps its name: it is the same tag on every task carrying it.";
     task_tag_free(tag);
 
-    NSStackView *row = [NSStackView stackViewWithViews:@[emoji, name]];
-    row.orientation  = NSUserInterfaceLayoutOrientationHorizontal;
-    row.spacing      = tasks_look_form_spacing;
-
-    NSStackView *content = [NSStackView stackViewWithViews:@[title, row, favorite]];
-    content.orientation  = NSUserInterfaceLayoutOrientationVertical;
-    content.alignment    = NSLayoutAttributeLeading;
-    content.spacing      = tasks_look_form_spacing;
+    NSGridView *grid = [NSGridView gridViewWithViews:@[
+        @[label(@"Tag:"),              name],
+        @[label(@"Emoji (optional):"), emoji],
+        @[label(@"Favorite:"),         favorite],
+    ]];
+    grid.rowSpacing    = tasks_look_tool_btn_gap;
+    grid.columnSpacing = tasks_look_tool_btn_gap;
+    [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
+    for (NSInteger r = 0; r < grid.numberOfRows; r++) [grid rowAtIndex:r].yPlacement = NSGridCellPlacementCenter;
 
     __weak TasksSidebar *ws = self;
-    tasks_ui_sheet(library.window, content, @"Save", ^(BOOL accepted) {
+    TasksToolPanel *panel = [TasksToolPanel
+        panel_with_title:@"Edit Tag" hero_title:@"Edit Tag"
+                subtitle:@"The emoji shows in Notes and Tasks; a tag's name never changes."
+                  symbol:@"tag" content:grid buttons:@[@"OK", @"Cancel"] destructive:-1
+                 handler:^NSString *(NSInteger index) {
         TasksSidebar *s = ws;
-        if (!accepted || !s || s.is_shut_down) return;
-        TaskApp *app = s.library.app;
-        if (!task_db_tag_set_emoji(app->db, tag_id, emoji.stringValue.UTF8String) ||
-            !task_db_tag_set_favorite(app->db, tag_id,
-                                      favorite.state == NSControlStateValueOn)) {
-            task_app_write_failed(app, "The tag's emoji or favorite");
-            return;
-        }
+        if (index != 0 || !s || s.is_shut_down) return nil;    /* Cancel, or gone */
+        TaskApp  *app    = s.library.app;
+        NSString *picked = [emoji.stringValue stringByTrimmingCharactersInSet:
+                            NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (!task_db_tag_set_emoji(app->db, tag_id, picked.UTF8String) ||
+            !task_db_tag_set_favorite(app->db, tag_id, favorite.state == NSControlStateValueOn))
+            return @"The tag could not be changed.";
         [s.library full_refresh];
-    });
+        return nil;
+    }];
+    [panel show_over:library.window];
+    [panel.window makeFirstResponder:emoji];
 }
 
 /* ── Commands ────────────────────────────────────────────────────────── */
@@ -545,7 +482,7 @@ show_tag_sheet:(int64_t)tag_id
 perform_command:(TasksCommand)command param:(NSNumber *)param
 {
     if (self.is_shut_down || !self.library || param == nil) return;
-    if (command == TasksCommandEditTag) [self show_tag_sheet:param.longLongValue];
+    if (command == TasksCommandEditTag) [self show_tag_panel:param.longLongValue];
 }
 
 /*

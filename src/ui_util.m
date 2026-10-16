@@ -273,10 +273,9 @@ mouseDown:(NSEvent *)event
 void
 tasks_ui_notice(NSWindow *parent, NSString *title, NSString *message, void (^done)(void))
 {
-    tasks_tool_panel_show(parent, title, message, @"info.circle.fill", @[@"OK"], -1,
-                          ^(NSInteger index) {
-        if (done) done();
-    });
+    [TasksToolPanel show_message:title message:message symbol:@"info.circle.fill"
+                         buttons:@[@"OK"] destructive:-1 over:parent
+                         handler:^(NSInteger index) { if (done) done(); }];
 }
 
 /*
@@ -287,11 +286,13 @@ void
 tasks_ui_confirm(NSWindow *parent, NSString *title, NSString *message, NSString *action,
                  BOOL destructive, void (^done)(BOOL confirmed))
 {
-    tasks_tool_panel_show(parent, title, message,
-                          destructive ? @"exclamationmark.triangle.fill" : @"questionmark.circle.fill",
-                          @[@"Cancel", action], destructive ? 1 : -1, ^(NSInteger index) {
-        done(index == 1);
-    });
+    [TasksToolPanel show_message:title message:message
+                          symbol:destructive ? @"exclamationmark.triangle.fill"
+                                             : @"questionmark.circle.fill"
+                         buttons:@[@"Cancel", action]   /* [0] = default (Return) */
+                     destructive:destructive ? 1 : -1
+                            over:parent
+                         handler:^(NSInteger index) { done(index == 1); }];
 }
 
 /*
@@ -334,86 +335,86 @@ tasks_ui_pick_path(NSWindow *parent, TasksPickKind kind, NSString *message, NSSt
 }
 
 /*
- * TasksSheetPanel — the window behind tasks_ui_sheet.  Its two buttons and
- * the Escape key end the sheet on the window it is attached to; the sheet's
- * completion handler does the rest.  AppKit keeps the panel alive while it
- * is up, so nothing has to own it.
+ * TasksEmojiField — the emoji slot behind tasks_emoji_field: a text field
+ * that keeps one character and opens the emoji picker when clicked.
+ *
+ * In its compact form (the one Ctrl+Cmd+Space shows) the picker closes
+ * itself once an emoji is chosen; the slot then ends its edit, so the
+ * expanded Character Viewer window, which has no API to close it, types
+ * nowhere until the slot is clicked again.
  */
-@interface TasksSheetPanel : NSPanel
+@interface TasksEmojiField : NSTextField
 @end
 
-@implementation TasksSheetPanel
+@implementation TasksEmojiField
 
 /*
- * accept_action: — the accept button: end the sheet with OK.
+ * mouseDown: — a click starts editing as usual, selects what is there so
+ * that the chosen emoji replaces it, and opens the system's emoji picker
+ * over the slot.
  *
  * Inputs:
- *   sender — the button (unused)
+ *   event — the mouse-down
  */
 - (void)
-accept_action:(id)sender
+mouseDown:(NSEvent *)event
 {
-    [self.sheetParent endSheet:self returnCode:NSModalResponseOK];
+    [super mouseDown:event];
+    [self.currentEditor selectAll:nil];
+    [NSApp orderFrontCharacterPalette:nil];
 }
 
 /*
- * cancelOperation: — Escape, and the Cancel button: end the sheet with
- * Cancel.
+ * textDidChange: — keep only the last character entered, then give up the
+ * keyboard.
+ *
+ * "Character" is a composed sequence: an emoji with a skin tone or a flag
+ * is several code points and must stay whole.  Editing ends once there is
+ * a character because a field that is still being edited does not see the
+ * next click (its editor does), and so could not open the picker again.
+ * That happens on the next run-loop pass: ending an edit from inside the
+ * editor's own change notification re-enters it.
  *
  * Inputs:
- *   sender — the button or responder that sent it (unused)
+ *   note — NSTextDidChangeNotification; its object is the field editor
  */
 - (void)
-cancelOperation:(id)sender
+textDidChange:(NSNotification *)note
 {
-    [self.sheetParent endSheet:self returnCode:NSModalResponseCancel];
+    NSText   *editor = note.object;
+    NSString *text   = editor.string;
+
+    if (text.length > 0) {
+        NSRange last = [text rangeOfComposedCharacterSequenceAtIndex:text.length - 1];
+        if (last.location > 0) editor.string = [text substringWithRange:last];
+
+        __weak TasksEmojiField *ws = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TasksEmojiField *s = ws;
+            if (s.currentEditor) [s.window makeFirstResponder:nil];
+        });
+    }
+    [super textDidChange:note];
 }
 
 @end
 
 /*
- * tasks_ui_sheet — custom content above Cancel / accept, as a sheet.
- * Inputs are documented in ui_util.h.
+ * tasks_emoji_field — the emoji slot, filled in.
+ * Inputs/output are documented in ui_util.h.
  */
-void
-tasks_ui_sheet(NSWindow *parent, NSView *content, NSString *accept, void (^done)(BOOL accepted))
+NSTextField *
+tasks_emoji_field(NSString *emoji)
 {
-    TasksSheetPanel *panel =
-        [[TasksSheetPanel alloc] initWithContentRect:NSMakeRect(0, 0, 320, 120)
-                                           styleMask:NSWindowStyleMaskTitled
-                                             backing:NSBackingStoreBuffered
-                                               defer:YES];
-
-    NSButton *cancel_btn = [NSButton buttonWithTitle:@"Cancel"
-                                              target:panel
-                                              action:@selector(cancelOperation:)];
-    NSButton *accept_btn = [NSButton buttonWithTitle:accept
-                                              target:panel
-                                              action:@selector(accept_action:)];
-    accept_btn.keyEquivalent = @"\r";
-
-    /* The buttons hug the right edge: an empty view takes the spare width. */
-    NSView *spacer = [[NSView alloc] initWithFrame:NSZeroRect];
-    [spacer setContentHuggingPriority:NSLayoutPriorityDefaultLow - 1
-                       forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *buttons = [NSStackView stackViewWithViews:@[spacer, cancel_btn, accept_btn]];
-    buttons.orientation  = NSUserInterfaceLayoutOrientationHorizontal;
-
-    NSStackView *stack = [NSStackView stackViewWithViews:@[content, buttons]];
-    stack.orientation  = NSUserInterfaceLayoutOrientationVertical;
-    stack.alignment    = NSLayoutAttributeLeading;
-    stack.spacing      = tasks_look_form_margin;
-    stack.edgeInsets   = NSEdgeInsetsMake(tasks_look_form_margin, tasks_look_form_margin,
-                                          tasks_look_form_margin, tasks_look_form_margin);
-    [buttons.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
-
-    panel.contentView = stack;
-    [panel setContentSize:stack.fittingSize];
-    panel.initialFirstResponder = content.nextValidKeyView;
-
-    [parent beginSheet:panel completionHandler:^(NSModalResponse response) {
-        done(response == NSModalResponseOK);
-    }];
+    TasksEmojiField *field = [[TasksEmojiField alloc] initWithFrame:NSZeroRect];
+    field.stringValue       = emoji ?: @"";
+    field.placeholderString = @"…";
+    field.toolTip           = @"Optional emoji — click to pick";
+    field.alignment         = NSTextAlignmentCenter;
+    field.font              = [NSFont systemFontOfSize:tasks_look_ui_font + 3];
+    field.translatesAutoresizingMaskIntoConstraints = NO;
+    [field.widthAnchor constraintEqualToConstant:tasks_look_tool_emoji_w].active = YES;
+    return field;
 }
 
 /*

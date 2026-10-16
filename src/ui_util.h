@@ -255,21 +255,16 @@ void tasks_ui_pick_path(NSWindow *parent, TasksPickKind kind, NSString *message,
 void tasks_ui_place_lower_right(NSWindow *window, NSScreen *screen);
 
 /*
- * tasks_ui_sheet — show custom content as a sheet with a Cancel / <accept>
- * button pair.  The scaffold for the small dialogs: New List, New Group,
- * the date picker.  Return chooses the accept button, Escape chooses
- * Cancel.  The content's first key view takes focus.
- *
- * The content view is sized by its fittingSize, so give it constraints (or
- * build it from stack and grid views) that define its width and height.
- * `done` runs while the content view is still alive, so it reads the
- * controls it needs from there — keep references to them in the block.
+ * tasks_emoji_field — Edit Tag's emoji slot: a small text field that holds
+ * at most one character and opens the system's emoji picker when clicked
+ * (the same slot as Notes').  The picker is the system's Character Viewer,
+ * which types into whatever text is being edited, so the slot has to be a
+ * real text field.
  *
  * Inputs:
- *   parent  — window to attach the sheet to (required)
- *   content — the view above the buttons
- *   accept  — the accept button's title ("Create", "Rename", "OK")
- *   done    — called with YES for the accept button, NO for Cancel/Escape
+ *   emoji — the current emoji; empty for none
+ *
+ * Output:
+ *   the field, tasks_look_tool_emoji_w wide, in the app's text size.
  */
-void tasks_ui_sheet(NSWindow *parent, NSView *content, NSString *accept,
-                    void (^done)(BOOL accepted));
+NSTextField *tasks_emoji_field(NSString *emoji);

@@ -187,6 +187,7 @@ typedef NS_ENUM(NSInteger, TasksColor) {
     TasksColorBadge,                /* count on a multi-card drag ghost    */
     TasksColorHero,                 /* the hero strip's fill (white text)  */
     TasksColorHeroSubtitle,         /* the hero's second line              */
+    TasksColorHeroProblem,          /* ... when it reports a problem       */
     TasksColorCount
 };
 

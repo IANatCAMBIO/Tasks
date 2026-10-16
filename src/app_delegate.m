@@ -150,9 +150,11 @@ ask_welcome:(NSString *)default_path
         default_path.lastPathComponent];
 
     __weak TasksAppDelegate *ws = self;
-    tasks_tool_panel_show(nil, @"Welcome to " @TASKS_APP_NAME, message, @"tray.full.fill",
-                          @[@"Open Existing Database\u2026", @"Create New Database", @"Quit"],
-                          -1, ^(NSInteger index) {
+    [TasksToolPanel show_message:@"Welcome to " @TASKS_APP_NAME message:message
+                          symbol:@"tray.full.fill"
+                         buttons:@[@"Open Existing Database\u2026", @"Create New Database", @"Quit"]
+                     destructive:-1 over:nil
+                         handler:^(NSInteger index) {
         TasksAppDelegate *s = ws;
         if (index == 1) {
             [s finish_launch_at:default_path choice:TasksWelcomeCreate];
@@ -174,7 +176,7 @@ ask_welcome:(NSString *)default_path
         } else {
             [s ask_welcome:default_path];
         }
-    });
+    }];
 }
 
 /*

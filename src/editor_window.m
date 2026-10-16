@@ -1,5 +1,6 @@
 #import "editor_window.h"
 #import "look.h"
+#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "recur.h"
@@ -2474,35 +2475,39 @@ tableViewSelectionDidChange:(NSNotification *)note
 /* ── The date picker ────────────────────────────────────────────────── */
 
 /*
- * pick_date_for: — choose a date field's date from a calendar, shown as a
- * sheet with a "Clear date" box.  The calendar opens on the date the field
- * holds, or on today.  Typing in the field works as well; this is the other
- * way in.
+ * pick_date_for: — choose a date field's date from a calendar in a tool
+ * panel, as Notes asks for an action item's due date: Set writes the
+ * picked day, Clear removes the date.  The calendar opens on the date the
+ * field holds, or on today.  Typing in the field works as well; this is
+ * the other way in.
  *
  * Inputs:
- *   field — the due or the start field; OK writes the chosen date (or
- *           nothing, for Clear date) into it and saves
+ *   field — the due or the start field; Set and Clear write into it and
+ *           save
  */
 - (void)
 pick_date_for:(NSTextField *)field
 {
     int64_t       shown  = task_due_parse(field.stringValue.UTF8String);
     NSDatePicker *picker = [[NSDatePicker alloc] initWithFrame:NSZeroRect];
-    NSButton     *clear  = [NSButton checkboxWithTitle:@"Clear date" target:nil action:NULL];
 
     picker.datePickerStyle    = NSDatePickerStyleClockAndCalendar;
     picker.datePickerElements = NSDatePickerElementFlagYearMonthDay;
     picker.dateValue          = shown != 0 ? [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)shown]
                                            : NSDate.date;
+    NSSize size = picker.fittingSize;
+    picker.translatesAutoresizingMaskIntoConstraints = NO;
+    [picker.widthAnchor  constraintEqualToConstant:size.width].active  = YES;
+    [picker.heightAnchor constraintEqualToConstant:size.height].active = YES;
 
-    NSStackView *content = [NSStackView stackViewWithViews:@[picker, clear]];
-    content.orientation  = NSUserInterfaceLayoutOrientationVertical;
-    content.alignment    = NSLayoutAttributeLeading;
-
+    NSString *what = field == self.due_field ? @"Due Date" : @"Start Date";
     __weak TasksEditorWindow *ws = self;
-    tasks_ui_sheet(self.window, content, @"OK", ^(BOOL accepted) {
+    TasksToolPanel *panel = [TasksToolPanel
+        panel_with_title:what hero_title:what subtitle:self.window.title symbol:@"calendar"
+                 content:picker buttons:@[@"Set", @"Clear", @"Cancel"] destructive:-1
+                 handler:^NSString *(NSInteger index) {
         TasksEditorWindow *s = ws;
-        if (!s || s.is_shut_down || !accepted) return;
+        if (!s || s.is_shut_down || index == 2) return nil;
 
         /* The fields hold Gregorian dates whatever calendar the system
          * shows the picker in. */
@@ -2512,7 +2517,7 @@ pick_date_for:(NSTextField *)field
                                                       NSCalendarUnitDay
                                              fromDate:picker.dateValue];
         [field abortEditing];
-        field.stringValue = clear.state == NSControlStateValueOn ? @"" :
+        field.stringValue = index == 1 ? @"" :
             [NSString stringWithFormat:@"%04ld-%02ld-%02ld",
                 (long)day.year, (long)day.month, (long)day.day];
         if (field == s.due_field) {
@@ -2520,7 +2525,9 @@ pick_date_for:(NSTextField *)field
         } else {
             [s recur_changed];
         }
-    });
+        return nil;
+    }];
+    [panel show_over:self.window];
 }
 
 /*

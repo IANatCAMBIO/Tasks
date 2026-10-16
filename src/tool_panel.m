@@ -1,8 +1,10 @@
 /*
- * tool_panel.m — see tool_panel.h.  Ported from the Notes app's
- * tool_panel.m (itself from Files), cut down to what Tasks asks of it: a
- * message and its buttons.
+ * tool_panel.m — see tool_panel.h.  Ported from the Files app's
+ * tool_panel.m; Escape dismisses the panel (handler index -1) instead of
+ * clicking a button, so Escape never answers a destructive choice.  The
+ * same code as Notes' tool_panel.m apart from the prefix: keep them alike.
  */
+
 #import "tool_panel.h"
 #import "look.h"
 #import "ui_util.h"
@@ -101,7 +103,20 @@ set_title:(NSString *)title subtitle:(NSString *)subtitle
 {
     self.title_label.stringValue    = title ?: @"";
     self.subtitle_label.stringValue = subtitle ?: @"";
+    self.subtitle_label.textColor   = tasks_color(TasksColorHeroSubtitle);
     self.subtitle_label.hidden      = subtitle.length == 0;
+}
+
+/*
+ * show_problem: — a highlighted line in the subtitle's place.
+ * Inputs are documented in tool_panel.h.
+ */
+- (void)
+show_problem:(NSString *)problem
+{
+    self.subtitle_label.stringValue = problem ?: @"";
+    self.subtitle_label.textColor   = tasks_color(TasksColorHeroProblem);
+    self.subtitle_label.hidden      = problem.length == 0;
 }
 
 /*
@@ -135,7 +150,7 @@ drawRect:(NSRect)dirtyRect
 
 /*
  * TasksToolWindow — the panel's window: Escape closes it, which reports a
- * dismissal (index -1) to its TasksToolPanel.
+ * dismissal to its TasksToolPanel.
  */
 @interface TasksToolWindow : NSPanel
 @end
@@ -156,17 +171,17 @@ cancelOperation:(id)sender
 
 @end
 
-/*
- * TasksToolPanel — one panel on screen: its window and its completion.
- * It keeps itself alive (live_panels) until its window closes.
- */
-@interface TasksToolPanel : NSObject <NSWindowDelegate>
-@property (nonatomic, strong) TasksToolWindow *window;
-@property (nonatomic, copy)   void (^done)(NSInteger index);
-@property (nonatomic, assign) NSInteger chosen;     /* the button clicked; -1 none */
+@interface TasksToolPanel () <NSWindowDelegate>
+@property (nonatomic, strong) TasksToolWindow *panel;
+@property (nonatomic, strong) TasksHero       *hero;
+@property (nonatomic, copy)   NSString        *hero_title;
+@property (nonatomic, copy)   NSString        *subtitle;
+@property (nonatomic, copy)   NSString *(^button_handler)(NSInteger index);
+@property (nonatomic, copy)   void (^dismissed_handler)(void);
+@property (nonatomic, assign) BOOL             chosen;     /* a button answered */
 @end
 
-/* Panels on screen. */
+/* Panels on screen: each keeps itself alive until its window closes. */
 static NSMutableSet<TasksToolPanel *> *live_panels;
 
 /*
@@ -183,6 +198,7 @@ static NSView *
 message_view(NSString *message)
 {
     NSTextField *label = [NSTextField wrappingLabelWithString:message];
+    label.font         = [NSFont systemFontOfSize:tasks_look_ui_font];
     label.selectable   = YES;
     label.preferredMaxLayoutWidth = tasks_look_tool_msg_w;
     CGFloat h = ceil([label.cell cellSizeForBounds:
@@ -227,50 +243,39 @@ button_w(NSButton *button)
 @implementation TasksToolPanel
 
 /*
- * button_clicked: — a button answers the panel: remember which, close.
+ * build_with_title:… — the panel behind both public constructors: lay out
+ * the hero strip, the content and one button per entry of buttons.
  *
  * Inputs:
- *   sender — the button; its tag is its index
- */
-- (void)
-button_clicked:(NSButton *)sender
-{
-    self.chosen = sender.tag;
-    [self.window close];
-}
-
-/*
- * windowWillClose: — report the answer (or -1 for a dismissal), then let
- * go of the completion, which may hold the caller's objects, and of the
- * panel's own retention.
+ *   window_title — title bar text
+ *   hero_title   — bold line in the hero strip
+ *   subtitle     — second line in the hero strip; empty = title only
+ *   symbol       — SF Symbols name for the hero icon; may be nil
+ *   content      — the controls, sized by their own fittingSize
+ *   buttons      — button labels, at least one: [0] is the default button
+ *                  at the far right, the rest follow to its left
+ *   destructive  — index of the button with the destructive look; -1 none
+ *   handler      — called with the index of the clicked button; returns
+ *                  nil to close the panel or a one-line problem to show in
+ *                  the hero strip (the panel stays open)
  *
- * Inputs:
- *   note — NSWindowWillCloseNotification (unused)
+ * Output:
+ *   the panel, not yet shown.
  */
-- (void)
-windowWillClose:(NSNotification *)note
-{
-    void (^done)(NSInteger) = self.done;
-    self.done = nil;
-    [live_panels removeObject:self];
-    if (done) done(self.chosen);
-}
-
-@end
-
-/*
- * tasks_tool_panel_show — lay the panel out (hero, message, buttons), centre
- * it and bring it forward.
- * Inputs are documented in tool_panel.h.
- */
-void
-tasks_tool_panel_show(NSWindow *parent, NSString *title, NSString *message,
-                      NSString *symbol, NSArray<NSString *> *buttons, NSInteger destructive,
-                      void (^done)(NSInteger index))
++ (instancetype)
+build_with_title:(NSString *)window_title
+      hero_title:(NSString *)hero_title
+        subtitle:(NSString *)subtitle
+          symbol:(NSString *)symbol
+         content:(NSView *)content
+         buttons:(NSArray<NSString *> *)buttons
+     destructive:(NSInteger)destructive
+         handler:(NSString *(^)(NSInteger index))handler
 {
     TasksToolPanel *p = [[TasksToolPanel alloc] init];
-    p.done   = done;
-    p.chosen = -1;
+    p.hero_title     = hero_title;
+    p.subtitle       = subtitle;
+    p.button_handler = handler;
 
     NSMutableArray<NSButton *> *controls = [NSMutableArray array];
     CGFloat bar_w = 2 * tasks_look_tool_btn_margin - tasks_look_tool_btn_gap;
@@ -278,18 +283,20 @@ tasks_tool_panel_show(NSWindow *parent, NSString *title, NSString *message,
         NSButton *b = [NSButton buttonWithTitle:buttons[i] target:p
                                          action:@selector(button_clicked:)];
         b.tag                  = (NSInteger)i;
+        b.font                 = [NSFont systemFontOfSize:tasks_look_ui_font];
         b.hasDestructiveAction = (NSInteger)i == destructive;
         b.translatesAutoresizingMaskIntoConstraints = NO;
         [controls addObject:b];
         bar_w += tasks_look_tool_btn_gap + button_w(b);
     }
+    /* No button takes Escape: it dismisses the panel (TasksToolWindow). */
     controls.firstObject.keyEquivalent = @"\r";
 
-    NSView *content = message_view(message ?: @"");
-    NSSize  cs      = content.fittingSize;
-    CGFloat w = MAX(MAX(tasks_look_tool_min_w, cs.width + 2 * tasks_look_tool_pad), bar_w);
-    CGFloat h = tasks_look_hero_h + tasks_look_tool_pad + cs.height + tasks_look_tool_pad +
-                1.0 + tasks_look_tool_bar_h;
+    [content layoutSubtreeIfNeeded];
+    NSSize  cs = content.fittingSize;
+    CGFloat w  = MAX(MAX(tasks_look_tool_min_w, cs.width + 2 * tasks_look_tool_pad), bar_w);
+    CGFloat h  = tasks_look_hero_h + tasks_look_tool_pad + cs.height + tasks_look_tool_pad +
+                 1.0 + tasks_look_tool_bar_h;
 
     TasksToolWindow *window = [[TasksToolWindow alloc]
         initWithContentRect:NSMakeRect(0, 0, w, h)
@@ -297,17 +304,18 @@ tasks_tool_panel_show(NSWindow *parent, NSString *title, NSString *message,
                             NSWindowStyleMaskUtilityWindow
                     backing:NSBackingStoreBuffered
                       defer:NO];
-    window.title                  = @TASKS_APP_NAME;
+    window.title                  = window_title;
     window.floatingPanel          = YES;
     window.hidesOnDeactivate      = NO;
     window.becomesKeyOnlyIfNeeded = NO;
     window.releasedWhenClosed     = NO;
     window.delegate               = p;
-    p.window                      = window;
+    p.panel                       = window;
     NSView *cv = window.contentView;
 
     TasksHero *hero = [[TasksHero alloc] init_with_symbol:symbol];
-    [hero set_title:title subtitle:nil];
+    [hero set_title:hero_title subtitle:subtitle];
+    p.hero = hero;
     [cv addSubview:hero];
 
     NSBox *rule = [[NSBox alloc] init];
@@ -348,15 +356,115 @@ tasks_tool_panel_show(NSWindow *parent, NSString *title, NSString *message,
         ]];
         right = b;
     }
+    return p;
+}
 
+/*
+ * button_clicked: — run the button handler: nil closes the panel, a
+ * problem is shown in the hero strip and the panel stays.
+ *
+ * Inputs:
+ *   sender — the clicked button; its tag is the index in buttons
+ */
+- (void)
+button_clicked:(NSButton *)sender
+{
+    [self.hero set_title:self.hero_title subtitle:self.subtitle];
+    NSString *problem = self.button_handler ? self.button_handler(sender.tag) : nil;
+    if (problem) {
+        [self.hero show_problem:problem];
+        NSBeep();
+        return;
+    }
+    self.chosen = YES;
+    [self.panel close];
+}
+
+/*
+ * panel_with_title:…:handler: — see tool_panel.h.
+ */
++ (instancetype)
+panel_with_title:(NSString *)window_title
+      hero_title:(NSString *)hero_title
+        subtitle:(NSString *)subtitle
+          symbol:(NSString *)symbol
+         content:(NSView *)content
+         buttons:(NSArray<NSString *> *)buttons
+     destructive:(NSInteger)destructive
+         handler:(NSString *(^)(NSInteger index))handler
+{
+    return [self build_with_title:window_title hero_title:hero_title subtitle:subtitle
+                           symbol:symbol content:content buttons:buttons
+                      destructive:destructive handler:handler];
+}
+
+/*
+ * show_message:… — see tool_panel.h.
+ */
++ (void)
+show_message:(NSString *)title
+     message:(NSString *)message
+      symbol:(NSString *)symbol
+     buttons:(NSArray<NSString *> *)buttons
+ destructive:(NSInteger)destructive
+        over:(NSWindow *)parent
+     handler:(void (^)(NSInteger index))handler
+{
+    TasksToolPanel *p = [self build_with_title:@TASKS_APP_NAME hero_title:title subtitle:@""
+                                        symbol:symbol content:message_view(message ?: @"")
+                                       buttons:buttons destructive:destructive
+                                       handler:^NSString *(NSInteger index) {
+        if (handler) handler(index);
+        return nil;
+    }];
+    p.dismissed_handler = ^{ if (handler) handler(-1); };
+    [p show_over:parent];
+}
+
+/*
+ * show_over: — see tool_panel.h.
+ */
+- (void)
+show_over:(NSWindow *)parent
+{
     if (!live_panels) live_panels = [NSMutableSet set];
-    [live_panels addObject:p];
+    [live_panels addObject:self];
     if (parent) {
-        NSRect pf = parent.frame;
-        [window setFrameOrigin:NSMakePoint(NSMidX(pf) - w / 2.0, NSMidY(pf) - NSHeight(window.frame) / 2.0)];
+        NSRect pf = parent.frame, f = self.panel.frame;
+        [self.panel setFrameOrigin:NSMakePoint(NSMidX(pf) - f.size.width / 2.0,
+                                               NSMidY(pf) - f.size.height / 2.0)];
     } else {
-        [window center];
+        [self.panel center];
     }
     [NSApp activate];
-    [window makeKeyAndOrderFront:nil];
+    [self.panel makeKeyAndOrderFront:nil];
 }
+
+/*
+ * window — see tool_panel.h.
+ */
+- (NSPanel *)
+window
+{
+    return self.panel;
+}
+
+/*
+ * windowWillClose: — drop the handlers (which may reference the caller's
+ * objects) and the panel's self-retention, and report a close without a
+ * button click to the dismissed handler.
+ *
+ * Inputs:
+ *   note — close notification (unused)
+ */
+- (void)
+windowWillClose:(NSNotification *)note
+{
+    void (^dismissed)(void) = self.chosen ? nil : self.dismissed_handler;
+    self.button_handler    = nil;
+    self.dismissed_handler = nil;
+    [live_panels removeObject:self];
+    if (dismissed) dismissed();
+}
+
+@end

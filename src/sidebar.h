@@ -12,7 +12,7 @@
  * the window through [library select:]; a row is selected on mouse-down
  * (TasksTable).
  *
- * The sidebar OWNS the Edit Tag sheet (TasksCommandEditTag): a tag's
+ * The sidebar OWNS the Edit Tag panel (TasksCommandEditTag): a tag's
  * emoji and its favorite flag.  A tag's NAME never changes, and a tag is
  * never made or deleted here: it exists while a task carries it.  A
  * right-click on a tag offers Edit Tag…; the command's other callers (the
@@ -57,14 +57,15 @@
 - (void)refresh_counts;
 
 /*
- * show_tag_sheet: — the Edit Tag sheet for a tag: its name (fixed), an
- * emoji slot, and Favorite.  Saving writes the two and refreshes the
- * window.  Public so it can be driven without a menu.
+ * show_tag_panel: — the Edit Tag tool panel for a tag (the same panel as
+ * Notes'): its name (fixed), an emoji slot, and Favorite.  OK writes the
+ * two and refreshes the window; a failed write is reported in the panel.
+ * Public so it can be driven without a menu.
  *
  * Inputs:
  *   tag_id — the tag; a tag that has gone shows nothing
  */
-- (void)show_tag_sheet:(int64_t)tag_id;
+- (void)show_tag_panel:(int64_t)tag_id;
 
 /*
  * perform_command:param: — carry out one of the sidebar's commands.

@@ -350,14 +350,18 @@ constant there rather than a literal in your file.
 **Utilities** (`src/ui_util.h`): `tasks_string`, `tasks_list_title`,
 `tasks_icon`, `tasks_app_icon`, `tasks_image_view`, `tasks_ui_notice`,
 `tasks_ui_confirm`, `tasks_ui_pick_path`, `tasks_ui_place_lower_right`,
-`tasks_ui_sheet`.  Every dialog takes a completion
-block and the call returns at once.  **No system alerts:** a notice or a
-question is a tool panel (`tool_panel.h`) — a floating utility window with
-the blue hero strip — never `NSAlert`, an alert sheet or `runModal`.
-`tasks_ui_notice` and `tasks_ui_confirm` are built on it; in a tool panel
-Escape and the close box are no answer (Cancel), never the default
-button.  `tasks_ui_sheet` (Edit Tag and the other small forms) is still a
-sheet, and the file chooser is the system's (`NSOpenPanel`).
+`tasks_emoji_field`.  Every dialog takes a completion block and the call
+returns at once.  **No system alerts and no sheets** (owner decision,
+2026-10-16, as Notes): a notice, a question or a small form is a tool
+panel (`tool_panel.h`, `TasksToolPanel` — the same API as Notes'
+`NotesToolPanel`) — a floating utility window with the blue hero strip —
+never `NSAlert`, an alert sheet, a custom sheet or `runModal`.
+`tasks_ui_notice` and `tasks_ui_confirm` are built on it; Edit Tag and the
+date pickers build their own with `panel_with_title:…`, whose handler
+returns a problem to keep the panel open.  In a tool panel Escape and the
+close box are no answer (Cancel), never the default button, and a
+destructive button is never the default.  The file chooser is the
+system's (`NSOpenPanel`).
 Every table is a `TasksTable` (or a subclass of it), which selects a
 clicked row on mouse-down.
 
@@ -382,7 +386,6 @@ read it for the problems below first.
 | panes (sidebar, list, board) | the library window (strong properties) | with it |
 | editor controllers | the editor module's registry, keyed by task id | `windowWillClose:` removes the entry |
 | Settings controller | one module-level `static` | `windowWillClose:` sets it to nil |
-| sheets | AppKit, while up | when ended |
 | tool panels | `tool_panel.m`'s set of live panels | `windowWillClose:` |
 
 `NSWindow.windowController` and `NSWindow.delegate` do not retain.  A window
@@ -530,9 +533,9 @@ Still to do:
 Owns: `sidebar.[hm]`, `favorites_bar.[hm]`.  Reference: `sidebar.c`.
 Lists and groups are gone (tags replaced them): a source list of the
 views, the non-selectable Tags header and every tag; selection restored
-across reloads (`task_sidebar_pick`); Edit Tag through `tasks_ui_sheet`,
-with the emoji picker; the Favorites bar of favorite tags; the toolbar's
-sidebar toggle.
+across reloads (`task_sidebar_pick`); Edit Tag in a tool panel, with the
+emoji slot (`tasks_emoji_field`); the Favorites bar of favorite tags; the
+toolbar's sidebar toggle.
 
 ### WP3 — Task list
 

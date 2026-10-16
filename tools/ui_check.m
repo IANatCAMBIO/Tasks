@@ -64,6 +64,7 @@
 #import "settings_window.h"
 #import "favorites_bar.h"
 #import "sidebar.h"
+#import "tool_panel.h"
 #import "task_list.h"
 #import "ui_util.h"
 
@@ -301,6 +302,9 @@ snapshot_windows(TaskApp *app, NSString *dir)
     check_spin(0.2);
 }
 
+/* Defined with the text probes below; the utilities check uses it first. */
+static NSTextField *find_text(NSView *root, NSString *text);
+
 /*
  * tool_panel — the tool panel on screen (tool_panel.h), the app's own
  * dialog where a system alert would otherwise be.
@@ -385,27 +389,39 @@ check_utilities(TaskApp *app)
           [tasks_string("caf\xe9") isEqualToString:@"caf\u00e9"],
           "utilities: core text is never a nil string, even when not UTF-8");
 
-    /* The sheet: shown on a window, ended as its accept button would end
-     * it, its completion called once, and the panel released. */
-    __weak NSWindow *weak_sheet = nil;
-    __block int      accepted   = -1;
+    /* A panel with the caller's controls: shown over a window, never a
+     * sheet; its handler keeps it open with a problem in the hero strip
+     * and closes it with nil; the panel is released when it closes. */
+    __weak NSWindow *weak_panel = nil;
+    __block int      answered   = 0;
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
         [library showWindow:nil];
 
         NSTextField *field = [NSTextField textFieldWithString:@"New list"];
         [field.widthAnchor constraintEqualToConstant:240].active = YES;
-        tasks_ui_sheet(library.window, field, @"Create", ^(BOOL ok) { accepted = ok; });
+        TasksToolPanel *panel = [TasksToolPanel
+            panel_with_title:@"Probe" hero_title:@"Probe" subtitle:@"" symbol:nil content:field
+                     buttons:@[@"Create", @"Cancel"] destructive:-1
+                     handler:^NSString *(NSInteger index) {
+            answered++;
+            return answered == 1 ? @"Not yet" : nil;
+        }];
+        [panel show_over:library.window];
         check_spin(0.3);
-        weak_sheet = library.window.attachedSheet;
-        check(weak_sheet != nil, "utilities: the sheet attaches to its window");
-        [library.window endSheet:library.window.attachedSheet returnCode:NSModalResponseOK];
-        check_spin(0.3);
-        check(accepted == 1, "utilities: the sheet's completion reports the accept button");
+        weak_panel = tool_panel();
+        check(weak_panel != nil && library.window.attachedSheet == nil,
+              "utilities: custom content shows in a tool panel, not a sheet");
+        answer_panel(0);
+        check(answered == 1 && tool_panel() != nil && find_text(tool_panel().contentView, @"Not yet") != nil,
+              "utilities: a problem from the handler keeps the panel open, shown in the hero");
+        answer_panel(0);
+        check(answered == 2 && tool_panel() == nil,
+              "utilities: the default button answers and the panel closes");
         [library close];
     }
     check_spin(0.2);
-    check(weak_sheet == nil, "utilities: the sheet is released when it ends");
+    check(weak_panel == nil, "utilities: the panel is released when it closes");
 
     /* Questions and notices are tool panels, never system alerts: Return's
      * button is Cancel in a confirmation (it never destroys), Escape is no
@@ -1301,26 +1317,29 @@ check_sidebar(TaskApp *app, NSString *dir)
         check(bar_menu.numberOfItems == 1 && bar_menu.itemArray[0].tag == TasksCommandEditTag,
               "favorites: a button's menu offers Edit Tag");
 
-        /* Edit Tag: an emoji and Favorite, through the sheet. */
+        /* Edit Tag: an emoji and Favorite, in a tool panel (never a sheet),
+         * OK its default button. */
         [library perform_command:TasksCommandEditTag param:@(errands->id)];
         check_spin(0.3);
-        NSWindow *sheet = window.attachedSheet;
+        NSWindow *panel = tool_panel();
         NSTextField *emoji = nil;
         NSButton    *fav   = nil;
-        NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:sheet.contentView ?: [NSView new]];
+        NSButton    *ok    = nil;
+        NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:panel.contentView ?: [NSView new]];
         for (NSUInteger k = 0; k < queue.count; k++) {
             NSView *v = queue[k];
             if ([v isKindOfClass:NSTextField.class] && ((NSTextField *)v).editable) emoji = (NSTextField *)v;
             if ([v isKindOfClass:NSButton.class] && [((NSButton *)v).title hasPrefix:@"Show in"]) fav = (NSButton *)v;
+            if ([v isKindOfClass:NSButton.class] && [((NSButton *)v).keyEquivalent isEqualToString:@"\r"]) ok = (NSButton *)v;
             [queue addObjectsFromArray:v.subviews];
         }
-        check(sheet != nil && emoji != nil && fav != nil &&
-              find_text(sheet.contentView, @"Errands") != nil,
-              "edit tag: the sheet shows the name, an emoji slot and Favorite");
-        check(snapshot(sheet, dir, @"edit-tag"), "edit tag: snapshot");
+        check(panel != nil && window.attachedSheet == nil && emoji != nil && fav != nil &&
+              [ok.title isEqualToString:@"OK"] && find_text(panel.contentView, @"Errands") != nil,
+              "edit tag: the panel shows the name, an emoji slot and Favorite, OK its default");
+        check(snapshot(panel, dir, @"edit-tag"), "edit tag: snapshot");
         emoji.stringValue = @"\U0001F6CD";
         fav.state = NSControlStateValueOn;
-        [window endSheet:sheet returnCode:NSModalResponseOK];
+        [ok performClick:nil];
         check_spin(0.3);
         TaskTag *edited = tag_named("Errands");
         check(edited != NULL && strcmp(edited->emoji, "\U0001F6CD") == 0 && edited->favorite &&

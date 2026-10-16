@@ -3,6 +3,7 @@
 #import "kanban.h"
 #import "look.h"
 #import "task_list.h"
+#import "tool_panel.h"
 #import "ui_util.h"
 
 #include "db.h"
@@ -1412,7 +1413,7 @@ setHidden:(BOOL)hidden
 }
 
 /*
- * pick_displayed_date: — open a calendar sheet to jump to any date.
+ * pick_displayed_date: — a calendar in a tool panel to jump to any date.
  *
  * Inputs:
  *   sender — the calendar button (unused)
@@ -1425,11 +1426,18 @@ pick_displayed_date:(id)sender
     picker.datePickerStyle    = NSDatePickerStyleClockAndCalendar;
     picker.datePickerElements = NSDatePickerElementFlagYearMonthDay;
     picker.dateValue          = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)t];
+    NSSize size = picker.fittingSize;
+    picker.translatesAutoresizingMaskIntoConstraints = NO;
+    [picker.widthAnchor  constraintEqualToConstant:size.width].active  = YES;
+    [picker.heightAnchor constraintEqualToConstant:size.height].active = YES;
 
     __weak TasksDayPlanner *ws = self;
-    tasks_ui_sheet(self.window, picker, @"OK", ^(BOOL accepted) {
+    TasksToolPanel *panel = [TasksToolPanel
+        panel_with_title:@"Go to Date" hero_title:@"Go to Date" subtitle:@"" symbol:@"calendar"
+                 content:picker buttons:@[@"Go", @"Cancel"] destructive:-1
+                 handler:^NSString *(NSInteger index) {
         TasksDayPlanner *s = ws;
-        if (!s || !accepted) return;
+        if (!s || index != 0) return nil;
         NSCalendar       *cal    = NSCalendar.currentCalendar;
         NSDate           *today  = [cal startOfDayForDate:[NSDate date]];
         NSDate           *chosen = [cal startOfDayForDate:picker.dateValue];
@@ -1439,7 +1447,9 @@ pick_displayed_date:(id)sender
         [s update_header_controls];
         [s reload];
         [s scroll_to_now];
-    });
+        return nil;
+    }];
+    [panel show_over:self.window];
 }
 
 /*
