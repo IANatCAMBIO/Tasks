@@ -1281,12 +1281,12 @@ check_sidebar(TaskApp *app, NSString *dir)
               [errands_count() isEqualToString:[NSString stringWithFormat:@"%d", open]],
               "counts: on by default, a tag shows its open tasks' count");
         const TaskView *all_view = task_view_nth(0);
-        GPtrArray      *all      = all_view->query(app, all_view->user_data);
+        GPtrArray      *viewed   = all_view->query(app, all_view->user_data);
         int             all_open = 0;
-        for (guint t = 0; t < all->len; t++) {
-            if (((const Task *)g_ptr_array_index(all, t))->status != TASK_STATUS_DONE) all_open++;
+        for (guint t = 0; t < viewed->len; t++) {
+            if (((const Task *)g_ptr_array_index(viewed, t))->status != TASK_STATUS_DONE) all_open++;
         }
-        task_ptr_array_free_tasks(all);
+        task_ptr_array_free_tasks(viewed);
         check(all_open > 0 && [sidebar_count(sidebar, tasks_string(all_view->label))
                                    isEqualToString:[NSString stringWithFormat:@"%d", all_open]],
               "counts: a view shows its open tasks' count (as Notes' fixed rows)");

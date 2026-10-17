@@ -85,18 +85,6 @@ NSPasteboardType const tasks_row_drag_type = @"tasks.task-row";
 /* List-only metrics.  (Everything shared with another pane is in look.h.) */
 static const CGFloat task_col_min_w = 120.0;    /* the Task column's floor      */
 static const CGFloat data_col_min_w = 40.0;     /* Status, Due Date, Completed  */
-static const CGFloat header_fit_pad = 10.0;     /* header title to column edges
-                                                 * when fitting a column        */
-/* A sortable column's header must also fit the sort indicator, and the
- * sorted column's title is drawn in BOLD (macOS 26), so a sortable column
- * is fitted to its bold title.  Measured by rendering the header: a title
- * truncates below bold_title_w + 29..31 (the leading inset, AppKit's own
- * title margins and the indicator 17pt from the right edge); 10 + 22 = 32
- * leaves a point to spare. */
-static const CGFloat sort_indicator_w = 22.0;  /* extra width for sortable columns */
-static const CGFloat label_inset    = 2.0;      /* an NSTextField draws its text
-                                                 * this far inside its frame    */
-static const size_t  fit_row_limit  = 2000;     /* rows measured to fit a column */
 
 @interface TasksTaskList () <NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate>
 @property (nonatomic, weak) TasksLibraryWindow *library;
@@ -262,7 +250,7 @@ setText_height:(CGFloat)text_height
 - (void)
 drawRect:(NSRect)dirty
 {
-    [self.text drawWithRect:NSInsetRect(self.bounds, tasks_look_row_pad_h, tasks_look_row_pad_v)
+    [self.text drawWithRect:NSInsetRect(self.bounds, shared_look_cell_pad_h, tasks_look_row_pad_v)
                     options:NSStringDrawingUsesLineFragmentOrigin |
                             NSStringDrawingUsesFontLeading];
 }
@@ -344,34 +332,6 @@ label_text(const task_row_t *row, NSInteger column)
 }
 
 /*
- * label_width — the width a label's text takes in the label font, cached
- * per text.  The column fit measures every row's Due Date and Completed
- * text on every refresh; the texts are dates, of which a list has a few
- * dozen distinct ones, so after the first refresh this is a lookup.
- *
- * Inputs:
- *   text  — the label's text
- *   attrs — the label font, as sizeWithAttributes: takes it
- *
- * Output:
- *   the width in points.
- */
-static CGFloat
-label_width(NSString *text, NSDictionary<NSAttributedStringKey, id> *attrs)
-{
-    static NSMutableDictionary<NSString *, NSNumber *> *widths;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ widths = [NSMutableDictionary dictionary]; });
-
-    NSNumber *known = widths[text];
-    if (known != nil) return known.doubleValue;
-
-    CGFloat width = [text sizeWithAttributes:attrs].width;
-    widths[text]  = @(width);
-    return width;
-}
-
-/*
  * top_label — a one-line label placed in a cell at the height of the row
  * text's first line.
  *
@@ -416,9 +376,9 @@ make_label_cell(TasksTaskList *list)
                                     forOrientation:NSLayoutConstraintOrientationHorizontal];
     [NSLayoutConstraint activateConstraints:@[
         [label.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor
-                                            constant:tasks_look_row_pad_h],
+                                            constant:shared_look_cell_pad_h],
         [label.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor
-                                             constant:-tasks_look_row_pad_h],
+                                             constant:-shared_look_cell_pad_h],
     ]];
     cell.list      = list;
     cell.textField = label;
@@ -592,6 +552,14 @@ build_table
             column.minWidth     = data_col_min_w;
             column.resizingMask = NSTableColumnUserResizingMask;
         }
+        /* Headers always sort; the prototype is also what tells the column
+         * fit to leave room for the sort indicator. */
+        column.sortDescriptorPrototype = column_specs[i].sort == NO_SORT
+            ? nil
+            : [NSSortDescriptor
+                  sortDescriptorWithKey:tasks_string(
+                                            task_sort_column_name((task_sort_column_t)column_specs[i].sort))
+                              ascending:YES];
         [self.table addTableColumn:column];
     }
 
@@ -859,8 +827,8 @@ shut_down
 
 /*
  * apply_settings — make the columns match the settings: which are visible.
- * Column headers always sort; whether rows may be dragged is decided per
- * drag (pasteboardWriterForRow:), not by any column.
+ * Whether rows may be dragged is decided per drag (pasteboardWriterForRow:),
+ * not by any column.
  */
 - (void)
 apply_settings
@@ -874,74 +842,20 @@ apply_settings
             column.hidden    = hidden;
             self.fit_pending = YES;
         }
-        column.sortDescriptorPrototype = spec->sort == NO_SORT
-            ? nil
-            : [NSSortDescriptor
-                  sortDescriptorWithKey:tasks_string(
-                                            task_sort_column_name((task_sort_column_t)spec->sort))
-                              ascending:YES];
     }
-}
-
-/*
- * fitted_width: — the width a Status, Due Date or Completed column needs
- * to show its header and its widest cell.  Measured text is rounded up: a
- * label a fraction of a point too narrow truncates.
- *
- * Inputs:
- *   index — col_status, col_due or col_completed
- *
- * Output:
- *   the width in points.
- */
-- (CGFloat)
-fitted_width:(int)index
-{
-    NSTableColumn *column = self.table.tableColumns[(NSUInteger)index];
-    NSDictionary<NSAttributedStringKey, id> *attrs = @{ NSFontAttributeName: label_font() };
-    CGFloat widest = 0.0;
-
-    if (index == col_status) {
-        /* Three possible labels: no need to look at the rows. */
-        for (int status = 0; status < TASK_STATUS_N_VALUES; status++) {
-            NSString *text = tasks_string(task_status_label((TaskStatus)status));
-            widest = MAX(widest, [text sizeWithAttributes:attrs].width);
-        }
-    } else {
-        size_t limit = MIN(_rows->count, fit_row_limit);
-        for (size_t i = 0; i < limit; i++) {
-            const char *text = label_text(_rows->rows[i], index);
-            if (text[0] == '\0') continue;
-            widest = MAX(widest, label_width(tasks_string(text), attrs));
-        }
-    }
-
-    CGFloat cell_w   = ceil(widest) + 2.0 * (label_inset + tasks_look_row_pad_h);
-    /* Use the column spec's sort field rather than sortDescriptorPrototype:
-     * the prototype may not be set yet when the first fit runs at startup. */
-    BOOL    sortable = column_specs[index].sort != NO_SORT;
-    NSFont *title_font = column.headerCell.font;
-    if (sortable) {
-        title_font = [NSFontManager.sharedFontManager convertFont:title_font
-                                                      toHaveTrait:NSBoldFontMask];
-    }
-    CGFloat title_w   = ceil([column.title sizeWithAttributes:
-                                 @{ NSFontAttributeName: title_font }].width);
-    CGFloat indicator = sortable ? sort_indicator_w : 0.0;
-    CGFloat header_w  = title_w + header_fit_pad + indicator;
-    return MAX(column.minWidth, MAX(cell_w, header_w));
 }
 
 /*
  * fit_columns_if_pending — size the Status, Due Date and Completed columns
- * to their content and give the Task column exactly what is left.
+ * to their content and give the Task column exactly what is left
+ * (shared_ui_fit_columns, as Notes' lists).
  *
  * Two modes:
  *   full fit (fit_pending YES) — every data column is reset to its fitted
  *       width, even if that shrinks it, and the Task column is recalculated.
  *   widen-only (fit_pending NO) — each data column is widened when new
  *       content is wider than the current width; the Task column shrinks to
- *       compensate only when a column widened.
+ *       compensate.
  *
  * Widen-only runs on every show_rows: so that a task whose due time is
  * changed after the initial fit does not stay truncated.
@@ -950,75 +864,16 @@ fitted_width:(int)index
 fit_columns_if_pending
 {
     if (_rows == NULL) return;
-    if (self.scroll.contentSize.width <= 0.0) {
-        __weak TasksTaskList *ws = self;
-        dispatch_async(dispatch_get_main_queue(), ^{ [ws fit_columns_if_pending]; });
-        return;
-    }
-
-    BOOL full_fit = self.fit_pending;
+    BOOL full = self.fit_pending;
     self.fit_pending = NO;
 
-    BOOL changed = NO;
-    for (int i = col_status; i < col_count; i++) {
-        NSTableColumn *column = self.table.tableColumns[(NSUInteger)i];
-        if (column.hidden) continue;
-        CGFloat w = [self fitted_width:i];
-        if (full_fit || w > column.width) {
-            column.width = w;
-            changed = YES;
-        }
-    }
-    if (changed) [self place_task_column];
-}
-
-/*
- * place_task_column — give the Task column what the pane has left after the
- * other columns, so the table is exactly as wide as the pane.  Short of
- * room — the pane at its least width beside the day planner — the data
- * columns first give back what the Task column's floor needs, each down to
- * its own floor, so the table never overflows the pane; the next refresh
- * widens them again if the room has come back.
- */
-- (void)
-place_task_column
-{
-    CGFloat        room   = self.scroll.contentSize.width;
-    NSTableColumn *task   = self.table.tableColumns[col_task];
-    CGFloat        others = 0.0;
-
-    for (int i = 0; i < col_count; i++) {
-        NSTableColumn *column = self.table.tableColumns[(NSUInteger)i];
-        if (i != col_task && !column.hidden) others += column.width;
-    }
-    CGFloat deficit = others + task.minWidth - room;
-    for (int i = col_count - 1; deficit > 0.0 && i >= col_status; i--) {
-        NSTableColumn *column = self.table.tableColumns[(NSUInteger)i];
-        if (column.hidden) continue;
-        CGFloat give = MIN(deficit, column.width - column.minWidth);
-        if (give <= 0.0) continue;
-        column.width -= give;
-        others       -= give;
-        deficit      -= give;
-    }
-    task.width = MAX(task.minWidth, room - others);
-}
-
-/*
- * setFrameSize: — the pane was resized (the window, the split): a table
- * now wider than the pane is fitted to it again (place_task_column); the
- * uniform autoresizing shrinks the Task column only down to its floor.
- *
- * Inputs:
- *   size — the new size
- */
-- (void)
-setFrameSize:(NSSize)size
-{
-    [super setFrameSize:size];
-    if (_rows != NULL && NSWidth(self.table.frame) > self.scroll.contentSize.width + 0.5) {
-        [self place_task_column];
-    }
+    __weak TasksTaskList *ws = self;
+    shared_ui_fit_columns(self.table, full, ^NSString *(NSTableColumn *column, NSInteger row) {
+        TasksTaskList *list = ws;
+        if (list == nil || list->_rows == NULL || (size_t)row >= list->_rows->count) return nil;
+        NSUInteger index = [list.table.tableColumns indexOfObject:column];
+        return tasks_string(label_text(list->_rows->rows[row], (int)index));
+    });
 }
 
 /* ── Table: rows and cells ───────────────────────────────────────────── */

@@ -54,7 +54,6 @@ static const CGFloat tasks_look_float_pad        = 2.0;    /* plate edge to butt
 static const CGFloat tasks_look_row_line_gap     = 1.0;    /* between lines       */
 static const CGFloat tasks_look_row_pad_v        = 8.0;    /* above and below the
                                                              * text in a list row */
-static const CGFloat tasks_look_row_pad_h        = 4.0;
 static const CGFloat tasks_look_drag_rule        = 2.0;    /* row drop marker     */
 
 /* ── Kanban board ───────────────────────────────────────────────────── */
