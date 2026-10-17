@@ -3,8 +3,9 @@
 
 #include "task_config.h"
 
-/* The bundled artwork that is the app's icon. */
-static NSString * const app_icon_name = @"document";
+/* The bundled artwork that is the app's icon: its file name, from the
+ * Makefile (APP_ICON). */
+static NSString * const app_icon_name = @TASKS_APP_ICON;
 
 /* ── Text ───────────────────────────────────────────────────────────── */
 

@@ -114,7 +114,7 @@ Tasks.app/
 └── Contents/
     ├── Info.plist      resources/Info.plist + identity, version, build date
     ├── MacOS/Tasks
-    └── Resources/      document.png, the app's icon
+    └── Resources/      Tasks.icns, the app's icon
 build/                  objects, dependency files, test binaries, seed, ui_check.app
 dev/                    sandbox data, test scratch folders, snapshots
 ```
@@ -250,8 +250,8 @@ tools/
   ui_check.m           in-process window snapshots and ownership/memory checks
   winshot.sh, winlist.swift   screenshot a window of the running app
 resources/Info.plist
-icons/                 PNG artwork: document.png is the app's icon and the one file
-                       bundled; the rest are spares.  Command icons are SF Symbols
+icons/                 artwork: Tasks.icns is the app's icon and the one file
+                       bundled; the PNGs are spares.  Command icons are SF Symbols
 porting/               the porting documents and the GTK reference sources
 ```
 

@@ -71,17 +71,17 @@ NSString *tasks_tag_title(const TaskTag *tag);
 /* ── Images ─────────────────────────────────────────────────────────── */
 
 /*
- * tasks_app_icon — the app's own icon (the bundled "document" artwork, the
- * one PNG the app ships), for the Dock tile, alerts and the About panel.
+ * tasks_app_icon — the app's own icon (the bundled .icns, the one artwork
+ * file the app ships), for the Dock tile, alerts and the About panel.
  * macOS 26 puts a bundle icon that is not its rounded-square shape on a
  * grey backdrop; handing those places the image explicitly shows just the
  * icon.
  *
- * The artwork is 512 x 512 pixels.  Handing such an image to a view makes
- * AppKit decode and cache the full bitmap (1 MB, and a layer-backed view
- * keeps a second copy) to draw a 64 pt picture.  The image returned here
- * holds only a bitmap of `size` points at 2x, scaled ONCE, so it is safe
- * to give to any view.  Cached per size.
+ * The artwork goes up to 1024 x 1024 pixels.  Handing such an image to a
+ * view makes AppKit decode and cache the full bitmap (4 MB, and a
+ * layer-backed view keeps a second copy) to draw a 64 pt picture.  The
+ * image returned here holds only a bitmap of `size` points at 2x, scaled
+ * ONCE, so it is safe to give to any view.  Cached per size.
  *
  * Inputs:
  *   size — edge length in points

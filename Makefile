@@ -118,7 +118,8 @@ LINK_TARGET  := $(shell sw_vers -productVersion | cut -d. -f1).0
 # rebuilds every object that includes it.
 DEFS     = -DTASKS_APP_NAME='"$(APP_NAME)"' \
            -DTASKS_BUNDLE_ID='"$(BUNDLE_ID)"' \
-           -DTASKS_DATA_DIR_NAME='"$(DATA_DIR_NAME)"'
+           -DTASKS_DATA_DIR_NAME='"$(DATA_DIR_NAME)"' \
+           -DTASKS_APP_ICON='"$(notdir $(APP_ICON))"'
 COMMON   = -O2 -Wall -Wextra -Werror=unguarded-availability \
            -mmacosx-version-min=$(DEPLOY_TARGET) -I src -I $(SHARED_DATA_DIR)/src -I $(SHARED_UI_DIR)/src \
            -MMD -MP $(DEFS) $(PKG_CFLAGS)
@@ -174,10 +175,11 @@ all: $(BUNDLE)
 # from VERSION, the minimum system version from LINK_TARGET, and the time
 # the bundle was assembled as TasksBuildDate (UTC), shown in the About
 # panel.
-# The app's own icon is the one picture bundled (CFBundleIconFile names
-# it): the command icons are SF Symbols, which come with the system.
-# HELP_PAGE is what Help > Tasks Help opens.
-APP_ICON   = icons/document.png
+# The app's own icon is the one picture bundled: CFBundleIconFile names it
+# to Finder and the Dock, TASKS_APP_ICON (above) names it to the code
+# (src/ui_util.m).  The command icons are SF Symbols, which come with the
+# system.  HELP_PAGE is what Help > Tasks Help opens.
+APP_ICON   = icons/Tasks.icns
 HELP_PAGE  = resources/help.html
 PLIST      = $(CONTENTS)/Info.plist
 
@@ -188,6 +190,7 @@ $(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(APP_ICON) $(HELP_PAGE)
 	@plutil -replace CFBundleDisplayName -string "$(APP_NAME)" $(PLIST)
 	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" $(PLIST)
 	@plutil -replace CFBundleExecutable -string "$(APP)" $(PLIST)
+	@plutil -replace CFBundleIconFile -string "$(basename $(notdir $(APP_ICON)))" $(PLIST)
 	@plutil -replace CFBundleShortVersionString -string "$(VERSION)" $(PLIST)
 	@plutil -replace CFBundleVersion -string "$(VERSION)" $(PLIST)
 	@plutil -replace LSMinimumSystemVersion -string "$(LINK_TARGET)" $(PLIST)

@@ -24,6 +24,6 @@
     <key>NSRequiresAquaSystemAppearance</key>
     <false/>
     <key>CFBundleIconFile</key>
-    <string>document</string>
+    <string>Tasks</string>
 </dict>
 </plist>

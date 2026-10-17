@@ -378,7 +378,7 @@ check_utilities(TaskApp *app)
     check(icon != nil && NSEqualSizes(icon.size, NSMakeSize(64, 64)),
           "utilities: the app icon comes back at its drawing size");
     check(icon.representations.count == 1 && rep.pixelsWide == 128,
-          "utilities: ... holding one small bitmap, not the 512 px source");
+          "utilities: ... holding one small bitmap, not the 1024 px source");
 
     NSImageView *view = shared_ui_image_view(icon, 16.0, 16.0);
     check(NSEqualSizes(view.frame.size, NSMakeSize(16, 16)) && view.image == icon,
