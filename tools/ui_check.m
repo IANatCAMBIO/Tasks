@@ -1392,6 +1392,22 @@ check_sidebar(TaskApp *app, NSString *dir)
               "favorites: without a saved order, by name");
         task_tag_free(customers);
 
+        /* A favorite leaves the bar with its last live task, as it leaves
+         * the sidebar: the bar shows the tags Tasks shows. */
+        gint64   only   = task_db_task_create(app->db, 0, "ui-check only carrier", "UI Fav Only");
+        TaskTag *carried = tag_named("UI Fav Only");
+        task_db_tag_set_favorite(app->db, carried->id, TRUE);
+        task_tag_free(carried);
+        [library full_refresh];
+        check_spin(0.3);
+        check([favorites() containsObject:@"UI Fav Only"] && [rows() containsObject:@"UI Fav Only"],
+              "favorites: a favorite one task carries has a button and a row");
+        task_db_task_delete(app->db, only);
+        task_app_notify_tasks(app);
+        check_spin(0.3);
+        check(![favorites() containsObject:@"UI Fav Only"] && ![rows() containsObject:@"UI Fav Only"],
+              "favorites: deleting its last task takes the button away with the row");
+
         /* Edit Tag: an emoji and Favorite, in a tool panel (never a sheet),
          * OK its default button. */
         [library perform_command:@"edit-tag" param:@(errands->id)];
