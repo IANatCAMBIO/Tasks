@@ -1569,7 +1569,7 @@ check_task_list(TaskApp *app, NSString *dir)
          * hold to it) would leave the pane beside a planner too narrow for
          * any columns.  The user's choice is put back at the end. */
         if (library.kanban_on) [library perform_command:@"toggle-pane" param:nil];
-        BOOL planner_shown = !library.day_planner.hidden;
+        BOOL planner_shown = library.day_planner_shown;
         if (planner_shown) {
             [library perform_command:@"toggle-day-planner" param:nil];
             check_spin(0.3);
@@ -2820,7 +2820,7 @@ check_day_planner_calendar(TaskApp *app, NSString *dir)
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
         NSWindow *window = library.window;
         [library showWindow:nil];
-        BOOL was_hidden = library.day_planner.hidden;
+        BOOL was_hidden = !library.day_planner_shown;
         if (was_hidden) {
             [library perform_command:@"toggle-day-planner" param:nil];
             check_spin(0.5);

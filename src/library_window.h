@@ -139,6 +139,10 @@
 /* The day planner panel; nil until build_layout. */
 @property (nonatomic, readonly) TasksDayPlanner *day_planner;
 
+/* Whether the day planner shows: its split item is not collapsed (the
+ * toggle-day-planner command flips it, sliding it as the sidebar slides). */
+@property (nonatomic, readonly) BOOL day_planner_shown;
+
 /*
  * manual_sort_live — whether rows may be dropped into a hand-made order
  * right now: no search is active.  A search suspends hand-sorting because

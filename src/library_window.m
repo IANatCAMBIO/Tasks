@@ -35,19 +35,16 @@ static NSString * const search_tooltip       =
     @"Search the selected view's task titles, notes and subtasks.\n"
     @"\"quoted words\" matches the phrase; -word leaves out tasks containing it.";
 
-@interface TasksLibraryWindow () <NSWindowDelegate, NSToolbarDelegate, NSSearchFieldDelegate,
-                                  NSSplitViewDelegate>
+@interface TasksLibraryWindow () <NSWindowDelegate, NSToolbarDelegate, NSSearchFieldDelegate>
 @property (nonatomic, strong) TasksSidebar      *sidebar;
-@property (nonatomic, strong) NSSplitViewController *split;      /* sidebar | the rest */
+@property (nonatomic, strong) NSSplitViewController *split;      /* sidebar | pane | planner */
 @property (nonatomic, strong) NSSplitViewItem   *sidebar_item;
+@property (nonatomic, strong) NSSplitViewItem   *planner_item;
 @property (nonatomic, strong) TasksFavoritesBar *favorites_bar;
 @property (nonatomic, strong) NSLayoutConstraint *favorites_height; /* 0 while hidden */
 @property (nonatomic, strong) TasksTaskList *task_list;
 @property (nonatomic, strong) TasksKanban *kanban;
 @property (nonatomic, strong) TasksDayPlanner *day_planner;
-@property (nonatomic, strong) NSSplitView         *main_split;
-@property (nonatomic)         BOOL                 day_planner_animating;
-@property (nonatomic, strong) NSLayoutConstraint  *dp_min_width;
 @property (nonatomic, strong) NSTextField *status_left;    /* "<view> - N tasks"        */
 @property (nonatomic, strong) NSTextField *status_right;   /* the latest event message  */
 @property (nonatomic, weak) NSSearchField *search_field;   /* owned by its toolbar item */
@@ -145,7 +142,7 @@ on_app_tasks(TaskApp *app, gpointer data)
         [window.sidebar refresh_counts];
     }
     [window refresh_tasks];
-    if (!window.day_planner.hidden) [window.day_planner reload];
+    if (window.day_planner_shown) [window.day_planner reload];
     tasks_notify_retitle();
 }
 
@@ -252,44 +249,6 @@ save_size(const char *w_key, const char *h_key, NSSize size)
     task_config_set_int(h_key, (gint)size.height);
 }
 
-/*
- * TasksSplitHost — the plain container of the window's main split view,
- * which keeps the split view exactly its own size.  The split view has no
- * autoresizing link to it (see build_layout), so it is sized here.
- */
-@interface TasksSplitHost : NSView
-@end
-
-@implementation TasksSplitHost
-
-/*
- * setFrameSize: — the container was resized: make the split view fill it.
- *
- * Inputs:
- *   size — the new size
- */
-- (void)
-setFrameSize:(NSSize)size
-{
-    [super setFrameSize:size];
-    self.subviews.firstObject.frame = self.bounds;
-}
-
-/*
- * didAddSubview: — the split view arrived: make it fill the container.
- *
- * Inputs:
- *   view — the subview added
- */
-- (void)
-didAddSubview:(NSView *)view
-{
-    [super didAddSubview:view];
-    view.frame = self.bounds;
-}
-
-@end
-
 /* One handler table a command may be in, with the object its handlers
  * take as their target: the window's own (shell_commands, at the end of
  * this file), the sidebar's and the task list's. */
@@ -340,9 +299,6 @@ init_with_app:(TaskApp *)app
     window.delegate     = self;
     [self build_layout];
     [self build_toolbar];
-    /* Whether the planner shows decides the window's least width, so it
-     * is settled before the layout is applied. */
-    self.day_planner.hidden = !task_config_get_bool(TASK_CFG_DAY_PLANNER_VISIBLE);
     /* The size first, then the place: placing keeps the window on a
      * screen, which depends on how big it is. */
     [self apply_compact_layout_at:size animated:NO];
@@ -358,7 +314,7 @@ init_with_app:(TaskApp *)app
     [self update_window_title];
     [self refresh_tasks];
 
-    if (!self.day_planner.hidden) {
+    if (self.day_planner_shown) {
         [self.day_planner reload];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.day_planner scroll_to_now];
@@ -444,13 +400,13 @@ build_float_bar:(NSView *)pane
 
 /*
  * build_layout — the window's content: the Favorites bar across the whole
- * width under the toolbar; below it a split view controller (as Notes'
+ * width under the toolbar; below it one split view controller (as Notes'
  * library has) down to the status bar's separator: the tag sidebar at the
- * left, then a split view whose left half is the task pane and whose
- * right half is the day planner.  The task pane holds BOTH presentations,
- * the list and the board, of which apply_pane_mode shows one.  A hidden
- * bar has no height and a hidden sidebar is a collapsed split item, so
- * what is left fills the room.
+ * left, the task pane, and the day planner at the right.  The task pane
+ * holds BOTH presentations, the list and the board, of which
+ * apply_pane_mode shows one.  A hidden bar has no height; a hidden
+ * sidebar or planner is a collapsed split item, so what is left fills the
+ * room, and both slide the one way the split view controller slides.
  */
 - (void)
 build_layout
@@ -480,52 +436,31 @@ build_layout
 
     self.day_planner = [[TasksDayPlanner alloc] init_with_library:self];
 
-    NSSplitView *split = [[NSSplitView alloc] initWithFrame:NSZeroRect];
-    split.vertical     = YES;
-    split.dividerStyle = NSSplitViewDividerStyleThin;
-    split.delegate     = self;
-    [split addSubview:pane];
-    [split addSubview:self.day_planner];
-    self.main_split = split;
-
-    /* Minimum width for the day planner.  Stored so it can be deactivated
-     * during open/close animations (a live constraint fights NSSplitView's
-     * own frame management and desynchs the divider tracker). */
-    self.dp_min_width = [self.day_planner.widthAnchor
-        constraintGreaterThanOrEqualToConstant:tasks_look_day_planner_min_w];
-    self.dp_min_width.active = YES;
-
     NSBox *rule   = [[NSBox alloc] initWithFrame:NSZeroRect];
     rule.boxType  = NSBoxSeparator;
-    /* The split view sits in a container that sizes it by hand (TasksSplitHost)
-     * and carries NO autoresizing link to it.  Pinned to the window by
-     * constraints, or tied to its container by a flexible autoresizing mask,
-     * NSSplitView turns its subviews' frames into required width
-     * constraints, and the window then takes the size they add up to as its
-     * least size: once the day planner was shown the window could grow but
-     * never shrink again.  The container is constrained as the split view
-     * used to be; the window's least size is content_min_size alone. */
-    NSView *split_host = [[TasksSplitHost alloc] initWithFrame:NSZeroRect];
-    split.translatesAutoresizingMaskIntoConstraints = YES;
-    split.autoresizingMask = NSViewNotSizable;
-    [split_host addSubview:split];
 
-    /* The sidebar and the rest in a split view controller: the system's
-     * thin divider, drag and collapse; the sidebar holds its width, the
-     * rest absorbs a resize. */
+    /* The sidebar, the task pane and the day planner in one split view
+     * controller: the system's thin divider, drag and collapse slide for
+     * both side panes; each holds its width, the task pane absorbs a
+     * resize.  A side pane's width is saved as it is dragged. */
     SharedSplitController *outer = [[SharedSplitController alloc] init];
     __weak TasksLibraryWindow *ws = self;
-    outer.width_changed = ^(NSInteger width) {
-        if (width == task_config_get_int(TASK_CFG_SIDEBAR_WIDTH)) return;
-        task_config_set_int(TASK_CFG_SIDEBAR_WIDTH, (gint)width);
+    outer.width_changed = ^(NSInteger index, NSInteger width) {
+        const char *key = index == 0 ? TASK_CFG_SIDEBAR_WIDTH : TASK_CFG_DAY_PLANNER_W;
+        if (width == task_config_get_int(key)) return;
+        task_config_set_int(key, (gint)width);
         ws.window.contentMinSize = [ws content_min_size];
     };
     self.split        = outer;
     self.sidebar_item = shared_ui_pane_item(self.sidebar, shared_look_sidebar_min_w);
     self.sidebar_item.canCollapse     = YES;
     self.sidebar_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;
+    self.planner_item = shared_ui_pane_item(self.day_planner, tasks_look_day_planner_min_w);
+    self.planner_item.canCollapse     = YES;
+    self.planner_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;
     [self.split addSplitViewItem:self.sidebar_item];
-    [self.split addSplitViewItem:shared_ui_pane_item(split_host, tasks_look_pane_min_w)];
+    [self.split addSplitViewItem:shared_ui_pane_item(pane, tasks_look_pane_min_w)];
+    [self.split addSplitViewItem:self.planner_item];
     self.split.splitView.dividerStyle = NSSplitViewDividerStyleThin;
     NSView *panes = self.split.view;
 
@@ -572,13 +507,17 @@ build_layout
                                                          constant:-shared_look_status_inset],
     ]];
 
-    /* The sidebar's width, set once the split view has its frame (a
-     * position set before layout is clamped to a zero width); then
+    /* The side panes' widths, set once the split view has its frame (a
+     * position set before layout is clamped to a zero width); then each
      * collapsed if it was left hidden, so that showing it again brings
      * that width back. */
     [content layoutSubtreeIfNeeded];
-    [self.split.splitView setPosition:[self sidebar_extent] ofDividerAtIndex:0];
+    NSSplitView *split = self.split.splitView;
+    [split setPosition:[self sidebar_extent] ofDividerAtIndex:0];
+    [split setPosition:NSWidth(split.bounds) - [self planner_extent] - split.dividerThickness
+      ofDividerAtIndex:1];
     self.sidebar_item.collapsed = !task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE);
+    self.planner_item.collapsed = !task_config_get_bool(TASK_CFG_DAY_PLANNER_VISIBLE);
 }
 
 /* ── Toolbar ─────────────────────────────────────────────────────────── */
@@ -922,7 +861,7 @@ full_refresh
 {
     [self refresh_sidebar];
     [self refresh_tasks];
-    if (!self.day_planner.hidden) [self.day_planner reload];
+    if (self.day_planner_shown) [self.day_planner reload];
     tasks_editor_refresh_all();
 }
 
@@ -981,89 +920,6 @@ show_status_message:(NSString *)message
             faded.status_right.stringValue = @"";
         }];
     }];
-}
-
-/* ── Split view delegate ─────────────────────────────────────────────── */
-
-/*
- * splitView:constrainMinCoordinate:ofSubviewAt: — the left (task pane)
- * minimum width.
- *
- * Inputs:
- *   split — the main split view
- *   coord — AppKit's proposed minimum (unused)
- *   idx   — divider index (0)
- *
- * Output:
- *   the minimum X coordinate of the divider.
- */
-- (CGFloat)
-splitView:(NSSplitView *)split
-constrainMinCoordinate:(CGFloat)coord
-ofSubviewAt:(NSInteger)idx
-{
-    return tasks_look_pane_min_w;
-}
-
-/*
- * splitView:constrainMaxCoordinate:ofSubviewAt: — the day planner minimum
- * width enforced as a maximum divider position.
- *
- * Inputs:
- *   split — the main split view
- *   coord — AppKit's proposed maximum (unused)
- *   idx   — divider index (0)
- *
- * Output:
- *   the maximum X coordinate of the divider.
- */
-- (CGFloat)
-splitView:(NSSplitView *)split
-constrainMaxCoordinate:(CGFloat)coord
-ofSubviewAt:(NSInteger)idx
-{
-    if (self.day_planner_animating)
-        return NSWidth(split.bounds) - split.dividerThickness;
-    return NSWidth(split.bounds) - tasks_look_day_planner_min_w - split.dividerThickness;
-}
-
-/*
- * splitView:resizeSubviewsWithOldSize: — keep the day planner at its current
- * width when the window is resized; the task pane absorbs the delta.
- *
- * Inputs:
- *   split   — the main split view
- *   old_sz  — the split view's previous size (unused; we use current bounds)
- */
-- (void)
-splitView:(NSSplitView *)split
-resizeSubviewsWithOldSize:(NSSize)old_sz
-{
-    NSView  *left   = split.subviews[0];
-    NSView  *right  = split.subviews[1];
-    CGFloat  total  = NSWidth(split.bounds);
-    CGFloat  div_t  = split.dividerThickness;
-
-    if (right.hidden) {
-        left.frame = NSMakeRect(0, 0, total, NSHeight(split.bounds));
-        return;
-    }
-
-    CGFloat right_w = NSWidth(right.frame);
-    CGFloat left_w  = total - right_w - div_t;
-
-    /* Clamp so neither side goes below its minimum. */
-    if (left_w < tasks_look_pane_min_w) {
-        left_w  = tasks_look_pane_min_w;
-        right_w = total - left_w - div_t;
-    }
-    if (right_w < tasks_look_day_planner_min_w) {
-        right_w = tasks_look_day_planner_min_w;
-        left_w  = total - right_w - div_t;
-    }
-
-    left.frame  = NSMakeRect(0,              0, left_w,  NSHeight(split.bounds));
-    right.frame = NSMakeRect(left_w + div_t, 0, right_w, NSHeight(split.bounds));
 }
 
 /* ── Task context menu ───────────────────────────────────────────────── */
@@ -1453,6 +1309,31 @@ sidebar_extent
 }
 
 /*
+ * planner_extent — the shown day planner's width: the one it was last
+ * dragged to, at least tasks_look_day_planner_min_w; tasks_look_day_planner_w
+ * until the first drag.
+ *
+ * Output:
+ *   the width, in points.
+ */
+- (CGFloat)
+planner_extent
+{
+    gint saved = task_config_get_int(TASK_CFG_DAY_PLANNER_W);
+    if (saved == 0) return tasks_look_day_planner_w;
+    return MAX((CGFloat)saved, tasks_look_day_planner_min_w);
+}
+
+/*
+ * day_planner_shown — see library_window.h.
+ */
+- (BOOL)
+day_planner_shown
+{
+    return !self.planner_item.collapsed;
+}
+
+/*
  * show_favorites_bar:animated: — show or hide the Favorites bar.
  *
  * Inputs:
@@ -1518,80 +1399,29 @@ content_min_size
     if (task_config_get_bool(TASK_CFG_SIDEBAR_VISIBLE)) {
         width += [self sidebar_extent] + self.split.splitView.dividerThickness;
     }
-    if (!self.day_planner.hidden) {
-        width += self.main_split.dividerThickness + tasks_look_day_planner_min_w;
+    if (task_config_get_bool(TASK_CFG_DAY_PLANNER_VISIBLE)) {
+        width += self.split.splitView.dividerThickness + tasks_look_day_planner_min_w;
     }
     return NSMakeSize(width, tasks_look_window_min_h);
 }
 
 /*
- * toggle_day_planner — slide the day planner panel in or out and remember
- * the choice.  Animates by moving the NSSplitView divider so the layout
- * change and the visual reveal happen in a single pass.  The window's
- * least width follows: the planner's minimum counts only while it shows.
+ * toggle_day_planner — slide the day planner in or out and remember the
+ * choice: its split item collapses, the same slide as the sidebar's (the
+ * split view controller remembers its width).  The window's least width
+ * follows: the planner's minimum counts only while it shows.
  */
 - (void)
 toggle_day_planner
 {
-    BOOL show = self.day_planner.hidden; /* YES → we are about to show it */
-
-    __weak TasksLibraryWindow *ws  = self;
-    CGFloat split_w = NSWidth(self.main_split.bounds);
-    CGFloat div_t   = self.main_split.dividerThickness;
-
-    /* Suspend the min-width constraint for the duration of the animation.
-     * NSSplitView and Auto Layout both set subview frames; a live required
-     * constraint desynchs NSSplitView's internal divider tracker, leaving
-     * dragging broken until the next window resize forces a re-sync. */
-    self.dp_min_width.active = NO;
-
-    if (show) {
-        /* Reveal: unhide at zero width then slide the divider in from the
-         * right.  Delegate is cleared just for the instant start-position
-         * call so the max-coordinate constraint doesn't clamp it. */
-        self.day_planner.hidden     = NO;
-        self.day_planner_animating  = YES;
-        self.window.contentMinSize  = [self content_min_size];
-
-        id saved = self.main_split.delegate;
-        self.main_split.delegate = nil;
-        [self.main_split setPosition:split_w - div_t ofDividerAtIndex:0];
-        self.main_split.delegate = saved;
-
-        gint saved_w = task_config_get_int(TASK_CFG_DAY_PLANNER_W);
-        CGFloat dp_w = ((CGFloat)saved_w >= tasks_look_day_planner_min_w)
-                       ? (CGFloat)saved_w : tasks_look_day_planner_w;
-        CGFloat target = split_w - dp_w - div_t;
-        if (target < tasks_look_pane_min_w) target = tasks_look_pane_min_w;
-
-        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
-            ctx.duration = 0.22;
-            [[ws.main_split animator] setPosition:target ofDividerAtIndex:0];
-        } completionHandler:^{
-            ws.day_planner_animating  = NO;
-            ws.dp_min_width.active    = YES;
-            [ws.day_planner reload];
-            [ws.day_planner scroll_to_now];
-        }];
-    } else {
-        /* Hide: save the current width, slide the divider to the right
-         * edge, then set hidden (instant at that point, no visible snap). */
-        task_config_set_int(TASK_CFG_DAY_PLANNER_W, (gint)NSWidth(self.day_planner.frame));
-
-        self.day_planner_animating = YES;
-        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
-            ctx.duration = 0.22;
-            [[ws.main_split animator] setPosition:split_w - div_t ofDividerAtIndex:0];
-        } completionHandler:^{
-            ws.day_planner_animating  = NO;
-            ws.day_planner.hidden     = YES;
-            ws.dp_min_width.active    = YES;
-            ws.window.contentMinSize  = [ws content_min_size];
-            [ws.main_split adjustSubviews];
-        }];
-    }
-
+    BOOL show = self.planner_item.collapsed;
     task_config_set_bool(TASK_CFG_DAY_PLANNER_VISIBLE, show);
+    self.window.contentMinSize = [self content_min_size];
+    self.planner_item.animator.collapsed = !show;
+    if (show) {
+        [self.day_planner reload];
+        [self.day_planner scroll_to_now];
+    }
 }
 
 /* ── Compact mode ────────────────────────────────────────────────────── */
@@ -2252,7 +2082,7 @@ run_toggle_day_planner(id target, id sender)
 static BOOL
 validate_toggle_day_planner(id target, id item, SharedCommandState *state)
 {
-    if (((TasksLibraryWindow *)target).day_planner.hidden) {
+    if (!((TasksLibraryWindow *)target).day_planner_shown) {
         shared_command_state_set(state, @"Show Day Planner", nil, NO);
         state.tooltip = @"Show the day planner";
     }
