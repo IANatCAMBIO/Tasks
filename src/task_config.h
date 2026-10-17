@@ -43,11 +43,6 @@
                                                                * shows its open tasks' count */
 
 /* New tasks (Settings window) */
-#define TASK_CFG_DEFAULT_TAG         "default_tag"             /* string tag name; none = no
-                                                               * default.  New Task gives it
-                                                               * when no tag is selected,
-                                                               * Quick Task always
-                                                               * (task_ops_default_tag) */
 #define TASK_CFG_QUICK_TASK_HOTKEY   "quick_task_hotkey"       /* bool, 1: Quick Task's shortcut
                                                                * works from any app (hotkey.h) */
 

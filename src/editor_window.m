@@ -773,7 +773,7 @@ build_fields:(NSStackView *)form
     self.tag_field.placeholderString = @"Add a tag";
     self.tag_field.toolTip           =
         @"Type to find a tag; pick one from the list, or press Return to make a new one. "
-        @"Every task keeps at least one tag. Each tag has its own row in the sidebar.";
+        @"A task without a tag is listed under All Tasks alone. Each tag has its own row in the sidebar.";
     self.tag_field.delegate          = self;
     self.tag_field.completionDelay   = 0;
     self.tag_field.cell.wraps        = NO;
@@ -1225,9 +1225,7 @@ show_tags
 /*
  * drop_removed_tags — take off the task every tag that is no longer a
  * token in the field (the user deleted it).  Text still being typed never
- * names a stored tag that is not also a token, so it removes nothing.  A
- * task keeps at least one tag: deleting the last token is refused, said
- * so, and the token comes back (on the next pass: the field is mid-edit).
+ * names a stored tag that is not also a token, so it removes nothing.
  */
 - (void)
 drop_removed_tags
@@ -1243,18 +1241,8 @@ drop_removed_tags
         const TaskTag *tag = g_ptr_array_index(tags, i);
         if (has_name(tokens, tasks_string(tag->name))) continue;
 
-        gint removed = task_db_task_tag_remove(self.app->db, self.task_id, tag->id);
-        if (removed > 0) {
+        if (task_db_task_tag_remove(self.app->db, self.task_id, tag->id) > 0) {
             changed = YES;
-        } else if (removed == 0) {
-            task_app_status(self.app, "A task keeps at least one tag \xe2\x80\x94 "
-                                      "add another before removing \xe2\x80\x9c%s\xe2\x80\x9d",
-                            tag->name);
-            NSArray *restored = [tokens arrayByAddingObject:tasks_string(tag->name)];
-            __weak TasksEditorWindow *ws = self;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                ws.tag_field.objectValue = restored;
-            });
         } else {
             gchar *what = g_strdup_printf("Removing the tag \xe2\x80\x9c%s\xe2\x80\x9d", tag->name);
             task_app_write_failed(self.app, what);

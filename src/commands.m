@@ -26,7 +26,7 @@ static const shared_command_t commands[] = {
 
     /* ── The library window's ── */
     { @"new-task",            @"New Task",                @"n", cmd,       app, @"plus",
-      @"Create a task with the selected tag, or else with the default tag" },
+      @"Create a task with the selected tag" },
     /* The same shortcut is registered system-wide by hotkey.m. */
     { @"quick-task",          @"Quick Task",              @"t", cmd | ctrl_opt, app, nil, nil },
     { @"delete-task",         @"Delete Task",             KEY_BACKSPACE, cmd, app, @"trash",

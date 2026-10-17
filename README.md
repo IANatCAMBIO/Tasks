@@ -130,8 +130,9 @@ so and the panes show what is really stored; an editor keeps the change,
 saves it again with the next change or on closing, and will not close while
 it cannot.
 
-**Tags are how tasks are organised**; there are no lists.  Every task has
-at least one tag, and any number.  The sidebar at the left shows three
+**Tags are how tasks are organised**; there are no lists.  A task carries
+any number of tags, none included: a task without a tag is listed under
+All Tasks alone.  The sidebar at the left shows three
 views — **All Tasks**, **All Favorites** (every task with a favorite tag)
 and the **3-Day Forecast** — then every tag, by name, with how many open tasks
 carry it (Settings → Appearance → **Show task counts next to tags in the
@@ -143,7 +144,7 @@ own manual order); each row says what it is tagged.
   tags that already exist (pick one with the arrow keys or a click);
   Return makes what you typed a tag, a new one when no tag has that name.
   Names ignore case: "work" typed is the existing "Work".  Delete a tag's
-  token to take it off — except the last: a task keeps at least one.
+  token to take it off.
 - Select tasks and right-click, **Add Tag ▸** gives them all a tag.
 - Right-click a tag in the sidebar, **Edit Tag…**: give it an emoji, and
   make it a favorite or not.  A tag's name never changes.
@@ -152,12 +153,11 @@ own manual order); each row says what it is tagged.
   button at the far left of the toolbar (⌃⌘S); drag its right edge to
   make it wider or narrower, and it keeps that width.
 - A subtask is born with its parent's tags.  New Task gives the selected
-  tag, or with a view selected the **default tag** chosen in Settings; Quick
-  Task always gives the default tag.
+  tag, or none with a view selected; Quick Task gives none.
 - **Tags are shared with Notes**: a note can carry the same tags (its Tags
   field and its `#tags`), and an emoji set in either app shows in both.
   The sidebar and the Favorites bar show the tags your tasks carry;
-  wherever you choose a tag (the Tags field, Add Tag, the default tag)
+  wherever you choose a tag (the Tags field, Add Tag)
   every tag is offered, Notes' too.  Favorites are each app's own.
 - A tag exists while a task or a note carries it: when the last one lets
   go — untagged or deleted — the tag goes.
@@ -212,7 +212,7 @@ written by the app; comments are not preserved), apart from the backup
 settings, which live in the shared database so that Notes follows them too.
 The Settings window (⌘,) holds the appearance options (bold titles, Kanban
 shadows, business-day forecast, the sidebar's tag counts), New Tasks
-(the default tag, and whether Quick Task's ⌃⌥⌘T works from any app),
+(whether Quick Task's ⌃⌥⌘T works from any app),
 the database's health
 and fingerprint, the backups, notifications and Google Calendar; the View
 menu holds the rest.  Every key and its default is listed in
@@ -222,8 +222,8 @@ menu holds the rest.  Every key and its default is listed in
 
 | Shortcut | Action |
 |---|---|
-| ⌘N | New Task (with the selected tag; with a view selected, the default tag) |
-| ⌃⌥⌘T | Quick Task — a task with the default tag whatever is selected, its editor in the lower-right corner of the screen; works from any app while Tasks is running |
+| ⌘N | New Task (with the selected tag; with a view selected, none) |
+| ⌃⌥⌘T | Quick Task — a task without a tag whatever is selected, its editor in the lower-right corner of the screen; works from any app while Tasks is running |
 | ⌘I | Info… — open the task editor |
 | ⌘⌫ | Delete the selected task(s) |
 | ⌘F | Find — search the selected view |

@@ -1,6 +1,6 @@
 /*
  * hotkey — Quick Task's system-wide shortcut, ⌃⌥⌘T: pressed in any app,
- * it runs Quick Task in this one (a task with the default tag, its editor
+ * it runs Quick Task in this one (a task without a tag, its editor
  * in the corner of the screen).  Only while Tasks is running.
  *
  * Registered through Carbon's RegisterEventHotKey, the one system-wide

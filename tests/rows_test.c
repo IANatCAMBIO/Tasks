@@ -392,7 +392,7 @@ test_notes_item(TaskApp *app)
 
 /*
  * test_new_task_tag — the tag New Task gives its task: the selected tag,
- * else the default tag (by name, whether or not a task carries it yet).
+ * none with a view selected (a task is made without a tag).
  *
  * Inputs:
  *   app — the context
@@ -405,25 +405,15 @@ test_new_task_tag(TaskApp *app)
     task_sel_t all  = task_sel_default();
     task_tag_free(rows);
 
-    gchar *name = task_ops_default_tag(app);
-    check(name == NULL, "default tag: none until one is chosen");
-    name = task_sel_new_task_tag(app, tsel);
+    gchar *name = task_sel_new_task_tag(app, tsel);
     check(name != NULL && strcmp(name, "Rows") == 0, "new task: a selected tag is used");
     g_free(name);
-    check(task_sel_new_task_tag(app, all) == NULL,
-          "new task: a view with no default tag has no tag to give");
-
-    task_config_set(TASK_CFG_DEFAULT_TAG, "  Inbox ");
-    name = task_ops_default_tag(app);
-    check(name != NULL && strcmp(name, "Inbox") == 0, "default tag: the chosen name, trimmed");
-    g_free(name);
-    name = task_sel_new_task_tag(app, all);
-    check(name != NULL && strcmp(name, "Inbox") == 0, "new task: a view uses the default tag");
-    g_free(name);
-    name = task_sel_new_task_tag(app, tsel);
-    check(name != NULL && strcmp(name, "Rows") == 0, "new task: a selected tag wins over the default");
-    g_free(name);
-    task_config_set(TASK_CFG_DEFAULT_TAG, NULL);
+    check(task_sel_new_task_tag(app, all) == NULL, "new task: a view gives no tag");
+    gint64 untagged = task_db_task_create(app->db, 0, "Loose", NULL);
+    GPtrArray *tags = task_db_task_tags(app->db, untagged);
+    check(untagged != 0 && tags->len == 0, "new task: a task is made without a tag");
+    task_ptr_array_free_tags(tags);
+    task_db_task_delete(app->db, untagged);
 }
 
 /*

@@ -42,13 +42,13 @@ task_sel_tag_id(task_sel_t sel)
 }
 
 /*
- * task_sel_new_task_tag — the selected tag's name, else the default tag.
+ * task_sel_new_task_tag — the selected tag's name, else none.
  * Inputs/output are documented in task_pane.h.
  */
 gchar *
 task_sel_new_task_tag(TaskApp *app, task_sel_t sel)
 {
-    if (sel.kind != task_sel_tag) return task_ops_default_tag(app);
+    if (sel.kind != task_sel_tag) return NULL;
 
     TaskTag *tag  = task_db_tag_get(app->db, sel.id);
     gchar   *name = tag != NULL ? g_strdup(tag->name) : NULL;

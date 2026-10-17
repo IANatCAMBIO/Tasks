@@ -797,8 +797,6 @@ task_db_task_create(TaskDatabase *db, gint64 parent_id, const gchar *title,
     gchar   *clean   = g_strstrip(g_strdup(tag != NULL ? tag : ""));
     gboolean has_tag = clean[0] != '\0';
     g_free(clean);
-    if (parent_id == 0 && !has_tag)
-        return 0;
     if (parent_id != 0) {
         Task *p = task_db_task_get(db, parent_id);
         gboolean ok = p != NULL && p->parent_id == 0 && !p->deleted;
@@ -1777,9 +1775,7 @@ task_db_task_tag_add(TaskDatabase *db, gint64 task_id, const gchar *name)
 }
 
 /*
- * task_db_task_tag_remove — take a tag off a task (see db.h).  The schema
- * refuses a live task's last tag (task_tags_keep_one): that refusal is an
- * answer, not a failure, so it is told apart by its error and not logged.
+ * task_db_task_tag_remove — take a tag off a task (see db.h).
  *
  * Inputs:
  *   db      — the connection
@@ -1787,7 +1783,7 @@ task_db_task_tag_add(TaskDatabase *db, gint64 task_id, const gchar *name)
  *   tag_id  — the tag
  *
  * Output:
- *   1 written, 0 refused (the last tag), -1 failed (logged).
+ *   1 written, -1 failed (logged).
  */
 gint
 task_db_task_tag_remove(TaskDatabase *db, gint64 task_id, gint64 tag_id)
@@ -1804,9 +1800,6 @@ task_db_task_tag_remove(TaskDatabase *db, gint64 task_id, gint64 tag_id)
             rc = 1;
             if (sqlite3_get_autocommit(sq))
                 own_commit(db);
-        } else if (sqlite3_extended_errcode(sq) == SQLITE_CONSTRAINT_TRIGGER &&
-                   g_strcmp0(sqlite3_errmsg(sq), SHARED_DB_TAG_KEEP_ONE_MSG) == 0) {
-            rc = 0;
         } else {
             g_warning("db: tag remove: %s", sqlite3_errmsg(sq));
         }

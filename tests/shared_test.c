@@ -478,14 +478,14 @@ test_tombstones(TaskApp *app)
     g_free(names);
     TaskTag *tombs = task_db_tag_find(app->db, "Tombs");
     TaskTag *extra = task_db_tag_find(app->db, "Extra");
-    check(task_db_task_tag_remove(app->db, sub, tombs->id) == 0,
-          "tags: a live task's last tag cannot be taken off");
+    check(task_db_task_tag_remove(app->db, sub, tombs->id) == 1,
+          "tags: a live task's last tag can be taken off (schema 201)");
     names = tag_names_of(app, sub);
-    check(strcmp(names, "Tombs") == 0, "tags: ... and it keeps it");
+    check(names[0] == '\0', "tags: ... and it carries none");
     g_free(names);
     check(task_db_task_tag_remove(app->db, old, tombs->id) == 1 &&
-          task_db_task_tag_remove(app->db, old, extra->id) == 0,
-          "tags: another can, then not the one left");
+          task_db_task_tag_remove(app->db, old, extra->id) == 1,
+          "tags: one tag, then the other, both come off");
     task_tag_free(extra);
 
     snprintf(sql, sizeof sql, "UPDATE tasks SET deleted = 1, updated_at = 1 WHERE id = %lld",

@@ -105,7 +105,7 @@ pane_ids(TaskApp *app, task_sel_t sel, const gint64 *want, size_t n)
 /*
  * test_add_remove — tags by name: new, existing in another case, trimmed,
  * a second add, a subtask's inherited tags, the refusals; taking one off;
- * a live task's last tag kept; the last task's tag going deletes the tag;
+ * a live task's last tag comes off; the last task's tag going deletes the tag;
  * a tombstoned task loses its tags.
  *
  * Inputs:
@@ -169,16 +169,19 @@ test_add_remove(TaskApp *app)
           task_db_tag_get(app->db, errands) == NULL,
           "remove: the last task's tag going deletes the tag");
     TaskTag *chores = task_db_tag_find(app->db, "Chores");
-    check(task_db_task_tag_remove(app->db, a, chores->id) == 0 && names_are(app, a, "Chores"),
-          "remove: a task's last tag is refused, and kept");
+    check(task_db_task_tag_remove(app->db, a, chores->id) == 1 && names_are(app, a, ""),
+          "remove: a task's last tag comes off too; it carries none");
+    tag = task_db_tag_get(app->db, chores->id);
+    check(tag != NULL, "remove: the tag the other tasks carry stays");
+    task_tag_free(tag);
     task_tag_free(chores);
 
     task_db_task_delete(app->db, b);
-    check(names_are(app, b, "") && names_are(app, sub, "") && tag_count(app) == 1,
+    check(names_are(app, b, "") && names_are(app, sub, "") && tag_count(app) == 0,
           "delete: a deleted task and its subtask lose their tags, and diy goes");
-    check(task_db_task_tag_add(app->db, b, "late") == 0 && tag_count(app) == 1,
+    check(task_db_task_tag_add(app->db, b, "late") == 0 && tag_count(app) == 0,
           "add: refused for a deleted task, writing no tag");
-    check(task_db_task_tag_add(app->db, 999999, "ghost") == 0 && tag_count(app) == 1,
+    check(task_db_task_tag_add(app->db, 999999, "ghost") == 0 && tag_count(app) == 0,
           "add: refused for a task that does not exist");
 }
 

@@ -75,15 +75,15 @@ int64_t task_sel_tag_id(task_sel_t sel);
 
 /*
  * task_sel_new_task_tag — the tag New Task gives its task: the selected
- * tag, or — with a view selected — the default tag (task_ops_default_tag).
- * Every task carries a tag, so with neither there is no New Task.
+ * tag; with a view selected, none (the task is listed under All Tasks
+ * alone).
  *
  * Inputs:
  *   app — the context (the selected tag's name is read from its database)
  *   sel — the selection
  *
  * Output:
- *   the tag's name (g_free), or NULL when there is none.
+ *   the tag's name (g_free), or NULL for none.
  */
 gchar *task_sel_new_task_tag(TaskApp *app, task_sel_t sel);
 

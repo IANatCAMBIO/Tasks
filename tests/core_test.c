@@ -451,9 +451,13 @@ test_db_create_read_task(void)
     g_assert_no_error(err);
     g_assert_nonnull(db);
 
-    /* A task needs a tag. */
-    g_assert_cmpint(task_db_task_create(db, 0, "Untagged", NULL), ==, 0);
-    g_assert_cmpint(task_db_task_create(db, 0, "Untagged", "  "), ==, 0);
+    /* A task may carry no tag: NULL and a blank name both make one. */
+    gint64 loose = task_db_task_create(db, 0, "Untagged", NULL);
+    g_assert_cmpint(loose, >, 0);
+    g_assert_cmpint(task_db_task_create(db, 0, "Untagged", "  "), >, loose);
+    GPtrArray *loose_tags = task_db_task_tags(db, loose);
+    g_assert_cmpuint(loose_tags->len, ==, 0);
+    task_ptr_array_free_tags(loose_tags);
     gint64 task_id = task_db_task_create(db, 0, "Walk the dog", "Test");
     g_assert_cmpint(task_id, >, 0);
 

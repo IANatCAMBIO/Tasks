@@ -2,8 +2,8 @@
 #include "task_app.h"
 
 /*
- * settings_window — the Settings window: Appearance, New Tasks (the
- * default tag, Quick Task's system-wide shortcut), notifications, the
+ * settings_window — the Settings window: Appearance, New Tasks (Quick
+ * Task's system-wide shortcut), notifications, the
  * database health plate, rotating backups, Google Calendar.
  *
  * Every control is write-through: a change lands in the config at once

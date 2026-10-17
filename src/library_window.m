@@ -1187,11 +1187,13 @@ plural(NSUInteger count)
 }
 
 /*
- * create_task_tagged:quick: — create an empty task with a tag and open its
- * editor (the variant with Cancel, which deletes the task again).
+ * create_task_tagged:quick: — create an empty task, with a tag or none,
+ * and open its editor (the variant with Cancel, which deletes the task
+ * again).
  *
  * Inputs:
- *   tag   — the tag's name (made when no task carries it yet); not NULL
+ *   tag   — the tag's name (made when no task carries it yet), or NULL for
+ *           none: the task is listed under All Tasks alone
  *   quick — YES for Quick Task: the editor opens in the corner of the
  *           screen the user is on, and the app comes forward with it (the
  *           shortcut may have been pressed in another app)
@@ -1211,43 +1213,25 @@ create_task_tagged:(const char *)tag quick:(BOOL)quick
 
 /*
  * new_task — New Task: a task with the selected tag or, when a view is
- * selected, with the default tag (task_sel_new_task_tag).  With no default
- * tag the status bar says how to get one.
+ * selected, without one (task_sel_new_task_tag).
  */
 - (void)
 new_task
 {
     gchar *tag = task_sel_new_task_tag(self.app, self.selection);
-    if (tag == NULL) {
-        task_app_status(self.app, "Select a tag, or choose a default tag in Settings");
-        return;
-    }
     [self create_task_tagged:tag quick:NO];
     g_free(tag);
 }
 
 /*
  * quick_task — Quick Task (the menu item or the system-wide shortcut): a
- * task with the default tag whatever is selected, its editor in the lower-
- * right corner of the screen.  With no default tag it says so and opens
- * Settings, where one is chosen.
+ * task without a tag whatever is selected (it is listed under All Tasks
+ * alone), its editor in the lower-right corner of the screen.
  */
 - (void)
 quick_task
 {
-    gchar *tag = task_ops_default_tag(self.app);
-    if (tag == NULL) {
-        TaskApp *app = self.app;
-        [NSApp activate];
-        shared_ui_notice(nil, @"Choose a default tag first",
-                        @"Quick Task gives its task the default tag. "
-                        @"Choose one in Settings, under New Tasks.", ^{
-            tasks_settings_window_open(app);
-        });
-        return;
-    }
-    [self create_task_tagged:tag quick:YES];
-    g_free(tag);
+    [self create_task_tagged:NULL quick:YES];
 }
 
 /*

@@ -238,7 +238,7 @@ copy_to_pasteboard(NSString *text)
 
 /* ── The window ─────────────────────────────────────────────────────── */
 
-@interface TasksSettingsWindow : NSWindowController <NSWindowDelegate, NSMenuDelegate>
+@interface TasksSettingsWindow : NSWindowController <NSWindowDelegate>
 @property (nonatomic, assign) TaskApp *app;              /* borrowed; outlives the window */
 @property (nonatomic, strong) NSScrollView *scroll;      /* the window's content          */
 @property (nonatomic, strong) NSStackView *form;         /* every row, top to bottom      */
@@ -282,8 +282,6 @@ copy_to_pasteboard(NSString *text)
                                                            * hidden until there is one    */
 
 /* New tasks. */
-@property (nonatomic, strong) NSPopUpButton *default_tag_popup; /* None, then every tag;
-                                                                 * rebuilt as it opens  */
 
 /* Notifications. */
 @property (nonatomic, strong) NSButton *notif_tasks_btn;   /* radio: Tasks popup  */
@@ -657,8 +655,8 @@ backup_rows
 }
 
 /*
- * new_task_rows — the New Tasks section: the default tag, and whether
- * Quick Task's shortcut works from any app.
+ * new_task_rows — the New Tasks section: whether Quick Task's shortcut
+ * works from any app.
  *
  * Output:
  *   the section's rows, heading first.
@@ -666,19 +664,6 @@ backup_rows
 - (NSArray<NSView *> *)
 new_task_rows
 {
-    self.default_tag_popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    self.default_tag_popup.target        = self;
-    self.default_tag_popup.action        = @selector(default_tag_changed:);
-    self.default_tag_popup.menu.delegate = self;
-    self.default_tag_popup.toolTip       =
-        @"New Task gives its task this tag when a view is selected; Quick Task always does.";
-    [self menuNeedsUpdate:self.default_tag_popup.menu];
-
-    NSStackView *tag_row = [NSStackView stackViewWithViews:@[
-        [NSTextField labelWithString:@"Default tag:"], self.default_tag_popup]];
-    tag_row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    tag_row.alignment   = NSLayoutAttributeFirstBaseline;
-
     NSButton *hotkey = [NSButton checkboxWithTitle:
                             @"Quick Task (\u2303\u2325\u2318T) works from any app"
                                             target:self
@@ -687,65 +672,11 @@ new_task_rows
                                                                       : NSControlStateValueOff;
 
     NSTextField *note = shared_ui_note(
-        @"Every task has a tag. New Task gives the default tag when a view is selected "
-        @"rather than a tag. Quick Task always gives it, and opens its editor in the "
-        @"lower-right corner of the screen.", form_content_w());
+        @"New Task gives the selected tag; with a view selected, no tag, and the task is "
+        @"listed under All Tasks alone. Quick Task makes a task without a tag and opens its "
+        @"editor in the lower-right corner of the screen.", form_content_w());
 
-    return @[shared_ui_heading(@"New Tasks"), tag_row, hotkey, note];
-}
-
-/*
- * menuNeedsUpdate: — the default-tag popup's menu is about to open (or is
- * being built): fill it afresh from the database, so tags made or gone
- * while Settings is open are offered as they now are.  "None" leads.  A
- * default that no task carries just now is offered too, by its name: the
- * next task given it makes the tag again.
- *
- * Inputs:
- *   menu — the popup's menu
- */
-- (void)
-menuNeedsUpdate:(NSMenu *)menu
-{
-    gchar    *chosen  = task_ops_default_tag(self.app);
-    NSString *current = chosen != NULL ? tasks_string(chosen) : nil;
-    g_free(chosen);
-
-    [menu removeAllItems];
-    NSMenuItem *none = [menu addItemWithTitle:@"None" action:NULL keyEquivalent:@""];
-    [menu addItem:NSMenuItem.separatorItem];
-
-    NSMenuItem *selected = none;
-    GPtrArray  *tags     = task_db_tags(self.app->db, TASK_TAGS_ALL);
-    for (guint i = 0; i < tags->len; i++) {
-        const TaskTag *tag  = g_ptr_array_index(tags, i);
-        NSMenuItem    *item = [menu addItemWithTitle:tasks_tag_title(tag) action:NULL
-                                       keyEquivalent:@""];
-        item.representedObject = tasks_string(tag->name);
-        if (current != nil && [current caseInsensitiveCompare:item.representedObject] == NSOrderedSame) {
-            selected = item;
-        }
-    }
-    task_ptr_array_free_tags(tags);
-    if (current != nil && selected == none) {
-        selected = [menu addItemWithTitle:current action:NULL keyEquivalent:@""];
-        selected.representedObject = current;
-    }
-    [self.default_tag_popup selectItem:selected];
-}
-
-/*
- * default_tag_changed: — a default tag (or None) was chosen.
- *
- * Inputs:
- *   sender — the popup; the chosen item carries the tag's name, nil for
- *            None
- */
-- (void)
-default_tag_changed:(NSPopUpButton *)sender
-{
-    NSString *name = sender.selectedItem.representedObject;
-    task_config_set(TASK_CFG_DEFAULT_TAG, name != nil ? name.UTF8String : NULL);
+    return @[shared_ui_heading(@"New Tasks"), hotkey, note];
 }
 
 /*

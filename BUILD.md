@@ -72,7 +72,7 @@ and stops with a message when the directory has no sources.  The module
 is Objective-C against Cocoa only (`shared_ui/README.md`).  After pulling
 a new `shared_ui`, run `make clean && make`.
 
-Tasks needs `shared_data` at schema version 200: one `tags` table shared
+Tasks needs `shared_data` at schema version 201: one `tags` table shared
 with Notes (emoji, `favorite_tasks` for Tasks and `favorite_notes` for
 Notes) and `task_tags` are its only organisation.  The module brings a
 version-100 file up to date in place the first time an app opens it
@@ -185,7 +185,7 @@ The programs, all linked against the core only (no AppKit), include:
 | `backup_test` | backups through the shared module: refused destinations (Tasks' live-data fence and the module's folder checks), Back Up Now and its UTC file name, retention, the periodic poll |
 | `switch_test` | Open Database File: refusals (an old `tasks.db` and an empty file among them, left untouched), a switch, Make Default under the sandbox |
 | `rows_test` | the row description (lines, emphasis, the tags line, notes preview, a Notes item's plain title) and the pane collection (filters, search, status line, the Favorites view); which tag New Task gives (the selected tag, else the default tag) |
-| `tags_test` | tags: adding by name (any case, trimmed), the refusals, a subtask's inherited tags, removal and the last tag kept, a tag going with its last task, emoji and favorite, a tag's view and its saved order |
+| `tags_test` | tags: adding by name (any case, trimmed), the refusals, a subtask's inherited tags, removal (the last tag too), a tag going with its last task, emoji and favorite, a tag's view and its saved order |
 | `sidebar_test` | a tag's label, the selection fallback after a rebuild |
 | `order_test` | saved orders: key spelling, the permutation, dropping keys |
 | `app_test` | the event bus, the outside-change watch (`data_version`), due-date urgency, the recurrence pass waking on a main-loop timer |

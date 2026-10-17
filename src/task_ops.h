@@ -30,17 +30,4 @@
  * ------------------------------------------------------------------------- */
 guint task_ops_clear_completed(TaskApp *app, gint64 tag_id);
 
-/* ---------------------------------------------------------------------------
- * task_ops_default_tag() — the default tag (Settings: TASK_CFG_DEFAULT_TAG),
- * which New Task gives a task when no tag is selected and Quick Task
- * always does.
- *
- * The setting holds a NAME, not an id: a tag exists only while a task
- * carries it, so the default may name a tag that has gone (or never
- * existed yet); task_db_task_create then makes it again.
- *
- * Returns the name (g_free), or NULL when no default is set.
- * ------------------------------------------------------------------------- */
-gchar *task_ops_default_tag(TaskApp *app);
-
 #endif /* TASK_OPS_H */

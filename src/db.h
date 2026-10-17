@@ -25,11 +25,11 @@
  *                Notes' own flag)
  *   task_tags    task_id, tag_id — the tags a task carries.
  *
- * TAGS ARE THE ONLY ORGANISATION; there are no lists.  Every live task
- * carries at least one tag, and a tag exists while a live task or a note
- * carries it; the shared schema's triggers hold both for every writer
- * (shared_db.c, LATE_SQL), and tag a task Notes writes (or revives)
- * "Action Items".  So Tasks shows the tags ITS tasks carry
+ * TAGS ARE THE ONLY ORGANISATION; there are no lists.  A task carries any
+ * number of tags, none included (it is then listed under All Tasks
+ * alone); a tag exists while a live task or a note carries it, which the
+ * shared schema's triggers hold for every writer (shared_db.c, LATE_SQL),
+ * and they tag a task Notes writes (or revives) "Action Items".  So Tasks shows the tags ITS tasks carry
  * (TASK_TAGS_CARRIED) and offers every tag where one is chosen
  * (TASK_TAGS_ALL): the vocabulary is the two apps' together.
  *
@@ -408,7 +408,8 @@ GPtrArray *task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi,
 
 /* ---------------------------------------------------------------------------
  * task_db_task_create() — create a task with its tags, in one transaction
- * (the caller's when one is open): every live task carries a tag.
+ * (the caller's when one is open).  A task may carry no tag: Tasks lists
+ * it under All Tasks alone.
  *
  *   db        — the connection
  *   parent_id — 0 for a top-level task; else the parent, which must be a
@@ -418,11 +419,11 @@ GPtrArray *task_db_tasks_due_between(TaskDatabase *db, gint64 lo, gint64 hi,
  *               parent carries
  *   title     — the title ('' allowed)
  *   tag       — the tag's name (task_db_task_tag_add: an existing tag in
- *               any case, else a new one).  REQUIRED for a top-level task;
- *               for a subtask NULL adds nothing to the parent's tags
+ *               any case, else a new one), or NULL / blank for none (a
+ *               subtask then carries its parent's tags alone)
  *
- * Returns the new id, or 0 when refused (no tag for a top-level task, a
- * bad parent) or a write failed (logged); nothing is written then.
+ * Returns the new id, or 0 when refused (a bad parent) or a write failed
+ * (logged); nothing is written then.
  * ------------------------------------------------------------------------- */
 gint64 task_db_task_create(TaskDatabase *db, gint64 parent_id, const gchar *title,
                            const gchar *tag);
@@ -622,10 +623,9 @@ gint64     task_db_task_tag_add(TaskDatabase *db, gint64 task_id, const gchar *n
  * task_db_task_tag_remove() — take a tag off a task.  The tag itself is
  * deleted when no other task and no note carries it (the schema's
  * trigger).  A live
- * task's LAST tag is never taken off (the schema refuses it).
- *
+ * *
  * Returns 1 when written (also when the task did not carry it), 0 when
- * refused because it is the task's last tag, -1 when the write failed
+ * -1 when the write failed
  * (logged).
  * ------------------------------------------------------------------------- */
 gint       task_db_task_tag_remove(TaskDatabase *db, gint64 task_id, gint64 tag_id);

@@ -909,9 +909,10 @@ secondary_windows(NSWindow *library)
  *
  * Inputs:
  *   app — the application context, the sandbox database open
+ *   dir — where snapshots go (the refusal's tool panel)
  */
 static void
-check_open_database(TaskApp *app)
+check_open_database(TaskApp *app, NSString *dir)
 {
     NSFileManager *files   = NSFileManager.defaultManager;
     NSString      *sandbox = tasks_string(getenv(TASK_DATA_DIR_ENV));
@@ -946,6 +947,7 @@ check_open_database(TaskApp *app)
         check_spin(0.3);
         check(tool_panel() != nil && [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
               "open database: a file that is not a database is refused in a tool panel");
+        check(snapshot(tool_panel(), dir, @"tool-panel"), "snapshot: a tool panel");
         check(secondary_windows(window) == 1, "open database: ... and the editors stay open");
         answer_panel(0);
 
@@ -2146,19 +2148,32 @@ check_editor_window(TaskApp *app, NSString *dir)
         [library close];
     }
 
-    /* Quick Task: with one tag selected, the task still gets the default
-     * tag, and its editor opens in the lower-right corner of the screen;
-     * Cancel takes the task away again.  With a VIEW selected, New Task
-     * also uses the default tag; with a tag selected, that tag. */
+    /* Quick Task: whatever is selected, the task gets no tag (it is listed
+     * under All Tasks alone) and its editor opens in the lower-right corner
+     * of the screen; Cancel takes the task away again.  New Task gives the
+     * selected tag, or none with a view selected. */
     @autoreleasepool {
         TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
         [library showWindow:nil];
         TaskTag *selected = task_db_tag_find(app->db, "Errands");
-        TaskTag *fallback = task_db_tag_find(app->db, "Reading");
-        if (selected != NULL && fallback != NULL) {
+        if (selected != NULL) {
             guint (^count_in)(gint64) = ^guint(gint64 tag_id) {
                 GPtrArray *tasks = task_db_tasks_tagged(app->db, tag_id);
                 guint      n     = tasks->len;
+                task_ptr_array_free_tasks(tasks);
+                return n;
+            };
+            /* The live top-level tasks carrying no tag: All Tasks lists
+             * them, no tag's view does. */
+            guint (^untagged)(void) = ^guint(void) {
+                GPtrArray *tasks = task_db_tasks_all_visible(app->db);
+                guint      n     = 0;
+                for (guint i = 0; i < tasks->len; i++) {
+                    const Task *task = g_ptr_array_index(tasks, i);
+                    GPtrArray  *tags = task_db_task_tags(app->db, task->id);
+                    n += tags->len == 0;
+                    task_ptr_array_free_tags(tags);
+                }
                 task_ptr_array_free_tasks(tasks);
                 return n;
             };
@@ -2169,15 +2184,14 @@ check_editor_window(TaskApp *app, NSString *dir)
                 }
                 return nil;
             };
-            guint in_selected = count_in(selected->id), in_fallback = count_in(fallback->id);
+            guint in_selected = count_in(selected->id), loose = untagged();
 
             [library select:(task_sel_t){ task_sel_tag, selected->id }];
-            task_config_set(TASK_CFG_DEFAULT_TAG, fallback->name);
             [library perform_command:@"quick-task" param:nil];
             check_spin(0.1);
             NSWindow *editor_win = new_editor();
-            check(count_in(fallback->id) == in_fallback + 1 && count_in(selected->id) == in_selected,
-                  "quick task: gets the default tag, not the selected one");
+            check(untagged() == loose + 1 && count_in(selected->id) == in_selected,
+                  "quick task: makes a task without a tag, not with the selected one");
             NSRect area = NSScreen.mainScreen.visibleFrame;
             check(editor_win != nil &&
                   fabs(NSMaxX(editor_win.frame) - (NSMaxX(area) - shared_look_screen_margin)) < 1 &&
@@ -2185,39 +2199,16 @@ check_editor_window(TaskApp *app, NSString *dir)
                   "quick task: its editor opens in the screen's lower-right corner");
             if (editor_win) send_escape(editor_win);
             check_spin(0.2);
-            check(count_in(fallback->id) == in_fallback, "quick task: Cancel deletes the task");
-
-            /* With no default tag, Quick Task says so in a tool panel and
-             * creates nothing; OK opens Settings, where one is chosen. */
-            task_config_set(TASK_CFG_DEFAULT_TAG, NULL);
-            [library perform_command:@"quick-task" param:nil];
-            check_spin(0.2);
-            NSWindow *panel = tool_panel();
-            check(panel != nil && find_text(panel.contentView, @"Choose a default tag first") != nil &&
-                  count_in(fallback->id) == in_fallback,
-                  "quick task: with no default tag it says so in a tool panel and creates nothing");
-            check(snapshot(panel, dir, @"tool-panel"), "snapshot: a tool panel");
-            answer_panel(0);
-            NSWindow *settings = nil;
-            for (NSWindow *w in NSApp.windows) {
-                if (w.visible && [w.title isEqualToString:@"Settings"]) settings = w;
-            }
-            check(settings != nil, "quick task: ... and OK opens Settings");
-            [settings close];
-            check_spin(0.2);
+            check(untagged() == loose, "quick task: Cancel deletes the task");
 
             [library select:task_sel_default()];
-            [library perform_command:@"new-task" param:nil];
-            check_spin(0.1);
-            check(new_editor() == nil, "new task: in a view with no default tag, nothing is made");
-            task_config_set(TASK_CFG_DEFAULT_TAG, fallback->name);
             check([library state_of_command:@"new-task"].enabled,
                   "new task: enabled in All Tasks");
             [library perform_command:@"new-task" param:nil];
             check_spin(0.1);
             editor_win = new_editor();
-            check(count_in(fallback->id) == in_fallback + 1,
-                  "new task: with a view selected it gets the default tag");
+            check(untagged() == loose + 1 && count_in(selected->id) == in_selected,
+                  "new task: with a view selected it gets no tag");
             if (editor_win) send_escape(editor_win);
             check_spin(0.2);
 
@@ -2225,15 +2216,12 @@ check_editor_window(TaskApp *app, NSString *dir)
             [library perform_command:@"new-task" param:nil];
             check_spin(0.1);
             editor_win = new_editor();
-            check(count_in(selected->id) == in_selected + 1 &&
-                  count_in(fallback->id) == in_fallback,
+            check(count_in(selected->id) == in_selected + 1 && untagged() == loose,
                   "new task: with a tag selected it gets that tag");
             if (editor_win) send_escape(editor_win);
             check_spin(0.2);
-            task_config_set(TASK_CFG_DEFAULT_TAG, NULL);
         }
         task_tag_free(selected);
-        task_tag_free(fallback);
         [library close];
     }
 
@@ -2542,20 +2530,23 @@ check_tags(TaskApp *app, NSString *dir)
         check(library.selection.kind == task_sel_view,
               "tags: ... and the selection moves from its row to a view");
 
-        /* The last token cannot go. */
+        /* The last token goes too: the task then carries no tag and is
+         * listed under All Tasks alone. */
         field.objectValue = @[];
         [NSNotificationCenter.defaultCenter
             postNotificationName:NSControlTextDidChangeNotification object:field];
         check_spin(0.3);
-        check(tag_named(@"UI Base") != 0 && [field.objectValue isEqual:@[@"UI Base"]],
-              "tags: deleting the last token is refused, and the token comes back");
+        GPtrArray *left = task_db_task_tags(app->db, tagged);
+        check(left->len == 0 && tag_named(@"UI Base") == 0 && [field.objectValue isEqual:@[]],
+              "tags: deleting the last token takes it off too; the task carries none");
+        task_ptr_array_free_tags(left);
 
         tasks_editor_close_all();
         task_db_task_delete(app->db, tagged);
         task_db_task_delete(app->db, other);
         task_app_notify_tasks(app);
         check_spin(0.3);
-        check(tag_named(@"UI Check Other") == 0 && tag_named(@"UI Base") == 0 &&
+        check(tag_named(@"UI Check Other") == 0 &&
               ![sidebar_rows(sidebar) containsObject:@"UI Check Other"],
               "tags: deleting the last task carrying a tag deletes it and its row");
         [library close];
@@ -2948,7 +2939,7 @@ main(int argc, const char *argv[])
         check_row_text(app);
         check_compact(app, dir);
         check_status_message(app);
-        check_open_database(app);
+        check_open_database(app, dir);
         check_menu_bar();
         check_sidebar(app, dir);
         check_tags(app, dir);
