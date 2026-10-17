@@ -1327,18 +1327,23 @@ check_sidebar(TaskApp *app, NSString *dir)
         NSMenu *bar_menu = [favorite_button(@"\U0001F91D  Customers") menuForEvent:[NSApp currentEvent]];
         check(bar_menu.numberOfItems == 2 &&
               [shared_command_ident(bar_menu.itemArray[0]) isEqualToString:@"edit-tag"] &&
-              [shared_command_ident(bar_menu.itemArray[1]) isEqualToString:@"toggle-favorite"],
-              "favorites: a button's menu offers Edit Tag and the favorite toggle");
-        /* Add to / Remove from Favorites: the selected tag (Reading, a
-         * favorite) names the removal; a tag named by the item flips. */
-        check([[library state_of_command:@"toggle-favorite"].title isEqualToString:@"Remove from Favorites"],
-              "favorites: the toggle offers to remove the selected favorite");
+              [shared_command_ident(bar_menu.itemArray[1]) isEqualToString:@"remove-favorite"],
+              "favorites: a button's menu offers Edit Tag and Remove from Favorites");
+        /* The selected tag (Reading, a favorite): Add is disabled, Remove
+         * enabled; adding a favorite again changes nothing. */
+        check(![library state_of_command:@"add-favorite"].enabled &&
+              [library state_of_command:@"remove-favorite"].enabled,
+              "favorites: a favorite can be removed, not added again");
         TaskTag *customers = tag_named("Customers");
-        [library perform_command:@"toggle-favorite" param:@(customers->id)];
+        [library perform_command:@"add-favorite" param:@(customers->id)];
+        check_spin(0.3);
+        check([favorites() containsObject:@"\U0001F91D  Customers"],
+              "favorites: Add to Favorites on a favorite leaves it one");
+        [library perform_command:@"remove-favorite" param:@(customers->id)];
         check_spin(0.3);
         check(![favorites() containsObject:@"\U0001F91D  Customers"],
               "favorites: Remove from Favorites takes the tag's button away");
-        [library perform_command:@"toggle-favorite" param:@(customers->id)];
+        [library perform_command:@"add-favorite" param:@(customers->id)];
         check_spin(0.3);
         check([favorites() containsObject:@"\U0001F91D  Customers"],
               "favorites: Add to Favorites brings it back");
