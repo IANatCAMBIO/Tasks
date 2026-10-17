@@ -146,10 +146,14 @@ own manual order); each row says what it is tagged.
   Names ignore case: "work" typed is the existing "Work".  Delete a tag's
   token to take it off.
 - Select tasks and right-click, **Add Tag ▸** gives them all a tag.
-- Right-click a tag in the sidebar, **Edit Tag…**: give it an emoji, and
-  make it a favorite or not.  A tag's name never changes.
+- Right-click a tag in the sidebar, **Edit Tag…**: give it an emoji (a
+  click in the emoji slot opens the emoji picker), and make it a favorite
+  or not.  A tag's name never changes.
 - **Favorite** tags have a button each in the **Favorites bar** above the
-  task pane (View → Hide/Show Favorites Bar).  The sidebar toggles with the
+  task pane (View → Hide/Show Favorites Bar); right-click a tag for **Add
+  to Favorites**, a button for **Remove from Favorites**.  Drag a button
+  along the bar to put the favorites in your order (new ones join at the
+  end, by name).  The sidebar toggles with the
   button at the far left of the toolbar (⌃⌘S); drag its right edge to
   make it wider or narrower, and it keeps that width.
 - A subtask is born with its parent's tags.  New Task gives the selected

@@ -157,12 +157,14 @@ build/oauth.o: CFLAGS += $(if $(GOOGLE_CLIENT_ID),-DTASK_GOOGLE_CLIENT_ID='"$(GO
 
 # Every src/*.c is the toolkit-free core; every src/*.m is the AppKit
 # layer.  A .c and a .m must not share a base name (both would build to
-# the same object).  The shared database module joins the core.
+# the same object).  The shared database module joins the core, and so
+# does shared_ui's saved-order helper (plain C in a .m: task_order.c and
+# its test use it).
 CORE_SRCS = $(wildcard src/*.c)
 UI_SRCS   = $(wildcard src/*.m)
-CORE_OBJS = $(patsubst src/%.c,build/%.o,$(CORE_SRCS)) build/shared_db.o
+CORE_OBJS = $(patsubst src/%.c,build/%.o,$(CORE_SRCS)) build/shared_db.o build/shared_order.o
 UI_OBJS   = $(patsubst src/%.m,build/%.o,$(UI_SRCS)) \
-            $(patsubst $(SHARED_UI_DIR)/src/%.m,build/%.o,$(SHARED_UI_SRCS))
+            $(filter-out build/shared_order.o,$(patsubst $(SHARED_UI_DIR)/src/%.m,build/%.o,$(SHARED_UI_SRCS)))
 OBJS      = $(CORE_OBJS) $(UI_OBJS)
 
 .PHONY: all run seed install clean test ui-check

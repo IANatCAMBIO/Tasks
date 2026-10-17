@@ -7,12 +7,13 @@
 /*
  * TasksFavoritesBar — a 28 pt horizontal scrolling strip across the whole
  * window, under the toolbar (the sidebar and the tasks start below it),
- * with one button per FAVORITE tag (TaskTag.favorite), alphabetically.
- * Clicking a button selects its tag through [library select:]; the button
- * of the selected
- * tag is lit.  A right-click on a button offers Edit Tag… (its emoji and
- * favorite flag, the "edit-tag" command).  With no favorite tag the bar says
- * how to make one.
+ * with one button per FAVORITE tag (TaskTag.favorite; SharedFavoriteButton)
+ * in the order the user dragged them into (TASK_CFG_FAVORITES_ORDER), new
+ * favorites at the end by name.  Clicking a button selects its tag through
+ * [library select:]; the button of the selected tag is lit.  Dragging a
+ * button along the bar reorders it.  A right-click on a button offers Edit
+ * Tag… (its emoji, the "edit-tag" command) and Remove from Favorites.
+ * With no favorite tag the bar says how to make one.
  *
  * It does NOT own the selection — that lives on the window
  * (TasksLibraryWindow selection) — nor the tags: they are the sidebar's

@@ -1347,6 +1347,49 @@ check_sidebar(TaskApp *app, NSString *dir)
         check_spin(0.3);
         check([favorites() containsObject:@"\U0001F91D  Customers"],
               "favorites: Add to Favorites brings it back");
+
+        /* Dragging a favorite along the bar reorders it: the order is kept
+         * (TASK_CFG_FAVORITES_ORDER) across a refresh; without it, by
+         * name.  The button tracks the drag from the window's queue, so
+         * the events are posted first and the press handed to it. */
+        void (^drag_right)(NSButton *, CGFloat) = ^(NSButton *btn, CGFloat dx) {
+            NSPoint from = [btn.superview convertPoint:NSMakePoint(NSMidX(btn.frame), NSMidY(btn.frame))
+                                                toView:nil];
+            NSEvent *(^mouse)(NSEventType, NSPoint) = ^NSEvent *(NSEventType type, NSPoint at) {
+                NSEvent *e = [NSEvent mouseEventWithType:type location:at modifierFlags:0
+                                               timestamp:NSProcessInfo.processInfo.systemUptime
+                                            windowNumber:window.windowNumber context:nil
+                                             eventNumber:0 clickCount:1 pressure:1.0];
+                [NSApp postEvent:e atStart:NO];
+                return e;
+            };
+            mouse(NSEventTypeLeftMouseDragged, NSMakePoint(from.x + 20.0, from.y));
+            mouse(NSEventTypeLeftMouseDragged, NSMakePoint(from.x + dx, from.y));
+            mouse(NSEventTypeLeftMouseUp, NSMakePoint(from.x + dx, from.y));
+            [btn mouseDown:mouse(NSEventTypeLeftMouseDown, from)];
+        };
+        NSButton *cust_btn = favorite_button(@"\U0001F91D  Customers");
+        NSButton *read_btn = favorite_button(@"\U0001F4DA  Reading");
+        drag_right(cust_btn, NSMaxX(read_btn.frame) - NSMinX(cust_btn.frame));
+        check_spin(0.4);
+        TaskTag *reading_tag = tag_named("Reading");
+        gchar   *kept_order  = task_config_get(TASK_CFG_FAVORITES_ORDER);
+        gchar   *want_order  = g_strdup_printf("%" G_GINT64_FORMAT ",%" G_GINT64_FORMAT, (gint64)reading_tag->id, (gint64)customers->id);
+        check([favorites()[0] hasPrefix:@"\U0001F4DA  Reading"] && [favorites()[1] hasPrefix:@"\U0001F91D  Customers"] &&
+              g_strcmp0(kept_order, want_order) == 0,
+              "favorites: dragging a button past the next puts it after, and the order is kept");
+        g_free(kept_order);
+        g_free(want_order);
+        task_tag_free(reading_tag);
+        [library full_refresh];
+        check_spin(0.3);
+        check([favorites()[0] hasPrefix:@"\U0001F4DA  Reading"] && [favorites()[1] hasPrefix:@"\U0001F91D  Customers"],
+              "favorites: a refresh shows the dragged order");
+        task_config_set(TASK_CFG_FAVORITES_ORDER, NULL);
+        [library full_refresh];
+        check_spin(0.3);
+        check([favorites()[0] hasPrefix:@"\U0001F91D  Customers"] && [favorites()[1] hasPrefix:@"\U0001F4DA  Reading"],
+              "favorites: without a saved order, by name");
         task_tag_free(customers);
 
         /* Edit Tag: an emoji and Favorite, in a tool panel (never a sheet),
@@ -1397,7 +1440,7 @@ check_sidebar(TaskApp *app, NSString *dir)
         task_ptr_array_free_tags(all);
         [library full_refresh];
         check(favorites().count == 0 &&
-              find_text(bar, @"No favorites yet \u2014 right-click a tag in the sidebar and choose Edit Tag\u2026") != nil,
+              find_text(bar, @"No favorites yet \u2014 right-click a tag in the sidebar and choose Add to Favorites") != nil,
               "favorites: with none, the bar says how to make one");
         for (NSNumber *id in were) task_db_tag_set_favorite(app->db, id.longLongValue, TRUE);
         [library full_refresh];

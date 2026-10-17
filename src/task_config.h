@@ -90,6 +90,10 @@
 /* Task-list header sort (written by the list; spelling in task_sort.h) */
 #define TASK_CFG_LIST_SORT           "task_list_sort"        /* column names, e.g. "due,-title"; none = unsorted */
 
+#define TASK_CFG_FAVORITES_ORDER     "favorites_order"       /* tag ids, comma separated: the Favorites
+                                                            * bar's buttons as dragged into order
+                                                            * (shared_order.h); none = by name */
+
 /* Per-view order keys are built in task_order.c (see task_order.h):
  * "<family>_list_<id>", "<family>_group_<id>", "<family>_<view id>", with
  * these two families.  Value: task ids, comma separated.  No default. */
