@@ -1280,6 +1280,16 @@ check_sidebar(TaskApp *app, NSString *dir)
         check(task_config_get_bool(TASK_CFG_SIDEBAR_COUNTS) && open > 0 &&
               [errands_count() isEqualToString:[NSString stringWithFormat:@"%d", open]],
               "counts: on by default, a tag shows its open tasks' count");
+        const TaskView *all_view = task_view_nth(0);
+        GPtrArray      *all      = all_view->query(app, all_view->user_data);
+        int             all_open = 0;
+        for (guint t = 0; t < all->len; t++) {
+            if (((const Task *)g_ptr_array_index(all, t))->status != TASK_STATUS_DONE) all_open++;
+        }
+        task_ptr_array_free_tasks(all);
+        check(all_open > 0 && [sidebar_count(sidebar, tasks_string(all_view->label))
+                                   isEqualToString:[NSString stringWithFormat:@"%d", all_open]],
+              "counts: a view shows its open tasks' count (as Notes' fixed rows)");
         gint64 extra = task_db_task_create(app->db, 0, "ui-check counted", "Errands");
         task_app_notify_tasks(app);
         check_spin(0.2);

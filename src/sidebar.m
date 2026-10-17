@@ -22,6 +22,9 @@ static const CGFloat    count_gap     = 4.0;                /* text to count    
 @property (nonatomic, strong) SharedTable         *table;
 @property (nonatomic, strong) NSMutableData      *rows;      /* task_sel_t[], on screen */
 @property (nonatomic, copy)   NSArray<NSString *> *titles;   /* one per row             */
+@property (nonatomic, copy)   NSArray<NSNumber *> *view_counts;  /* a view's open tasks, by
+                                                                  * view index; empty while
+                                                                  * counts are not shown  */
 @property (nonatomic, copy)   NSDictionary<NSNumber *, NSNumber *> *counts; /* tag id → open
                                                               * tasks; empty while the
                                                               * counts are not shown    */
@@ -47,6 +50,7 @@ init_with_library:(TasksLibraryWindow *)library
     _rows    = [NSMutableData data];
     _titles  = @[];
     _counts  = @{};
+    _view_counts = @[];
 
     NSVisualEffectView *back = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
     back.material     = NSVisualEffectMaterialSidebar;
@@ -166,16 +170,29 @@ reload
 }
 
 /*
- * read_counts — the tags' open-task counts from the database, or none
- * while the setting hides them.
+ * read_counts — the open-task counts: each view's (its query, less the
+ * Done tasks) and each tag's, from the database; none while the setting
+ * hides them.  As Notes' sidebar counts its fixed rows and its tags.
  */
 - (void)
 read_counts
 {
-    NSMutableDictionary<NSNumber *, NSNumber *> *counts = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSNumber *, NSNumber *> *counts      = [NSMutableDictionary dictionary];
+    NSMutableArray<NSNumber *>                  *view_counts = [NSMutableArray array];
+    TaskApp *app = self.library.app;
 
     if (task_config_get_bool(TASK_CFG_SIDEBAR_COUNTS)) {
-        GHashTable    *map = task_db_tag_open_counts(self.library.app->db);
+        for (guint i = 0; i < task_view_count(); i++) {
+            const TaskView *view  = task_view_nth(i);
+            GPtrArray      *tasks = view->query(app, view->user_data);
+            int             open  = 0;
+            for (guint t = 0; t < tasks->len; t++) {
+                if (((const Task *)g_ptr_array_index(tasks, t))->status != TASK_STATUS_DONE) open++;
+            }
+            task_ptr_array_free_tasks(tasks);
+            [view_counts addObject:@(open)];
+        }
+        GHashTable    *map = task_db_tag_open_counts(app->db);
         GHashTableIter it;
         gpointer       key, value;
         g_hash_table_iter_init(&it, map);
@@ -184,7 +201,30 @@ read_counts
         }
         g_hash_table_destroy(map);
     }
-    self.counts = counts;
+    self.counts      = counts;
+    self.view_counts = view_counts;
+}
+
+/*
+ * count_of: — the count a row shows, or nil for none (the header, or
+ * while counts are hidden).
+ *
+ * Inputs:
+ *   sel — the row's selection
+ *
+ * Output: the count.
+ */
+- (NSNumber *)
+count_of:(task_sel_t)sel
+{
+    switch (sel.kind) {
+    case task_sel_view:
+        return (NSUInteger)sel.id < self.view_counts.count ? self.view_counts[(NSUInteger)sel.id] : nil;
+    case task_sel_tag:
+        return self.counts[@(sel.id)];
+    default:
+        return nil;
+    }
 }
 
 /*
@@ -197,12 +237,12 @@ refresh_counts
     if (!self.library || self.is_shut_down) return;
 
     [self read_counts];
-    NSMutableIndexSet *tag_rows = [NSMutableIndexSet indexSet];
+    NSMutableIndexSet *counted = [NSMutableIndexSet indexSet];
     for (NSInteger row = 0; row < [self row_count]; row++) {
-        if ([self sel_at:row].kind == task_sel_tag) [tag_rows addIndex:(NSUInteger)row];
+        if ([self sel_at:row].kind != task_sel_header) [counted addIndex:(NSUInteger)row];
     }
     self.showing = YES;
-    [self.table reloadDataForRowIndexes:tag_rows columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+    [self.table reloadDataForRowIndexes:counted columnIndexes:[NSIndexSet indexSetWithIndex:0]];
     self.showing = NO;
 }
 
@@ -282,7 +322,8 @@ tableView:(NSTableView *)table shouldSelectRow:(NSInteger)row
 
 /*
  * tableView:viewForTableColumn:row: — a row's cell: its label and, for a
- * tag while the counts are shown, its open tasks' count at the right.  To
+ * view or a tag while the counts are shown, its open tasks' count at the
+ * right.  To
  * VoiceOver the cell is one static text — the bare name and the count —
  * not the emoji, the name and the count apart.
  *
@@ -334,8 +375,7 @@ tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(N
             [count.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
-    task_sel_t   sel   = [self sel_at:row];
-    NSNumber    *n     = sel.kind == task_sel_tag ? self.counts[@(sel.id)] : nil;
+    NSNumber    *n     = [self count_of:[self sel_at:row]];
     NSTextField *count = nil;
     for (NSView *v in cell.subviews) {
         if ([v.identifier isEqualToString:count_id]) count = (NSTextField *)v;
