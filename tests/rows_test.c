@@ -302,15 +302,15 @@ test_collect(TaskApp *app)
     task_sel_t sel    = { task_sel_tag, chores->id };
     task_tag_free(chores);
     task_pane_content_t *content = task_pane_collect(app, sel, NULL);
-    check(content->rows->count == 4 && strcmp(content->status_text, "Chores - 4 tasks") == 0 &&
+    check(content->rows->count == 4 && strcmp(content->status_text, "#Chores") == 0 &&
           content->rows->rows[1]->id == b && content->rows->rows[2]->id == stamp,
           "collect: a tag shows every task carrying it, a subtask on its own row after its parent");
     task_pane_content_free(content);
 
     task_config_set_bool(TASK_CFG_SHOW_COMPLETED, FALSE);
     content = task_pane_collect(app, sel, NULL);
-    check(content->rows->count == 3 && strcmp(content->status_text, "Chores - 3 tasks") == 0,
-          "collect: completed tasks hidden by the setting; the count is what is shown");
+    check(content->rows->count == 3 && strcmp(content->status_text, "#Chores") == 0,
+          "collect: completed tasks hidden by the setting; the status stays the location");
     task_pane_content_free(content);
     task_config_set_bool(TASK_CFG_SHOW_COMPLETED, TRUE);
 
@@ -318,8 +318,8 @@ test_collect(TaskApp *app)
     content = task_pane_collect(app, sel, q);
     check(content->rows->count == 2 && content->rows->rows[0]->id == b,
           "collect: a subtask match surfaces its parent, and its own row after it");
-    check(strcmp(content->status_text, "Chores - 2 matching tasks") == 0,
-          "collect: the status says matching");
+    check(strcmp(content->status_text, "#Chores - 2 matching tasks") == 0,
+          "collect: the status says matching, the tag with its '#'");
     task_pane_content_free(content);
     task_search_free(q);
 
@@ -332,7 +332,7 @@ test_collect(TaskApp *app)
           "collect: only a tag selection has a tag id");
     content = task_pane_collect(app, all, NULL);
     check(content->rows->count > 3 &&
-          strncmp(content->status_text, "All Tasks - ", 12) == 0,
+          strcmp(content->status_text, "All Tasks") == 0,
           "collect: All Tasks gathers every tag's tasks");
     check(line_of(content->rows->rows[0], task_row_line_tags) != NULL,
           "collect: every row says what it is tagged");
@@ -341,7 +341,7 @@ test_collect(TaskApp *app)
     /* All Favorites: every task carrying a favorite tag, and only those. */
     task_sel_t fav = { task_sel_view, task_view_index_of(task_view_find("pinned")) };
     content = task_pane_collect(app, fav, NULL);
-    check(content->rows->count == 0 && strcmp(content->status_text, "All Favorites - 0 tasks") == 0,
+    check(content->rows->count == 0 && strcmp(content->status_text, "All Favorites") == 0,
           "favorites: empty while no tag is a favorite");
     task_pane_content_free(content);
     TaskTag *fav_tag = task_db_tag_find(app->db, "Chores");

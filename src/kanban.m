@@ -1289,9 +1289,11 @@ shut_down
 /* ── Selection ───────────────────────────────────────────────────────── */
 
 /*
- * restyle_cards — draw every card as selected or not, in place.  Never a
- * refresh: a refresh would be work for nothing, and the card under the
- * pointer may be about to start a drag.
+ * restyle_cards — the selection changed under the user: draw every card as
+ * selected or not, in place, and tell the window (the status bar's count).
+ * Never a refresh: a refresh would be work for nothing, and the card under
+ * the pointer may be about to start a drag.  (A refresh restyles its cards
+ * itself, in rebuild, and says nothing.)
  */
 - (void)
 restyle_cards
@@ -1299,6 +1301,7 @@ restyle_cards
     for (NSNumber *key in self.cards) {
         [self.cards[key] show_selected:[self.selection containsObject:key]];
     }
+    [self.library selection_changed];
 }
 
 /*

@@ -45,7 +45,7 @@ static NSString * const search_tooltip       =
 @property (nonatomic, strong) TasksTaskList *task_list;
 @property (nonatomic, strong) TasksKanban *kanban;
 @property (nonatomic, strong) TasksDayPlanner *day_planner;
-@property (nonatomic, strong) NSTextField *status_left;    /* "<view> - N tasks"        */
+@property (nonatomic, strong) NSTextField *status_left;    /* "<view>" or "#<tag>"      */
 @property (nonatomic, strong) NSTextField *status_right;   /* the latest event message  */
 @property (nonatomic, weak) NSSearchField *search_field;   /* owned by its toolbar item */
 /* Compact mode's floating controls: the plate, and the command buttons on
@@ -744,6 +744,20 @@ visible_pane
 selected_task_ids
 {
     return [[self visible_pane] selected_task_ids];
+}
+
+/*
+ * selection_changed — the visible pane's selection changed under the user:
+ * the status bar's event message says how many tasks are selected.
+ * Documented in library_window.h.
+ */
+- (void)
+selection_changed
+{
+    if (self.is_shut_down) return;
+    NSUInteger count = [self selected_task_ids].count;
+    if (count == 0) return;
+    task_app_status(self.app, "%lu task%s selected", (unsigned long)count, count == 1 ? "" : "s");
 }
 
 /*

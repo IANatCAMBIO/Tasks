@@ -65,18 +65,24 @@ task_pane_collect(TaskApp *app, task_sel_t sel, const TaskSearch *search)
 {
     /* A registered view answers for itself; a tag shows every task
      * carrying it. */
-    const TaskView *view  = task_sel_view_of(sel);
-    TaskTag        *tag   = NULL;   /* owns `where` for a tag             */
+    const TaskView *view      = task_sel_view_of(sel);
+    gchar          *tag_where = NULL;   /* "#<tag>", owned, for a tag     */
     GPtrArray      *tasks;
-    const gchar    *where = "";
+    const gchar    *where     = "";
 
     if (view != NULL) {
         tasks = view->query(app, view->user_data);
         where = view->name != NULL ? view->name : "";
     } else {
+        /* A tag is written as the sidebar's filter, "#<tag>", as Notes'
+         * status bar writes it. */
         tasks = task_db_tasks_tagged(app->db, sel.id);
-        tag   = task_db_tag_get(app->db, sel.id);
-        if (tag != NULL) where = tag->name;
+        TaskTag *tag = task_db_tag_get(app->db, sel.id);
+        if (tag != NULL) {
+            tag_where = g_strdup_printf("#%s", tag->name);
+            where     = tag_where;
+        }
+        task_tag_free(tag);
     }
 
     TaskRowCtx ctx;
@@ -103,16 +109,21 @@ task_pane_collect(TaskApp *app, task_sel_t sel, const TaskSearch *search)
     if (content == NULL) abort();
     content->rows = task_rows_build(filtered != NULL ? filtered : tasks, &ctx);
 
-    if (asprintf(&content->status_text, "%s - %zu %stask%s", where,
-                 content->rows->count, search != NULL ? "matching " : "",
-                 content->rows->count == 1 ? "" : "s") < 0) {
+    /* The location alone, as Notes' status bar: the sidebar already counts
+     * the view's tasks.  A search's matches are counted, since nothing
+     * else shows how many there are. */
+    if (search == NULL) {
+        content->status_text = strdup(where);
+        if (content->status_text == NULL) abort();
+    } else if (asprintf(&content->status_text, "%s - %zu matching task%s", where,
+                        content->rows->count, content->rows->count == 1 ? "" : "s") < 0) {
         abort();
     }
 
     task_row_ctx_clear(&ctx);
     if (filtered != NULL) g_ptr_array_free(filtered, TRUE);
     task_ptr_array_free_tasks(tasks);
-    task_tag_free(tag);
+    g_free(tag_where);
     return content;
 }
 

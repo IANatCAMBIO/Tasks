@@ -23,7 +23,7 @@
  *   │ views,   │                                             │  by     │
  *   │ tags     │                                             │ default)│
  *   ├──────────┴────────────────────────────────────────────┴─────────┤
- *   │ <view> - N tasks                            latest event message │
+ *   │ <view> or #<tag>                            latest event message │
  *   └─────────────────────────────────────────────────────────────────┘
  *
  * In COMPACT mode (View > Compact Controls) the window shrinks to a
@@ -180,10 +180,19 @@
 
 /*
  * refresh_tasks — rebuild the task pane for the current selection and
- * search, and update the status bar's count.  Cheap enough to call after
- * any change to tasks.
+ * search, and update the status bar's location line.  Cheap enough to call
+ * after any change to tasks.
  */
 - (void)refresh_tasks;
+
+/*
+ * selection_changed — the visible pane's selection changed under the user
+ * (a click, a Shift- or Command-click, Select All, a drop): the status
+ * bar's event message says how many tasks are selected, as Notes' does
+ * for notes.  Nothing selected says nothing.  Not called for a refresh
+ * putting the selection back.
+ */
+- (void)selection_changed;
 
 /*
  * refresh_sidebar — rebuild the sidebar and the Favorites bar from the

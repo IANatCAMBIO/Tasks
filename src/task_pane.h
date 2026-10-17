@@ -91,9 +91,12 @@ gchar *task_sel_new_task_tag(TaskApp *app, task_sel_t sel);
  * task_pane_content_t — the content of the task pane for one refresh.
  *
  *   rows        — the rows to show, in query order (owned)
- *   status_text — the status bar's left text: "<where> - N task(s)", or
- *                 "... N matching task(s)" while a search is active
- *                 (owned).  It is deliberately not "3 of 30": the total
+ *   status_text — the status bar's left text: "<where>", or
+ *                 "<where> - N matching task(s)" while a search is active
+ *                 (owned); <where> is the view's name, or "#<tag>" for a
+ *                 tag, as Notes' status bar writes a tag.  The view's own
+ *                 count is the sidebar's; a search's matches are counted
+ *                 here, and deliberately not as "3 of 30": the total
  *                 would need a second copy of the completed-visibility
  *                 rule.
  */

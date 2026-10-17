@@ -220,8 +220,8 @@ test_proto_list(TaskApp *app)
     task_config_set_bool(TASK_CFG_SHOW_COMPLETED, was);
 
     task_pane_content_t *content = task_pane_collect(app, sel, NULL);
-    check(strncmp(content->status_text, "urgent - ", 9) == 0,
-          "pane: the status line names the tag");
+    check(strcmp(content->status_text, "#urgent") == 0,
+          "pane: the status line names the tag, with its '#'");
     task_pane_content_free(content);
     (void)plain;
 

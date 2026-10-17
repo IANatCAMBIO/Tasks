@@ -94,6 +94,9 @@ static const CGFloat data_col_min_w = 40.0;     /* Status, Due Date, Completed  
  * view, a column shown or hidden); the next show_rows: fits them.  Not on
  * every refresh: a fit measures text. */
 @property (nonatomic, assign) BOOL fit_pending;
+/* Set while a refresh puts the selection back (arrange_selecting:), so
+ * that tableViewSelectionDidChange: reports the user's changes only. */
+@property (nonatomic, assign) BOOL populating;
 
 /* Declared here because the cell classes below call it before its
  * definition; documented where it is defined. */
@@ -715,7 +718,25 @@ arrange_selecting:(NSSet<NSNumber *> *)selected
             }
         }
     }
+    self.populating = YES;
     [self.table selectRowIndexes:indexes byExtendingSelection:NO];
+    self.populating = NO;
+}
+
+/*
+ * tableViewSelectionDidChange: — the user changed the selection (a click,
+ * a modifier click, a right-click outside it, Select All): the window
+ * puts the count in the status bar.  A refresh putting the selection
+ * back (populating) says nothing.
+ *
+ * Inputs:
+ *   note — the notification (unused)
+ */
+- (void)
+tableViewSelectionDidChange:(NSNotification *)note
+{
+    if (self.populating) return;
+    [self.library selection_changed];
 }
 
 /*
