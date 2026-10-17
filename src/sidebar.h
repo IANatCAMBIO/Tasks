@@ -69,9 +69,10 @@
 - (void)show_tag_panel:(int64_t)tag_id;
 
 /*
- * tasks_sidebar_commands — the sidebar's command handlers (Edit Tag…: its
- * parameter names the tag; without one it means the tag selected in the
- * sidebar, and is disabled when none is).  Their target is the sidebar.
+ * tasks_sidebar_commands — the sidebar's command handlers (Edit Tag…, Add
+ * to / Remove from Favorites: the parameter names the tag; without one
+ * the command means the tag selected in the sidebar, and is disabled when
+ * none is).  Their target is the sidebar.
  *
  * Inputs:
  *   n — receives how many

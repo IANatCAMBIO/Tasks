@@ -51,6 +51,7 @@ static const shared_command_t commands[] = {
 
     /* ── The sidebar's ── */
     { @"edit-tag",            @"Edit Tag…",               @"",  0,         app, nil, nil },
+    { @"toggle-favorite",     @"Add to Favorites",        @"",  0,         app, nil, nil },
 
     /* ── The task list's: column visibility (check-marked items) ── */
     { @"column-done",         @"Done",                    @"",  0,         app, nil, nil },

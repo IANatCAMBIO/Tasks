@@ -629,6 +629,7 @@ build_menu_bar
     [file_menu addItem:command(@"clear-completed")];
     [file_menu addItem:NSMenuItem.separatorItem];
     [file_menu addItem:command(@"edit-tag")];
+    [file_menu addItem:command(@"toggle-favorite")];
     [file_menu addItem:NSMenuItem.separatorItem];
     [file_menu addItem:command(@"open-database")];
     [file_menu addItem:NSMenuItem.separatorItem];

@@ -427,8 +427,9 @@ tableViewSelectionDidChange:(NSNotification *)note
 /* ── The context menu ────────────────────────────────────────────────── */
 
 /*
- * menuNeedsUpdate: — the table's menu is about to open: Edit Tag… for a
- * right-clicked tag, nothing elsewhere.
+ * menuNeedsUpdate: — the table's menu is about to open: Edit Tag… and
+ * Add to / Remove from Favorites for a right-clicked tag, nothing
+ * elsewhere.
  *
  * Inputs:
  *   menu — the table's menu
@@ -443,6 +444,7 @@ menuNeedsUpdate:(NSMenu *)menu
     task_sel_t sel = [self sel_at:row];
     if (sel.kind != task_sel_tag) return;
     [menu addItem:shared_command_menu_item(@"edit-tag", @(sel.id))];
+    [menu addItem:shared_command_menu_item(@"toggle-favorite", @(sel.id))];
 }
 
 /* ── Edit Tag ────────────────────────────────────────────────────────── */
@@ -581,13 +583,63 @@ validate_edit_tag(id target, id item, SharedCommandState *state)
 }
 
 /*
+ * run_toggle_favorite — Add to / Remove from Favorites: flip the tag's
+ * favorite flag (Tasks' own, as the Edit Tag panel's box does) and
+ * refresh the sidebar and the Favorites bar.
+ *
+ * Inputs:
+ *   target — the sidebar
+ *   sender — the item
+ */
+static void
+run_toggle_favorite(id target, id sender)
+{
+    TasksSidebar *sidebar = target;
+    int64_t       tag_id  = tag_of(sidebar, sender);
+    if (sidebar.is_shut_down || sidebar.library == nil || tag_id == 0) return;
+    TaskApp *app = sidebar.library.app;
+    TaskTag *tag = task_db_tag_get(app->db, tag_id);
+    if (tag == NULL) return;
+    if (!task_db_tag_set_favorite(app->db, tag_id, !tag->favorite)) {
+        task_app_status(app, "The tag could not be changed");
+    }
+    task_tag_free(tag);
+    [sidebar.library full_refresh];
+}
+
+/*
+ * validate_toggle_favorite — there is a tag; the item says what a click
+ * will do ("Remove from Favorites" for a favorite).
+ *
+ * Inputs:
+ *   target — the sidebar
+ *   item   — the item
+ *   state  — the command's look, adjusted here
+ *
+ * Output: whether the command may run.
+ */
+static BOOL
+validate_toggle_favorite(id target, id item, SharedCommandState *state)
+{
+    TasksSidebar *sidebar = target;
+    int64_t       tag_id  = tag_of(sidebar, item);
+    if (tag_id == 0 || sidebar.library == nil) return NO;
+    TaskTag *tag = task_db_tag_get(sidebar.library.app->db, tag_id);
+    if (tag == NULL) return NO;
+    if (tag->favorite) shared_command_state_set(state, @"Remove from Favorites", nil, NO);
+    task_tag_free(tag);
+    return YES;
+}
+
+/*
  * tasks_sidebar_commands — see sidebar.h.
  */
 const shared_command_handler_t *
 tasks_sidebar_commands(size_t *n)
 {
     static const shared_command_handler_t table[] = {
-        { @"edit-tag", run_edit_tag, validate_edit_tag },
+        { @"edit-tag",        run_edit_tag,        validate_edit_tag        },
+        { @"toggle-favorite", run_toggle_favorite, validate_toggle_favorite },
     };
     *n = sizeof table / sizeof table[0];
     return table;

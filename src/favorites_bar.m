@@ -90,6 +90,7 @@ menuForEvent:(NSEvent *)event
     TasksLibraryWindow *library = ((TasksFavoritesBar *)view).library;
     if (library != nil) {
         [menu addItem:shared_command_menu_item(@"edit-tag", @(self.tag_id))];
+        [menu addItem:shared_command_menu_item(@"toggle-favorite", @(self.tag_id))];
     }
     return menu;
 }

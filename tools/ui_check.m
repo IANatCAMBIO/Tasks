@@ -1325,9 +1325,24 @@ check_sidebar(TaskApp *app, NSString *dir)
               "favorites: a button selects its tag, lit in the bar and the sidebar");
         task_tag_free(reading);
         NSMenu *bar_menu = [favorite_button(@"\U0001F91D  Customers") menuForEvent:[NSApp currentEvent]];
-        check(bar_menu.numberOfItems == 1 &&
-              [shared_command_ident(bar_menu.itemArray[0]) isEqualToString:@"edit-tag"],
-              "favorites: a button's menu offers Edit Tag");
+        check(bar_menu.numberOfItems == 2 &&
+              [shared_command_ident(bar_menu.itemArray[0]) isEqualToString:@"edit-tag"] &&
+              [shared_command_ident(bar_menu.itemArray[1]) isEqualToString:@"toggle-favorite"],
+              "favorites: a button's menu offers Edit Tag and the favorite toggle");
+        /* Add to / Remove from Favorites: the selected tag (Reading, a
+         * favorite) names the removal; a tag named by the item flips. */
+        check([[library state_of_command:@"toggle-favorite"].title isEqualToString:@"Remove from Favorites"],
+              "favorites: the toggle offers to remove the selected favorite");
+        TaskTag *customers = tag_named("Customers");
+        [library perform_command:@"toggle-favorite" param:@(customers->id)];
+        check_spin(0.3);
+        check(![favorites() containsObject:@"\U0001F91D  Customers"],
+              "favorites: Remove from Favorites takes the tag's button away");
+        [library perform_command:@"toggle-favorite" param:@(customers->id)];
+        check_spin(0.3);
+        check([favorites() containsObject:@"\U0001F91D  Customers"],
+              "favorites: Add to Favorites brings it back");
+        task_tag_free(customers);
 
         /* Edit Tag: an emoji and Favorite, in a tool panel (never a sheet),
          * OK its default button. */
