@@ -666,6 +666,7 @@ build_menu_bar
     [columns.submenu addItem:command(@"column-status")];
     [columns.submenu addItem:command(@"column-due")];
     [columns.submenu addItem:command(@"column-completed")];
+    [columns.submenu addItem:command(@"column-created")];
     [view_menu addItem:columns];
     [view_menu addItem:NSMenuItem.separatorItem];
     [view_menu addItem:command(@"toggle-sidebar")];

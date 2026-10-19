@@ -339,6 +339,7 @@ task_row_describe(const Task *t, const TaskRowCtx *ctx)
      * `due` alone is local midnight for every row of the same day. */
     gchar *due_text       = task_due_format_at(t->due, t->due_time);
     gchar *completed_text = task_due_format(t->completed_at);
+    gchar *created_text   = task_due_format(t->created_at);
 
     row->due            = t->due;
     row->due_time       = t->due_time;
@@ -347,9 +348,12 @@ task_row_describe(const Task *t, const TaskRowCtx *ctx)
     row->due_urgency    = task_due_urgency(row->due_instant);
     row->completed_at   = t->completed_at;
     row->completed_text = text_printf("%s", completed_text);
+    row->created_at     = t->created_at;
+    row->created_text   = text_printf("%s", created_text);
     row->status_text    = task_status_label(t->status);
     g_free(due_text);
     g_free(completed_text);
+    g_free(created_text);
     return row;
 }
 
@@ -370,6 +374,7 @@ task_row_free(task_row_t *row)
     free(row->title);
     free(row->due_text);
     free(row->completed_text);
+    free(row->created_text);
     free(row);
 }
 

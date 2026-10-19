@@ -44,6 +44,7 @@ static const struct {
     { TASK_CFG_COL_STATUS,          kind_bool, "0"   },
     { TASK_CFG_COL_DUE,             kind_bool, "1"   },
     { TASK_CFG_COL_COMPLETED,       kind_bool, "1"   },
+    { TASK_CFG_COL_CREATED,         kind_bool, "1"   },
 };
 #define REGISTRY_COUNT (sizeof(registry) / sizeof(registry[0]))
 

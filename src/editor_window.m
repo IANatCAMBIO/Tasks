@@ -1291,7 +1291,7 @@ indexOfSelectedItem:(NSInteger *)selected
     NSArray<NSString *> *names = [starts arrayByAddingObjectsFromArray:inside];
     if (names.count > (NSUInteger)shared_look_tag_suggestions_max)
         names = [names subarrayWithRange:NSMakeRange(0, (NSUInteger)shared_look_tag_suggestions_max)];
-    if (selected != NULL) *selected = names.count > 0 ? 0 : -1;
+    if (selected != NULL) *selected = -1;
     return names;
 }
 

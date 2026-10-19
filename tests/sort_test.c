@@ -15,13 +15,16 @@
 
 /* The rows every small check sorts.  Index: what it is there for. */
 static task_row_t sample_rows[] = {
-    /* 0 */ { .title = "banana",  .status = TASK_STATUS_NEW,         .due_instant = 300 },
+    /* 0 */ { .title = "banana",  .status = TASK_STATUS_NEW,         .due_instant = 300,
+              .created_at = 100 },
     /* 1 */ { .title = "Apple",   .status = TASK_STATUS_DONE,        .due_instant = 100,
               .completed_at = 900 },
-    /* 2 */ { .title = "cherry",  .status = TASK_STATUS_IN_PROGRESS, .due_instant = 0 },
+    /* 2 */ { .title = "cherry",  .status = TASK_STATUS_IN_PROGRESS, .due_instant = 0,
+              .created_at = 300 },
     /* 3 */ { .title = "apple",   .status = TASK_STATUS_DONE,        .due_instant = 200,
-              .completed_at = 500 },
-    /* 4 */ { .title = "\xc3\x89" "clair", .status = TASK_STATUS_NEW, .due_instant = 100 },
+              .completed_at = 500, .created_at = 200 },
+    /* 4 */ { .title = "\xc3\x89" "clair", .status = TASK_STATUS_NEW, .due_instant = 100,
+              .created_at = 50 },
     /* 5 */ { .title = "\xc3\xa9" "clair", .status = TASK_STATUS_IN_PROGRESS },
 };
 #define SAMPLE_COUNT ((int)(sizeof sample_rows / sizeof sample_rows[0]))
@@ -106,6 +109,10 @@ check_columns(void)
     check(same(order, (int[]){ 3, 1, 0, 2, 4, 5 }, SAMPLE_COUNT),
           "completed: oldest first, never-completed rows last");
 
+    sorted(order, (task_sort_key_t[]){ { task_sort_created, true } }, 1);
+    check(same(order, (int[]){ 4, 0, 3, 2, 1, 5 }, SAMPLE_COUNT),
+          "created: oldest first, unknown-creation rows last");
+
     /* A prefix sorts before the longer title. */
     task_row_t  shorter = { .title = "app" };
     task_row_t *pair[]  = { &sample_rows[3], &shorter };
@@ -161,10 +168,11 @@ check_saved(void)
           keys[1].column == task_sort_status && keys[1].ascending,
           "saved: unknown names and a repeated column are skipped");
 
-    n = task_sort_keys_parse("title,done,status,due,completed,title,due", keys);
+    n = task_sort_keys_parse("title,done,status,due,completed,created,title,due", keys);
     check(n == TASK_SORT_MAX_KEYS, "saved: never more keys than columns");
 
     check(strcmp(task_sort_column_name(task_sort_completed), "completed") == 0 &&
+          strcmp(task_sort_column_name(task_sort_created), "created") == 0 &&
           task_sort_column_name(task_sort_column_count) == NULL,
           "saved: a column has a name, a non-column has none");
 }

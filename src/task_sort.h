@@ -34,12 +34,14 @@ typedef enum {
     task_sort_status,               /* New < In Progress < Done            */
     task_sort_due,                  /* soonest first; undated rows last    */
     task_sort_completed,            /* oldest first; never-completed last  */
+    task_sort_created,              /* oldest first; unknown time last     */
     task_sort_column_count
 } task_sort_column_t;
 
 /*
  * task_sort_key_t — one level of a sort.  Descending is the exact reverse
- * of the comparison, so it also brings the undated / never-completed rows
+ * of the comparison, so it also brings the undated / never-completed /
+ * unknown-creation rows
  * to the top.
  */
 typedef struct {
@@ -52,7 +54,7 @@ typedef struct {
 
 /*
  * task_sort_column_name — a column's name: "title", "done", "status",
- * "due", "completed".  It is what the saved sort spells (so it is part of
+ * "due", "completed", "created".  It is what the saved sort spells (so it is part of
  * the ini format) and what the table's sort descriptors carry as their key.
  *
  * Inputs:

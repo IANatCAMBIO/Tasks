@@ -599,7 +599,7 @@ tombstone_each(TaskDatabase *db, const gchar *parents, gint64 owner, const gchar
                   "completed_at, priority, "\
                   "recur_interval, recur_unit, recur_time, recur_lead, "\
                   "recur_next, recur_start, due_time, "\
-                  "scheduled_start, scheduled_duration"
+                  "scheduled_start, scheduled_duration, created_at"
 #define TASK_COLS       TASK_COLS_WITH("notes")
 /* The same shape with the notes left out (an empty string in their
  * place), for a query whose rows are read for their titles alone: the
@@ -648,6 +648,7 @@ read_task(sqlite3_stmt *st)
     t->scheduled_duration = sqlite3_column_int(st, 19);
     if (t->scheduled_duration <= 0)
         t->scheduled_duration = SHARED_DB_TASK_SCHEDULED_DURATION_DEFAULT;
+    t->created_at = sqlite3_column_int64(st, 20);
     if (t->title == NULL) t->title = g_strdup("");
     if (t->notes == NULL) t->notes = g_strdup("");
     return t;
@@ -812,9 +813,9 @@ task_db_task_create(TaskDatabase *db, gint64 parent_id, const gchar *title,
     sqlite3_stmt *st = NULL;
     gint64        id = 0;            /* the new rowid                       */
     if (sqlite3_prepare_v2(shared_db_handle(db->shared),
-            "INSERT INTO tasks(parent_id, title, position, updated_at) "
+            "INSERT INTO tasks(parent_id, title, position, updated_at, created_at) "
             "VALUES(?1, ?2, (SELECT COALESCE(MAX(position), 0) + 1 FROM tasks "
-            "                WHERE parent_id IS ?1), ?3)", -1,
+            "                WHERE parent_id IS ?1), ?3, ?3)", -1,
             &st, NULL) == SQLITE_OK) {
         if (parent_id != 0)
             sqlite3_bind_int64(st, 1, parent_id);

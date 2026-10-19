@@ -102,6 +102,8 @@ typedef struct {
  *   due_urgency    — the Due cell's tint, as of when the row was built
  *   completed_at   — the Completed column's sort key (0 = never)
  *   completed_text — formatted, "" for none
+ *   created_at     — the Created column's sort key (0 = unknown)
+ *   created_text   — formatted, "" for unknown
  *   status_text    — "New" / "In Progress" / "Done" (static, not owned)
  */
 typedef struct {
@@ -117,6 +119,8 @@ typedef struct {
     task_due_urgency_t  due_urgency;
     int64_t             completed_at;
     char               *completed_text;
+    int64_t             created_at;
+    char               *created_text;
     const char         *status_text;
 } task_row_t;
 

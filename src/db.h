@@ -192,6 +192,9 @@ typedef struct {
                                       * of every view                       */
     gint      position;
     gint64    updated_at;
+    gint64    created_at;            /* unix; when the task was created.
+                                      * 0 = unknown (a task stored before
+                                      * schema 202 with no known time)     */
     gboolean  deleted;
     gint64    completed_at;          /* unix; when the task was LAST
                                       * completed.  0 = never.  Nothing
