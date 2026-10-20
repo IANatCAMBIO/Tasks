@@ -149,8 +149,8 @@ own manual order); each row says what it is tagged.
 - Right-click a tag in the sidebar, **Edit Tag…**: give it an emoji (a
   click in the emoji slot opens the emoji picker), and make it a favorite
   or not.  A tag's name never changes.
-- Right-click a tag, **Clear from all Tasks**: after a confirmation
-  ("Do you want to remove the tag … from N tasks?") the tag comes off every
+- Right-click a tag, **Clear Tag from All Tasks**: after a confirmation
+  ("Are you sure you want to remove the tag … from N tasks?") the tag comes off every
   task that carries it, so it leaves this sidebar.  It stays in the tag
   lists (Add Tag, a new task) while a note carries it; once no task and no
   note does, it is deleted.

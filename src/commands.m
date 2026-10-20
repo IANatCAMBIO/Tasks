@@ -53,7 +53,7 @@ static const shared_command_t commands[] = {
     { @"edit-tag",            @"Edit Tag…",               @"",  0,         app, nil, nil },
     { @"add-favorite",        @"Add to Favorites",        @"",  0,         app, nil, nil },
     { @"remove-favorite",     @"Remove from Favorites",   @"",  0,         app, nil, nil },
-    { @"clear-tag",           @"Clear from all Tasks",    @"",  0,         app, nil, nil },
+    { @"clear-tag",           @"Clear Tag from All Tasks",    @"",  0,         app, nil, nil },
 
     /* ── The task list's: column visibility (check-marked items) ── */
     { @"column-done",         @"Done",                    @"",  0,         app, nil, nil },

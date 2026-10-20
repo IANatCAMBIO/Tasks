@@ -429,7 +429,7 @@ tableViewSelectionDidChange:(NSNotification *)note
 /*
  * menuNeedsUpdate: — the table's menu is about to open: Edit Tag…, Add to
  * Favorites (a favorite is removed from the Favorites bar's own menu) and
- * Clear from all Tasks for a right-clicked tag, nothing elsewhere.
+ * Clear Tag from All Tasks for a right-clicked tag, nothing elsewhere.
  *
  * Inputs:
  *   menu — the table's menu
@@ -598,7 +598,7 @@ clear_tag(TasksSidebar *sidebar, int64_t tag_id)
 }
 
 /*
- * run_clear_tag — Clear from all Tasks: ask, then take the tag off every
+ * run_clear_tag — Clear Tag from All Tasks: ask, then take the tag off every
  * task that carries it.  The tag leaves this sidebar at once; it stays in
  * the tag lists until no note carries it either.
  *
@@ -618,14 +618,16 @@ run_clear_tag(id target, id sender)
     if (tag == NULL) return;
     GPtrArray *tasks = task_db_tasks_tagged(db, tag_id);
     guint      n     = tasks->len;
-    NSString  *title = [NSString stringWithFormat:@"Do you want to remove the tag %@ from %u %@?",
-                        tasks_string(tag->name), n, n == 1 ? @"task" : @"tasks"];
+    NSString  *name  = tasks_string(tag->name);
+    NSString  *title = [NSString stringWithFormat:@"Are you sure you want to remove the tag %@ from %u %@?",
+                        name, n, n == 1 ? @"task" : @"tasks"];
+    NSString  *note  = [NSString stringWithFormat:
+        @"Removing from All Tasks will hide %@ in the sidebar, but it will still be available in "
+        @"the tags list. To delete, it must be removed from All Tasks and All Notes.", name];
     task_ptr_array_free_tasks(tasks);
     task_tag_free(tag);
 
-    shared_ui_confirm(sidebar.window, title,
-                      @"The tag is deleted once no note or task carries it.",
-                      @"Remove", YES, ^(BOOL confirmed) {
+    shared_ui_confirm(sidebar.window, title, note, @"Remove", YES, ^(BOOL confirmed) {
         if (!confirmed || sidebar.is_shut_down || sidebar.library == nil) return;
         if (!clear_tag(sidebar, tag_id)) {
             task_app_status(sidebar.library.app, "The tag could not be cleared");
