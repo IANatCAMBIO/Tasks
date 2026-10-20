@@ -167,12 +167,13 @@ notify_run(TaskApp *app, const gchar *db_path)
 
     /* ── Startup pass ────────────────────────────────────────────────── */
     /* On first run, immediately fire for every non-done task whose due
-     * date is today or in the past.                                    */
+     * date is today or in the past.  A due of 0 means no due date, so the
+     * range starts at 1.                                               */
     if (!startup_done) {
         startup_done = TRUE;
         task_db_reminders_prune(app->db, (gint64)now - notify_dismissed_keep);
         GPtrArray *past =
-            task_db_tasks_due_between(app->db, 0, today_hi, TRUE);
+            task_db_tasks_due_between(app->db, 1, today_hi, TRUE);
         for (guint i = 0; i < past->len; i++) {
             const Task *t = past->pdata[i];
 

@@ -291,6 +291,43 @@ test_forecast_view(TaskApp *app)
 }
 
 /*
+ * test_overdue_range — the range the notification worker's startup pass
+ * asks for, 1 .. end of today, holds open tasks due today or earlier and
+ * not a task with no due date (due 0) nor a Done one.
+ *
+ * Inputs:
+ *   app — the context
+ */
+static void
+test_overdue_range(TaskApp *app)
+{
+    const char *list = "Overdue";
+    gint64 lo, hi;
+    task_day_bounds(-3, &lo, &hi);
+    gint64 overdue = due_task(app, list, "Overdue open", lo);
+    gint64 done    = due_task(app, list, "Overdue done", lo);
+    task_day_bounds(0, &lo, &hi);
+    gint64 today   = due_task(app, list, "Due today", lo);
+    gint64 undated = due_task(app, list, "No due date", 0);
+    check(task_db_task_set_status(app->db, done, TASK_STATUS_DONE),
+          "overdue range: a task can be marked Done");
+
+    GPtrArray *tasks = task_db_tasks_due_between(app->db, 1, hi, TRUE);
+    gboolean has_overdue = FALSE, has_done = FALSE, has_today = FALSE, has_undated = FALSE;
+    for (guint i = 0; i < tasks->len; i++) {
+        gint64 id = ((const Task *)g_ptr_array_index(tasks, i))->id;
+        has_overdue = has_overdue || id == overdue;
+        has_done    = has_done    || id == done;
+        has_today   = has_today   || id == today;
+        has_undated = has_undated || id == undated;
+    }
+    task_ptr_array_free_tasks(tasks);
+    check(has_overdue && has_today, "overdue range: past-due and today's open tasks are in it");
+    check(!has_undated, "overdue range: a task with no due date is not");
+    check(!has_done, "overdue range: a Done task is not");
+}
+
+/*
  * test_recurrence_timer — the recurrence pass, armed by the scheduler, is
  * woken by a main-loop timer: a Done task whose next occurrence is a second
  * away is reopened without anything calling the pass again.
@@ -354,6 +391,7 @@ main(void)
     test_urgency();
     test_forecast_span();
     test_forecast_view(app);
+    test_overdue_range(app);
     test_recurrence_timer(app);
     fixture_close(app);
     return check_result();
