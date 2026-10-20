@@ -17,10 +17,13 @@
  * Inputs:
  *   app      — the application context, borrowed; it outlives the window
  *   task_id  — the task the reminder is for, which a double-click opens
+ *   key      — the notification key (task_notify.m); dismissing the
+ *              reminder records it as dismissed (task_db_reminder_dismiss)
  *   title    — the task's title
  *   subtitle — the context line (e.g. "Due today", "Starts in 10 minutes at 9:00 AM")
  */
-void tasks_notify_add(TaskApp *app, int64_t task_id, NSString *title, NSString *subtitle);
+void tasks_notify_add(TaskApp *app, int64_t task_id, NSString *key, NSString *title,
+                      NSString *subtitle);
 
 /*
  * tasks_notify_retitle — re-read the title of every listed reminder's task

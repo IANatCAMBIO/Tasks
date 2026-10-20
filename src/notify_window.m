@@ -28,19 +28,23 @@ static const NSInteger snooze_default_mins = 10;
 
 @interface TasksReminderItem : NSObject
 @property (nonatomic, assign) int64_t   task_id;
+@property (nonatomic, copy)   NSString *key;       /* the notification key, recorded when dismissed */
 @property (nonatomic, copy)   NSString *title;
 @property (nonatomic, copy)   NSString *subtitle;
-- (instancetype)initWithTaskId:(int64_t)task_id title:(NSString *)title subtitle:(NSString *)subtitle;
+- (instancetype)initWithTaskId:(int64_t)task_id key:(NSString *)key title:(NSString *)title
+                      subtitle:(NSString *)subtitle;
 @end
 
 @implementation TasksReminderItem
 
 - (instancetype)
-initWithTaskId:(int64_t)task_id title:(NSString *)title subtitle:(NSString *)subtitle
+initWithTaskId:(int64_t)task_id key:(NSString *)key title:(NSString *)title
+      subtitle:(NSString *)subtitle
 {
     self = [super init];
     if (self) {
         _task_id  = task_id;
+        _key      = [key copy];
         _title    = [title copy];
         _subtitle = [subtitle copy];
     }
@@ -386,7 +390,22 @@ update_title
 /* ── Actions ─────────────────────────────────────────────────────────── */
 
 /*
- * dismiss_selected — remove the currently selected reminder.
+ * record_dismissed: — remember a dismissed reminder, so it is not shown
+ * again until its task's due date or scheduled start changes.
+ *
+ * Inputs:
+ *   item — the reminder
+ */
+- (void)
+record_dismissed:(TasksReminderItem *)item
+{
+    if (self.app != NULL && self.app->db != NULL) {
+        task_db_reminder_dismiss(self.app->db, item.key.UTF8String);
+    }
+}
+
+/*
+ * dismiss_selected — dismiss the currently selected reminder.
  */
 - (void)
 dismiss_selected
@@ -394,6 +413,7 @@ dismiss_selected
     NSInteger row = _table.selectedRow;
     if (row < 0 || row >= (NSInteger)_items.count) return;
 
+    [self record_dismissed:_items[(NSUInteger)row]];
     [_items removeObjectAtIndex:(NSUInteger)row];
     [_table reloadData];
 
@@ -410,11 +430,12 @@ dismiss_selected
 }
 
 /*
- * dismiss_all — remove every reminder and close the window.
+ * dismiss_all — dismiss every reminder and close the window.
  */
 - (void)
 dismiss_all
 {
+    for (TasksReminderItem *item in _items) [self record_dismissed:item];
     [_items removeAllObjects];
     [_table reloadData];
     [self.window orderOut:nil];
@@ -591,9 +612,11 @@ tableViewSelectionDidChange:(NSNotification *)note
  * Inputs are documented in notify_window.h.
  */
 void
-tasks_notify_add(TaskApp *app, int64_t task_id, NSString *title, NSString *subtitle)
+tasks_notify_add(TaskApp *app, int64_t task_id, NSString *key, NSString *title,
+                 NSString *subtitle)
 {
     TasksReminderItem *item = [[TasksReminderItem alloc] initWithTaskId:task_id
+                                                                    key:key
                                                                   title:title
                                                                subtitle:subtitle];
     TasksReminderWindowController *controller = [TasksReminderWindowController shared];

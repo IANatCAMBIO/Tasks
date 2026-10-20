@@ -552,6 +552,38 @@ test_db_status_stamps_updated_at(void)
  * Output:
  *   0 when every case passed.
  */
+/*
+ * test_db_reminder_dismissal — a dismissed reminder stays dismissed, only
+ * that key does, it survives a reopen, and pruning forgets it.
+ */
+static void
+test_db_reminder_dismissal(void)
+{
+    GError *err    = NULL;
+    gchar  *tmpdir = scratch_dir();
+    gchar  *path   = g_build_filename(tmpdir, "tasks.db", NULL);
+    TaskDatabase *db = task_db_open(path, &err);
+    g_assert_no_error(err);
+
+    g_assert_false(task_db_reminder_is_dismissed(db, "due:7:2026-10-18"));
+    g_assert_true(task_db_reminder_dismiss(db, "due:7:2026-10-18"));
+    g_assert_true(task_db_reminder_is_dismissed(db, "due:7:2026-10-18"));
+    g_assert_false(task_db_reminder_is_dismissed(db, "due:7:2026-10-19"));   /* a new due date */
+    task_db_close(db);
+
+    db = task_db_open(path, &err);
+    g_assert_no_error(err);
+    g_assert_true(task_db_reminder_is_dismissed(db, "due:7:2026-10-18"));
+    task_db_reminders_prune(db, (gint64)time(NULL) + 10);
+    g_assert_false(task_db_reminder_is_dismissed(db, "due:7:2026-10-18"));
+    task_db_close(db);
+
+    g_remove(path);
+    g_remove(tmpdir);
+    g_free(path);
+    g_free(tmpdir);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -583,6 +615,7 @@ main(int argc, char **argv)
     g_test_add_func("/db/create_read_task",         test_db_create_read_task);
     g_test_add_func("/db/create_due_time_default",  test_db_create_due_time_default);
     g_test_add_func("/db/status_stamps_updated_at", test_db_status_stamps_updated_at);
+    g_test_add_func("/db/reminder_dismissal",       test_db_reminder_dismissal);
 
     return g_test_run();
 }

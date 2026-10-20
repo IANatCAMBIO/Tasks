@@ -14,7 +14,9 @@
  *      and fires the task-pane event, which refreshes the panes.
  *
  * Notifications that already fired are tracked in a module-level GHashTable
- * that starts empty on each launch, so a restart does not replay past ones.
+ * for the session.  A reminder the user dismissed (or that went to the
+ * Notification Center) is also recorded in the database, so a restart does
+ * not bring it back until its due date or scheduled start changes.
  *
  * Delivery is either a Tasks popup window (notify_window.h) or a
  * UNUserNotificationCenter alert, depending on TASK_CFG_NOTIF_MODE.
@@ -39,6 +41,8 @@ static const gint notify_due_minute = 8 * 60;
 static const gint notify_due_window = 30;
 /* Minutes before scheduled_start to fire the reminder. */
 static const gint notify_sched_lead = 10;
+/* How long a dismissal is remembered (seconds): 90 days. */
+static const gint64 notify_dismissed_keep = 90 * 24 * 3600;
 /* Width of the scheduled-notification window (minutes).  Must be larger than
  * the worker interval (1 min) to guarantee the alert is never missed. */
 static const gint notify_sched_window = 5;
@@ -53,16 +57,18 @@ static GHashTable *sent_set;
 static gboolean startup_done = FALSE;
 
 /*
- * already_sent — TRUE when this key has been delivered before.
+ * already_sent — TRUE when this key has been delivered this session or
+ * was dismissed before.
  *
  * Inputs:
+ *   app — the application context (db open)
  *   key — borrowed string
  */
 static gboolean
-already_sent(const gchar *key)
+already_sent(TaskApp *app, const gchar *key)
 {
-    if (!sent_set) return FALSE;
-    return g_hash_table_contains(sent_set, key);
+    if (sent_set && g_hash_table_contains(sent_set, key)) return TRUE;
+    return task_db_reminder_is_dismissed(app->db, key);
 }
 
 /*
@@ -89,7 +95,7 @@ mark_sent(gchar *key)
  *              to open the task's editor
  *   task     — the task (borrowed): its title and id
  *   subtitle — the context line, e.g. "Due today" (borrowed)
- *   ident    — a unique string for native dedup (borrowed)
+ *   ident    — the notification key, unique for native dedup (borrowed)
  */
 static void
 fire_notification(TaskApp *app, const Task *task, const gchar *subtitle, const gchar *ident)
@@ -119,8 +125,11 @@ fire_notification(TaskApp *app, const Task *task, const gchar *subtitle, const g
         [[UNUserNotificationCenter currentNotificationCenter]
             addNotificationRequest:req
              withCompletionHandler:nil];
+        /* The Notification Center is not told when it is dismissed: delivered
+         * is dismissed, so a restart does not deliver it again. */
+        task_db_reminder_dismiss(app->db, ident);
     } else {
-        tasks_notify_add(app, task->id, ns_title, ns_sub);
+        tasks_notify_add(app, task->id, tasks_string(ident), ns_title, ns_sub);
     }
 }
 
@@ -161,6 +170,7 @@ notify_run(TaskApp *app, const gchar *db_path)
      * date is today or in the past.                                    */
     if (!startup_done) {
         startup_done = TRUE;
+        task_db_reminders_prune(app->db, (gint64)now - notify_dismissed_keep);
         GPtrArray *past =
             task_db_tasks_due_between(app->db, 0, today_hi, TRUE);
         for (guint i = 0; i < past->len; i++) {
@@ -173,7 +183,7 @@ notify_run(TaskApp *app, const gchar *db_path)
 
             gchar *key = g_strdup_printf("due:%" G_GINT64_FORMAT ":%s",
                                          t->id, due_iso);
-            if (!already_sent(key)) {
+            if (!already_sent(app, key)) {
                 const gchar *subtitle =
                     (t->due >= today_lo) ? "Due today" : "Overdue";
                 fire_notification(app, t, subtitle, key);
@@ -196,7 +206,7 @@ notify_run(TaskApp *app, const gchar *db_path)
 
             gchar *key = g_strdup_printf("due:%" G_GINT64_FORMAT ":%s",
                                          t->id, today_iso);
-            if (!already_sent(key)) {
+            if (!already_sent(app, key)) {
                 fire_notification(app, t, "Due today", key);
                 mark_sent(key);
             } else {
@@ -234,7 +244,7 @@ notify_run(TaskApp *app, const gchar *db_path)
 
         gchar *key = g_strdup_printf("sched:%" G_GINT64_FORMAT ":%" G_GINT64_FORMAT,
                                      t->id, t->scheduled_start);
-        if (!already_sent(key)) {
+        if (!already_sent(app, key)) {
             time_t sched_t = (time_t)t->scheduled_start;
             struct tm slt = *localtime(&sched_t);
             gint sched_min = slt.tm_hour * 60 + slt.tm_min;

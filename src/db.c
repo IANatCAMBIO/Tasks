@@ -1811,6 +1811,72 @@ task_db_task_tag_remove(TaskDatabase *db, gint64 task_id, gint64 tag_id)
     return rc;
 }
 
+/*
+ * reminder_key — the sync_state key of a reminder's dismissal.
+ *
+ * Inputs:
+ *   key — the notification key
+ *
+ * Output: a new string; g_free it.
+ */
+static gchar *
+reminder_key(const gchar *key)
+{
+    return g_strconcat("reminder:", key, NULL);
+}
+
+/* task_db_reminder_is_dismissed() — see db.h.                              */
+gboolean
+task_db_reminder_is_dismissed(TaskDatabase *db, const gchar *key)
+{
+    sqlite3_stmt *st    = NULL;
+    gboolean      found = FALSE;
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
+                           "SELECT 1 FROM sync_state WHERE key = ?", -1, &st, NULL) == SQLITE_OK) {
+        gchar *k = reminder_key(key);
+        sqlite3_bind_text(st, 1, k, -1, SQLITE_TRANSIENT);
+        found = sqlite3_step(st) == SQLITE_ROW;
+        g_free(k);
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+/* task_db_reminder_dismiss() — see db.h.                                   */
+gboolean
+task_db_reminder_dismiss(TaskDatabase *db, const gchar *key)
+{
+    sqlite3      *sq = shared_db_handle(db->shared);
+    sqlite3_stmt *st = NULL;
+    gboolean      ok = FALSE;
+    if (sqlite3_prepare_v2(sq, "INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
+                           -1, &st, NULL) == SQLITE_OK) {
+        gchar *k = reminder_key(key);
+        sqlite3_bind_text(st, 1, k, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)time(NULL));
+        ok = sqlite3_step(st) == SQLITE_DONE;
+        if (!ok) g_warning("db: dismiss reminder: %s", sqlite3_errmsg(sq));
+        else if (sqlite3_get_autocommit(sq)) own_commit(db);
+        g_free(k);
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* task_db_reminders_prune() — see db.h.                                    */
+void
+task_db_reminders_prune(TaskDatabase *db, gint64 before)
+{
+    sqlite3      *sq = shared_db_handle(db->shared);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(sq, "DELETE FROM sync_state WHERE key LIKE 'reminder:%' "
+                               "AND CAST(value AS INTEGER) < ?", -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, before);
+        if (sqlite3_step(st) == SQLITE_DONE && sqlite3_get_autocommit(sq)) own_commit(db);
+    }
+    sqlite3_finalize(st);
+}
+
 /* task_db_totals() — non-tombstoned task and tag counts (see db.h).        */
 void
 task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_tags)

@@ -644,6 +644,26 @@ GPtrArray *task_db_tasks_tagged(TaskDatabase *db, gint64 tag_id);
  * Either out-pointer may be NULL; a failed query leaves 0.                 */
 void task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_tags);
 
+/* ------------------------------ reminders -------------------------------- */
+
+/* A reminder the user dismissed (or that was delivered to the Notification
+ * Center) stays dismissed until something about it changes.  `key` is the
+ * notification worker's: "due:<id>:<due date>" or "sched:<id>:<start>", so
+ * a new due date or start time is a new key.  Kept in sync_state under
+ * "reminder:<key>", the value the dismissal time (unix seconds): no schema
+ * of its own.                                                              */
+
+/* TRUE when `key` was dismissed.                                           */
+gboolean task_db_reminder_is_dismissed(TaskDatabase *db, const gchar *key);
+
+/* Record `key` as dismissed now.  Returns TRUE when written (logged
+ * otherwise).                                                              */
+gboolean task_db_reminder_dismiss(TaskDatabase *db, const gchar *key);
+
+/* Forget the dismissals made before `before` (unix seconds): their
+ * reminders are long past.                                                 */
+void task_db_reminders_prune(TaskDatabase *db, gint64 before);
+
 /* ---------------------------------------------------------------------------
  * task_db_task_purge() — physically remove a task and its subtasks, in one
  * transaction.  REFUSED, deleting nothing, when either is a Notes action
