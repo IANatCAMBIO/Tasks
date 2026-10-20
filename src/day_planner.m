@@ -262,7 +262,7 @@ item_rect:(TasksDayItem *)item midnight:(int64_t)mid
     if (n > 1) w  -= tasks_look_day_planner_block_inset;
     CGFloat y = [self y_for_unix:item.start_unix midnight:mid];
     CGFloat h = (item.duration / 60.0) * tasks_look_day_planner_hour_h;
-    CGFloat min_h = tasks_look_day_planner_resize_h * 2.0 + 4.0;
+    CGFloat min_h = ((CGFloat)snap_minutes / 60.0) * tasks_look_day_planner_hour_h;
     if (h < min_h) h = min_h;
     return NSMakeRect(x, y, w, h);
 }
@@ -380,8 +380,11 @@ typedef struct {
     NSDictionary *title_attrs;
     NSDictionary *time_attrs;
     NSDictionary *event_attrs;               /* a calendar event's title */
+    NSDictionary *title_compact_attrs;       /* ... a task's and an event's, smaller, */
+    NSDictionary *event_compact_attrs;       /* ... for a block too short for two lines */
     CGFloat       title_h;
     CGFloat       time_h;
+    CGFloat       compact_h;
     NSArray<NSString *> *hour_labels;         /* indexed by hour, 0-23 */
     CGFloat       hour_label_h;
     NSColor      *acc_fill_n, *acc_bord_n, *done_fill_n, *done_bord_n;
@@ -413,6 +416,12 @@ canvas_look(void)
                               NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
         look.event_attrs = @{ NSFontAttributeName:            title_font,
                               NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
+        NSFont *compact_font = [NSFont systemFontOfSize:shared_look_ui_font - 2.0];
+        look.title_compact_attrs = @{ NSFontAttributeName:            compact_font,
+                                      NSForegroundColorAttributeName: NSColor.labelColor };
+        look.event_compact_attrs = @{ NSFontAttributeName:            compact_font,
+                                      NSForegroundColorAttributeName: NSColor.secondaryLabelColor };
+        look.compact_h = compact_font.ascender - compact_font.descender + compact_font.leading;
         look.title_h = title_font.ascender - title_font.descender + title_font.leading;
         look.time_h  = time_font.ascender  - time_font.descender  + time_font.leading;
 
@@ -435,6 +444,43 @@ canvas_look(void)
         look.done_bord_s = tasks_color_dimmed(second, 52);
     });
     return &look;
+}
+
+/*
+ * draw_block_text — a block's title, with its time under it when there is
+ * room.  A block too short for a full title line (a 15-minute one) gets
+ * the title alone, in the smaller font, centred on the block.
+ *
+ * Inputs:
+ *   item          — the task or event
+ *   r             — the block's frame
+ *   left_extra    — extra inset on the left (an event's colour bar)
+ *   title_attrs   — the title's attributes
+ *   compact_attrs — the title's attributes for a short block
+ *   look          — the shared drawing resources
+ */
+static void
+draw_block_text(TasksDayItem *item, NSRect r, CGFloat left_extra,
+                NSDictionary *title_attrs, NSDictionary *compact_attrs,
+                const canvas_look_t *look)
+{
+    NSRect content = NSInsetRect(r, 4.0, 3.0);
+    content.origin.x   += left_extra;
+    content.size.width -= left_extra;
+
+    if (NSHeight(content) < look->title_h) {
+        NSRect line = NSMakeRect(content.origin.x, NSMinY(r) + (NSHeight(r) - look->compact_h) / 2.0,
+                                 content.size.width, look->compact_h);
+        [item.title drawInRect:line withAttributes:compact_attrs];
+        return;
+    }
+    NSRect title_rect = NSMakeRect(content.origin.x, content.origin.y,
+                                   content.size.width, look->title_h);
+    [item.title drawInRect:title_rect withAttributes:title_attrs];
+    NSRect time_rect = NSMakeRect(content.origin.x, NSMaxY(title_rect) + 1.0,
+                                  content.size.width, look->time_h);
+    if (NSMaxY(time_rect) <= NSMaxY(content))
+        [item.time_text drawInRect:time_rect withAttributes:look->time_attrs];
 }
 
 /*
@@ -505,20 +551,7 @@ drawRect:(NSRect)dirty
             [sel ? look->acc_bord_s : look->acc_bord_n setStroke]; [path stroke];
         }
 
-        NSRect content = NSInsetRect(r, 4.0, 3.0);
-
-        /* Title on the first line */
-        NSRect title_rect = NSMakeRect(content.origin.x, content.origin.y,
-                                       content.size.width, look->title_h);
-        [item.title drawInRect:title_rect withAttributes:look->title_attrs];
-
-        /* Time / duration on the second line, if there is room */
-        NSRect time_rect = NSMakeRect(content.origin.x,
-                                      NSMaxY(title_rect) + 1.0,
-                                      content.size.width, look->time_h);
-        if (NSMaxY(time_rect) <= NSMaxY(content)) {
-            [item.time_text drawInRect:time_rect withAttributes:look->time_attrs];
-        }
+        draw_block_text(item, r, 0.0, look->title_attrs, look->title_compact_attrs, look);
     }
 
     /* Drop indicator */
@@ -566,16 +599,7 @@ draw_event:(TasksDayItem *)item in:(NSRect)r look:(const canvas_look_t *)look
     [item.event_bar setFill];
     NSRectFill(NSMakeRect(NSMinX(body), NSMinY(body) + 1.0, event_bar_w, NSHeight(body) - 2.0));
 
-    NSRect content = NSInsetRect(r, 4.0, 3.0);
-    content.origin.x   += event_bar_w;
-    content.size.width -= event_bar_w;
-    NSRect title_rect = NSMakeRect(content.origin.x, content.origin.y,
-                                   content.size.width, look->title_h);
-    [item.title drawInRect:title_rect withAttributes:look->event_attrs];
-    NSRect time_rect = NSMakeRect(content.origin.x, NSMaxY(title_rect) + 1.0,
-                                  content.size.width, look->time_h);
-    if (NSMaxY(time_rect) <= NSMaxY(content))
-        [item.time_text drawInRect:time_rect withAttributes:look->time_attrs];
+    draw_block_text(item, r, event_bar_w, look->event_attrs, look->event_compact_attrs, look);
 }
 
 /*
