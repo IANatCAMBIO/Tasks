@@ -427,9 +427,9 @@ tableViewSelectionDidChange:(NSNotification *)note
 /* ── The context menu ────────────────────────────────────────────────── */
 
 /*
- * menuNeedsUpdate: — the table's menu is about to open: Edit Tag… and
- * Add to Favorites for a right-clicked tag (a favorite is removed from
- * the Favorites bar's own menu), nothing elsewhere.
+ * menuNeedsUpdate: — the table's menu is about to open: Edit Tag…, Add to
+ * Favorites (a favorite is removed from the Favorites bar's own menu) and
+ * Clear from all Tasks for a right-clicked tag, nothing elsewhere.
  *
  * Inputs:
  *   menu — the table's menu
@@ -445,6 +445,8 @@ menuNeedsUpdate:(NSMenu *)menu
     if (sel.kind != task_sel_tag) return;
     [menu addItem:shared_command_menu_item(@"edit-tag", @(sel.id))];
     [menu addItem:shared_command_menu_item(@"add-favorite", @(sel.id))];
+    [menu addItem:NSMenuItem.separatorItem];
+    [menu addItem:shared_command_menu_item(@"clear-tag", @(sel.id))];
 }
 
 /* ── Edit Tag ────────────────────────────────────────────────────────── */
@@ -494,7 +496,7 @@ show_tag_panel:(int64_t)tag_id
 
     __weak TasksSidebar *ws = self;
     SharedToolPanel *panel = [SharedToolPanel
-        panel_with_title:@"Edit Tag" hero_title:@"Edit Tag"
+        panel_with_title:@"Edit Tag" headline:@"Edit Tag"
                 subtitle:@"The emoji shows in Notes and Tasks; a tag's name never changes."
                   symbol:@"tag" content:grid buttons:@[@"OK", @"Cancel"] destructive:-1
                  handler:^NSString *(NSInteger index) {
@@ -567,7 +569,73 @@ run_edit_tag(id target, id sender)
 }
 
 /*
- * validate_edit_tag — there is a tag to edit.
+ * clear_tag — take a tag off every live task that carries it, in one
+ * transaction.  The schema's triggers delete the tag itself once no note
+ * carries it either.
+ *
+ * Inputs:
+ *   sidebar — the sidebar
+ *   tag_id  — the tag
+ *
+ * Output: YES when every task was cleared, NO when a write failed (the
+ * transaction is then rolled back).
+ */
+static BOOL
+clear_tag(TasksSidebar *sidebar, int64_t tag_id)
+{
+    TaskDatabase *db    = sidebar.library.app->db;
+    GPtrArray    *tasks = task_db_tasks_tagged(db, tag_id);
+    BOOL          began = task_db_transaction_begin(db);
+    BOOL          ok    = YES;
+
+    for (guint i = 0; ok && i < tasks->len; i++) {
+        Task *task = g_ptr_array_index(tasks, i);
+        ok = task_db_task_tag_remove(db, task->id, tag_id) == 1;
+    }
+    if (began) ok = task_db_transaction_end(db, ok) && ok;
+    task_ptr_array_free_tasks(tasks);
+    return ok;
+}
+
+/*
+ * run_clear_tag — Clear from all Tasks: ask, then take the tag off every
+ * task that carries it.  The tag leaves this sidebar at once; it stays in
+ * the tag lists until no note carries it either.
+ *
+ * Inputs:
+ *   target — the sidebar
+ *   sender — the item
+ */
+static void
+run_clear_tag(id target, id sender)
+{
+    TasksSidebar *sidebar = target;
+    int64_t       tag_id  = tag_of(sidebar, sender);
+    if (sidebar.is_shut_down || sidebar.library == nil || tag_id == 0) return;
+
+    TaskDatabase *db  = sidebar.library.app->db;
+    TaskTag      *tag = task_db_tag_get(db, tag_id);
+    if (tag == NULL) return;
+    GPtrArray *tasks = task_db_tasks_tagged(db, tag_id);
+    guint      n     = tasks->len;
+    NSString  *title = [NSString stringWithFormat:@"Do you want to remove the tag %@ from %u %@?",
+                        tasks_string(tag->name), n, n == 1 ? @"task" : @"tasks"];
+    task_ptr_array_free_tasks(tasks);
+    task_tag_free(tag);
+
+    shared_ui_confirm(sidebar.window, title,
+                      @"The tag is deleted once no note or task carries it.",
+                      @"Remove", YES, ^(BOOL confirmed) {
+        if (!confirmed || sidebar.is_shut_down || sidebar.library == nil) return;
+        if (!clear_tag(sidebar, tag_id)) {
+            task_app_status(sidebar.library.app, "The tag could not be cleared");
+        }
+        [sidebar.library full_refresh];
+    });
+}
+
+/*
+ * validate_has_tag — there is a tag for the command to mean.
  *
  * Inputs:
  *   target — the sidebar
@@ -577,7 +645,7 @@ run_edit_tag(id target, id sender)
  * Output: whether the command may run.
  */
 static BOOL
-validate_edit_tag(id target, id item, SharedCommandState *state)
+validate_has_tag(id target, id item, SharedCommandState *state)
 {
     return tag_of(target, item) != 0;
 }
@@ -670,7 +738,8 @@ const shared_command_handler_t *
 tasks_sidebar_commands(size_t *n)
 {
     static const shared_command_handler_t table[] = {
-        { @"edit-tag",        run_edit_tag,        validate_edit_tag        },
+        { @"edit-tag",        run_edit_tag,        validate_has_tag         },
+        { @"clear-tag",       run_clear_tag,       validate_has_tag         },
         { @"add-favorite",    run_set_favorite,    validate_add_favorite    },
         { @"remove-favorite", run_set_favorite,    validate_remove_favorite },
     };

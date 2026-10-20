@@ -400,7 +400,7 @@ check_utilities(TaskApp *app)
         NSTextField *field = [NSTextField textFieldWithString:@"New list"];
         [field.widthAnchor constraintEqualToConstant:240].active = YES;
         SharedToolPanel *panel = [SharedToolPanel
-            panel_with_title:@"Probe" hero_title:@"Probe" subtitle:@"" symbol:nil content:field
+            panel_with_title:@"Probe" headline:@"Probe" subtitle:@"" symbol:nil content:field
                      buttons:@[@"Create", @"Cancel"] destructive:-1
                      handler:^NSString *(NSInteger index) {
             answered++;

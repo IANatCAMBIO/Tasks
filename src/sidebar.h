@@ -16,8 +16,10 @@
  * The sidebar OWNS the Edit Tag panel (the "edit-tag" command): a tag's
  * emoji and its favorite flag.  A tag's NAME never changes, and a tag is
  * never made or deleted here: it exists while a task carries it.  A
- * right-click on a tag offers Edit Tag…; the command's other callers (the
- * main menu, the Favorites bar) reach it through the window.
+ * right-click on a tag offers Edit Tag… and Clear from all Tasks (after a
+ * confirmation, the tag comes off every task, so it leaves this sidebar; it
+ * is deleted once no note carries it either); the command's other callers
+ * (the main menu, the Favorites bar) reach it through the window.
  *
  * It does NOT own the selection — that lives on the window
  * (TasksLibraryWindow selection); a rebuild that finds the selected row
@@ -70,7 +72,7 @@
 
 /*
  * tasks_sidebar_commands — the sidebar's command handlers (Edit Tag…, Add
- * to Favorites, Remove from Favorites: the parameter names the tag;
+ * to Favorites, Remove from Favorites, Clear from all Tasks: the parameter names the tag;
  * without one the command means the tag selected in the sidebar, and is
  * disabled when none is).  Their target is the sidebar.
  *

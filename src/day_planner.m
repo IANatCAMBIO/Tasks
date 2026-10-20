@@ -1426,7 +1426,7 @@ pick_displayed_date:(id)sender
 
     __weak TasksDayPlanner *ws = self;
     SharedToolPanel *panel = [SharedToolPanel
-        panel_with_title:@"Go to Date" hero_title:@"Go to Date" subtitle:@"" symbol:@"calendar"
+        panel_with_title:@"Go to Date" headline:@"Go to Date" subtitle:@"" symbol:@"calendar"
                  content:picker buttons:@[@"Go", @"Cancel"] destructive:-1
                  handler:^NSString *(NSInteger index) {
         TasksDayPlanner *s = ws;

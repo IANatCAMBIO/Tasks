@@ -358,7 +358,7 @@ labels, `SharedTable`, `SharedSplitController`.  Every dialog takes a
 completion block and the call returns at once.  **No system alerts and no
 sheets** (owner decision, 2026-10-16, as Notes): a notice, a question or a
 small form is a tool panel (`SharedToolPanel`) — a floating utility
-window with the blue hero strip — never `NSAlert`, an alert sheet, a
+window with a centred symbol-and-headline header — never `NSAlert`, an alert sheet, a
 custom sheet or `runModal`.  `shared_ui_notice` and `shared_ui_confirm`
 are built on it; Edit Tag and the date pickers build their own with
 `panel_with_title:…`, whose handler returns a problem to keep the panel
