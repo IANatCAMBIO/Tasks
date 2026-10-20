@@ -1,6 +1,7 @@
 #import "editor_window.h"
 #import "look.h"
 #import "ui_util.h"
+#import "shared_tag_popup.h"
 
 #include "recur.h"
 #include "task_dates.h"
@@ -21,6 +22,7 @@ static const NSTimeInterval fold_duration = 0.2;
 
 /* ── Layout ─────────────────────────────────────────────────────────── */
 
+static const CGFloat date_popover_pad = 8.0;      /* the calendar to its popover's edge */
 static const CGFloat status_popup_w = 118.0;    /* fits "In Progress", so the
                                                  * row does not move when the
                                                  * selection changes        */
@@ -492,6 +494,34 @@ becomeFirstResponder
 
 @end
 
+/*
+ * TasksCalendarPicker — the calendar in the date popover.  Return or Enter
+ * picks the day the arrow keys have moved to, as a click on it does.
+ */
+@interface TasksCalendarPicker : NSDatePicker
+@end
+
+@implementation TasksCalendarPicker
+
+/*
+ * keyDown: — Return or Enter sends the picker's action (the pick); any
+ * other key is the picker's own (the arrows move the selected day).
+ *
+ * Inputs:
+ *   event — the key event
+ */
+- (void)
+keyDown:(NSEvent *)event
+{
+    if (event.keyCode == 36 || event.keyCode == 76) {
+        [self sendAction:self.action to:self.target];
+        return;
+    }
+    [super keyDown:event];
+}
+
+@end
+
 /* ── The editor ─────────────────────────────────────────────────────── */
 
 @interface TasksEditorWindow : NSWindowController <NSWindowDelegate, NSTokenFieldDelegate,
@@ -509,8 +539,11 @@ becomeFirstResponder
                                                                  * action item from Notes */
 @property (nonatomic, strong) NSPopUpButton *status_popup;      /* index is a TaskStatus */
 @property (nonatomic, strong) NSTokenField  *tag_field;         /* one token per tag      */
+@property (nonatomic, strong) SharedTagPopup *tag_popup;        /* the tags offered while one is typed */
 @property (nonatomic, strong) NSTextField   *due_field;
 @property (nonatomic, strong) NSDatePicker  *due_time_field;
+@property (nonatomic, strong) NSPopover     *date_popover;      /* the open calendar, if any   */
+@property (nonatomic, weak)   NSTextField   *date_popover_field; /* the date field it fills in */
 @property (nonatomic, strong) NSButton      *priority_check;
 @property (nonatomic, strong) NSTextField   *completed_label;
 @property (nonatomic, strong) NSScrollView  *notes_scroll;
@@ -765,8 +798,9 @@ build_fields:(NSStackView *)form
     ]);
     add_row(form, status_row);
 
-    /* The tags, as tokens: typing offers the existing tags (completions),
-     * Return or a comma makes the typed text a tag, new or not. */
+    /* The tags, as tokens: typing offers the existing tags (tag_popup, not
+     * the token field's own completions), Return or a comma makes the typed
+     * text a tag, new or not. */
     self.tag_field = [[NSTokenField alloc] initWithFrame:NSZeroRect];
     self.tag_field.font              = [NSFont systemFontOfSize:shared_look_ui_font];
     self.tag_field.bezelStyle        = NSTextFieldRoundedBezel;
@@ -775,7 +809,6 @@ build_fields:(NSStackView *)form
         @"Type to find a tag; pick one from the list, or press Return to make a new one. "
         @"A task without a tag is listed under All Tasks alone. Each tag has its own row in the sidebar.";
     self.tag_field.delegate          = self;
-    self.tag_field.completionDelay   = 0;
     self.tag_field.cell.wraps        = NO;
     self.tag_field.cell.scrollable   = YES;
     [self.tag_field setContentHuggingPriority:NSLayoutPriorityDefaultLow - 1
@@ -1254,27 +1287,18 @@ drop_removed_tags
 }
 
 /*
- * tokenField:completionsForSubstring:indexOfToken:indexOfSelectedItem: —
- * the existing tags offered while a tag is typed: those whose name starts
- * with the text, then those containing it elsewhere, leaving out the tags
- * the task already carries.  Nothing is preselected, so Return makes the
- * text as typed a tag — a new one when no tag has that name — and an
- * offered tag is chosen with the arrow keys or a click.
+ * tag_matches: — the existing tags offered for typed text: those whose name
+ * starts with the text, then those containing it elsewhere, leaving out the
+ * tags the task already carries, at most shared_look_tag_suggestions_max.
  *
  * Inputs:
- *   field       — the tag field (unused)
- *   substring   — the text typed for this token
- *   token_index — its place among the tokens (unused)
- *   selected    — out: the preselected completion, -1 for none
+ *   typed — the text typed for this token, not empty
  *
  * Output:
  *   the names to offer.
  */
-- (NSArray *)
-tokenField:(NSTokenField *)field
-completionsForSubstring:(NSString *)substring
-indexOfToken:(NSInteger)token_index
-indexOfSelectedItem:(NSInteger *)selected
+- (NSArray<NSString *> *)
+tag_matches:(NSString *)typed
 {
     NSArray<NSString *>        *have    = [self stored_tag_names];
     NSMutableArray<NSString *> *starts  = [NSMutableArray array];
@@ -1283,7 +1307,7 @@ indexOfSelectedItem:(NSInteger *)selected
 
     for (guint i = 0; i < tags->len; i++) {
         NSString *name  = tasks_string(((const TaskTag *)g_ptr_array_index(tags, i))->name);
-        NSRange   found = [name rangeOfString:substring options:NSCaseInsensitiveSearch];
+        NSRange   found = [name rangeOfString:typed options:NSCaseInsensitiveSearch];
         if (found.location == NSNotFound || has_name(have, name)) continue;
         [found.location == 0 ? starts : inside addObject:name];
     }
@@ -1291,8 +1315,76 @@ indexOfSelectedItem:(NSInteger *)selected
     NSArray<NSString *> *names = [starts arrayByAddingObjectsFromArray:inside];
     if (names.count > (NSUInteger)shared_look_tag_suggestions_max)
         names = [names subarrayWithRange:NSMakeRange(0, (NSUInteger)shared_look_tag_suggestions_max)];
-    if (selected != NULL) *selected = -1;
     return names;
+}
+
+/*
+ * typed_tag_range — where the text being typed for the next tag is in the
+ * tag field's editor: after the last token (a token is one attachment
+ * character), to the end.
+ *
+ * Inputs:
+ *   editor — the tag field's field editor
+ *
+ * Output:
+ *   the range; empty when nothing is being typed.
+ */
+static NSRange
+typed_tag_range(NSText *editor)
+{
+    NSString  *text = editor.string;
+    NSRange    last = [text rangeOfString:@"\uFFFC" options:NSBackwardsSearch];
+    NSUInteger from = last.location == NSNotFound ? 0 : NSMaxRange(last);
+    return NSMakeRange(from, text.length - from);
+}
+
+/*
+ * update_tag_popup — list the existing tags matching the text being typed
+ * under the tag field, or take the list away when nothing is typed or
+ * nothing matches.  Nothing is preselected, so Return makes the text as
+ * typed a tag — a new one when no tag has that name — and an offered tag is
+ * chosen with the arrow keys and Return, or a click.
+ */
+- (void)
+update_tag_popup
+{
+    NSText   *editor = [self.tag_field currentEditor];
+    NSString *typed  = editor == nil ? @""
+        : [[editor.string substringWithRange:typed_tag_range(editor)]
+              stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (typed.length == 0) {
+        [self.tag_popup hide];
+        return;
+    }
+
+    if (self.tag_popup == nil) {
+        self.tag_popup = [[SharedTagPopup alloc] init];
+        self.tag_popup.starts_unselected = YES;
+        __weak TasksEditorWindow *ws = self;
+        self.tag_popup.chosen_handler = ^(NSString *name) { [ws choose_tag:name]; };
+    }
+    CGFloat bottom = self.tag_field.isFlipped ? NSHeight(self.tag_field.bounds) : 0;
+    [self.tag_popup show_names:[self tag_matches:typed]
+                         under:NSMakeRect(0, bottom, 0, 0) of:self.tag_field];
+}
+
+/*
+ * choose_tag: — an offered tag was chosen (clicked, or arrowed to and
+ * Return): it replaces the typed text and becomes a token at once, as
+ * Return would make it, and the cursor stays in the field for the next tag.
+ *
+ * Inputs:
+ *   name — the tag's name
+ */
+- (void)
+choose_tag:(NSString *)name
+{
+    NSText *editor = [self.tag_field currentEditor];
+    [self.tag_popup hide];
+    if (editor == nil) return;
+
+    [editor replaceCharactersInRange:typed_tag_range(editor) withString:name];
+    [editor doCommandBySelector:@selector(insertNewline:)];
 }
 
 /*
@@ -2423,59 +2515,78 @@ tableViewSelectionDidChange:(NSNotification *)note
 /* ── The date picker ────────────────────────────────────────────────── */
 
 /*
- * pick_date_for: — choose a date field's date from a calendar in a tool
- * panel, as Notes asks for an action item's due date: Set writes the
- * picked day, Clear removes the date.  The calendar opens on the date the
- * field holds, or on today.  Typing in the field works as well; this is
+ * pick_date_for:from: — open a calendar over the window, beside the button
+ * that asked for it.  Clicking a day writes it into the date field and
+ * closes the calendar; a click outside it or Escape closes it without a
+ * date.  The calendar opens on the date the field holds, or on today.
+ * Typing in the field works as well (an empty field is no date); this is
  * the other way in.
  *
  * Inputs:
- *   field — the due or the start field; Set and Clear write into it and
- *           save
+ *   field  — the due or the start field the picked day is written into
+ *   button — the calendar button the calendar points at
  */
 - (void)
-pick_date_for:(NSTextField *)field
+pick_date_for:(NSTextField *)field from:(NSView *)button
 {
+    [self.date_popover close];
+
     int64_t       shown  = task_due_parse(field.stringValue.UTF8String);
-    NSDatePicker *picker = [[NSDatePicker alloc] initWithFrame:NSZeroRect];
+    NSDatePicker *picker = [[TasksCalendarPicker alloc] initWithFrame:NSZeroRect];
 
     picker.datePickerStyle    = NSDatePickerStyleClockAndCalendar;
     picker.datePickerElements = NSDatePickerElementFlagYearMonthDay;
     picker.dateValue          = shown != 0 ? [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)shown]
                                            : NSDate.date;
+    picker.target             = self;
+    picker.action             = @selector(date_picked:);
+
     NSSize size = picker.fittingSize;
-    picker.translatesAutoresizingMaskIntoConstraints = NO;
-    [picker.widthAnchor  constraintEqualToConstant:size.width].active  = YES;
-    [picker.heightAnchor constraintEqualToConstant:size.height].active = YES;
+    NSView *content = [[NSView alloc] initWithFrame:
+        NSMakeRect(0, 0, size.width + 2 * date_popover_pad, size.height + 2 * date_popover_pad)];
+    picker.frame = NSMakeRect(date_popover_pad, date_popover_pad, size.width, size.height);
+    [content addSubview:picker];
 
-    NSString *what = field == self.due_field ? @"Due Date" : @"Start Date";
-    __weak TasksEditorWindow *ws = self;
-    SharedToolPanel *panel = [SharedToolPanel
-        panel_with_title:what hero_title:what subtitle:self.window.title symbol:@"calendar"
-                 content:picker buttons:@[@"Set", @"Clear", @"Cancel"] destructive:-1
-                 handler:^NSString *(NSInteger index) {
-        TasksEditorWindow *s = ws;
-        if (!s || s.is_shut_down || index == 2) return nil;
+    NSViewController *controller = [[NSViewController alloc] init];
+    controller.view = content;
 
-        /* The fields hold Gregorian dates whatever calendar the system
-         * shows the picker in. */
-        NSCalendar *gregorian =
-            [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
-        NSDateComponents *day = [gregorian components:NSCalendarUnitYear | NSCalendarUnitMonth |
-                                                      NSCalendarUnitDay
-                                             fromDate:picker.dateValue];
-        [field abortEditing];
-        field.stringValue = index == 1 ? @"" :
-            [NSString stringWithFormat:@"%04ld-%02ld-%02ld",
-                (long)day.year, (long)day.month, (long)day.day];
-        if (field == s.due_field) {
-            [s save_now];
-        } else {
-            [s recur_changed];
-        }
-        return nil;
-    }];
-    [panel show_over:self.window];
+    self.date_popover                   = [[NSPopover alloc] init];
+    self.date_popover.behavior          = NSPopoverBehaviorTransient;
+    self.date_popover.contentViewController = controller;
+    self.date_popover_field             = field;
+    [self.date_popover showRelativeToRect:button.bounds ofView:button preferredEdge:NSRectEdgeMaxY];
+    [picker.window makeFirstResponder:picker];
+}
+
+/*
+ * date_picked: — a day was clicked in the calendar: write it into the date
+ * field it was opened for, save, and close the calendar.
+ *
+ * Inputs:
+ *   sender — the calendar's date picker
+ */
+- (void)
+date_picked:(NSDatePicker *)sender
+{
+    NSTextField *field = self.date_popover_field;
+    [self.date_popover close];
+    if (field == nil || self.is_shut_down) return;
+
+    /* The fields hold Gregorian dates whatever calendar the system shows
+     * the picker in. */
+    NSCalendar *gregorian =
+        [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    NSDateComponents *day = [gregorian components:NSCalendarUnitYear | NSCalendarUnitMonth |
+                                                  NSCalendarUnitDay
+                                         fromDate:sender.dateValue];
+    [field abortEditing];
+    field.stringValue = [NSString stringWithFormat:@"%04ld-%02ld-%02ld",
+                            (long)day.year, (long)day.month, (long)day.day];
+    if (field == self.due_field) {
+        [self save_now];
+    } else {
+        [self recur_changed];
+    }
 }
 
 /*
@@ -2494,24 +2605,24 @@ due_time_changed:(id)sender
  * pick_due_date: — the calendar button beside the due date.
  *
  * Inputs:
- *   sender — the button (unused)
+ *   sender — the button
  */
 - (void)
 pick_due_date:(id)sender
 {
-    [self pick_date_for:self.due_field];
+    [self pick_date_for:self.due_field from:sender];
 }
 
 /*
  * pick_start_date: — the calendar button beside the schedule's start date.
  *
  * Inputs:
- *   sender — the button (unused)
+ *   sender — the button
  */
 - (void)
 pick_start_date:(id)sender
 {
-    [self pick_date_for:self.recur_start_field];
+    [self pick_date_for:self.recur_start_field from:sender];
 }
 
 /* ── Text editing and keys ──────────────────────────────────────────── */
@@ -2534,6 +2645,7 @@ controlTextDidChange:(NSNotification *)note
     if ([self is_subtask_field:field]) return;
     if (field == self.tag_field) {
         [self drop_removed_tags];
+        [self update_tag_popup];
         return;
     }
 
@@ -2570,7 +2682,10 @@ controlTextDidEndEditing:(NSNotification *)note
         [self save_subtask_title:field];
         return;
     }
-    if (field == self.tag_field) [self drop_removed_tags];
+    if (field == self.tag_field) {
+        [self.tag_popup hide];
+        [self drop_removed_tags];
+    }
     if (self.save_pending) [self save_now];
 
     /* On the next pass: the field still counts as being edited here, and a
@@ -2588,7 +2703,9 @@ controlTextDidEndEditing:(NSNotification *)note
  *
  * Return in the title saves and closes the editor.  Return in the tag
  * field is the token field's own: it makes the typed text a tag and stays
- * in the field for the next one.  Return anywhere else ends the edit
+ * in the field for the next one; with the tag list showing, Up and Down
+ * move in it, Return takes the selected tag and Escape closes the list.
+ * Return anywhere else ends the edit
  * (which saves it) and lets go of the field, instead of AppKit selecting
  * all its text again.  Escape in a subtask's title
  * abandons that edit; anywhere else it is Escape for the window (dismiss).
@@ -2608,6 +2725,16 @@ doCommandBySelector:(SEL)command
 {
     BOOL subtask = [self is_subtask_field:control];
 
+    if (control == self.tag_field && self.tag_popup.is_visible) {
+        if (command == @selector(moveDown:)) { [self.tag_popup move_selection:+1]; return YES; }
+        if (command == @selector(moveUp:))   { [self.tag_popup move_selection:-1]; return YES; }
+        if (command == @selector(cancelOperation:)) { [self.tag_popup hide]; return YES; }
+        NSString *offered = self.tag_popup.selected_name;
+        if (command == @selector(insertNewline:) && offered != nil) {
+            [self choose_tag:offered];
+            return YES;
+        }
+    }
     if (command == @selector(insertNewline:) && control == self.tag_field) return NO;
     if (command == @selector(insertNewline:)) {
         if (control == self.title_field) {
