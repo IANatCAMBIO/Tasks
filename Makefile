@@ -184,7 +184,7 @@ all: $(BUNDLE)
 # reminder plays (src/task_notify.m).
 APP_ICON   = icons/Tasks.icns
 HELP_PAGE  = resources/help.html
-CHIME      = resources/mixkit-correct-answer-tone-2870.wav
+CHIME      = resources/tunetank.com_data-select-safely.wav
 PLIST      = $(CONTENTS)/Info.plist
 
 $(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(APP_ICON) $(HELP_PAGE) $(CHIME)

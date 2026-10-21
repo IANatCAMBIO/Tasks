@@ -50,7 +50,7 @@ static const gint notify_sched_window = 5;
 /* The reminder chime: the bundled sound, and the quiet gap (seconds) after
  * one play during which further reminders stay silent, so a burst of them
  * chimes once. */
-static NSString *const notify_chime_name = @"mixkit-correct-answer-tone-2870";
+static NSString *const notify_chime_name = @"tunetank.com_data-select-safely";
 static NSString *const notify_chime_type = @"wav";
 static const CFAbsoluteTime notify_chime_gap = 5.0;
 
