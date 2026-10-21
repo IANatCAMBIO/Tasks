@@ -87,6 +87,7 @@ static const CGFloat tasks_look_reminders_min_w  = 243.0;
 static const CGFloat tasks_look_reminders_min_h  = 154.0;
 static const CGFloat tasks_look_reminders_row_h  = 27.0;   /* one reminder        */
 static const CGFloat tasks_look_reminders_icon   = 14.0;   /* its symbol          */
+static const CGFloat tasks_look_reminders_fit_buffer = 22.0; /* spare height when expanded */
 
 
 /* ── Day planner ────────────────────────────────────────────────────── */

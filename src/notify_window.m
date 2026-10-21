@@ -11,6 +11,10 @@
  * window when the list empties.  Snoozing removes the row and re-queues it
  * after the chosen interval via dispatch_after.  Double-clicking a row opens
  * the task's editor and leaves the reminder in place.
+ *
+ * A chevron button at the bar's lower left toggles between the default height
+ * and one that fits every reminder; while expanded, the height follows the
+ * list as reminders come and go.
  */
 
 #import "notify_window.h"
@@ -63,6 +67,8 @@ initWithTaskId:(int64_t)task_id key:(NSString *)key title:(NSString *)title
 @property (nonatomic, strong) NSTableView   *table;
 @property (nonatomic, strong) SharedHero     *hero;   /* the selected reminder */
 @property (nonatomic, assign) BOOL           refresh_pending;  /* a show_items is queued */
+@property (nonatomic, strong) NSButton      *expand_btn;       /* the chevron */
+@property (nonatomic, assign) BOOL           expanded;         /* window fits every reminder */
 
 + (instancetype)shared;
 - (void)addItem:(TasksReminderItem *)item;
@@ -140,6 +146,12 @@ init_window
     [btn_bar addSubview:snooze_btn];
     [btn_bar addSubview:dismiss_btn];
 
+    _expand_btn = [NSButton buttonWithTitle:@"" target:self action:@selector(toggle_expanded:)];
+    _expand_btn.bezelStyle = NSBezelStyleRounded;
+    _expand_btn.translatesAutoresizingMaskIntoConstraints = NO;
+    [self update_expand_button];
+    [btn_bar addSubview:_expand_btn];
+
     [NSLayoutConstraint activateConstraints:@[
         [btn_bar.leadingAnchor   constraintEqualToAnchor:cv.leadingAnchor],
         [btn_bar.trailingAnchor  constraintEqualToAnchor:cv.trailingAnchor],
@@ -160,6 +172,12 @@ init_window
         [snooze_btn.centerYAnchor    constraintEqualToAnchor:btn_bar.centerYAnchor],
         [snooze_btn.widthAnchor      constraintEqualToConstant:shared_look_tool_btn_w],
         [snooze_btn.heightAnchor     constraintEqualToConstant:shared_look_tool_btn_h],
+
+        [_expand_btn.leadingAnchor   constraintEqualToAnchor:btn_bar.leadingAnchor
+                                                    constant:shared_look_tool_btn_margin],
+        [_expand_btn.centerYAnchor   constraintEqualToAnchor:btn_bar.centerYAnchor],
+        [_expand_btn.widthAnchor     constraintEqualToConstant:shared_look_tool_btn_h * 1.5],
+        [_expand_btn.heightAnchor    constraintEqualToConstant:shared_look_tool_btn_h],
     ]];
 
     /* Separator above buttons */
@@ -288,6 +306,82 @@ make_dismiss_button
                               menu:menu];
 }
 
+/* ── Height ──────────────────────────────────────────────────────────── */
+
+/*
+ * update_expand_button — show the chevron for what a click will do: up to
+ * expand (the window grows upward), down to collapse.
+ */
+- (void)
+update_expand_button
+{
+    NSString *name = self.expanded ? @"chevron.down" : @"chevron.up";
+    _expand_btn.image   = [NSImage imageWithSystemSymbolName:name accessibilityDescription:nil];
+    _expand_btn.toolTip = self.expanded ? @"Collapse" : @"Show all reminders";
+}
+
+/*
+ * set_content_height: — resize the window to a content height, keeping its
+ * bottom edge, within the screen's usable height and the window's minimum.
+ *
+ * Inputs:
+ *   height  — wanted content height
+ *   animate — whether the resize animates
+ */
+- (void)
+set_content_height:(CGFloat)height animate:(BOOL)animate
+{
+    NSWindow *win = self.window;
+    NSRect content = [win contentRectForFrameRect:win.frame];
+    content.size.height = height;
+    NSRect frame = [win frameRectForContentRect:content];
+    frame.origin.y = NSMinY(win.frame);
+
+    NSScreen *screen = win.screen ?: NSScreen.screens.firstObject;
+    NSRect usable = screen.visibleFrame;
+    frame.size.height = MIN(NSHeight(frame), NSHeight(usable));
+    frame.size.height = MAX(frame.size.height, win.minSize.height);
+    if (NSMaxY(frame) > NSMaxY(usable)) frame.origin.y = NSMaxY(usable) - NSHeight(frame);
+
+    [win setFrame:frame display:YES animate:animate];
+}
+
+/*
+ * apply_height — resize the window to the default height, or, when expanded,
+ * to the room around the list plus every reminder's row plus a small buffer
+ * (at most the screen's usable height).
+ */
+- (void)
+apply_height
+{
+    NSWindow *win = self.window;
+    CGFloat height = tasks_look_reminders_h;
+    if (self.expanded) {
+        [win.contentView layoutSubtreeIfNeeded];
+        NSScrollView *scroll = _table.enclosingScrollView;
+        CGFloat around = NSHeight(win.contentView.frame) - NSHeight(scroll.contentView.bounds);
+        height = around + (CGFloat)_items.count * tasks_look_reminders_row_h +
+                 tasks_look_reminders_fit_buffer;
+    }
+    [self set_content_height:height animate:win.visible];
+}
+
+/*
+ * toggle_expanded: — switch between the default height and the height that
+ * shows every reminder.
+ *
+ * Inputs:
+ *   sender — the chevron button (unused)
+ */
+- (void)
+toggle_expanded:(id)sender
+{
+    (void)sender;
+    self.expanded = !self.expanded;
+    [self update_expand_button];
+    [self apply_height];
+}
+
 /* ── Item management ─────────────────────────────────────────────────── */
 
 /*
@@ -338,6 +432,7 @@ show_items
 
     [self update_hero];
     [self update_title];
+    if (self.expanded) [self apply_height];
     if (!self.window.visible) [self place_lower_right];
     [self.window orderFrontRegardless];
 }
@@ -427,6 +522,7 @@ dismiss_selected
         byExtendingSelection:NO];
     [self update_hero];
     [self update_title];
+    if (self.expanded) [self apply_height];
 }
 
 /*
@@ -469,6 +565,7 @@ snooze:(id)sender
             byExtendingSelection:NO];
         [self update_hero];
         [self update_title];
+        if (self.expanded) [self apply_height];
     }
 
     /* The reminder comes back only for a task that is still there and still
