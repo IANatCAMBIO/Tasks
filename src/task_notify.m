@@ -19,7 +19,8 @@
  * not bring it back until its due date or scheduled start changes.
  *
  * Delivery is either a Tasks popup window (notify_window.h) or a
- * UNUserNotificationCenter alert, depending on TASK_CFG_NOTIF_MODE.
+ * UNUserNotificationCenter alert, depending on TASK_CFG_NOTIF_MODE.  Either
+ * way the app plays its own chime (resources/), once per burst.
  */
 
 #import "task_notify.h"
@@ -46,6 +47,12 @@ static const gint64 notify_dismissed_keep = 90 * 24 * 3600;
 /* Width of the scheduled-notification window (minutes).  Must be larger than
  * the worker interval (1 min) to guarantee the alert is never missed. */
 static const gint notify_sched_window = 5;
+/* The reminder chime: the bundled sound, and the quiet gap (seconds) after
+ * one play during which further reminders stay silent, so a burst of them
+ * chimes once. */
+static NSString *const notify_chime_name = @"mixkit-correct-answer-tone-2870";
+static NSString *const notify_chime_type = @"wav";
+static const CFAbsoluteTime notify_chime_gap = 5.0;
 
 /* ── Tracking ────────────────────────────────────────────────────────── */
 
@@ -88,6 +95,32 @@ mark_sent(gchar *key)
 /* ── Delivery ────────────────────────────────────────────────────────── */
 
 /*
+ * play_chime — sound the reminder chime, unless it sounded within the last
+ * notify_chime_gap seconds.  A missing or unreadable sound file plays
+ * nothing.
+ *
+ * Runs on the main thread.
+ */
+static void
+play_chime(void)
+{
+    static NSSound       *chime;
+    static CFAbsoluteTime last_played;
+
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (last_played != 0 && now - last_played < notify_chime_gap) return;
+
+    if (chime == nil) {
+        NSURL *url = [NSBundle.mainBundle URLForResource:notify_chime_name
+                                           withExtension:notify_chime_type];
+        if (url == nil) return;
+        chime = [[NSSound alloc] initWithContentsOfURL:url byReference:YES];
+    }
+    last_played = now;
+    [chime play];
+}
+
+/*
  * fire_notification — deliver one notification for the given task.
  *
  * Inputs:
@@ -112,7 +145,6 @@ fire_notification(TaskApp *app, const Task *task, const gchar *subtitle, const g
             [[UNMutableNotificationContent alloc] init];
         content.title = ns_title;
         content.body  = ns_sub;
-        content.sound = [UNNotificationSound defaultSound];
 
         UNTimeIntervalNotificationTrigger *trigger =
             [UNTimeIntervalNotificationTrigger triggerWithTimeInterval:0.1
@@ -131,6 +163,7 @@ fire_notification(TaskApp *app, const Task *task, const gchar *subtitle, const g
     } else {
         tasks_notify_add(app, task->id, tasks_string(ident), ns_title, ns_sub);
     }
+    play_chime();
 }
 
 /* ── Worker pass ─────────────────────────────────────────────────────── */

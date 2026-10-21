@@ -180,12 +180,14 @@ all: $(BUNDLE)
 # The app's own icon is the one picture bundled: CFBundleIconFile names it
 # to Finder and the Dock, TASKS_APP_ICON (above) names it to the code
 # (src/ui_util.m).  The command icons are SF Symbols, which come with the
-# system.  HELP_PAGE is what Help > Tasks Help opens.
+# system.  HELP_PAGE is what Help > Tasks Help opens.  CHIME is the sound a
+# reminder plays (src/task_notify.m).
 APP_ICON   = icons/Tasks.icns
 HELP_PAGE  = resources/help.html
+CHIME      = resources/mixkit-correct-answer-tone-2870.wav
 PLIST      = $(CONTENTS)/Info.plist
 
-$(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(APP_ICON) $(HELP_PAGE)
+$(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(APP_ICON) $(HELP_PAGE) $(CHIME)
 	@rm -rf $(RSRC) && mkdir -p $(RSRC)  # fresh, so removed resources do not linger
 	@cp resources/Info.plist $(PLIST)
 	@plutil -replace CFBundleName -string "$(APP_NAME)" $(PLIST)
@@ -197,7 +199,7 @@ $(BUNDLE): $(MACOS)/$(APP) resources/Info.plist VERSION $(APP_ICON) $(HELP_PAGE)
 	@plutil -replace CFBundleVersion -string "$(VERSION)" $(PLIST)
 	@plutil -replace LSMinimumSystemVersion -string "$(LINK_TARGET)" $(PLIST)
 	@plutil -replace TasksBuildDate -string "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" $(PLIST)
-	@cp $(APP_ICON) $(HELP_PAGE) $(RSRC)/
+	@cp $(APP_ICON) $(HELP_PAGE) $(CHIME) $(RSRC)/
 	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(BUNDLE)
 	@touch $(BUNDLE)  # codesign rewrites the binary; keep the bundle newer than it
 

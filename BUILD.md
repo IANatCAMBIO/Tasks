@@ -114,7 +114,7 @@ Tasks.app/
 └── Contents/
     ├── Info.plist      resources/Info.plist + identity, version, build date
     ├── MacOS/Tasks
-    └── Resources/      Tasks.icns, the app's icon
+    └── Resources/      Tasks.icns (the app's icon), help.html, the reminder chime (.wav)
 build/                  objects, dependency files, test binaries, seed, ui_check.app
 dev/                    sandbox data, test scratch folders, snapshots
 ```
