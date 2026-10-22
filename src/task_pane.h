@@ -74,6 +74,54 @@ const TaskView *task_sel_view_of(task_sel_t sel);
 int64_t task_sel_tag_id(task_sel_t sel);
 
 /*
+ * task_sel_button_id — the id a Favorites bar button carries for a
+ * selection: the tag id for a tag, -(index + 1) for a view, so one id says
+ * which and the saved button order (TASK_CFG_FAVORITES_ORDER) holds both.
+ *
+ * Inputs:
+ *   sel — the selection
+ *
+ * Output:
+ *   the button id, or 0 for a selection that has no button (the header).
+ */
+int64_t task_sel_button_id(task_sel_t sel);
+
+/*
+ * task_sel_from_button_id — the selection a Favorites bar button stands for.
+ * The inverse of task_sel_button_id.
+ *
+ * Inputs:
+ *   id — a button id, not 0
+ *
+ * Output:
+ *   the selection.
+ */
+task_sel_t task_sel_from_button_id(int64_t id);
+
+/*
+ * task_view_is_favorite — whether a view is on the Favorites bar
+ * (TASK_CFG_FAVORITE_VIEWS).
+ *
+ * Inputs:
+ *   view — the view, or NULL
+ *
+ * Output:
+ *   true when it is listed; false for NULL.
+ */
+bool task_view_is_favorite(const TaskView *view);
+
+/*
+ * task_view_set_favorite — put a view on the Favorites bar, or take it off,
+ * and write the setting through.  A view already in the asked state is left
+ * alone.
+ *
+ * Inputs:
+ *   view     — the view, or NULL (ignored)
+ *   favorite — true to add it, false to remove it
+ */
+void task_view_set_favorite(const TaskView *view, bool favorite);
+
+/*
  * task_sel_new_task_tag — the tag New Task gives its task: the selected
  * tag; with a view selected, none (the task is listed under All Tasks
  * alone).

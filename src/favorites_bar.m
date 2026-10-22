@@ -8,7 +8,7 @@
 
 /* What the bar says while no tag is a favorite. */
 static NSString * const empty_hint =
-    @"No favorites yet — right-click a tag in the sidebar and choose Add to Favorites";
+    @"No favorites yet — right-click a tag or view in the sidebar and choose Add to Favorites";
 
 @interface TasksFavoritesBar ()
 @property (nonatomic, weak)   TasksLibraryWindow *library;
@@ -144,7 +144,7 @@ layout
 }
 
 /*
- * update_selection — light the selected tag's button.
+ * update_selection — light the selected tag's or view's button.
  * Documented in favorites_bar.h.
  */
 - (void)
@@ -152,15 +152,16 @@ update_selection
 {
     if (!self.library || self.is_shut_down) return;
 
-    int64_t selected = task_sel_tag_id(self.library.selection);
+    int64_t selected = task_sel_button_id(self.library.selection);
     for (SharedFavoriteButton *btn in self.strip.subviews) {
         btn.state = btn.tag_id == selected ? NSControlStateValueOn : NSControlStateValueOff;
     }
 }
 
 /*
- * reload — rebuild the buttons from the favorite tags, in the saved order
- * (TASK_CFG_FAVORITES_ORDER), new favorites at the end by name.
+ * reload — rebuild the buttons from the favorite views and tags, in the
+ * saved order (TASK_CFG_FAVORITES_ORDER), new favorites at the end: the
+ * views in their sidebar order, then the tags by name.
  * Documented in favorites_bar.h.
  */
 - (void)
@@ -170,19 +171,18 @@ reload
 
     for (NSView *v in self.strip.subviews.copy) [v removeFromSuperview];
 
-    __weak TasksFavoritesBar *ws = self;
     NSMutableArray<SharedFavoriteButton *> *buttons = [NSMutableArray array];
+    for (guint i = 0; i < task_view_count(); i++) {
+        const TaskView *view = task_view_nth(i);
+        if (!task_view_is_favorite(view)) continue;
+        [buttons addObject:[self button_titled:tasks_string(view->label)
+                                        tag_id:task_sel_button_id((task_sel_t){ task_sel_view, i })]];
+    }
     GPtrArray *tags = task_db_tags(self.library.app->db, TASK_TAGS_CARRIED);
     for (guint i = 0; i < tags->len; i++) {
         const TaskTag *tag = g_ptr_array_index(tags, i);
         if (!tag->favorite) continue;
-        SharedFavoriteButton *btn = [[SharedFavoriteButton alloc] init_with_title:tasks_tag_title(tag)
-                                                                           tag_id:tag->id];
-        btn.target       = self;
-        btn.action       = @selector(btn_clicked:);
-        btn.reordered    = ^(NSArray<SharedFavoriteButton *> *order) { [ws save_order:order]; };
-        btn.context_menu = ^NSMenu *(SharedFavoriteButton *button) { return [ws menu_for:button]; };
-        [buttons addObject:btn];
+        [buttons addObject:[self button_titled:tasks_tag_title(tag) tag_id:tag->id]];
     }
     task_ptr_array_free_tags(tags);
 
@@ -208,6 +208,29 @@ reload
 }
 
 /*
+ * button_titled:tag_id: — a button wired to this bar: click, drag-reorder
+ * and context menu.
+ *
+ * Inputs:
+ *   title  — its label
+ *   tag_id — its button id (task_sel_button_id)
+ *
+ * Output: the button, not yet in the strip.
+ */
+- (SharedFavoriteButton *)
+button_titled:(NSString *)title tag_id:(int64_t)tag_id
+{
+    __weak TasksFavoritesBar *ws = self;
+    SharedFavoriteButton *btn = [[SharedFavoriteButton alloc] init_with_title:title tag_id:tag_id];
+
+    btn.target       = self;
+    btn.action       = @selector(btn_clicked:);
+    btn.reordered    = ^(NSArray<SharedFavoriteButton *> *order) { [ws save_order:order]; };
+    btn.context_menu = ^NSMenu *(SharedFavoriteButton *button) { return [ws menu_for:button]; };
+    return btn;
+}
+
+/*
  * save_order: — a button was dragged into place: remember the row's
  * order (TASK_CFG_FAVORITES_ORDER).
  *
@@ -227,8 +250,8 @@ save_order:(NSArray<SharedFavoriteButton *> *)order
 }
 
 /*
- * menu_for: — a right-click on a favorite: Edit Tag… and Remove from
- * Favorites, for its tag.
+ * menu_for: — a right-click on a favorite: Edit Tag… (a tag's only) and
+ * Remove from Favorites.
  *
  * Inputs:
  *   button — the button
@@ -240,14 +263,16 @@ menu_for:(SharedFavoriteButton *)button
 {
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
     if (self.library != nil && !self.is_shut_down) {
-        [menu addItem:shared_command_menu_item(@"edit-tag", @(button.tag_id))];
+        if (button.tag_id > 0) {
+            [menu addItem:shared_command_menu_item(@"edit-tag", @(button.tag_id))];
+        }
         [menu addItem:shared_command_menu_item(@"remove-favorite", @(button.tag_id))];
     }
     return menu;
 }
 
 /*
- * btn_clicked: — a favorite was clicked: select its tag.
+ * btn_clicked: — a favorite was clicked: select its tag or view.
  *
  * Inputs:
  *   sender — the button
@@ -256,7 +281,7 @@ menu_for:(SharedFavoriteButton *)button
 btn_clicked:(SharedFavoriteButton *)sender
 {
     if (self.is_shut_down) return;
-    [self.library select:(task_sel_t){ task_sel_tag, sender.tag_id }];
+    [self.library select:task_sel_from_button_id(sender.tag_id)];
     [self update_selection];
 }
 

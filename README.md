@@ -155,10 +155,11 @@ own manual order); each row says what it is tagged.
   lists (Add Tag, a new task) while a note carries it; once no task and no
   note does, it is deleted.
 - **Favorite** tags have a button each in the **Favorites bar** above the
-  task pane (View → Hide/Show Favorites Bar); right-click a tag for **Add
-  to Favorites**, a button for **Remove from Favorites**.  Drag a button
-  along the bar to put the favorites in your order (new ones join at the
-  end, by name).  The sidebar toggles with the
+  task pane (View → Hide/Show Favorites Bar), and so can the All Tasks,
+  All Favorites and 3-Day Forecast views; right-click a tag or a view for
+  **Add to Favorites**, a button for **Remove from Favorites**.  Drag a
+  button along the bar to put the favorites in your order (new ones join
+  at the end: views, then tags by name).  The sidebar toggles with the
   button at the far left of the toolbar (⌃⌘S); drag its right edge to
   make it wider or narrower, and it keeps that width.
 - A subtask is born with its parent's tags.  New Task gives the selected

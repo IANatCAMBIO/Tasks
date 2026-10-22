@@ -1,11 +1,12 @@
 /*
  * sidebar_test.c — the sidebar's toolkit-free rules: a tag's label
- * (task_tag_label, db.h) and the selection fallback after a rebuild
- * (src/task_sidebar.h).
+ * (task_tag_label, db.h), the selection fallback after a rebuild
+ * (src/task_sidebar.h) and the Favorites bar's button ids (src/task_pane.h).
  */
 
 #include "check.h"
 #include "db.h"
+#include "task_pane.h"
 #include "task_sidebar.h"
 
 #include <string.h>
@@ -94,6 +95,15 @@ main(void)
           "pick: only the header means no selection");
     check(task_sidebar_pick(rows, 0, (task_sel_t){ task_sel_view, 0 }) == -1,
           "pick: no rows means no selection");
+
+    /* A Favorites bar button's id says tag or view: tags keep their id, a
+     * view is -(index + 1), so index 0 is not mistaken for "none". */
+    check(task_sel_button_id(rows[0]) == -1 && task_sel_button_id(rows[2]) == -3 &&
+          task_sel_button_id(rows[4]) == 11 && task_sel_button_id(rows[3]) == 0,
+          "button id: views are negative, tags their own id, the header none");
+    check(task_sel_from_button_id(-3).kind == task_sel_view && task_sel_from_button_id(-3).id == 2 &&
+          task_sel_from_button_id(12).kind == task_sel_tag && task_sel_from_button_id(12).id == 12,
+          "button id: it reads back to the selection");
 
     return check_result();
 }

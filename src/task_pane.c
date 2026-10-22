@@ -1,4 +1,5 @@
 #include "task_pane.h"
+#include "task_config.h"
 #include "task_ops.h"
 
 #include <stdio.h>
@@ -39,6 +40,72 @@ int64_t
 task_sel_tag_id(task_sel_t sel)
 {
     return sel.kind == task_sel_tag ? sel.id : 0;
+}
+
+/*
+ * task_sel_button_id — a selection's Favorites bar button id.
+ * Inputs/output are documented in task_pane.h.
+ */
+int64_t
+task_sel_button_id(task_sel_t sel)
+{
+    if (sel.kind == task_sel_tag) return sel.id;
+    return sel.kind == task_sel_view ? -(sel.id + 1) : 0;
+}
+
+/*
+ * task_sel_from_button_id — the selection of a button id.
+ * Inputs/output are documented in task_pane.h.
+ */
+task_sel_t
+task_sel_from_button_id(int64_t id)
+{
+    task_sel_t sel = id < 0 ? (task_sel_t){ task_sel_view, -id - 1 }
+                            : (task_sel_t){ task_sel_tag, id };
+    return sel;
+}
+
+/*
+ * task_view_is_favorite — whether a view is listed in the setting.
+ * Inputs/output are documented in task_pane.h.
+ */
+bool
+task_view_is_favorite(const TaskView *view)
+{
+    if (view == NULL) return false;
+
+    gchar  *saved = task_config_get(TASK_CFG_FAVORITE_VIEWS);
+    gchar **ids   = g_strsplit(saved != NULL ? saved : "", ",", -1);
+    bool    found = g_strv_contains((const gchar *const *)ids, view->id);
+
+    g_strfreev(ids);
+    g_free(saved);
+    return found;
+}
+
+/*
+ * task_view_set_favorite — add the view to the setting, or remove it.
+ * Inputs are documented in task_pane.h.
+ */
+void
+task_view_set_favorite(const TaskView *view, bool favorite)
+{
+    if (view == NULL || task_view_is_favorite(view) == favorite) return;
+
+    gchar   *saved = task_config_get(TASK_CFG_FAVORITE_VIEWS);
+    gchar  **ids   = g_strsplit(saved != NULL ? saved : "", ",", -1);
+    GString *out   = g_string_new("");
+
+    for (gchar **id = ids; *id != NULL; id++) {
+        if (**id == '\0' || g_strcmp0(*id, view->id) == 0) continue;
+        g_string_append_printf(out, "%s%s", out->len > 0 ? "," : "", *id);
+    }
+    if (favorite) g_string_append_printf(out, "%s%s", out->len > 0 ? "," : "", view->id);
+    task_config_set(TASK_CFG_FAVORITE_VIEWS, out->len > 0 ? out->str : NULL);
+
+    g_string_free(out, TRUE);
+    g_strfreev(ids);
+    g_free(saved);
 }
 
 /*

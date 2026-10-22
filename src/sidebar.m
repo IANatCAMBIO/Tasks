@@ -429,7 +429,8 @@ tableViewSelectionDidChange:(NSNotification *)note
 /*
  * menuNeedsUpdate: — the table's menu is about to open: Edit Tag…, Add to
  * Favorites (a favorite is removed from the Favorites bar's own menu) and
- * Clear Tag from All Tasks for a right-clicked tag, nothing elsewhere.
+ * Clear Tag from All Tasks for a right-clicked tag; Add to Favorites alone
+ * for a right-clicked view; nothing elsewhere.
  *
  * Inputs:
  *   menu — the table's menu
@@ -442,7 +443,11 @@ menuNeedsUpdate:(NSMenu *)menu
     NSInteger row = self.table.clickedRow;
     if (row < 0 || self.is_shut_down || !self.library) return;
     task_sel_t sel = [self sel_at:row];
-    if (sel.kind != task_sel_tag) return;
+    if (sel.kind == task_sel_header) return;
+    if (sel.kind == task_sel_view) {
+        [menu addItem:shared_command_menu_item(@"add-favorite", @(task_sel_button_id(sel)))];
+        return;
+    }
     [menu addItem:shared_command_menu_item(@"edit-tag", @(sel.id))];
     [menu addItem:shared_command_menu_item(@"add-favorite", @(sel.id))];
     [menu addItem:NSMenuItem.separatorItem];
@@ -653,11 +658,30 @@ validate_has_tag(id target, id item, SharedCommandState *state)
 }
 
 /*
+ * button_of — the selection a Favorites item means: its parameter (a
+ * button id, task_sel_button_id), else the row selected in the sidebar.
+ *
+ * Inputs:
+ *   sidebar — the sidebar
+ *   item    — the item, or nil
+ *
+ * Output: the selection; of kind task_sel_header when there is none.
+ */
+static task_sel_t
+button_of(TasksSidebar *sidebar, id item)
+{
+    NSNumber *param = shared_command_param(item);
+    if (param != nil && param.longLongValue != 0) return task_sel_from_button_id(param.longLongValue);
+    task_sel_t sel = sidebar.library.selection;
+    return task_sel_button_id(sel) != 0 ? sel : (task_sel_t){ task_sel_header, 0 };
+}
+
+/*
  * run_set_favorite — Add to Favorites / Remove from Favorites: set the
- * tag's favorite flag (Tasks' own, as the Edit Tag panel's box does) and
- * refresh the sidebar and the Favorites bar.  Adding a favorite again
- * changes nothing: a favorite is removed only by its own command (the
- * Favorites bar's menu, the File menu).
+ * tag's favorite flag (Tasks' own, as the Edit Tag panel's box does) or
+ * list the view in TASK_CFG_FAVORITE_VIEWS, and refresh the sidebar and the
+ * Favorites bar.  Adding a favorite again changes nothing: a favorite is
+ * removed only by its own command (the Favorites bar's menu, the File menu).
  *
  * Inputs:
  *   target — the sidebar
@@ -667,32 +691,41 @@ static void
 run_set_favorite(id target, id sender)
 {
     TasksSidebar *sidebar  = target;
-    int64_t       tag_id   = tag_of(sidebar, sender);
     BOOL          favorite = [shared_command_ident(sender) isEqualToString:@"add-favorite"];
-    if (sidebar.is_shut_down || sidebar.library == nil || tag_id == 0) return;
-    TaskApp *app = sidebar.library.app;
-    if (!task_db_tag_set_favorite(app->db, tag_id, favorite)) {
-        task_app_status(app, "The tag could not be changed");
+    if (sidebar.is_shut_down || sidebar.library == nil) return;
+    task_sel_t sel = button_of(sidebar, sender);
+    if (sel.kind == task_sel_view) {
+        task_view_set_favorite(task_sel_view_of(sel), favorite);
+    } else if (sel.kind == task_sel_tag &&
+               !task_db_tag_set_favorite(sidebar.library.app->db, sel.id, favorite)) {
+        task_app_status(sidebar.library.app, "The tag could not be changed");
     }
     [sidebar.library full_refresh];
 }
 
 /*
- * tag_is_favorite — whether the tag an item means (tag_of) is a favorite.
+ * is_favorite — whether the tag or view an item means (button_of) is a
+ * favorite.
  *
  * Inputs:
  *   sidebar  — the sidebar
- *   item     — the item, or nil for the selected tag
+ *   item     — the item, or nil for the selected row
  *   favorite — receives the flag
  *
- * Output: NO when there is no such tag.
+ * Output: NO when there is no such tag or view.
  */
 static BOOL
-tag_is_favorite(TasksSidebar *sidebar, id item, BOOL *favorite)
+is_favorite(TasksSidebar *sidebar, id item, BOOL *favorite)
 {
-    int64_t tag_id = tag_of(sidebar, item);
-    if (tag_id == 0 || sidebar.library == nil) return NO;
-    TaskTag *tag = task_db_tag_get(sidebar.library.app->db, tag_id);
+    if (sidebar.library == nil) return NO;
+    task_sel_t sel = button_of(sidebar, item);
+    if (sel.kind == task_sel_view) {
+        const TaskView *view = task_sel_view_of(sel);
+        *favorite = task_view_is_favorite(view);
+        return view != NULL;
+    }
+    if (sel.kind != task_sel_tag) return NO;
+    TaskTag *tag = task_db_tag_get(sidebar.library.app->db, sel.id);
     if (tag == NULL) return NO;
     *favorite = tag->favorite != FALSE;
     task_tag_free(tag);
@@ -700,7 +733,7 @@ tag_is_favorite(TasksSidebar *sidebar, id item, BOOL *favorite)
 }
 
 /*
- * validate_add_favorite — a tag that is not yet a favorite.
+ * validate_add_favorite — a tag or view that is not yet a favorite.
  *
  * Inputs:
  *   target — the sidebar
@@ -713,11 +746,11 @@ static BOOL
 validate_add_favorite(id target, id item, SharedCommandState *state)
 {
     BOOL favorite = NO;
-    return tag_is_favorite(target, item, &favorite) && !favorite;
+    return is_favorite(target, item, &favorite) && !favorite;
 }
 
 /*
- * validate_remove_favorite — a tag that is a favorite.
+ * validate_remove_favorite — a tag or view that is a favorite.
  *
  * Inputs:
  *   target — the sidebar
@@ -730,7 +763,7 @@ static BOOL
 validate_remove_favorite(id target, id item, SharedCommandState *state)
 {
     BOOL favorite = NO;
-    return tag_is_favorite(target, item, &favorite) && favorite;
+    return is_favorite(target, item, &favorite) && favorite;
 }
 
 /*
