@@ -69,6 +69,7 @@
 
 /* Task-list column visibility (the header menu) */
 #define TASK_CFG_COL_DONE            "col_done_visible"      /* bool, 1 */
+#define TASK_CFG_COL_TAGS            "col_tags_visible"      /* bool, 1 */
 #define TASK_CFG_COL_STATUS          "col_status_visible"    /* bool, 0 */
 #define TASK_CFG_COL_DUE             "col_due_visible"       /* bool, 1 */
 #define TASK_CFG_COL_COMPLETED       "col_completed_visible" /* bool, 1 */

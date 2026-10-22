@@ -664,6 +664,7 @@ build_menu_bar
     NSMenuItem *columns = [[NSMenuItem alloc] initWithTitle:@"Columns" action:NULL keyEquivalent:@""];
     columns.submenu     = [[NSMenu alloc] initWithTitle:@"Columns"];
     [columns.submenu addItem:command(@"column-done")];
+    [columns.submenu addItem:command(@"column-tags")];
     [columns.submenu addItem:command(@"column-status")];
     [columns.submenu addItem:command(@"column-due")];
     [columns.submenu addItem:command(@"column-completed")];

@@ -11,6 +11,7 @@
  * task_sort_column_name: they are part of the ini format). */
 static const char * const column_names[task_sort_column_count] = {
     [task_sort_title]     = "title",
+    [task_sort_tags]      = "tags",
     [task_sort_done]      = "done",
     [task_sort_status]    = "status",
     [task_sort_due]       = "due",
@@ -137,6 +138,10 @@ compare_column(const task_row_t *a, const task_row_t *b, task_sort_column_t colu
     switch (column) {
     case task_sort_title:
         return compare_titles(a->title, b->title);
+    case task_sort_tags: {
+        int cmp = compare_titles(a->tags_text, b->tags_text);
+        return cmp != 0 ? cmp : compare_titles(a->title, b->title);
+    }
     case task_sort_done:
         return (a->status == TASK_STATUS_DONE) - (b->status == TASK_STATUS_DONE);
     case task_sort_status:

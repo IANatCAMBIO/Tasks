@@ -188,6 +188,31 @@ notes_preview(const gchar *notes)
 }
 
 /*
+ * tags_names — a task's tag names for the Tags column: names only, ", "
+ * apart, as Notes lists them.
+ *
+ * Inputs:
+ *   tags — the task's tags (GPtrArray of TaskTag*), or NULL for none
+ *
+ * Output:
+ *   new valid UTF-8 string (free it); "" for none; never NULL.
+ */
+static char *
+tags_names(const GPtrArray *tags)
+{
+    GString *joined = g_string_new("");
+
+    for (guint i = 0; tags != NULL && i < tags->len; i++) {
+        const TaskTag *tag = g_ptr_array_index(tags, i);
+        if (i > 0) g_string_append(joined, ", ");
+        g_string_append(joined, tag->name);
+    }
+    char *out = text_valid(joined->str);
+    g_string_free(joined, TRUE);
+    return out;
+}
+
+/*
  * lines_build — fill a row's lines from its task.
  *
  * The prefix glyphs stack outwards from the title: a siren for high
@@ -329,6 +354,7 @@ task_row_describe(const Task *t, const TaskRowCtx *ctx)
     row->title  = text_valid(*t->title != '\0' ? t->title : UNTITLED_TASK);
 
     const GPtrArray *tags = g_hash_table_lookup(ctx->tags_by_task, GINT_TO_POINTER(t->id));
+    row->tags_text = tags_names(tags);
     gint att_count = GPOINTER_TO_INT(
         g_hash_table_lookup(ctx->att_counts, GINT_TO_POINTER(t->id)));
     lines_build(row, t, tags, att_count, task_row_ctx_subtasks(ctx, t),
@@ -372,6 +398,7 @@ task_row_free(task_row_t *row)
     }
     free(row->lines);
     free(row->title);
+    free(row->tags_text);
     free(row->due_text);
     free(row->completed_text);
     free(row->created_text);

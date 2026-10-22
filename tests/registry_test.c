@@ -41,6 +41,7 @@ static const struct {
     { TASK_CFG_COMPACT_PRE_W,       kind_int,  "980" },
     { TASK_CFG_COMPACT_PRE_H,       kind_int,  "640" },
     { TASK_CFG_COL_DONE,            kind_bool, "1"   },
+    { TASK_CFG_COL_TAGS,            kind_bool, "1"   },
     { TASK_CFG_COL_STATUS,          kind_bool, "0"   },
     { TASK_CFG_COL_DUE,             kind_bool, "1"   },
     { TASK_CFG_COL_COMPLETED,       kind_bool, "1"   },

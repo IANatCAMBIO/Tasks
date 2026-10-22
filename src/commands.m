@@ -57,6 +57,7 @@ static const shared_command_t commands[] = {
 
     /* ── The task list's: column visibility (check-marked items) ── */
     { @"column-done",         @"Done",                    @"",  0,         app, nil, nil },
+    { @"column-tags",         @"Tags",                    @"",  0,         app, nil, nil },
     { @"column-status",       @"Status",                  @"",  0,         app, nil, nil },
     { @"column-due",          @"Due Date",                @"",  0,         app, nil, nil },
     { @"column-completed",    @"Completion Date",         @"",  0,         app, nil, nil },

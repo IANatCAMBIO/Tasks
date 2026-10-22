@@ -92,6 +92,8 @@ typedef struct {
  *
  *   id             — task id (never 0)
  *   status         — the tri-state; "done" is status == TASK_STATUS_DONE
+ *   tags_text      — the tag names, ", " apart, "" for none: the Tags
+ *                    column's text and sort key
  *   title          — the title as shown ("Untitled Task" when empty):
  *                    the Task column's sort
  *                    key and what status messages quote
@@ -110,6 +112,7 @@ typedef struct {
     int64_t             id;
     TaskStatus          status;
     char               *title;
+    char               *tags_text;
     task_row_line_t    *lines;
     size_t              line_count;
     int64_t             due;

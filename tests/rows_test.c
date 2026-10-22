@@ -138,6 +138,7 @@ test_title_line(TaskApp *app, const char *tag)
           "title: the glyphs are in the prefix, not the text");
     check(row->completed_at > 0 && row->completed_text[0] != '\0',
           "title: completion stamp and text");
+    check(strcmp(row->tags_text, "Rows") == 0, "title: the Tags column lists the tag names");
     check(row->created_at > 0 && row->created_text[0] != '\0',
           "title: creation stamp and text");
     check(strcmp(row->status_text, "Done") == 0, "title: Done label");

@@ -1,6 +1,6 @@
 /*
  * sort_test.c — the arrangement of the task list's rows (src/task_sort.h):
- * the five column comparators, the stable multi-key sort, the saved
+ * the six column comparators, the stable multi-key sort, the saved
  * spelling of a sort, and the block move of a manual drag.
  */
 
@@ -109,6 +109,17 @@ check_columns(void)
     check(same(order, (int[]){ 3, 1, 0, 2, 4, 5 }, SAMPLE_COUNT),
           "completed: oldest first, never-completed rows last");
 
+    /* Tags: names case-insensitively, untagged first, ties by title. */
+    sample_rows[0].tags_text = "Work, Home";
+    sample_rows[1].tags_text = "work, Home";
+    sample_rows[2].tags_text = "Home";
+    sample_rows[3].tags_text = "";
+    sample_rows[4].tags_text = "";
+    sample_rows[5].tags_text = "Home";
+    sorted(order, (task_sort_key_t[]){ { task_sort_tags, true } }, 1);
+    check(same(order, (int[]){ 3, 4, 2, 5, 1, 0 }, SAMPLE_COUNT),
+          "tags: untagged first, then by name, equal tags by title");
+
     sorted(order, (task_sort_key_t[]){ { task_sort_created, true } }, 1);
     check(same(order, (int[]){ 4, 0, 3, 2, 1, 5 }, SAMPLE_COUNT),
           "created: oldest first, unknown-creation rows last");
@@ -168,10 +179,11 @@ check_saved(void)
           keys[1].column == task_sort_status && keys[1].ascending,
           "saved: unknown names and a repeated column are skipped");
 
-    n = task_sort_keys_parse("title,done,status,due,completed,created,title,due", keys);
+    n = task_sort_keys_parse("title,tags,done,status,due,completed,created,title,due", keys);
     check(n == TASK_SORT_MAX_KEYS, "saved: never more keys than columns");
 
-    check(strcmp(task_sort_column_name(task_sort_completed), "completed") == 0 &&
+    check(strcmp(task_sort_column_name(task_sort_tags), "tags") == 0 &&
+          strcmp(task_sort_column_name(task_sort_completed), "completed") == 0 &&
           strcmp(task_sort_column_name(task_sort_created), "created") == 0 &&
           task_sort_column_name(task_sort_column_count) == NULL,
           "saved: a column has a name, a non-column has none");

@@ -31,6 +31,7 @@ static const struct {
     { TASK_CFG_COMPACT_PRE_W,       "980" },
     { TASK_CFG_COMPACT_PRE_H,       "640" },
     { TASK_CFG_COL_DONE,            "1"   },
+    { TASK_CFG_COL_TAGS,            "1"   },
     { TASK_CFG_COL_STATUS,          "0"   },
     { TASK_CFG_COL_DUE,             "1"   },
     { TASK_CFG_COL_COMPLETED,       "1"   },
