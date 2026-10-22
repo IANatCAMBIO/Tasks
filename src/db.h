@@ -648,8 +648,9 @@ void task_db_totals(TaskDatabase *db, gint *n_tasks, gint *n_tags);
 
 /* A reminder the user dismissed (or that was delivered to the Notification
  * Center) stays dismissed until something about it changes.  `key` is the
- * notification worker's: "due:<id>:<due date>" or "sched:<id>:<start>", so
- * a new due date or start time is a new key.  Kept in sync_state under
+ * notification worker's: "due:<id>:<due date>:<reminder day>" or
+ * "sched:<id>:<start>", so a new due date or start time is a new key, and a
+ * due reminder dismissed today is a new key again from 8:00 AM tomorrow.  Kept in sync_state under
  * "reminder:<key>", the value the dismissal time (unix seconds): no schema
  * of its own.                                                              */
 

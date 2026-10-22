@@ -3,10 +3,13 @@
  *
  * The notification worker runs once per minute (task_worker.h) and:
  *
- *   1. Scans tasks due today.  Between 8:00 AM and 8:30 AM, any non-done
- *      task that has not been notified yet this calendar day gets a
- *      notification.  Key: "due:<id>:<YYYY-MM-DD>".
- *
+ *   1. Scans tasks due today or overdue.  Between 8:00 AM and 8:30 AM, and
+ *      once at launch, any non-done task not yet reminded this reminder day
+ *      gets a notification.  A reminder day runs from 8:00 AM to the next
+ *      8:00 AM, so a task still not done is reminded again at 8:00 AM the
+ *      day after the user dismissed it.  Key:
+ *      "due:<id>:<YYYY-MM-DD due date>:<YYYY-MM-DD reminder day>".
+
  *   2. Scans tasks scheduled today.  Within a 5-minute window starting
  *      10 minutes before scheduled_start, any task not already notified
  *      gets a reminder.  Key: "sched:<id>:<scheduled_start_unix>".  A
@@ -16,7 +19,8 @@
  * Notifications that already fired are tracked in a module-level GHashTable
  * for the session.  A reminder the user dismissed (or that went to the
  * Notification Center) is also recorded in the database, so a restart does
- * not bring it back until its due date or scheduled start changes.
+ * not bring it back until its due date or scheduled start changes, or (a due
+ * reminder) the next reminder day begins at 8:00 AM.
  *
  * Delivery is either a Tasks popup window (notify_window.h) or a
  * UNUserNotificationCenter alert, depending on TASK_CFG_NOTIF_MODE.  Either
@@ -169,6 +173,42 @@ fire_notification(TaskApp *app, const Task *task, const gchar *subtitle, const g
 /* ── Worker pass ─────────────────────────────────────────────────────── */
 
 /*
+ * remind_due — remind about every non-done task due by the end of the
+ * current reminder day (overdue ones included) that has not been reminded
+ * this reminder day.  A task with no due date is never reminded.
+ *
+ * Inputs:
+ *   app          — the application context (db open)
+ *   hi           — end of the reminder day (next local midnight)
+ *   today_lo     — this calendar day's local midnight: a task due from then
+ *                  is "Due today", an earlier one "Overdue"
+ *   reminder_day — the reminder day, "YYYY-MM-DD"
+ */
+static void
+remind_due(TaskApp *app, gint64 hi, gint64 today_lo, const char *reminder_day)
+{
+    GPtrArray *due = task_db_tasks_due_between(app->db, 1, hi, TRUE);
+
+    for (guint i = 0; i < due->len; i++) {
+        const Task *t = due->pdata[i];
+
+        time_t due_t = (time_t)t->due;
+        char   due_iso[11];
+        strftime(due_iso, sizeof(due_iso), "%Y-%m-%d", localtime(&due_t));
+
+        gchar *key = g_strdup_printf("due:%" G_GINT64_FORMAT ":%s:%s",
+                                     t->id, due_iso, reminder_day);
+        if (!already_sent(app, key)) {
+            fire_notification(app, t, t->due >= today_lo ? "Due today" : "Overdue", key);
+            mark_sent(key);
+        } else {
+            g_free(key);
+        }
+    }
+    task_ptr_array_free_tasks(due);
+}
+
+/*
  * notify_run — one notification pass: check due-today and scheduled tasks,
  * fire any that are in their notification window and not yet sent.
  *
@@ -186,68 +226,30 @@ notify_run(TaskApp *app, const gchar *db_path)
 
     time_t now = time(NULL);
 
-    /* Copy the tm struct immediately so inner localtime() calls in the
-     * startup loop (which use a different time_t) cannot clobber it. */
+    /* Copy the tm struct immediately: later localtime() calls reuse its
+     * buffer. */
     struct tm now_tm = *localtime(&now);
     gint minutes_now = now_tm.tm_hour * 60 + now_tm.tm_min;
-
-    /* ISO date string for today's due-key, e.g. "2026-10-08". */
-    char today_iso[11];
-    strftime(today_iso, sizeof(today_iso), "%Y-%m-%d", &now_tm);
 
     gint64 today_lo, today_hi;
     task_day_bounds(0, &today_lo, &today_hi);
 
-    /* ── Startup pass ────────────────────────────────────────────────── */
-    /* On first run, immediately fire for every non-done task whose due
-     * date is today or in the past.  A due of 0 means no due date, so the
-     * range starts at 1.                                               */
+    /* ── Due reminders: at launch, then in the 8 AM window ───────────── */
+    /* A reminder day starts at 8:00 AM, so before then it is still
+     * yesterday's: a dismissal made at 7:00 AM does not outlast 8:00 AM. */
+    gint64 day_lo, day_hi;
+    task_day_bounds(minutes_now < notify_due_minute ? -1 : 0, &day_lo, &day_hi);
+    time_t day_t = now - (time_t)notify_due_minute * 60;
+    char   reminder_day[11];
+    strftime(reminder_day, sizeof(reminder_day), "%Y-%m-%d", localtime(&day_t));
+
     if (!startup_done) {
         startup_done = TRUE;
         task_db_reminders_prune(app->db, (gint64)now - notify_dismissed_keep);
-        GPtrArray *past =
-            task_db_tasks_due_between(app->db, 1, today_hi, TRUE);
-        for (guint i = 0; i < past->len; i++) {
-            const Task *t = past->pdata[i];
-
-            time_t due_t = (time_t)t->due;
-            struct tm due_tm = *localtime(&due_t);
-            char due_iso[11];
-            strftime(due_iso, sizeof(due_iso), "%Y-%m-%d", &due_tm);
-
-            gchar *key = g_strdup_printf("due:%" G_GINT64_FORMAT ":%s",
-                                         t->id, due_iso);
-            if (!already_sent(app, key)) {
-                const gchar *subtitle =
-                    (t->due >= today_lo) ? "Due today" : "Overdue";
-                fire_notification(app, t, subtitle, key);
-                mark_sent(key);
-            } else {
-                g_free(key);
-            }
-        }
-        task_ptr_array_free_tasks(past);
-    }
-
-    /* ── Due-today notifications (8 AM window) ───────────────────────── */
-    if (minutes_now >= notify_due_minute &&
-        minutes_now < notify_due_minute + notify_due_window) {
-
-        GPtrArray *due =
-            task_db_tasks_due_between(app->db, today_lo, today_hi, TRUE);
-        for (guint i = 0; i < due->len; i++) {
-            const Task *t = due->pdata[i];
-
-            gchar *key = g_strdup_printf("due:%" G_GINT64_FORMAT ":%s",
-                                         t->id, today_iso);
-            if (!already_sent(app, key)) {
-                fire_notification(app, t, "Due today", key);
-                mark_sent(key);
-            } else {
-                g_free(key);
-            }
-        }
-        task_ptr_array_free_tasks(due);
+        remind_due(app, day_hi, today_lo, reminder_day);
+    } else if (minutes_now >= notify_due_minute &&
+               minutes_now < notify_due_minute + notify_due_window) {
+        remind_due(app, day_hi, today_lo, reminder_day);
     }
 
     /* ── Scheduled sessions: the reminder, then the promotion ─────────── */
