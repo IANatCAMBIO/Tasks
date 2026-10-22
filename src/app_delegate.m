@@ -1,6 +1,6 @@
 #import "app_delegate.h"
 #import "commands.h"
-#import "hotkey.h"
+#import "shared_hotkey.h"
 #import "library_window.h"
 #import "settings_window.h"
 #import "task_notify.h"
@@ -34,6 +34,22 @@ static NSString * const build_date_key = @"TasksBuildDate";
 
 /* The size of the app icon in the Dock tile and the About panel. */
 static const CGFloat app_icon_size = 128.0;
+
+/*
+ * quick_task_wanted — whether the Quick Task setting is on.
+ *
+ * Output: the setting.
+ */
+static BOOL
+quick_task_wanted(void)
+{
+    return task_config_get_bool(TASK_CFG_QUICK_TASK_HOTKEY);
+}
+
+/* Quick Task's system-wide shortcut, ⌃⌥⌘T.  The menu item's copy is in commands.m. */
+static const shared_hotkey_t quick_task_hotkey = {
+    kVK_ANSI_T, controlKey | optionKey | cmdKey, 'TskQ', quick_task_wanted,
+};
 
 @interface TasksAppDelegate () <NSUserInterfaceValidations, NSMenuDelegate>
 /* The application context: the open database and the event bus.  Owned;
@@ -302,7 +318,7 @@ finish_launch_at:(NSString *)open_path choice:(TasksWelcomeChoice)choice
 }
 
 /*
- * start_hotkey — arm Quick Task's system-wide shortcut (hotkey.h), which
+ * start_hotkey — arm Quick Task's system-wide shortcut (shared_hotkey.h), which
  * runs Quick Task in the library window from any app.  A shortcut another
  * app already holds is reported in the status bar.
  */
@@ -310,7 +326,7 @@ finish_launch_at:(NSString *)open_path choice:(TasksWelcomeChoice)choice
 start_hotkey
 {
     __weak TasksAppDelegate *ws = self;
-    BOOL ok = tasks_hotkey_start(^{
+    BOOL ok = shared_hotkey_start(&quick_task_hotkey, ^{
         [ws.library perform_command:@"quick-task" param:nil];
     });
     if (!ok) {
@@ -383,7 +399,7 @@ applicationWillTerminate:(NSNotification *)note
     if (self.app == NULL) return;
 
     [NSNotificationCenter.defaultCenter removeObserver:self];
-    tasks_hotkey_stop();
+    shared_hotkey_stop();
     task_app_watch_stop(self.app);
     [self.library shut_down];
     self.library = nil;

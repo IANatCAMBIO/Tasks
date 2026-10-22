@@ -20,7 +20,7 @@ xcode-select --install
 | Library | Used for | Where it comes from |
 |---|---|---|
 | Cocoa, UniformTypeIdentifiers | the interface | macOS SDK |
-| Carbon (`RegisterEventHotKey` only) | Quick Task's system-wide shortcut, ⌃⌥⌘T (`src/hotkey.m`); needs no Accessibility permission | macOS SDK |
+| Carbon (`RegisterEventHotKey` only) | Quick Task's system-wide shortcut, ⌃⌥⌘T (`shared_ui/src/shared_hotkey.m`); needs no Accessibility permission | macOS SDK |
 | libdispatch, CoreFoundation | timers and background work in the core; the tests' run loop | macOS SDK |
 | GLib 2 (`glib-2.0`; developed with 2.88) | utilities in the core — strings, arrays, key file, dates | MacPorts `glib2` |
 | SQLite 3 (3.35 or later; developed with 3.53) | storage | MacPorts `sqlite3` |
@@ -235,7 +235,7 @@ src/
   look.[hm]            sizes, timings, colours
   ui_util.[hm]         icons, image views, the shared table view, dialogs
   tool_panel.[hm]      the app's own dialog (never a system alert) and its blue hero strip
-  hotkey.[hm]          Quick Task's system-wide shortcut
+  (shared_ui) shared_hotkey.[hm]  the system-wide shortcut, shared with Notes
   row_text.[hm]        the renderer of a task row's text
   sidebar.[hm]         sidebar: the views and every tag, Edit Tag
   favorites_bar.[hm]   Favorites bar: the favorite tags

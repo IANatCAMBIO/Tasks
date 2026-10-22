@@ -2,7 +2,7 @@
 #import "look.h"
 #import "ui_util.h"
 #import "task_notify.h"
-#import "hotkey.h"
+#import "shared_hotkey.h"
 
 #include "backup.h"
 #include "gcal_store.h"
@@ -692,7 +692,7 @@ new_task_rows
 hotkey_toggled:(NSButton *)sender
 {
     task_config_set_bool(TASK_CFG_QUICK_TASK_HOTKEY, sender.state == NSControlStateValueOn);
-    if (tasks_hotkey_apply()) return;
+    if (shared_hotkey_apply()) return;
 
     sender.state = NSControlStateValueOff;
     task_config_set_bool(TASK_CFG_QUICK_TASK_HOTKEY, FALSE);
