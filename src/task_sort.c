@@ -15,6 +15,7 @@ static const char * const column_names[task_sort_column_count] = {
     [task_sort_done]      = "done",
     [task_sort_status]    = "status",
     [task_sort_due]       = "due",
+    [task_sort_schedule]  = "schedule",
     [task_sort_completed] = "completed",
     [task_sort_created]   = "created",
 };
@@ -148,6 +149,8 @@ compare_column(const task_row_t *a, const task_row_t *b, task_sort_column_t colu
         return ((int)a->status > (int)b->status) - ((int)a->status < (int)b->status);
     case task_sort_due:
         return compare_times(a->due_instant, b->due_instant);
+    case task_sort_schedule:
+        return compare_times(a->scheduled_start, b->scheduled_start);
     case task_sort_completed:
         return compare_times(a->completed_at, b->completed_at);
     case task_sort_created:

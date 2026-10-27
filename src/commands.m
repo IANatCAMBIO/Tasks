@@ -60,6 +60,7 @@ static const shared_command_t commands[] = {
     { @"column-tags",         @"Tags",                    @"",  0,         app, nil, nil },
     { @"column-status",       @"Status",                  @"",  0,         app, nil, nil },
     { @"column-due",          @"Due Date",                @"",  0,         app, nil, nil },
+    { @"column-schedule",     @"Scheduled",               @"",  0,         app, nil, nil },
     { @"column-completed",    @"Completion Date",         @"",  0,         app, nil, nil },
     { @"column-created",      @"Creation Date",           @"",  0,         app, nil, nil },
 };

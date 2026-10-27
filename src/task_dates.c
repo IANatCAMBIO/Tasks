@@ -222,6 +222,97 @@ task_day_at_minute(gint64 ts, gint minutes)
 }
 
 /*
+ * task_minutes_of_day — a moment's local time of day, in minutes.
+ * Inputs/output are documented in task_dates.h.
+ */
+gint
+task_minutes_of_day(gint64 ts)
+{
+    GDateTime *dt = task_local_dt(ts);
+    if (dt == NULL) return 0;
+
+    gint minutes = g_date_time_get_hour(dt) * 60 + g_date_time_get_minute(dt);
+    g_date_time_unref(dt);
+    return minutes;
+}
+
+/*
+ * task_duration_format — "45 min", "1 hr", "1.5 hr".
+ * Inputs/output are documented in task_dates.h.
+ */
+gchar *
+task_duration_format(gint minutes)
+{
+    if (minutes < 60) return g_strdup_printf("%d min", MAX(minutes, 0));
+
+    /* Hundredths of an hour, so 1.25 stays 1.25 and 1.5 loses its zero. */
+    gint   hundredths = (minutes * 100 + 30) / 60;
+    gchar *out        = hundredths % 100 == 0 ? g_strdup_printf("%d hr", hundredths / 100)
+                      : hundredths % 10 == 0  ? g_strdup_printf("%d.%d hr", hundredths / 100,
+                                                                (hundredths % 100) / 10)
+                                              : g_strdup_printf("%d.%02d hr", hundredths / 100,
+                                                                hundredths % 100);
+    return out;
+}
+
+/*
+ * when_text — a local moment as "10/23/26", `join`, "9:30", `gap`, "AM".
+ *
+ * Inputs:
+ *   dt   — the moment, local time
+ *   join — between the date and the time
+ *   gap  — between the time and AM / PM
+ *
+ * Output:
+ *   new string (g_free).
+ */
+static gchar *
+when_text(GDateTime *dt, const char *join, const char *gap)
+{
+    gint hour = g_date_time_get_hour(dt);
+
+    return g_strdup_printf("%d/%d/%02d%s%d:%02d%s%s",
+                           g_date_time_get_month(dt), g_date_time_get_day_of_month(dt),
+                           g_date_time_get_year(dt) % 100, join,
+                           hour % 12 == 0 ? 12 : hour % 12, g_date_time_get_minute(dt),
+                           gap, hour < 12 ? "AM" : "PM");
+}
+
+/*
+ * task_schedule_format — "1.5 hr @ 10/23/26 9:30AM".
+ * Inputs/output are documented in task_dates.h.
+ */
+gchar *
+task_schedule_format(gint64 start, gint duration)
+{
+    GDateTime *dt = start != 0 ? task_local_dt(start) : NULL;
+    if (dt == NULL) return g_strdup("");
+
+    gchar *length = task_duration_format(duration);
+    gchar *when   = when_text(dt, " ", "");
+    gchar *out    = g_strdup_printf("%s @ %s", length, when);
+    g_free(when);
+    g_free(length);
+    g_date_time_unref(dt);
+    return out;
+}
+
+/*
+ * task_schedule_when — "10/26/26 at 5:00 PM".
+ * Inputs/output are documented in task_dates.h.
+ */
+gchar *
+task_schedule_when(gint64 start)
+{
+    GDateTime *dt = start != 0 ? task_local_dt(start) : NULL;
+    if (dt == NULL) return g_strdup("");
+
+    gchar *out = when_text(dt, " at ", " ");
+    g_date_time_unref(dt);
+    return out;
+}
+
+/*
  * task_due_instant — date plus time of day.
  * Inputs/output are documented in task_dates.h.
  */

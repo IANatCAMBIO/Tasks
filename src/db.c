@@ -924,6 +924,8 @@ static const struct {
     { "recur_lead",     EDIT_INT,   offsetof(Task, recur_lead),     FALSE },
     { "recur_next",     EDIT_INT64, offsetof(Task, recur_next),     FALSE },
     { "recur_start",    EDIT_INT64, offsetof(Task, recur_start),    FALSE },
+    { "scheduled_start",    EDIT_INT64, offsetof(Task, scheduled_start),    FALSE },
+    { "scheduled_duration", EDIT_INT,   offsetof(Task, scheduled_duration), FALSE },
 };
 
 /*

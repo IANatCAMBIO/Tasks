@@ -72,6 +72,7 @@
 #define TASK_CFG_COL_TAGS            "col_tags_visible"      /* bool, 1 */
 #define TASK_CFG_COL_STATUS          "col_status_visible"    /* bool, 0 */
 #define TASK_CFG_COL_DUE             "col_due_visible"       /* bool, 1 */
+#define TASK_CFG_COL_SCHEDULE        "col_schedule_visible"  /* bool, 1 */
 #define TASK_CFG_COL_COMPLETED       "col_completed_visible" /* bool, 1 */
 #define TASK_CFG_COL_CREATED         "col_created_visible"   /* bool, 1 */
 

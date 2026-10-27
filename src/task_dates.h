@@ -135,6 +135,56 @@ gchar *task_clock_format(gint minutes);
 gint64 task_day_at_minute(gint64 ts, gint minutes);
 
 /*
+ * task_minutes_of_day — the local time of day of a moment.
+ *
+ * Inputs:
+ *   ts — a unix time
+ *
+ * Output:
+ *   minutes past local midnight, 0..1439; 0 when GDateTime cannot
+ *   represent the time.
+ */
+gint task_minutes_of_day(gint64 ts);
+
+/*
+ * task_duration_format — a session's length: "45 min" under an hour,
+ * otherwise hours with at most two decimals, "1 hr", "1.5 hr", "1.25 hr".
+ * task_edit_duration_parse reads it back.
+ *
+ * Inputs:
+ *   minutes — the length; zero or less reads as 0 min
+ *
+ * Output:
+ *   new string (g_free); never NULL.
+ */
+gchar *task_duration_format(gint minutes);
+
+/*
+ * task_schedule_format — a planner session for display, "1.5 hr @ 10/23/26
+ * 9:30AM": its length, then its local start.
+ *
+ * Inputs:
+ *   start    — unix seconds of the start; 0 means not scheduled
+ *   duration — the length in minutes
+ *
+ * Output:
+ *   new string (g_free); "" for not scheduled or an unrepresentable time.
+ */
+gchar *task_schedule_format(gint64 start, gint duration);
+
+/*
+ * task_schedule_when — when a planner session starts, in a sentence: "10/26/26
+ * at 5:00 PM".
+ *
+ * Inputs:
+ *   start — unix seconds of the start; 0 means not scheduled
+ *
+ * Output:
+ *   new string (g_free); "" for not scheduled or an unrepresentable time.
+ */
+gchar *task_schedule_when(gint64 start);
+
+/*
  * task_due_instant — the MOMENT a task is due: its date plus its time of
  * day.  Use it for sorting and for "when is this actually due"; use `due`
  * alone for anything that buckets by calendar day.

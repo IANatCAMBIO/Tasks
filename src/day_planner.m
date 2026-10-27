@@ -88,6 +88,7 @@ time_text
 @property (nonatomic, weak)   NSTextField                   *all_day_label;
 @property (nonatomic, strong) NSLayoutConstraint            *all_day_height;
 - (void)committed_block;
+- (void)refresh_schedule_views;
 @end
 
 /* ── TasksDayCanvas ────────────────────────────────────────────────────── */
@@ -769,6 +770,7 @@ performDragOperation:(id<NSDraggingInfo>)info
         dispatch_async(dispatch_get_main_queue(), ^{ [weak_library full_refresh]; });
     } else {
         [self.planner reload];
+        [self.planner refresh_schedule_views];
     }
     gcal_sync_kick();
     return YES;
@@ -1648,7 +1650,20 @@ committed_block
     layout_columns(self.items);
     [self.canvas setNeedsDisplay:YES];
     [self.canvas.window invalidateCursorRectsForView:self.canvas];
+    [self refresh_schedule_views];
     gcal_sync_kick();
+}
+
+/*
+ * refresh_schedule_views — a session was written to the database: the task
+ * pane (the list's Schedule column, the board's ⏰) and every open editor's
+ * Scheduling section show it too.  The planner's own blocks are the caller's.
+ */
+- (void)
+refresh_schedule_views
+{
+    [self.library refresh_tasks];
+    tasks_editor_refresh_schedules();
 }
 
 /*
@@ -1672,7 +1687,7 @@ scroll_to_now
 
 /*
  * remove_selected_from_schedule: — clear the schedule fields for every
- * selected block and reload the view.
+ * selected block and reload the views.
  *
  * Inputs:
  *   sender — unused (called from the context menu)
@@ -1688,7 +1703,7 @@ remove_selected_from_schedule:(id)sender
     [self.canvas.selected_ids removeAllObjects];
     if (failed) task_app_write_failed(self.library.app, "Removing from the schedule");
     [self reload];
-    [self.library refresh_tasks];
+    [self refresh_schedule_views];
     gcal_sync_kick();
 }
 

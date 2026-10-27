@@ -142,6 +142,17 @@ test_title_line(TaskApp *app, const char *tag)
     check(row->created_at > 0 && row->created_text[0] != '\0',
           "title: creation stamp and text");
     check(strcmp(row->status_text, "Done") == 0, "title: Done label");
+    check(row->scheduled_start == 0 && strcmp(row->scheduled_text, "") == 0,
+          "title: unscheduled, no Schedule text");
+    task_row_free(row);
+
+    /* A planner session: 90 minutes from 9:30 on Oct 23. */
+    gint64 start = task_day_at_minute(task_due_from_ymd(2026, 10, 23), 9 * 60 + 30);
+    task_db_task_set_scheduled(app->db, id, start, 90);
+    row = describe(app, id);
+    check(row->scheduled_start == start &&
+          strcmp(row->scheduled_text, "1.5 hr @ 10/23/26 9:30AM") == 0,
+          "title: the Schedule column's text and sort key");
     task_row_free(row);
     task_config_set_bool(TASK_CFG_BOLD_TITLES, FALSE);
 

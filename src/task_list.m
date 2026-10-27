@@ -11,7 +11,7 @@
 /*
  * HOW THE LIST IS BUILT
  *
- * A view-based NSTableView of seven columns (column_specs below).  The rows
+ * A view-based NSTableView of eight columns (column_specs below).  The rows
  * the window hands over (show_rows:) are never moved: what the table shows
  * is a DISPLAY ORDER over them (task_sort.h) — the saved manual order when
  * manual sorting is on, then the header sort — so everything kept per row
@@ -44,8 +44,8 @@
 
 /* The columns, in table order.  Reordering is off and a hidden column
  * stays in the table, so these are also indexes into table.tableColumns. */
-enum { col_done = 0, col_task, col_tags, col_status, col_due, col_completed, col_created,
-       col_count };
+enum { col_done = 0, col_task, col_tags, col_status, col_due, col_schedule, col_completed,
+       col_created, col_count };
 
 #define NO_SORT    (-1)                 /* column_spec_t.sort: not sortable    */
 
@@ -77,6 +77,8 @@ static const column_spec_t column_specs[col_count] = {
                         TASK_CFG_COL_STATUS,    @"column-status" },
     [col_due]       = { @"due",       @"Due Date",  task_sort_due,
                         TASK_CFG_COL_DUE,       @"column-due" },
+    [col_schedule]  = { @"schedule",  @"Scheduled", task_sort_schedule,
+                        TASK_CFG_COL_SCHEDULE,  @"column-schedule" },
     [col_completed] = { @"completed", @"Completed", task_sort_completed,
                         TASK_CFG_COL_COMPLETED, @"column-completed" },
     [col_created]   = { @"created",   @"Created",   task_sort_created,
@@ -89,7 +91,7 @@ NSPasteboardType const tasks_row_drag_type = @"tasks.task-row";
 
 /* List-only metrics.  (Everything shared with another pane is in look.h.) */
 static const CGFloat task_col_min_w = 120.0;    /* the Task column's floor      */
-static const CGFloat data_col_min_w = 40.0;     /* Tags, Status, Due Date, Completed, Created */
+static const CGFloat data_col_min_w = 40.0;     /* Tags, Status, Due Date, Schedule, Completed, Created */
 
 @interface TasksTaskList () <NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate>
 @property (nonatomic, weak) TasksLibraryWindow *library;
@@ -305,7 +307,7 @@ accessibilityValue
 /* ── Cell text and factories ─────────────────────────────────────────── */
 
 /*
- * label_font — the font of the Tags, Status, Due Date, Completed and Created cells.  One
+ * label_font — the font of the Tags, Status, Due Date, Schedule, Completed and Created cells.  One
  * function, so the cells and the column fit measure the same thing.
  *
  * Output:
@@ -318,12 +320,12 @@ label_font(void)
 }
 
 /*
- * label_text — what a Tags, Status, Due Date, Completed or Created cell says.  One
+ * label_text — what a Tags, Status, Due Date, Schedule, Completed or Created cell says.  One
  * function, shared by the cell and the column fit.
  *
  * Inputs:
  *   row    — the row
- *   column — col_tags, col_status, col_due, col_completed or col_created
+ *   column — col_tags, col_status, col_due, col_schedule, col_completed or col_created
  *
  * Output:
  *   borrowed text; "" when the row has no value for the column.
@@ -335,6 +337,7 @@ label_text(const task_row_t *row, NSInteger column)
     case col_tags:      return row->tags_text;
     case col_status:    return row->status_text;
     case col_due:       return row->due_text;
+    case col_schedule:  return row->scheduled_text;
     case col_completed: return row->completed_text;
     case col_created:   return row->created_text;
     default:            return "";
@@ -367,7 +370,7 @@ top_label(NSTableCellView *cell, NSString *text)
 }
 
 /*
- * make_label_cell — a Tags, Status, Due Date, Completed or Created cell.
+ * make_label_cell — a Tags, Status, Due Date, Schedule, Completed or Created cell.
  *
  * Inputs:
  *   list — the list the cell reports emphasis changes to
@@ -874,7 +877,7 @@ apply_settings
 }
 
 /*
- * fit_columns_if_pending — size the Tags, Status, Due Date, Completed and Created columns
+ * fit_columns_if_pending — size the Tags, Status, Due Date, Schedule, Completed and Created columns
  * to their content and give the Task column exactly what is left
  * (shared_ui_fit_columns, as Notes' lists).
  *
@@ -972,6 +975,7 @@ fill_cell:(NSTableCellView *)cell column:(NSInteger)column row:(NSInteger)row
     case col_tags:
     case col_status:
     case col_due:
+    case col_schedule:
     case col_completed:
     case col_created:
         cell.textField.stringValue = tasks_string(label_text(task, column));
@@ -1509,6 +1513,7 @@ tasks_task_list_commands(size_t *n)
         { @"column-tags",      run_column, validate_column },
         { @"column-status",    run_column, validate_column },
         { @"column-due",       run_column, validate_column },
+        { @"column-schedule",  run_column, validate_column },
         { @"column-completed", run_column, validate_column },
         { @"column-created",   run_column, validate_column },
     };

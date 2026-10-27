@@ -9,7 +9,8 @@
  * insertion marker, Escape to cancel), what a drop does (the status change
  * and, separately, the saved card order, TASK_CFG_FAMILY_KANBAN), the Done
  * lane's cap, and the card shadow (the kanban_shadow setting, re-read on
- * every show_rows:).  A card's text comes from row_text.h and nowhere else.
+ * every show_rows:).  A card's text comes from row_text.h and nowhere else
+ * (card_text adds the ⏰ of a scheduled task).
  *
  * Behavioural reference: porting/gtk_reference/kanban.c.
  */

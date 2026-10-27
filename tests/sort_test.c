@@ -1,6 +1,6 @@
 /*
  * sort_test.c — the arrangement of the task list's rows (src/task_sort.h):
- * the six column comparators, the stable multi-key sort, the saved
+ * the seven column comparators, the stable multi-key sort, the saved
  * spelling of a sort, and the block move of a manual drag.
  */
 
@@ -18,14 +18,15 @@ static task_row_t sample_rows[] = {
     /* 0 */ { .title = "banana",  .status = TASK_STATUS_NEW,         .due_instant = 300,
               .created_at = 100 },
     /* 1 */ { .title = "Apple",   .status = TASK_STATUS_DONE,        .due_instant = 100,
-              .completed_at = 900 },
+              .completed_at = 900, .scheduled_start = 300 },
     /* 2 */ { .title = "cherry",  .status = TASK_STATUS_IN_PROGRESS, .due_instant = 0,
-              .created_at = 300 },
+              .created_at = 300, .scheduled_start = 100 },
     /* 3 */ { .title = "apple",   .status = TASK_STATUS_DONE,        .due_instant = 200,
               .completed_at = 500, .created_at = 200 },
     /* 4 */ { .title = "\xc3\x89" "clair", .status = TASK_STATUS_NEW, .due_instant = 100,
               .created_at = 50 },
-    /* 5 */ { .title = "\xc3\xa9" "clair", .status = TASK_STATUS_IN_PROGRESS },
+    /* 5 */ { .title = "\xc3\xa9" "clair", .status = TASK_STATUS_IN_PROGRESS,
+              .scheduled_start = 200 },
 };
 #define SAMPLE_COUNT ((int)(sizeof sample_rows / sizeof sample_rows[0]))
 
@@ -105,6 +106,10 @@ check_columns(void)
     check(same(order, (int[]){ 2, 5, 0, 3, 1, 4 }, SAMPLE_COUNT),
           "due: descending is the exact reverse, undated rows first");
 
+    sorted(order, (task_sort_key_t[]){ { task_sort_schedule, true } }, 1);
+    check(same(order, (int[]){ 2, 5, 1, 0, 3, 4 }, SAMPLE_COUNT),
+          "schedule: soonest session first, unscheduled rows last in their order");
+
     sorted(order, (task_sort_key_t[]){ { task_sort_completed, true } }, 1);
     check(same(order, (int[]){ 3, 1, 0, 2, 4, 5 }, SAMPLE_COUNT),
           "completed: oldest first, never-completed rows last");
@@ -179,10 +184,11 @@ check_saved(void)
           keys[1].column == task_sort_status && keys[1].ascending,
           "saved: unknown names and a repeated column are skipped");
 
-    n = task_sort_keys_parse("title,tags,done,status,due,completed,created,title,due", keys);
+    n = task_sort_keys_parse("title,tags,done,status,due,schedule,completed,created,title,due", keys);
     check(n == TASK_SORT_MAX_KEYS, "saved: never more keys than columns");
 
     check(strcmp(task_sort_column_name(task_sort_tags), "tags") == 0 &&
+          strcmp(task_sort_column_name(task_sort_schedule), "schedule") == 0 &&
           strcmp(task_sort_column_name(task_sort_completed), "completed") == 0 &&
           strcmp(task_sort_column_name(task_sort_created), "created") == 0 &&
           task_sort_column_name(task_sort_column_count) == NULL,

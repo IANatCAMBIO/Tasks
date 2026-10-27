@@ -107,6 +107,9 @@ typedef struct {
  *   created_at     — the Created column's sort key (0 = unknown)
  *   created_text   — formatted, "" for unknown
  *   status_text    — "New" / "In Progress" / "Done" (static, not owned)
+ *   scheduled_start — the day planner session's start (0 = not scheduled):
+ *                    the Schedule column's sort key and the board's ⏰
+ *   scheduled_text — task_schedule_format, "" for not scheduled
  */
 typedef struct {
     int64_t             id;
@@ -125,6 +128,8 @@ typedef struct {
     int64_t             created_at;
     char               *created_text;
     const char         *status_text;
+    int64_t             scheduled_start;
+    char               *scheduled_text;
 } task_row_t;
 
 /* The rows of one refresh, in the order the tasks were given. */

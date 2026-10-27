@@ -69,6 +69,14 @@ void tasks_editor_close(int64_t task_id);
 void tasks_editor_refresh_all(void);
 
 /*
+ * tasks_editor_refresh_schedules — re-read, in every open editor, the
+ * Scheduling section (date, time and length) and nothing else: the day
+ * planner scheduled, moved, stretched or unscheduled a task.  A field that
+ * is being edited keeps what is typed in it.
+ */
+void tasks_editor_refresh_schedules(void);
+
+/*
  * tasks_editor_refresh_sources — re-read, in every open editor, the title
  * of the note its task was written in (the "From note" line) and nothing
  * else: Notes renamed a note, which changes no task.

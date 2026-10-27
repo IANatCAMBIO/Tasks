@@ -377,6 +377,10 @@ task_row_describe(const Task *t, const TaskRowCtx *ctx)
     row->created_at     = t->created_at;
     row->created_text   = text_printf("%s", created_text);
     row->status_text    = task_status_label(t->status);
+    gchar *scheduled_text = task_schedule_format(t->scheduled_start, t->scheduled_duration);
+    row->scheduled_start = t->scheduled_start;
+    row->scheduled_text  = text_printf("%s", scheduled_text);
+    g_free(scheduled_text);
     g_free(due_text);
     g_free(completed_text);
     g_free(created_text);
@@ -402,6 +406,7 @@ task_row_free(task_row_t *row)
     free(row->due_text);
     free(row->completed_text);
     free(row->created_text);
+    free(row->scheduled_text);
     free(row);
 }
 

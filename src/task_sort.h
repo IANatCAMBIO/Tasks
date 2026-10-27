@@ -9,7 +9,7 @@
  * moved; that is what lets a pane keep anything it holds per row (measured
  * heights) through a sort or a drag.
  *
- * The six column comparators are lifted from the GTK build's task_list.c.
+ * The seven column comparators are lifted from the GTK build's task_list.c.
  * Sorting is STABLE: rows a key cannot tell apart keep the order they came
  * in, so a header sort laid over a hand-made order keeps that order inside
  * each group of equals, and sorting the same rows twice gives the same
@@ -35,6 +35,8 @@ typedef enum {
     task_sort_done,                 /* not Done before Done                */
     task_sort_status,               /* New < In Progress < Done            */
     task_sort_due,                  /* soonest first; undated rows last    */
+    task_sort_schedule,             /* soonest session first; unscheduled
+                                     * rows last                           */
     task_sort_completed,            /* oldest first; never-completed last  */
     task_sort_created,              /* oldest first; unknown time last     */
     task_sort_column_count
@@ -56,7 +58,7 @@ typedef struct {
 
 /*
  * task_sort_column_name — a column's name: "title", "tags", "done", "status",
- * "due", "completed", "created".  It is what the saved sort spells (so it is part of
+ * "due", "schedule", "completed", "created".  It is what the saved sort spells (so it is part of
  * the ini format) and what the table's sort descriptors carry as their key.
  *
  * Inputs:

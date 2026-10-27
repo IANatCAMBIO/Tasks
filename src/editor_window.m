@@ -3,6 +3,7 @@
 #import "ui_util.h"
 #import "shared_tag_popup.h"
 
+#include "gcal_sync.h"
 #include "recur.h"
 #include "task_dates.h"
 #include "task_edit.h"
@@ -27,8 +28,8 @@ static const CGFloat status_popup_w = 118.0;    /* fits "In Progress", so the
                                                  * row does not move when the
                                                  * selection changes        */
 static const CGFloat date_field_w   = 100.0;    /* "YYYY-MM-DD"             */
-static const CGFloat time_field_w   = 56.0;     /* "HH:MM"                  */
 static const CGFloat count_field_w  = 46.0;     /* three digits             */
+static const CGFloat length_field_w = 70.0;     /* "12.25 hr"               */
 static const CGFloat row_gap        = 8.0;      /* between a row's controls */
 static const CGFloat foot_gap       = 12.0;     /* the form to the foot row */
 static const CGFloat notes_inset    = 4.0;      /* text to the notes border */
@@ -231,6 +232,68 @@ calendar_button(id target, SEL action, NSString *tip)
     button.bordered = NO;
     button.toolTip  = tip;
     return button;
+}
+
+/*
+ * time_picker — a time of day with a stepper: the due time's control.
+ *
+ * Inputs:
+ *   tip    — its tooltip
+ *   target — the editor
+ *   action — sent when the time changes
+ *
+ * Output:
+ *   new picker.
+ */
+static NSDatePicker *
+time_picker(NSString *tip, id target, SEL action)
+{
+    NSDatePicker *picker = [[NSDatePicker alloc] initWithFrame:NSZeroRect];
+
+    picker.datePickerStyle    = NSDatePickerStyleTextFieldAndStepper;
+    picker.datePickerElements = NSDatePickerElementFlagHourMinute;
+    picker.font               = [NSFont systemFontOfSize:shared_look_ui_font];
+    picker.toolTip            = tip;
+    picker.target             = target;
+    picker.action             = action;
+    return picker;
+}
+
+/*
+ * show_time — set a time picker to a time of day.
+ *
+ * Inputs:
+ *   picker  — the picker
+ *   minutes — minutes past midnight; outside 0..1439 reads as `fallback`
+ *   fallback — a valid time of day
+ */
+static void
+show_time(NSDatePicker *picker, int minutes, int fallback)
+{
+    int               at    = minutes >= 0 && minutes <= 23 * 60 + 59 ? minutes : fallback;
+    NSDateComponents *comps = [[NSDateComponents alloc] init];
+
+    comps.hour   = at / 60;
+    comps.minute = at % 60;
+    picker.dateValue = [[NSCalendar currentCalendar] dateFromComponents:comps] ?: NSDate.date;
+}
+
+/*
+ * time_text — a time picker's time as "HH:MM", for task_edit.h.
+ *
+ * Inputs:
+ *   picker — the picker
+ *
+ * Output:
+ *   the text (autoreleased).
+ */
+static NSString *
+time_text(NSDatePicker *picker)
+{
+    NSDateComponents *tc = [[NSCalendar currentCalendar]
+        components:NSCalendarUnitHour | NSCalendarUnitMinute fromDate:picker.dateValue];
+
+    return [NSString stringWithFormat:@"%02ld:%02ld", (long)tc.hour, (long)tc.minute];
 }
 
 /*
@@ -568,11 +631,16 @@ keyDown:(NSEvent *)event
 @property (nonatomic, assign) GPtrArray   *attachments;         /* TaskAttachment *; owned  */
 @property (nonatomic, copy)   NSArray<NSImage *> *attachment_icons; /* one per attachment   */
 
+/* Scheduling: the day planner session.  An empty date means not scheduled. */
+@property (nonatomic, strong) NSTextField   *sched_date_field;
+@property (nonatomic, strong) NSDatePicker  *sched_time_field;
+@property (nonatomic, strong) NSTextField   *sched_duration_field;
+
 /* Recurrence.  The body is the nested fold: shown while the switch is on. */
 @property (nonatomic, strong) NSButton      *recur_check;
 @property (nonatomic, strong) NSStackView   *recur_body;
 @property (nonatomic, strong) NSTextField   *recur_start_field;
-@property (nonatomic, strong) NSTextField   *recur_time_field;
+@property (nonatomic, strong) NSDatePicker  *recur_time_field;
 @property (nonatomic, strong) NSTextField   *every_field;
 @property (nonatomic, strong) NSStepper     *every_stepper;
 @property (nonatomic, strong) NSPopUpButton *unit_popup;        /* index is a TaskRecurUnit */
@@ -707,6 +775,7 @@ build_layout
     self.advanced_box = column_stack(tasks_look_section_gap);
     if (self.parent_id == 0) add_row(self.advanced_box, [self build_subtasks]);
     add_row(self.advanced_box, [self build_attachments]);
+    add_row(self.advanced_box, [self build_scheduling]);
     add_row(self.advanced_box, [self build_recurrence]);
     self.advanced_box.hidden = YES;
     add_row(form, self.advanced_box);
@@ -762,11 +831,9 @@ build_fields:(NSStackView *)form
     self.title_field.usesSingleLineMode = YES;
     add_row(form, self.title_field);
 
-    /* Shown for a Notes action item only (show_task fills it). */
+    /* The note an action item came from and when the task is scheduled; shown
+     * for either (show_source fills it). */
     self.source_label = shared_ui_note(@"", form_w);
-    self.source_label.toolTip =
-        @"This task is an action item written in Notes. Its title, completion and due date "
-        @"stay in step with the line in the note.";
     self.source_label.hidden = YES;
     add_row(form, self.source_label);
 
@@ -780,16 +847,8 @@ build_fields:(NSStackView *)form
 
     self.due_field = entry_field(@"YYYY-MM-DD", date_field_w,
         @"The due date, as YYYY-MM-DD or M/D/YY.  Leave it empty for no due date.", self);
-    {
-        NSDatePicker *tp = [[NSDatePicker alloc] initWithFrame:NSZeroRect];
-        tp.datePickerStyle    = NSDatePickerStyleTextFieldAndStepper;
-        tp.datePickerElements = NSDatePickerElementFlagHourMinute;
-        tp.font               = [NSFont systemFontOfSize:shared_look_ui_font];
-        tp.toolTip            = @"The time of day this task is due.";
-        tp.target             = self;
-        tp.action             = @selector(due_time_changed:);
-        self.due_time_field   = tp;
-    }
+    self.due_time_field = time_picker(@"The time of day this task is due.", self,
+                                      @selector(time_changed:));
     NSView *status_row = row_stack(@[
         form_label(@"Status:"), self.status_popup, spacer(),
         form_label(@"Due:"), self.due_field,
@@ -949,6 +1008,43 @@ build_attachments
 }
 
 /*
+ * build_scheduling — the Scheduling section: when the day planner has the
+ * task, as a date, a time and a length.  Typing a date schedules the task;
+ * emptying it takes the task off the planner.  The planner shows the same
+ * session, and dragging a task onto it fills these in.
+ *
+ * Output:
+ *   the section view.
+ */
+- (NSView *)
+build_scheduling
+{
+    self.sched_date_field = entry_field(@"YYYY-MM-DD", date_field_w,
+        @"The day this task is scheduled in the day planner.  Leave it empty to leave the "
+        @"task unscheduled; clear it to take the task off the planner.", self);
+    self.sched_time_field = time_picker(@"The time the session starts.", self,
+                                        @selector(time_changed:));
+    self.sched_duration_field = entry_field(@"1 hr", length_field_w,
+        @"How long the session lasts: hours (\u201C1.5\u201D, \u201C1.5 hr\u201D) or "
+        @"minutes (\u201C45 min\u201D).", self);
+
+    NSStackView *when = row_stack(@[
+        self.sched_date_field,
+        calendar_button(self, @selector(pick_sched_date:), @"Pick the scheduled date"),
+        form_label(@"at"), self.sched_time_field,
+        form_label(@"for"), self.sched_duration_field, spacer(),
+    ]);
+
+    NSStackView *section = column_stack(tasks_look_form_spacing);
+    add_row(section, shared_ui_heading(@"Scheduling"));
+    add_row(section, shared_ui_note(
+        @"Schedule this task in the day planner: pick a date, a time and how long it will "
+        @"take.  Dragging the task onto the planner fills these in too.", form_w));
+    add_row(section, when);
+    return section;
+}
+
+/*
  * build_recurrence — the Recurrence section: what it does, the switch, and
  * the body the switch shows (three rows whose leading labels line up, and
  * the summary).  The body is hidden, never greyed, while the switch is off.
@@ -971,10 +1067,10 @@ build_recurrence
         @"The day this schedule is anchored on — the \"Monday\" of \"every Monday at "
         @"9:00 AM\".  A start still in the future is the FIRST repeat, not a week after it.  "
         @"Leave it empty to anchor on the task's own due date.", self);
-    self.recur_time_field = entry_field(@"HH:MM", time_field_w,
-        @"The time of day the schedule is anchored at (24-hour).  A repeat measured in days, "
+    self.recur_time_field = time_picker(
+        @"The time of day the schedule is anchored at.  A repeat measured in days, "
         @"weeks, months or years lands on this time every time; one measured in minutes or "
-        @"hours starts from it and steps on from there.", self);
+        @"hours starts from it and steps on from there.", self, @selector(recur_control_changed:));
     NSStackView *starting = row_stack(@[
         self.recur_start_field,
         calendar_button(self, @selector(pick_start_date:), @"Pick the start date"),
@@ -1052,7 +1148,7 @@ build_foot
     self.advanced_button.font     = [NSFont systemFontOfSize:shared_look_ui_font];
     self.advanced_button.bordered = NO;
     self.advanced_button.toolTip  =
-        @"Show or hide the Recurrence, Subtasks and Attachments sections";
+        @"Show or hide the Recurrence, Scheduling, Subtasks and Attachments sections";
 
     NSButton *save = [NSButton buttonWithTitle:@"Save" target:self action:@selector(save_action:)];
     save.font          = [NSFont systemFontOfSize:shared_look_ui_font];
@@ -1120,14 +1216,18 @@ reload
 - (void)
 show_task:(const Task *)task
 {
-    char        clock[TASK_EDIT_TIME_LEN];
     Task       *loaded = task_dup(task);
     const Task *before = self.loaded;
 
     if (before != NULL) {
         if (is_editing(self.due_field))         loaded->due            = before->due;
+        if (is_editing(self.sched_date_field)) {
+            loaded->scheduled_start = before->scheduled_start;
+        }
+        if (is_editing(self.sched_duration_field)) {
+            loaded->scheduled_duration = before->scheduled_duration;
+        }
         if (is_editing(self.recur_start_field)) loaded->recur_start    = before->recur_start;
-        if (is_editing(self.recur_time_field))  loaded->recur_time     = before->recur_time;
         if (is_editing(self.every_field))       loaded->recur_interval = before->recur_interval;
         if (is_editing(self.lead_field))        loaded->recur_lead     = before->recur_lead;
     }
@@ -1140,15 +1240,7 @@ show_task:(const Task *)task
     [self show_tags];
     self.priority_check.state = task->priority ? NSControlStateValueOn : NSControlStateValueOff;
     [self show_date:task->due in:self.due_field];
-    {
-        int due_min = task->due_time >= 0 && task->due_time <= 23 * 60 + 59
-            ? task->due_time : SHARED_DB_TASK_DUE_TIME_DEFAULT;
-        NSDateComponents *comps = [[NSDateComponents alloc] init];
-        comps.hour   = due_min / 60;
-        comps.minute = due_min % 60;
-        self.due_time_field.dateValue =
-            [[NSCalendar currentCalendar] dateFromComponents:comps] ?: NSDate.date;
-    }
+    show_time(self.due_time_field, task->due_time, SHARED_DB_TASK_DUE_TIME_DEFAULT);
     [self show_completed:task];
 
     NSString *notes = tasks_string(task->notes);
@@ -1158,14 +1250,15 @@ show_task:(const Task *)task
         [self.notes_view.undoManager removeAllActions];
     }
 
+    [self show_session];
+
     BOOL repeats = task->recur_interval > 0;
     self.recur_check.state = repeats ? NSControlStateValueOn : NSControlStateValueOff;
     [self show_count:repeats ? task->recur_interval : TASK_EDIT_EVERY_MIN
                   in:self.every_field stepper:self.every_stepper];
     [self.unit_popup selectItemAtIndex:repeats ? (NSInteger)task->recur_unit : TASK_RECUR_DAY];
     [self show_date:task->recur_start in:self.recur_start_field];
-    task_edit_time_format(task->recur_time, SHARED_DB_TASK_RECUR_TIME_DEFAULT, clock);
-    show_text(self.recur_time_field, @(clock), YES);
+    show_time(self.recur_time_field, task->recur_time, SHARED_DB_TASK_RECUR_TIME_DEFAULT);
     [self show_lead:task->recur_lead];
     self.seen_every = repeats ? task->recur_interval : 0;
     self.seen_unit  = repeats ? (int)task->recur_unit : (int)TASK_RECUR_DAY;
@@ -1178,20 +1271,80 @@ show_task:(const Task *)task
 }
 
 /*
- * show_source — the line naming the note a Notes action item was written
- * in, hidden for any other task (task_db_task_note).  Read at every load
- * and by tasks_editor_refresh_sources, so a note renamed in Notes shows its
- * new title at the next poll.
+ * show_session — put the loaded row's day planner session in the
+ * Scheduling fields: date, time and length.  A text field being edited is
+ * left alone.  A task that is not scheduled shows no date, the default time and
+ * the stored length.
+ */
+- (void)
+show_session
+{
+    const Task *task = self.loaded;
+
+    [self show_date:task->scheduled_start in:self.sched_date_field];
+    show_time(self.sched_time_field,
+              task->scheduled_start != 0 ? task_minutes_of_day(task->scheduled_start)
+                                         : TASK_EDIT_SCHEDULE_TIME_DEFAULT,
+              TASK_EDIT_SCHEDULE_TIME_DEFAULT);
+
+    gchar *length = task_duration_format(task->scheduled_duration);
+    show_text(self.sched_duration_field, tasks_string(length), YES);
+    g_free(length);
+}
+
+/*
+ * refresh_session — the day planner changed the task's session: take the
+ * database's into the loaded row and the Scheduling fields.  A field being
+ * edited keeps what the user typed, and the loaded value it was showing,
+ * so a save writes only what they typed.
+ */
+- (void)
+refresh_session
+{
+    Task *task = self.is_shut_down || self.loaded == NULL
+        ? NULL : task_db_task_get(self.app->db, self.task_id);
+
+    if (task != NULL) {
+        if (!is_editing(self.sched_date_field)) {
+            self.loaded->scheduled_start = task->scheduled_start;
+        }
+        if (!is_editing(self.sched_duration_field)) {
+            self.loaded->scheduled_duration = task->scheduled_duration;
+        }
+        [self show_session];
+        [self show_source];
+    }
+    task_free(task);
+}
+
+/*
+ * show_source — the line under the title: the note a Notes action item was
+ * written in (task_db_task_note), then, for a task in the day planner, the
+ * ⏰ and when it is scheduled.  Hidden when there is neither.  Read at every
+ * load, after a schedule change and by tasks_editor_refresh_sources, so a
+ * note renamed in Notes shows its new title at the next poll.
  */
 - (void)
 show_source
 {
-    gchar    *note   = task_db_task_note(self.app->db, self.task_id);
-    NSString *text   = note == NULL ? @"" :
-        [NSString stringWithFormat:@"From note: \u201C%@\u201D",
-            note[0] != '\0' ? tasks_string(note) : @"Untitled"];
-    BOOL      hidden = note == NULL;
+    gchar    *note  = task_db_task_note(self.app->db, self.task_id);
+    gchar    *when  = task_schedule_when(self.loaded != NULL ? self.loaded->scheduled_start : 0);
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+
+    if (note != NULL) {
+        [parts addObject:[NSString stringWithFormat:@"From note: \u201C%@\u201D",
+                             note[0] != '\0' ? tasks_string(note) : @"Untitled"]];
+    }
+    if (when[0] != '\0') {
+        [parts addObject:[NSString stringWithFormat:@"\u23F0 Scheduled for %@", tasks_string(when)]];
+    }
+    NSString *text   = [parts componentsJoinedByString:@"   "];
+    BOOL      hidden = parts.count == 0;
+    self.source_label.toolTip = note == NULL ? nil :
+        @"This task is an action item written in Notes. Its title, completion and due date "
+        @"stay in step with the line in the note.";
     g_free(note);
+    g_free(when);
 
     if ([self.source_label.stringValue isEqualToString:text] &&
         self.source_label.hidden == hidden) return;
@@ -1550,21 +1703,22 @@ refresh_title
 - (task_edit_form_t)
 form
 {
-    NSCalendar       *cal  = [NSCalendar currentCalendar];
-    NSDateComponents *tc   = [cal components:NSCalendarUnitHour | NSCalendarUnitMinute
-                                   fromDate:self.due_time_field.dateValue];
-    NSString         *time = [NSString stringWithFormat:@"%02ld:%02ld",
-                              (long)tc.hour, (long)tc.minute];
+    NSString *due_time   = time_text(self.due_time_field);
+    NSString *recur_time = time_text(self.recur_time_field);
+    NSString *sched_time = time_text(self.sched_time_field);
     return (task_edit_form_t){
         .due_text         = self.due_field.stringValue.UTF8String,
-        .due_time_text    = time.UTF8String,
+        .due_time_text    = due_time.UTF8String,
         .repeat           = self.recur_check.state == NSControlStateValueOn,
         .every            = (int)self.every_stepper.integerValue,
         .unit             = (int)self.unit_popup.indexOfSelectedItem,
         .recur_start_text = self.recur_start_field.stringValue.UTF8String,
-        .recur_time_text  = self.recur_time_field.stringValue.UTF8String,
+        .recur_time_text  = recur_time.UTF8String,
         .lead_count       = (int)self.lead_stepper.integerValue,
         .lead_unit        = (int)self.lead_unit_popup.indexOfSelectedItem,
+        .sched_date_text     = self.sched_date_field.stringValue.UTF8String,
+        .sched_time_text     = sched_time.UTF8String,
+        .sched_duration_text = self.sched_duration_field.stringValue.UTF8String,
     };
 }
 
@@ -1627,9 +1781,12 @@ save_now
         ? edited.recur_next - task_recur_lead_seconds(&edited) : 0);
 
     BOOL  status_moved = edited.status != self.loaded->status;
+    BOOL  session_moved = edited.scheduled_start != self.loaded->scheduled_start ||
+                          edited.scheduled_duration != self.loaded->scheduled_duration;
     Task *saved        = task_dup(&edited);
     task_free(self.loaded);
     self.loaded = saved;
+    [self show_source];
 
     /* Moving into or out of Done changes the completion line; the stamp is
      * the database's, so read it back. */
@@ -1642,6 +1799,7 @@ save_now
         task_free(fresh);
     }
     task_app_notify_tasks(self.app);
+    if (session_moved) gcal_sync_kick();
     return YES;
 }
 
@@ -1808,8 +1966,8 @@ count_typed:(NSTextField *)field
 /* ── The folds and the window's height ──────────────────────────────── */
 
 /*
- * has_advanced_content — whether the task already has a schedule, subtasks
- * or attachments.  Read from the loaded controls: call after show_task:.
+ * has_advanced_content — whether the task is already scheduled or repeats, or
+ * has subtasks or attachments.  Read from the loaded controls: call after show_task:.
  *
  * Output:
  *   YES when the Advanced block has something to show.
@@ -1818,6 +1976,7 @@ count_typed:(NSTextField *)field
 has_advanced_content
 {
     return self.recur_check.state == NSControlStateValueOn ||
+           self.loaded->scheduled_start != 0 ||
            (self.subtasks != NULL && self.subtasks->len > 0) ||
            (self.attachments != NULL && self.attachments->len > 0);
 }
@@ -2582,7 +2741,7 @@ date_picked:(NSDatePicker *)sender
     [field abortEditing];
     field.stringValue = [NSString stringWithFormat:@"%04ld-%02ld-%02ld",
                             (long)day.year, (long)day.month, (long)day.day];
-    if (field == self.due_field) {
+    if (field == self.due_field || field == self.sched_date_field) {
         [self save_now];
     } else {
         [self recur_changed];
@@ -2590,13 +2749,13 @@ date_picked:(NSDatePicker *)sender
 }
 
 /*
- * due_time_changed: — the due time picker changed; queue a save.
+ * time_changed: — the due or the scheduled time picker changed; queue a save.
  *
  * Inputs:
  *   sender — the picker (unused)
  */
 - (void)
-due_time_changed:(id)sender
+time_changed:(id)sender
 {
     [self queue_save];
 }
@@ -2623,6 +2782,18 @@ pick_due_date:(id)sender
 pick_start_date:(id)sender
 {
     [self pick_date_for:self.recur_start_field from:sender];
+}
+
+/*
+ * pick_sched_date: — the calendar button beside the scheduled date.
+ *
+ * Inputs:
+ *   sender — the button
+ */
+- (void)
+pick_sched_date:(id)sender
+{
+    [self pick_date_for:self.sched_date_field from:sender];
 }
 
 /* ── Text editing and keys ──────────────────────────────────────────── */
@@ -2652,7 +2823,8 @@ controlTextDidChange:(NSNotification *)note
     if (field == self.title_field) {
         [self refresh_title];
         [self queue_save];
-    } else if (field == self.due_field) {
+    } else if (field == self.due_field || field == self.sched_date_field ||
+               field == self.sched_duration_field) {
         [self queue_save];
     } else if (field == self.every_field || field == self.lead_field) {
         [self count_typed:field];
@@ -3057,6 +3229,16 @@ tasks_editor_refresh_all(void)
         if (editor.save_pending && ![editor save_now]) continue;
         if (![editor reload]) [editor close];
     }
+}
+
+/*
+ * tasks_editor_refresh_schedules — every open editor's Scheduling section.
+ * Inputs are documented in editor_window.h.
+ */
+void
+tasks_editor_refresh_schedules(void)
+{
+    for (TasksEditorWindow *editor in editors().allValues) [editor refresh_session];
 }
 
 /*

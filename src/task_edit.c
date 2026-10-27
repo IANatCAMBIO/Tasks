@@ -3,7 +3,9 @@
 #include "recur.h"
 #include "task_dates.h"
 
+#include <ctype.h>
 #include <stdio.h>
+#include <string.h>
 
 /* The last minute of a day, in minutes past midnight. */
 #define LAST_MINUTE (23 * 60 + 59)
@@ -115,6 +117,60 @@ task_edit_count_parse(const char *text, int lo, int hi, int current)
     if (end == start || *skip_spaces(end) != '\0') return current;
 
     return value >= lo && value <= hi ? value : current;
+}
+
+/*
+ * unit_is — whether a length's unit text is one of a set of spellings.
+ *
+ * Inputs:
+ *   unit  — the text after the number, leading spaces already skipped
+ *   names — the accepted spellings, NULL-terminated, lower case
+ *
+ * Output:
+ *   true when the text, ignoring case and trailing spaces, is one of them.
+ */
+static bool
+unit_is(const char *unit, const char *const *names)
+{
+    size_t len = strlen(unit);
+
+    while (len > 0 && unit[len - 1] == ' ') len--;
+    for (; *names != NULL; names++) {
+        if (strlen(*names) == len && g_ascii_strncasecmp(unit, *names, len) == 0) return true;
+    }
+    return false;
+}
+
+/*
+ * task_edit_duration_parse — a session length's text, mid-typing safe.
+ * Inputs/output are documented in task_edit.h.
+ */
+int
+task_edit_duration_parse(const char *text, int current)
+{
+    static const char *const hour_units[]   = { "", "h", "hr", "hrs", "hour", "hours", NULL };
+    static const char *const minute_units[] = { "m", "min", "mins", "minute", "minutes", NULL };
+
+    if (text == NULL) return current;
+
+    const char *start = skip_spaces(text);
+    if (!isdigit((unsigned char)*start) && *start != '.') return current;
+
+    char   *end   = NULL;
+    double  value = g_ascii_strtod(start, &end);
+    if (end == start) return current;
+
+    const char *unit = skip_spaces(end);
+    double      minutes;
+    if (unit_is(unit, hour_units)) {
+        minutes = value * 60.0;
+    } else if (unit_is(unit, minute_units)) {
+        minutes = value;
+    } else {
+        return current;
+    }
+    if (!(minutes >= 0.5 && minutes < TASK_EDIT_DURATION_MAX + 0.5)) return current;
+    return (int)(minutes + 0.5);
 }
 
 /*
@@ -241,6 +297,30 @@ schedule_read(const task_edit_form_t *form, Task *t)
 }
 
 /*
+ * session_read — the form's Scheduling controls into a task's
+ * scheduled_start and scheduled_duration.
+ *
+ * Inputs:
+ *   form — the controls as they stand
+ *   t    — the task; its stored session is the fallback for any text that
+ *          cannot be read
+ */
+static void
+session_read(const task_edit_form_t *form, Task *t)
+{
+    bool    scheduled = t->scheduled_start != 0;
+    int64_t day       = scheduled ? task_day_at_minute(t->scheduled_start, 0) : 0;
+    int     minutes   = scheduled ? task_minutes_of_day(t->scheduled_start)
+                                  : TASK_EDIT_SCHEDULE_TIME_DEFAULT;
+
+    day     = task_edit_date_parse(form->sched_date_text, day);
+    minutes = task_edit_time_parse(form->sched_time_text, minutes);
+    t->scheduled_start    = day == 0 ? 0 : task_day_at_minute(day, minutes);
+    t->scheduled_duration = task_edit_duration_parse(form->sched_duration_text,
+                                                     t->scheduled_duration);
+}
+
+/*
  * task_edit_apply — the form's dates and schedule into a task to be saved.
  * Inputs are documented in task_edit.h.
  */
@@ -249,6 +329,7 @@ task_edit_apply(const task_edit_form_t *form, Task *t)
 {
     t->due      = task_edit_date_parse(form->due_text, t->due);
     t->due_time = task_edit_time_parse(form->due_time_text, t->due_time);
+    session_read(form, t);
     schedule_read(form, t);
 }
 

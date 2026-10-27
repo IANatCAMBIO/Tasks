@@ -117,6 +117,34 @@ static const CGFloat drag_threshold    = 4.0;   /* a press on the grip becomes a
 /* ── Shared drawing ─────────────────────────────────────────────────── */
 
 /*
+ * card_text — what a card says: the row's text (row_text.h), with a ⏰ in
+ * front of the title of a task scheduled in the day planner.
+ *
+ * Inputs:
+ *   row — the row the card shows
+ *
+ * Output:
+ *   new attributed string.  The ⏰ takes the style of the line's first
+ *   character, less any strike-through: a Done task's clock is not struck.
+ */
+static NSAttributedString *
+card_text(const task_row_t *row)
+{
+    NSAttributedString *text = tasks_row_text(row, NO);
+    if (row->scheduled_start == 0 || text.length == 0) return text;
+
+    NSMutableDictionary<NSAttributedStringKey, id> *attrs =
+        [[text attributesAtIndex:0 effectiveRange:NULL] mutableCopy];
+    [attrs removeObjectForKey:NSStrikethroughStyleAttributeName];
+
+    NSMutableAttributedString *badged = [text mutableCopy];
+    [badged insertAttributedString:[[NSAttributedString alloc] initWithString:@"\u23F0 "
+                                                                   attributes:attrs]
+                           atIndex:0];
+    return badged;
+}
+
+/*
  * grip_glyph — the dotted grip drawn at a card's left edge, the one part of
  * a card a drag starts from.
  *
@@ -1163,7 +1191,7 @@ rebuild
             TasksKanbanCard  *card = self.cards[key]
                 ?: [[TasksKanbanCard alloc] init_with_kanban:self task_id:row->id];
 
-            [card show_text:tasks_row_text(row, NO)];
+            [card show_text:card_text(row)];
             [card show_selected:[self.selection containsObject:key]];
             [card show_dragged:[self.drag_ids containsObject:key]];
             [lane_cards addObject:card];

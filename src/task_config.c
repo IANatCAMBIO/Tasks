@@ -34,6 +34,7 @@ static const struct {
     { TASK_CFG_COL_TAGS,            "1"   },
     { TASK_CFG_COL_STATUS,          "0"   },
     { TASK_CFG_COL_DUE,             "1"   },
+    { TASK_CFG_COL_SCHEDULE,        "1"   },
     { TASK_CFG_COL_COMPLETED,       "1"   },
     { TASK_CFG_COL_CREATED,         "1"   },
     { TASK_CFG_NOTIF_MODE,          "tasks" },

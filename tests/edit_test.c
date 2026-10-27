@@ -392,6 +392,104 @@ test_apply(void)
 }
 
 /*
+ * test_session — the Scheduling section: the length typed and shown, a
+ * session as the form describes it, and how it reads in a list.
+ */
+static void
+test_session(void)
+{
+    check(task_edit_duration_parse("1.5", 60) == 90, "length: a bare number is hours");
+    check(task_edit_duration_parse("1.5 hr", 60) == 90, "length: hr");
+    check(task_edit_duration_parse("2H", 60) == 120, "length: unit case does not matter");
+    check(task_edit_duration_parse("45 min", 60) == 45, "length: minutes");
+    check(task_edit_duration_parse(" 90m ", 60) == 90, "length: m, spaces around it");
+    check(task_edit_duration_parse(".5", 60) == 30, "length: a leading point");
+    check(task_edit_duration_parse("24", 60) == TASK_EDIT_DURATION_MAX, "length: the longest session");
+    check(task_edit_duration_parse("25", 60) == 60, "length: beyond a day keeps the current value");
+    check(task_edit_duration_parse("0", 60) == 60, "length: zero keeps it");
+    check(task_edit_duration_parse("", 60) == 60, "length: empty keeps it");
+    check(task_edit_duration_parse(NULL, 60) == 60, "length: NULL keeps it");
+    check(task_edit_duration_parse("-1", 60) == 60, "length: a sign keeps it");
+    check(task_edit_duration_parse("1.", 45) == 60, "length: a half-typed 1. reads as 1 hour");
+    check(task_edit_duration_parse("2 days", 60) == 60, "length: an unknown unit keeps it");
+
+    const struct { int minutes; const char *text; const char *shows; const char *reads; } shown[] = {
+        { 30, "30 min", "length: 30 min is shown as 30 min", "length: 30 min reads back" },
+        { 59, "59 min", "length: 59 min is shown as 59 min", "length: 59 min reads back" },
+        { 60, "1 hr", "length: 60 min is shown as 1 hr", "length: 1 hr reads back" },
+        { 75, "1.25 hr", "length: 75 min is shown as 1.25 hr", "length: 1.25 hr reads back" },
+        { 90, "1.5 hr", "length: 90 min is shown as 1.5 hr", "length: 1.5 hr reads back" },
+        { 120, "2 hr", "length: 120 min is shown as 2 hr", "length: 2 hr reads back" },
+        { 1440, "24 hr", "length: 1440 min is shown as 24 hr", "length: 24 hr reads back" },
+    };
+    for (size_t i = 0; i < sizeof shown / sizeof shown[0]; i++) {
+        gchar *text = task_duration_format(shown[i].minutes);
+        check(strcmp(text, shown[i].text) == 0, shown[i].shows);
+        check(task_edit_duration_parse(text, 1) == shown[i].minutes, shown[i].reads);
+        g_free(text);
+    }
+
+    int64_t oct23 = task_due_from_ymd(2026, 10, 23);
+    int64_t nine  = task_day_at_minute(oct23, 9 * 60 + 30);
+    gchar  *when  = task_schedule_format(nine, 90);
+    check(strcmp(when, "1.5 hr @ 10/23/26 9:30AM") == 0, "schedule text: length, then the start");
+    g_free(when);
+    when = task_schedule_format(task_day_at_minute(oct23, 0), 45);
+    check(strcmp(when, "45 min @ 10/23/26 12:00AM") == 0, "schedule text: midnight is 12 AM");
+    g_free(when);
+    when = task_schedule_format(task_day_at_minute(oct23, 12 * 60 + 5), 60);
+    check(strcmp(when, "1 hr @ 10/23/26 12:05PM") == 0, "schedule text: noon is 12 PM");
+    g_free(when);
+    when = task_schedule_format(0, 60);
+    check(strcmp(when, "") == 0, "schedule text: not scheduled is empty");
+    g_free(when);
+    when = task_schedule_when(task_day_at_minute(oct23, 17 * 60));
+    check(strcmp(when, "10/23/26 at 5:00 PM") == 0, "schedule when: date at time, with a space before PM");
+    g_free(when);
+    when = task_schedule_when(0);
+    check(strcmp(when, "") == 0, "schedule when: not scheduled is empty");
+    g_free(when);
+    check(task_minutes_of_day(nine) == 570, "minutes of day: 9:30 is 570");
+
+    /* The form into a session. */
+    Task             t    = { .scheduled_duration = 60 };
+    task_edit_form_t form = {
+        .due_text = "", .due_time_text = "", .recur_start_text = "", .recur_time_text = "",
+        .sched_date_text = "2026-10-23", .sched_time_text = "09:30",
+        .sched_duration_text = "1.5 hr",
+    };
+
+    task_edit_apply(&form, &t);
+    check(t.scheduled_start == nine && t.scheduled_duration == 90,
+          "session: a date, a time and a length schedule the task");
+
+    form.sched_time_text = "9:";
+    form.sched_duration_text = "1.";
+    form.sched_date_text = "2026-1";
+    task_edit_apply(&form, &t);
+    check(t.scheduled_start == nine && t.scheduled_duration == 60,
+          "session: partial date and time keep the stored ones; 1. is an hour");
+
+    form.sched_time_text = "16:45";
+    form.sched_date_text = "2026-10-24";
+    task_edit_apply(&form, &t);
+    check(t.scheduled_start == task_day_at_minute(task_due_from_ymd(2026, 10, 24), 16 * 60 + 45),
+          "session: moved to another day and time");
+
+    form.sched_date_text = "";
+    task_edit_apply(&form, &t);
+    check(t.scheduled_start == 0, "session: an empty date unschedules the task");
+    check(t.scheduled_duration == 60, "session: ... and keeps the length");
+
+    form.sched_date_text = "2026-10-25";
+    form.sched_time_text = "";
+    task_edit_apply(&form, &t);
+    check(t.scheduled_start == task_day_at_minute(task_due_from_ymd(2026, 10, 25),
+                                                  TASK_EDIT_SCHEDULE_TIME_DEFAULT),
+          "session: a date alone schedules at the default time");
+}
+
+/*
  * test_schedule — the bare schedule and its next occurrence, against fixed
  * moments so the answers do not depend on today.
  */
@@ -487,6 +585,7 @@ main(void)
     test_lead_units();
     test_lead_follow();
     test_apply();
+    test_session();
     test_schedule();
     return check_result();
 }

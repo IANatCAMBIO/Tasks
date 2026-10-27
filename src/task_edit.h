@@ -39,6 +39,11 @@
 #define TASK_EDIT_LEAD_MIN  0       /* "Reset to New N ... beforehand"    */
 #define TASK_EDIT_LEAD_MAX  999
 
+/* The Scheduling section's time of day while the task is not scheduled
+ * (minutes past midnight, 09:00), and the longest session it accepts. */
+#define TASK_EDIT_SCHEDULE_TIME_DEFAULT (9 * 60)
+#define TASK_EDIT_DURATION_MAX          (24 * 60)
+
 /*
  * task_edit_form_t — the editor's date and schedule controls as they stand,
  * unparsed.  The strings are borrowed for the length of one call.
@@ -55,6 +60,10 @@ typedef struct {
     int         lead_count;         /* TASK_EDIT_LEAD_MIN..MAX            */
     int         lead_unit;          /* 0..TASK_EDIT_LEAD_N_UNITS - 1; out
                                      * of range reads as days             */
+    const char *sched_date_text;    /* the Scheduling date; empty = not
+                                     * scheduled                          */
+    const char *sched_time_text;    /* its time, "HH:MM"                  */
+    const char *sched_duration_text;/* its length, "1.5 hr" / "45 min"    */
 } task_edit_form_t;
 
 /*
@@ -98,6 +107,22 @@ int task_edit_time_parse(const char *text, int current);
  *   out      — receives the text, TASK_EDIT_TIME_LEN bytes
  */
 void task_edit_time_format(int minutes, int fallback, char out[TASK_EDIT_TIME_LEN]);
+
+/*
+ * task_edit_duration_parse — a session length as minutes.  A number (a
+ * decimal point allowed) and an optional unit: none, "h", "hr", "hrs",
+ * "hour" or "hours" read as hours; "m", "min", "mins", "minute" or
+ * "minutes" as minutes.  "1.5", "1.5 hr" and "90 min" are all 90.
+ *
+ * Inputs:
+ *   text    — the field's text; NULL reads as empty
+ *   current — the value now stored, in minutes
+ *
+ * Output:
+ *   1..TASK_EDIT_DURATION_MAX minutes (rounded) when the text is a length;
+ *   otherwise `current`, so partial or invalid text changes nothing.
+ */
+int task_edit_duration_parse(const char *text, int current);
 
 /*
  * task_edit_count_parse — a whole-number field ("every N", the lead count).
@@ -166,17 +191,23 @@ bool task_edit_lead_follow(int *seen_every, int *seen_unit, const task_edit_form
                            int *lead);
 
 /*
- * task_edit_apply — write the form's due date, due time and schedule into
- * a task about to be saved.  Each field falls back to the value the task
+ * task_edit_apply — write the form's due date, due time, planner session and
+ * recurrence schedule into a task about to be saved.  Each field falls back to the value the task
  * already holds when its text is partial or invalid, with ONE exception
  * carried from the GTK build: a schedule time that cannot be read becomes
  * SHARED_DB_TASK_RECUR_TIME_DEFAULT, not the stored time.  recur_next is NOT
  * touched: it is the editor's bookkeeping (task_edit_reseed).
  *
+ * The Scheduling section goes the same way: an empty date unschedules the
+ * task (scheduled_start 0), a date schedules it at the time given (09:00
+ * when the task had none), and a time or length that cannot be read keeps
+ * the stored one.
+ *
  * Inputs:
  *   form — the controls as they stand
- *   t    — the task as stored; its due, due_time and recur_* fields (other
- *          than recur_next) are overwritten
+ *   t    — the task as stored; its due, due_time, scheduled_start,
+ *          scheduled_duration and recur_* fields (other than recur_next)
+ *          are overwritten
  */
 void task_edit_apply(const task_edit_form_t *form, Task *t);
 

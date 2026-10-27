@@ -440,11 +440,12 @@ gint64 task_db_task_create(TaskDatabase *db, gint64 parent_id, const gchar *titl
  * it in the meantime survives.  Nothing differing writes nothing.
  *
  * The editable fields: title, notes, due, due_time, status,
- * priority and the recurrence schedule (recur_interval, recur_unit,
- * recur_time, recur_lead, recur_next, recur_start).  updated_at is stamped
+ * priority, the recurrence schedule (recur_interval, recur_unit,
+ * recur_time, recur_lead, recur_next, recur_start) and the day-planner
+ * session (scheduled_start, scheduled_duration).  updated_at is stamped
  * only when a SYNCED field is among them (title, notes, due, due_time,
  * status), never for the local-only ones (priority, the
- * schedule).  completed_at is stamped when status ENTERS Done (the CASE
+ * schedules).  completed_at is stamped when status ENTERS Done (the CASE
  * reads the stored row), and a parent moves from New to In Progress when
  * a subtask enters Done — in the same transaction (the caller's when one
  * is open), so both rows change or neither does.
