@@ -5,9 +5,10 @@
  * reads "1 Reminder" or "N Reminders".  A full-width blue hero area at the top
  * shows the selected item; a scrollable NSTableView lists every pending item.
  * Snooze and Dismiss split combo buttons sit at the bottom: the title fires
- * the default action and the chevron opens a menu of alternatives.
+ * the default action and the chevron opens a menu of alternatives.  Mark
+ * Complete, beside the expand chevron, finishes the selected reminders' tasks.
  *
- * Selecting a row updates the hero.  Dismissing removes the row and closes the
+ * Selecting a row updates the hero (several rows may be selected).  Dismissing removes the row and closes the
  * window when the list empties.  Snoozing removes the row and re-queues it
  * after the chosen interval via dispatch_after.  Double-clicking a row opens
  * the task's editor and leaves the reminder in place.
@@ -146,6 +147,13 @@ init_window
     [btn_bar addSubview:snooze_btn];
     [btn_bar addSubview:dismiss_btn];
 
+    NSButton *complete_btn = [NSButton buttonWithTitle:@"Mark Complete" target:self
+                                                action:@selector(mark_complete)];
+    complete_btn.bezelStyle = NSBezelStyleRounded;
+    complete_btn.font       = [NSFont systemFontOfSize:shared_look_ui_font];
+    complete_btn.translatesAutoresizingMaskIntoConstraints = NO;
+    [btn_bar addSubview:complete_btn];
+
     _expand_btn = [NSButton buttonWithTitle:@"" target:self action:@selector(toggle_expanded:)];
     _expand_btn.bezelStyle = NSBezelStyleRounded;
     _expand_btn.translatesAutoresizingMaskIntoConstraints = NO;
@@ -178,6 +186,11 @@ init_window
         [_expand_btn.centerYAnchor   constraintEqualToAnchor:btn_bar.centerYAnchor],
         [_expand_btn.widthAnchor     constraintEqualToConstant:shared_look_tool_btn_h * 1.5],
         [_expand_btn.heightAnchor    constraintEqualToConstant:shared_look_tool_btn_h],
+
+        [complete_btn.leadingAnchor  constraintEqualToAnchor:_expand_btn.trailingAnchor
+                                                    constant:shared_look_tool_btn_gap],
+        [complete_btn.centerYAnchor  constraintEqualToAnchor:btn_bar.centerYAnchor],
+        [complete_btn.heightAnchor   constraintEqualToConstant:shared_look_tool_btn_h],
     ]];
 
     /* Separator above buttons */
@@ -202,6 +215,7 @@ init_window
     _table.gridStyleMask    = NSTableViewSolidHorizontalGridLineMask;
     _table.gridColor        = [NSColor separatorColor];
     _table.allowsEmptySelection = NO;
+    _table.allowsMultipleSelection = YES;
     _table.target           = self;
     _table.doubleAction     = @selector(open_clicked:);
 
@@ -510,6 +524,20 @@ dismiss_selected
 
     [self record_dismissed:_items[(NSUInteger)row]];
     [_items removeObjectAtIndex:(NSUInteger)row];
+    [self show_after_removal:row];
+}
+
+/*
+ * show_after_removal: — redraw the list after reminders were removed: close
+ * the window when none are left, else select the reminder now at row (or the
+ * last one) and refresh the hero, the title and, when expanded, the height.
+ *
+ * Inputs:
+ *   row — the row of the first reminder removed
+ */
+- (void)
+show_after_removal:(NSInteger)row
+{
     [_table reloadData];
 
     if (_items.count == 0) {
@@ -523,6 +551,41 @@ dismiss_selected
     [self update_hero];
     [self update_title];
     if (self.expanded) [self apply_height];
+}
+
+/*
+ * mark_complete — mark the task of every selected reminder done, and remove
+ * those reminders.  A task whose write fails is reported in the status bar
+ * and keeps its reminder.
+ */
+- (void)
+mark_complete
+{
+    NSIndexSet *rows = _table.selectedRowIndexes;
+    if (rows.count == 0 || self.app == NULL || self.app->db == NULL) return;
+
+    NSMutableIndexSet *done = [NSMutableIndexSet indexSet];
+    [rows enumerateIndexesUsingBlock:^(NSUInteger i, BOOL *stop) {
+        (void)stop;
+        TasksReminderItem *item = self->_items[i];
+        Task *task = task_db_task_get(self.app->db, item.task_id);
+        BOOL  ok   = task == NULL || task->deleted
+                  || task_db_task_set_status(self.app->db, item.task_id,
+                                             task_status_apply_done(task->status, TRUE));
+        task_free(task);
+        if (ok) {
+            [done addIndex:i];
+        } else {
+            task_app_write_failed(self.app, "The status of a task");
+        }
+    }];
+    if (done.count == 0) return;
+
+    task_app_status(self.app, "%lu task%s \xe2\x80\x94 Completed", (unsigned long)done.count,
+                    done.count == 1 ? "" : "s");
+    NSInteger first = (NSInteger)done.firstIndex;
+    [_items removeObjectsAtIndexes:done];
+    [self show_after_removal:first];
 }
 
 /*
@@ -555,18 +618,7 @@ snooze:(id)sender
     NSInteger minutes = [sender tag];
 
     [_items removeObjectAtIndex:(NSUInteger)row];
-    [_table reloadData];
-
-    if (_items.count == 0) {
-        [self.window orderOut:nil];
-    } else {
-        NSInteger next = MIN(row, (NSInteger)_items.count - 1);
-        [_table selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)next]
-            byExtendingSelection:NO];
-        [self update_hero];
-        [self update_title];
-        if (self.expanded) [self apply_height];
-    }
+    [self show_after_removal:row];
 
     /* The reminder comes back only for a task that is still there and still
      * open: the user may have finished or deleted it meanwhile. */
