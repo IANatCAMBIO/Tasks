@@ -3,7 +3,8 @@
 #   make          build the app bundle
 #   make run      launch it against the sandbox data in dev/data
 #   make seed     (re)create the sandbox test database through the core API
-#   make test     build and run the core tests (no AppKit, no display)
+#   make test     the release checks: test-build test-unit test-features test-ui
+#                 (test-unit: the core tests, no AppKit, no display)
 #   make ui-check build the windows in-process: snapshots, ownership, memory
 #   make install  copy the bundle to ~/Applications
 #   make clean    remove build/ and the bundle
@@ -84,7 +85,7 @@ PKG_LIBS   := $(shell $(PKGCONF) --libs $(PKGS))
 #
 # Only goals that build the bundle look the identity up: clean, test, seed
 # and ui-check sign nothing, so they skip the keychain query.
-SIGNING_GOALS := $(if $(MAKECMDGOALS),$(filter-out clean test seed ui-check,$(MAKECMDGOALS)),all)
+SIGNING_GOALS := $(if $(MAKECMDGOALS),$(filter-out clean test test-unit test-features test-ui seed ui-check,$(MAKECMDGOALS)),all)
 ifneq ($(SIGNING_GOALS),)
 ifeq ($(origin CODESIGN_IDENTITY),undefined)
 CODESIGN_IDENTITY := $(or $(shell security find-identity -v -p codesigning 2>/dev/null \
@@ -167,7 +168,7 @@ UI_OBJS   = $(patsubst src/%.m,build/%.o,$(UI_SRCS)) \
             $(filter-out build/shared_order.o,$(patsubst $(SHARED_UI_DIR)/src/%.m,build/%.o,$(SHARED_UI_SRCS)))
 OBJS      = $(CORE_OBJS) $(UI_OBJS)
 
-.PHONY: all run seed install clean test ui-check
+.PHONY: all run seed install clean test test-build test-unit test-features test-ui ui-check
 .DEFAULT_GOAL := all
 
 all: $(BUNDLE)
@@ -260,13 +261,13 @@ build/%_test: tests/%_test.c tests/check.h tests/fixture.h $(CORE_OBJS) Makefile
 	$(CC) $(CFLAGS) -I tests -c -o $@.o $<
 	$(CC) -o $@ $@.o $(CORE_OBJS) $(LDLIBS)
 
-test: $(TEST_BINS)
+test-unit: $(TEST_BINS)
 	@rm -rf "$(TEST_DATA)" && mkdir -p "$(TEST_DATA)"
 	@for t in $(TEST_BINS); do \
 	    echo "== $$t"; TASKS_DATA_DIR="$(TEST_DATA)" \
 	        CAMBIO_SHARED_DB="$(TEST_DATA)/shared_data.db" ./$$t || exit 1; \
 	done
-	@echo "all tests passed"
+	@echo "test-unit: ok"
 
 # ── UI check ─────────────────────────────────────────────────────────────
 # tools/ui_check.m linked against every app object but main.o: it builds
@@ -296,8 +297,8 @@ ui-check: $(UI_CHECK_BIN)
 # because `cp -R` into an existing bundle directory would nest the new one
 # inside it.  A running installed copy is asked to quit (SIGTERM, which the
 # app handles as a normal quit: pending edits are saved and the database is
-# closed) and reopened afterwards.  Install stops if it has not exited
-# after 5 s.  The installed app uses the per-user data directory, never
+# closed) and reopened afterwards.  It is killed (SIGKILL) if it has not
+# exited after 5 s.  The installed app uses the per-user data directory, never
 # the sandbox.
 INSTALL_DIR   = $(HOME)/Applications
 INSTALLED_BIN = $(INSTALL_DIR)/$(BUNDLE)/Contents/MacOS/$(APP)
@@ -311,16 +312,41 @@ install: all
 	    for i in 1 2 3 4 5 6 7 8 9 10; do \
 	        pgrep -qxf "$(INSTALLED_BIN)" || break; sleep 0.5; \
 	    done; \
-	    if pgrep -qxf "$(INSTALLED_BIN)"; then \
-	        echo "$(APP_NAME) did not quit; quit it and run make install again" >&2; \
-	        exit 1; \
-	    fi; \
-	    echo "Quit the running $(APP_NAME)"; \
+	    pkill -KILL -xf "$(INSTALLED_BIN)" 2>/dev/null; \
+	    echo "Stopped the running $(APP_NAME)"; \
 	fi; \
 	rm -rf "$(INSTALL_DIR)/$(BUNDLE)" && \
 	cp -R $(BUNDLE) "$(INSTALL_DIR)/$(BUNDLE)" && \
 	echo "Installed to $(INSTALL_DIR)/$(BUNDLE)" && \
 	if [ $$running = 1 ]; then open "$(INSTALL_DIR)/$(BUNDLE)" && echo "Reopened $(APP_NAME)"; fi
+
+# ── Release checks ───────────────────────────────────────────────────────
+# Not dependencies of all/run/install: they run only when asked for (a
+# release). `make test` runs all four; each is also a target of its own.
+test: test-build test-unit test-features test-ui
+	@echo "all release checks passed"
+
+# test-build: a from-scratch build has zero warnings, and the bundle is
+# sound (valid Info.plist, executable present, signature verifies).
+BUILD_LOG = build/build.log
+
+test-build:
+	@$(MAKE) clean
+	@mkdir -p build
+	@$(MAKE) all > $(BUILD_LOG) 2>&1 || { cat $(BUILD_LOG); exit 1; }
+	@! grep -q 'warning:' $(BUILD_LOG) || { grep 'warning:' $(BUILD_LOG); echo "test-build: warnings"; exit 1; }
+	@plutil -lint $(CONTENTS)/Info.plist >/dev/null
+	@test -x $(MACOS)/$(APP)
+	@codesign --verify --strict $(BUNDLE)
+	@echo "test-build: ok"
+
+# test-features: each user-visible feature driven through the app's own
+# code on seeded scratch data (tests/features/). None written yet.
+test-features:
+	@echo "test-features: no feature tests yet (tests/features/)"
+
+# test-ui: the interface check, ui-check above.
+test-ui: ui-check
 
 clean:
 	@rm -rf build $(BUNDLE)

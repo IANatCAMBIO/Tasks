@@ -90,9 +90,13 @@ file at 200 is refused by a Notes or Tasks built against an older
 | `make` | Build `Tasks.app` in the source directory |
 | `make run` | Build, then run the app against the sandbox data in `dev/data` (seeding it first if empty) |
 | `make seed` | Recreate the sandbox test database: 45 tasks with a dozen tags (emojis, two favorites), three of them Notes action items (two in notes with a tag of their own) |
-| `make test` | Build and run the core tests (`tests/*_test.c`); no window is opened |
+| `make test` | The release checks: `test-build`, `test-unit`, `test-features`, `test-ui`. Never part of `make`, `run` or `install` |
+| `make test-build` | From-scratch build with zero warnings; valid `Info.plist`, executable and signature |
+| `make test-unit` | Build and run the core tests (`tests/*_test.c`); no window is opened |
+| `make test-features` | Feature tests (`tests/features/`); none written yet |
+| `make test-ui` | Same as `make ui-check` |
 | `make ui-check` | Build the real windows in-process against the sandbox: writes PNG snapshots to `dev/snapshots` and checks window ownership and memory |
-| `make install` | Copy the bundle to `~/Applications` (quits and reopens a running copy) |
+| `make install` | Copy the bundle to `~/Applications` (a running copy is sent SIGTERM, killed after 5 s, and reopened) |
 | `make clean` | Remove `build/` and the bundle |
 
 `make run`, `make seed`, `make test` and `make ui-check` always set
