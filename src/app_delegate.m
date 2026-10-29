@@ -11,7 +11,8 @@
 #include "backup.h"
 #include "core_views.h"
 #include "db.h"
-#include "gcal_sync.h"
+#import "cal_eventkit.h"
+#include "cal_sync.h"
 #include "recur.h"
 #include "task_config.h"
 #include "task_switch.h"
@@ -100,7 +101,8 @@ start_config:(char **)out_path
     task_recur_init(app);
     task_backup_init(app);
     task_notify_init(app);
-    gcal_sync_init(app);
+    cal_eventkit_init(app);
+    cal_sync_init(app, cal_eventkit_backend());
     self.app = app;
 
     char *why = NULL;
@@ -404,7 +406,8 @@ applicationWillTerminate:(NSNotification *)note
     [self.library shut_down];
     self.library = nil;
     task_worker_disarm_all();
-    gcal_sync_shut_down();
+    cal_sync_shut_down();
+    cal_eventkit_shut_down();
     task_app_free(self.app);
     self.app = NULL;
     task_config_close();

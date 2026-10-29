@@ -11,6 +11,8 @@
     <string>APPL</string>
     <key>CFBundleSignature</key>
     <string>????</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Tasks shows the events of the calendars you choose in its day planner, and adds your scheduled tasks to the calendar you choose.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key>

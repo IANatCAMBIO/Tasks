@@ -70,41 +70,31 @@ make install  # copies Tasks.app to ~/Applications
 
 A running installed copy is asked to quit first and reopened afterwards.
 
-## Google Calendar
+## Calendar
 
-The day planner syncs with Google Calendar, both ways.  Meetings in the
-calendars you choose are drawn in the planner so you can schedule around
-them.  Tasks you drag onto the planner become events in your calendar, and
-moving, stretching or removing them updates the event.  Moving or deleting
-that event in Google Calendar updates the planner.  The meetings pulled,
-attendees included, are kept in the database Tasks shares with Notes,
-whose own day planner shows them and makes a meeting's note from them —
-so Notes' calendar is as fresh as Tasks' last sync.
+The day planner syncs with the **macOS Calendar**, both ways, and so with
+every account set up in the Calendar app (Google, iCloud, Exchange…),
+which does the syncing with the service.  Tasks has no sign-in of its
+own.  Meetings in the calendars you choose are drawn in the planner so
+you can schedule around them.  Tasks you drag onto the planner become
+events in the calendar you choose, and moving, stretching or removing
+them updates the event.  Moving or deleting that event in Calendar (or in
+Google Calendar, once Calendar has synced it) updates the planner.
 
-To set it up:
+To set it up, open Settings → Calendar and tick **Sync the day planner
+with Calendar**.  macOS asks once for access to your calendars; then
+choose the calendar tasks go to and the calendars to show.  Notes has the
+same section: the switch and the shown calendars are one setting both
+apps share, kept in their shared database.  If access was refused,
+**Open Privacy Settings…** goes to System Settings → Privacy & Security →
+Calendars.
 
-1. The app needs a Google OAuth client, a "Desktop app" client from the
-   Google Cloud console with the **Google Calendar API** enabled.  Either
-   put its two values in `client_credentials.mk` in the source folder and
-   rebuild:
+Tasks pushed to Google by the earlier Google sync are found again in the
+macOS Calendar by their Google id on the first sync, so none is pushed
+twice.
 
-   ```make
-   GOOGLE_CLIENT_ID     = <id>.apps.googleusercontent.com
-   GOOGLE_CLIENT_SECRET = <secret>
-   ```
-
-   or drop the console's downloaded client file into the data folder,
-   renamed to `client_secret.apps.googleusercontent.com.json`.  Both are
-   gitignored.  The client that the GTK app's Google Tasks sync used works
-   once the Calendar API is enabled on its project.
-2. Open Settings, press **Sign In to Google…** and approve the request in
-   your browser.
-3. Tick **Sync the day planner with Google Calendar**.  After the first
-   sync, choose the calendar tasks go to and the calendars to show.
-
-The sign-in is kept in the macOS keychain, one entry per data folder, so a
-`make run` sandbox has to be signed in separately and can never push test
-tasks into the calendar the installed app uses.
+The calendar is the real one even in a `make run` sandbox: leave the sync
+off there, or sandbox tasks become events in your calendar.
 
 ## Where the data lives
 
@@ -204,7 +194,6 @@ files wherever they are, and are not copied):
 ```
 ~/Library/Application Support/Tasks/
     tasks.ini        the settings
-    client_secret.apps.googleusercontent.com.json   optional Google client
 ```
 
 Setting `TASKS_DATA_DIR` moves Tasks' folder and `CAMBIO_SHARED_DB` names
@@ -227,7 +216,7 @@ The Settings window (⌘,) holds the appearance options (bold titles, Kanban
 shadows, business-day forecast, the sidebar's tag counts), New Tasks
 (whether Quick Task's ⌃⌥⌘T works from any app),
 the database's health
-and fingerprint, the backups, notifications and Google Calendar; the View
+and fingerprint, the backups, notifications and the Calendar; the View
 menu holds the rest.  Every key and its default is listed in
 `src/task_config.h`.
 

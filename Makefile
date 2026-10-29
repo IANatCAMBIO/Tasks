@@ -131,30 +131,13 @@ CFLAGS   = -std=c11 $(COMMON)
 # notifications, delegate arguments), which would otherwise each need a
 # (void) cast.
 OBJCFLAGS = -fobjc-arc $(COMMON) -Wno-unused-parameter
-# The core's own system libraries: libcurl (the SDK's, which trusts the
-# keychain's certificates, so it works behind a TLS-inspecting proxy) for
-# the Google Calendar sync, Security for the keychain item holding its
-# sign-in, CoreFoundation under both.  The tests and the seed tool link
-# the core, so they link these too.
-SYS_LIBS = -lcurl -framework Security -framework CoreFoundation
+# The core's own system library: CoreFoundation, under the shared
+# database module.  The tests and the seed tool link the core, so they
+# link it too.
+SYS_LIBS = -framework CoreFoundation
 LDLIBS   = -mmacosx-version-min=$(LINK_TARGET) $(PKG_LIBS) $(SYS_LIBS)
-LDFLAGS  = -framework Cocoa -framework Carbon -framework UniformTypeIdentifiers -framework UserNotifications $(LDLIBS)
-
-# ── Google OAuth client ──────────────────────────────────────────────────
-# The app's OAuth client for the Google Calendar sync, baked into
-# src/oauth.c so that signing in needs no setup.  client_credentials.mk
-# is gitignored and optional; it holds two lines from a "Desktop app"
-# OAuth client in the Google Cloud console (Google Calendar API enabled):
-#   GOOGLE_CLIENT_ID     = <id>.apps.googleusercontent.com
-#   GOOGLE_CLIENT_SECRET = <secret>
-# Without it the app looks for the console's downloaded client file in
-# the data folder instead (src/oauth.h).  Only oauth.o is built with the
-# values, and it is rebuilt when the file changes.
--include client_credentials.mk
-CREDENTIALS = $(wildcard client_credentials.mk)
-build/oauth.o: $(CREDENTIALS)
-build/oauth.o: CFLAGS += $(if $(GOOGLE_CLIENT_ID),-DTASK_GOOGLE_CLIENT_ID='"$(GOOGLE_CLIENT_ID)"') \
-                         $(if $(GOOGLE_CLIENT_SECRET),-DTASK_GOOGLE_CLIENT_SECRET='"$(GOOGLE_CLIENT_SECRET)"')
+LDFLAGS  = -framework Cocoa -framework Carbon -framework UniformTypeIdentifiers -framework UserNotifications \
+           -framework EventKit $(LDLIBS)
 
 # Every src/*.c is the toolkit-free core; every src/*.m is the AppKit
 # layer.  A .c and a .m must not share a base name (both would build to

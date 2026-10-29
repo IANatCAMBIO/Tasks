@@ -20,7 +20,6 @@
  */
 
 #include "fixture.h"
-#include "gcal_store.h"
 #include "task_pane.h"
 #include "task_view.h"
 
@@ -653,7 +652,7 @@ hold_lock(const char *path, int seconds)
  * test_busy — another process holds the write lock past the busy timeout:
  * each write reports failure and changes nothing (the editor's column
  * update, a list toggle's setter, a subtask's status change with its
- * parent's, the calendar store's transaction); once
+ * parent's); once
  * the lock is let go the same writes succeed.
  *
  * Inputs:
@@ -702,12 +701,6 @@ test_busy(TaskApp *app, const char *self)
     check(task_db_task_update(app->db, before, &after) < 0,
           "busy: the editor's update fails, and says so");
 
-    GPtrArray      *cals = g_ptr_array_new();
-    gcal_calendar_t cal  = { "c@x", "Cal", "", TRUE, TRUE };
-    g_ptr_array_add(cals, &cal);
-    check(!gcal_store_set_calendars(app->db, cals),
-          "busy: the calendar store fails its pass when BEGIN fails");
-
     int status = 0;
     waitpid(pid, &status, 0);
     check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "busy: (the lock is let go)");
@@ -719,20 +712,15 @@ test_busy(TaskApp *app, const char *self)
           "busy: nothing was written meanwhile (neither the subtask nor its parent)");
     task_free(stored);
     task_free(kid);
-    GPtrArray *none = gcal_store_calendars(app->db);
-    check(none->len == 0, "busy: ... not even part of the calendar list");
-    g_ptr_array_free(none, TRUE);
 
     check(task_db_task_set_priority(app->db, id, TRUE) &&
-          task_db_task_update(app->db, before, &after) == 1 &&
-          gcal_store_set_calendars(app->db, cals),
+          task_db_task_update(app->db, before, &after) == 1,
           "busy: the same writes succeed once the file is free");
     stored = task_db_task_get(app->db, id);
     check(stored != NULL && stored->priority && strcmp(stored->title, "Typed while busy") == 0,
           "busy: ... and are stored");
     task_free(stored);
     task_free(before);
-    g_ptr_array_free(cals, TRUE);
 }
 
 /*

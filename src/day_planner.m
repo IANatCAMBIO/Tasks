@@ -6,10 +6,11 @@
 #import "ui_util.h"
 
 #include "db.h"
-#include "gcal_store.h"
-#include "gcal_sync.h"
+#import "cal_eventkit.h"
+
+#include "cal_store.h"
+#include "cal_sync.h"
 #include "task_app.h"
-#include "task_config.h"
 
 /* Each further task of one drop starts this much after the one before. */
 static const int drop_stagger_minutes = 15;
@@ -49,10 +50,9 @@ refresh_schedule_views
 }
 
 /*
- * day_planner:items_from:to: — the day's scheduled tasks, and its Google
- * Calendar events (the sync's cache, gcal_store.h) while the sync is
- * switched on.  Signing out empties the cache, so the switch is the only
- * thing to ask.
+ * day_planner:items_from:to: — the day's scheduled tasks, and its
+ * calendar events (shared_calendar_day_events: nothing while the calendar
+ * is off) but for the sessions' own events, drawn as their tasks.
  *
  * Inputs:
  *   planner — the panel (unused)
@@ -80,22 +80,12 @@ day_planner:(SharedDayPlanner *)planner items_from:(int64_t)lo to:(int64_t)hi
     }
     task_ptr_array_free_tasks(tasks);
 
-    if (task_config_get_bool(TASK_CFG_GCAL_ENABLED)) {
-        GPtrArray *events = gcal_store_events_for_day(db, lo, hi);
-        for (guint i = 0; i < events->len; i++) {
-            const gcal_event_t *e    = g_ptr_array_index(events, i);
-            SharedDayItem      *item = [[SharedDayItem alloc] init];
-            item.calendar_id = tasks_string(e->calendar_id);
-            item.event_id    = tasks_string(e->event_id);
-            item.title       = tasks_string(e->title);
-            item.start_unix  = e->start;
-            item.duration    = (int)((e->end - e->start) / 60);
-            item.all_day     = e->all_day;
-            item.color       = tasks_string(e->color);
-            [items addObject:item];
-        }
-        g_ptr_array_free(events, TRUE);
-    }
+    NSMutableSet<NSString *> *sessions = [NSMutableSet set];
+    GPtrArray *bindings = cal_store_bindings(db);
+    for (guint i = 0; i < bindings->len; i++)
+        [sessions addObject:tasks_string(((cal_binding_t *)g_ptr_array_index(bindings, i))->event_id)];
+    g_ptr_array_free(bindings, TRUE);
+    [items addObjectsFromArray:shared_calendar_day_events(tasks_calendar_settings(), lo, hi, sessions)];
     return items;
 }
 
@@ -119,7 +109,7 @@ day_planner:(SharedDayPlanner *)planner moved_task:(int64_t)task_id start:(int64
     if (!task_db_task_set_scheduled(app->db, task_id, start, duration))
         task_app_write_failed(app, stretched ? "The new length" : "The new time");
     [self refresh_schedule_views];
-    gcal_sync_kick();
+    cal_sync_kick();
 }
 
 /*
@@ -140,7 +130,7 @@ day_planner:(SharedDayPlanner *)planner unschedule_tasks:(NSSet<NSNumber *> *)ta
     if (failed) task_app_write_failed(app, "Removing from the schedule");
     [planner reload];
     [self refresh_schedule_views];
-    gcal_sync_kick();
+    cal_sync_kick();
 }
 
 /*
@@ -216,7 +206,7 @@ day_planner:(SharedDayPlanner *)planner drop:(id<NSDraggingInfo>)info start:(int
         [planner reload];
         [self refresh_schedule_views];
     }
-    gcal_sync_kick();
+    cal_sync_kick();
     return YES;
 }
 

@@ -17,7 +17,7 @@ dev/
 # phantom submodule.  Ignore the parent so it cannot happen.
 .claude/worktrees/
 
-# The Google OAuth client (see the Makefile and src/oauth.h).  It identifies
-# the app rather than granting anything, but it is per-developer.
+# A Google OAuth client the retired Google sync used: per-developer files
+# that may still sit in a checkout, never to be committed.
 client_credentials.mk
 client_secret*.json

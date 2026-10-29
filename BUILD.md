@@ -26,7 +26,7 @@ xcode-select --install
 | SQLite 3 (3.35 or later; developed with 3.53) | storage | MacPorts `sqlite3` |
 | `shared_db` (the shared database module: schema, stamps, path, backups, check) | the database Notes and Tasks share | the `shared_data` repository beside this one, compiled in from source (below) |
 | `shared_ui` (the shared interface module: the command table and its dispatch, the tool panel, the sidebar's split view, the table, status labels, the emoji slot, `shared_look.h`) | what Notes and Tasks show the same way | the `shared_ui` repository beside this one, compiled in from source (below) |
-| libcurl, Security | the Google Calendar sync's HTTPS calls; the keychain item holding its sign-in | macOS SDK (the system libcurl, which trusts the keychain's certificates) |
+| EventKit | the day planner's calendar: the macOS Calendar's events, and the sessions written to it (`src/cal_eventkit.m`, `shared_ui/src/shared_calendar.m`); asks for calendar access once, the reason in `Info.plist` (`NSCalendarsFullAccessUsageDescription`) | macOS SDK |
 
 ```sh
 sudo port install glib2 sqlite3 pkgconf
@@ -134,22 +134,6 @@ there and run `make clean && make`.
 The version is the one line in `VERSION`.  The build time is written to
 `Info.plist` as `TasksBuildDate` and shown in the About panel.
 
-## Google OAuth client
-
-The Google Calendar sync needs an OAuth client.  `client_credentials.mk`
-(gitignored, optional) in the source folder supplies one at build time:
-
-```make
-GOOGLE_CLIENT_ID     = <id>.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET = <secret>
-```
-
-Only `build/oauth.o` is compiled with the two values, and it is rebuilt
-when the file changes.  Without the file the app looks for the Google Cloud
-console's client file in the data folder (`src/oauth.h`).  The client must
-be a "Desktop app" client with the Google Calendar API enabled on its
-project.
-
 ## Compiler flags
 
 `-O2 -Wall -Wextra -Werror=unguarded-availability -mmacosx-version-min=14.0
@@ -193,7 +177,7 @@ The programs, all linked against the core only (no AppKit), include:
 | `sidebar_test` | a tag's label, the selection fallback after a rebuild |
 | `order_test` | saved orders: key spelling, the permutation, dropping keys |
 | `app_test` | the event bus, the outside-change watch (`data_version`), due-date urgency, the recurrence pass waking on a main-loop timer |
-| `gcal_test` | the calendar sync without the network: every planning rule, reading events (attendees included) and writing request bodies, the sync's tables (dirty check, compare-and-set reschedule, event cache with attendees, account), the sign-in's loopback listener |
+| `cal_test` | the calendar sync against a fake calendar (the macOS Calendar is never touched): every planning rule, the binding table (dirty check, compare-and-set reschedule), whole passes — a session pushed, moved, adopted from the calendar, unscheduled by a deletion there, moved to another calendar, removed — and a Google-sync binding found again by its Google id |
 
 They work in scratch folders under `dev/test-data` and refuse to run unless
 `TASKS_DATA_DIR` names the sandbox and `CAMBIO_SHARED_DB` a file inside it
@@ -223,13 +207,10 @@ src/
   task_pane.[ch]       sidebar selection type (a view or a tag); collects its rows
   task_sidebar.[ch]    the sidebar's selection fallback
   task_order.[ch]      saved manual / Kanban orders
-  http.[ch]            one blocking HTTPS request (libcurl)
-  json.[ch]            minimal JSON parser and string escaping
-  oauth.[ch]           Google sign-in: PKCE, loopback redirect, keychain
-  gcal_plan.[ch]       the calendar sync's per-task decision
-  gcal_store.[ch]      the calendar sync's tables: calendars, events, bindings
-  gcal_api.[ch]        the Google Calendar REST calls
-  gcal_sync.[ch]       the calendar sync: worker, kick, background pass
+  cal_plan.[ch]        the calendar sync's per-task decision
+  cal_store.[ch]       the calendar sync's table: a session's binding to its event
+  cal_backend.h        the calendar as the sync sees it (EventKit, or a test's fake)
+  cal_sync.[ch]        the calendar sync: kick, pass on the main thread
 
   main.m               entry point
   app_delegate.[hm]    launch, menu bar, About, quit
@@ -238,6 +219,8 @@ src/
                        shared_commands.h, the handlers sit with their owners
   look.[hm]            sizes, timings, colours
   ui_util.[hm]         icons, image views, the shared table view, dialogs
+  cal_eventkit.[hm]    the calendar sync's EventKit backend, the shared calendar
+                       settings, the watch on the calendar's changes
   tool_panel.[hm]      the app's own dialog (never a system alert) and its blue hero strip
   (shared_ui) shared_hotkey.[hm]  the system-wide shortcut, shared with Notes
   row_text.[hm]        the renderer of a task row's text

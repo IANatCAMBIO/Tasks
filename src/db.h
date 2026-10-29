@@ -35,7 +35,7 @@
  *
  * NOTHING belonging to a particular INTEGRATION is here.  An integration
  * keeps its per-row state in its own SIDE TABLE keyed by row id: the
- * Google Calendar sync's gcal_* tables are described in gcal_store.h.
+ * calendar sync's cal_task table is described in cal_store.h.
  * A task a Notes action item IS has a note_task row naming it (the shared
  * schema); Tasks reads that link (task_db_task_note) and never purges
  * such a task.
@@ -255,7 +255,7 @@ TaskDatabase *task_db_open(const gchar *path, GError **err);
 
 /* ---------------------------------------------------------------------------
  * task_db_open_existing() — task_db_open for every connection but the main
- * one opened at launch / Create New: the backup and gcal sync workers and
+ * one opened at launch / Create New: the backup worker and
  * File > Open Database File….  It never creates a file
  * (shared_db_open_existing): a database the user moved aside — during a
  * restore or a rollback — is reported missing instead of being silently
@@ -268,8 +268,11 @@ void task_db_close(TaskDatabase *db);
 
 /* What task_db_outside_change found: bits of its result.                   */
 enum {
-    TASK_DB_CHANGED_TASKS = 1 << 0,  /* Tasks' data (SHARED_DB_REV_TASKS)   */
-    TASK_DB_CHANGED_NOTES = 1 << 1   /* Notes' data (SHARED_DB_REV_NOTES)   */
+    TASK_DB_CHANGED_TASKS    = 1 << 0,  /* Tasks' data (SHARED_DB_REV_TASKS) */
+    TASK_DB_CHANGED_NOTES    = 1 << 1,  /* Notes' data (SHARED_DB_REV_NOTES) */
+    TASK_DB_CHANGED_SETTINGS = 1 << 2   /* neither: what no revision covers,
+                                         * the shared settings (the calendar
+                                         * settings Notes edits too)        */
 };
 
 /* ---------------------------------------------------------------------------
@@ -278,8 +281,9 @@ enum {
  * look?  One shared_db_poll: nothing to report unless another connection
  * committed (or a commit of this connection's saw one land, see
  * own_commit in db.c); then each change revision that differs from the one
- * remembered on `db` is reported and remembered.  A commit that touched
- * only the shared settings reports nothing.  This connection's own commits
+ * remembered on `db` is reported and remembered.  A commit that moved
+ * neither revision (it touched the shared settings) reports
+ * TASK_DB_CHANGED_SETTINGS.  This connection's own commits
  * move the remembered revisions with them, so they never count.
  *
  * Inputs:

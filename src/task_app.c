@@ -268,6 +268,9 @@ task_app_check_outside(TaskApp *app)
         task_app_notify_changed(app);   /* re-reads the editors' notes too */
     else if (found & TASK_DB_CHANGED_NOTES)
         fire(app, &app->notes_l, NULL);
+    else if (found & TASK_DB_CHANGED_SETTINGS)
+        task_app_notify_tasks(app);     /* the planner and the calendar sync
+                                         * read the shared calendar settings */
     return found;
 }
 

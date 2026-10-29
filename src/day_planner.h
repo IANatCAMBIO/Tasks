@@ -7,8 +7,8 @@
  * right-side panel showing the hours of the day).  Tasks dragged onto it
  * from the list or the board are scheduled at that hour; blocks can be
  * stretched from either edge or dragged to move the session; a
- * double-click opens the task's editor; the day's Google Calendar events
- * (the sync's cache, gcal_store.h) are drawn while the sync is switched
+ * double-click opens the task's editor; the day's events from the macOS
+ * Calendar (shared_calendar.h) are drawn while the calendar is switched
  * on.  Every write kicks the calendar sync.  Moving a task to In Progress
  * when its session begins is the notification worker's job
  * (task_notify.h), which runs whether or not the panel is on screen.

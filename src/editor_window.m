@@ -3,7 +3,7 @@
 #import "ui_util.h"
 #import "shared_tag_popup.h"
 
-#include "gcal_sync.h"
+#include "cal_sync.h"
 #include "recur.h"
 #include "task_dates.h"
 #include "task_edit.h"
@@ -1799,7 +1799,7 @@ save_now
         task_free(fresh);
     }
     task_app_notify_tasks(self.app);
-    if (session_moved) gcal_sync_kick();
+    if (session_moved) cal_sync_kick();
     return YES;
 }
 

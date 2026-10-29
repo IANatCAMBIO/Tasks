@@ -130,8 +130,10 @@ void task_app_notify_tasks(TaskApp *app);
  * editor re-reads it (each keeps its selection and scroll).  When only
  * Notes' data has, fire the notes event, so the editors re-read the titles
  * of the notes their tasks came from.  A commit that touched only the
- * shared settings fires nothing, and this connection's own writes never
- * count, so the app's ordinary edits cause no second refresh.
+ * shared settings fires the task-pane event: the day planner and the
+ * calendar sync read the calendar settings Notes edits too.  This
+ * connection's own writes never count, so the app's ordinary edits cause
+ * no second refresh.
  *
  * Inputs:
  *   app — the context; NULL or no database open is a no-op

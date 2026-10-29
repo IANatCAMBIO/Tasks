@@ -332,16 +332,16 @@ test_awkward_text(const char *scratch)
 
     open_config(scratch, "awkward", ini, sizeof ini);
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        task_config_set(TASK_CFG_GCAL_PUSH_CALENDAR, cases[i].value);
+        task_config_set(TASK_CFG_LIST_SORT, cases[i].value);
         reload();
-        check(reads_as(TASK_CFG_GCAL_PUSH_CALENDAR, cases[i].value), cases[i].what);
+        check(reads_as(TASK_CFG_LIST_SORT, cases[i].value), cases[i].what);
     }
 
     memset(long_value, 'x', sizeof long_value - 1);
     long_value[sizeof long_value - 1] = '\0';
-    task_config_set(TASK_CFG_GCAL_PUSH_CALENDAR, long_value);
+    task_config_set(TASK_CFG_LIST_SORT, long_value);
     reload();
-    check(reads_as(TASK_CFG_GCAL_PUSH_CALENDAR, long_value), "text: 4000 characters");
+    check(reads_as(TASK_CFG_LIST_SORT, long_value), "text: 4000 characters");
     task_config_close();
 }
 
@@ -369,7 +369,7 @@ test_write_through(const char *scratch)
 
     /* Reading, and removing what is not there, write nothing. */
     task_config_set(TASK_CFG_WIN_W, NULL);
-    task_config_set(TASK_CFG_GCAL_PUSH_CALENDAR, NULL);
+    task_config_set(TASK_CFG_LIST_SORT, NULL);
     check(stat(ini, &before) != 0, "write: removing an absent key does not create the file");
 
     task_config_set_int(TASK_CFG_WIN_W, 1000);

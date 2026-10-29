@@ -533,8 +533,10 @@ task_db_outside_change(TaskDatabase *db)
         return TASK_DB_CHANGED_TASKS | TASK_DB_CHANGED_NOTES;
     guint found = db->outside_pending;
     db->outside_pending = 0;
-    if (changed)
-        found |= revs_moved(db, rev_tasks, rev_notes);
+    if (changed) {
+        guint moved = revs_moved(db, rev_tasks, rev_notes);
+        found |= moved != 0 ? moved : TASK_DB_CHANGED_SETTINGS;
+    }
     return found;
 }
 

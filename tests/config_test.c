@@ -340,8 +340,6 @@ test_config(const char *scratch)
     check(!task_config_get_bool(TASK_CFG_COL_STATUS), "config: the Status column defaults hidden");
     check(task_config_get_bool(TASK_CFG_SIDEBAR_COUNTS),
           "config: the sidebar's tag counts default on");
-    check(task_config_get_int(TASK_CFG_GCAL_INTERVAL_MIN) == 5,
-          "config: the calendar sync interval defaults to 5");
     check(task_config_get_int(TASK_CFG_WIN_W) == 980 &&
           task_config_get_int(TASK_CFG_WIN_H) == 640,
           "config: window size defaults to 980 x 640");
