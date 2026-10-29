@@ -9,10 +9,12 @@
  *   gcal_calendar  id (Google's calendar id), summary, color ("#rrggbb"),
  *                  writable, is_primary — the account's calendar list,
  *                  rewritten by every pass; Settings offers its rows
- *   gcal_event     calendar_id, event_id, title, start, end (unix), all_day
- *                  — the shown calendars' events in the pass's window,
- *                  what the day planner draws; a cache, rewritten per
- *                  calendar by every pass that could read that calendar
+ *   gcal_event     calendar_id, event_id, title, start, end (unix), all_day,
+ *                  attendees — the shown calendars' events in the pass's
+ *                  window, what the day planner draws (Notes' too, which
+ *                  also makes a note of an event's title and attendees);
+ *                  a cache, rewritten per calendar by every pass that
+ *                  could read that calendar
  *   gcal_task      task_id, calendar_id, event_id, pushed_start,
  *                  pushed_duration, pushed_title — a scheduled task's
  *                  BINDING to the event mirroring it (gcal_plan.h).
@@ -48,6 +50,9 @@ typedef struct {
     gint64    start;                 /* unix seconds                        */
     gint64    end;                   /* unix seconds, exclusive             */
     gboolean  all_day;
+    gchar    *attendees;             /* as gcal_remote_t's; written to the
+                                      * cache, not read back (Notes reads
+                                      * it), so NULL from events_for_day   */
 } gcal_event_t;
 
 /* One task's binding.  Strings owned. */

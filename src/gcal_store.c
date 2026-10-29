@@ -107,6 +107,7 @@ gcal_event_free(gcal_event_t *e)
     g_free(e->event_id);
     g_free(e->title);
     g_free(e->color);
+    g_free(e->attendees);
     g_free(e);
 }
 
@@ -184,8 +185,9 @@ gcal_store_set_events(TaskDatabase *db, const gchar *calendar_id, GPtrArray *eve
     if (!task_db_transaction_begin(db)) return FALSE;
     sqlite3_stmt *del = prepare(db, "DELETE FROM gcal_event WHERE calendar_id = ?");
     sqlite3_stmt *ins = prepare(db,
-        "INSERT OR REPLACE INTO gcal_event (calendar_id, event_id, title, start, end, all_day) "
-        "VALUES (?, ?, ?, ?, ?, ?)");
+        "INSERT OR REPLACE INTO gcal_event "
+        "(calendar_id, event_id, title, start, end, all_day, attendees) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)");
     gboolean ok = del != NULL && ins != NULL;
     if (ok) {
         bind_text(del, 1, calendar_id);
@@ -199,6 +201,7 @@ gcal_store_set_events(TaskDatabase *db, const gchar *calendar_id, GPtrArray *eve
         sqlite3_bind_int64(ins, 4, e->start);
         sqlite3_bind_int64(ins, 5, e->end);
         sqlite3_bind_int(ins, 6, e->all_day ? 1 : 0);
+        bind_text(ins, 7, e->attendees);
         ok = sqlite3_step(ins) == SQLITE_DONE;
         sqlite3_reset(ins);
     }

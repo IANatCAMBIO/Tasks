@@ -87,7 +87,7 @@ tasks_row_text(const task_row_t *row, BOOL emphasized)
 
         NSMutableDictionary<NSAttributedStringKey, id> *attrs = [@{
             NSFontAttributeName:            font,
-            NSForegroundColorAttributeName: tasks_color_dimmed(base, line->alpha_pct),
+            NSForegroundColorAttributeName: shared_ui_color_dimmed(base, line->alpha_pct),
             NSParagraphStyleAttributeName:  para,
         } mutableCopy];
         if (line->strike) attrs[NSStrikethroughStyleAttributeName] = @(NSUnderlineStyleSingle);

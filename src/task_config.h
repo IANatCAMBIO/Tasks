@@ -52,7 +52,7 @@
 #define TASK_CFG_COMPACT             "compact_layout"        /* bool, 0 */
 #define TASK_CFG_SIDEBAR_VISIBLE     "sidebar_visible"       /* bool, 1: the tag sidebar */
 #define TASK_CFG_FAVORITES_BAR_VISIBLE "favorites_bar_visible" /* bool, 1 */
-#define TASK_CFG_SIDEBAR_WIDTH       "sidebar_width"         /* int points; none = look.h's
+#define TASK_CFG_SIDEBAR_WIDTH       "sidebar_width"         /* int points; none = shared_look.h's
                                                             * shared_look_sidebar_w */
 #define TASK_CFG_WIN_X               "win_x"                 /* int; none = centred */
 #define TASK_CFG_WIN_Y               "win_y"                 /* int; none = centred */
@@ -64,8 +64,8 @@
 #define TASK_CFG_COMPACT_PRE_H       "compact_pre_h"         /* int, 640 */
 #define TASK_CFG_DAY_PLANNER_VISIBLE "day_planner_visible"   /* bool, none = hidden: the
                                                             * planner is opened on purpose */
-#define TASK_CFG_DAY_PLANNER_W       "day_planner_w"         /* int points; none = look.h's
-                                                            * tasks_look_day_planner_w */
+#define TASK_CFG_DAY_PLANNER_W       "day_planner_w"         /* int points; none = shared_look.h's
+                                                            * shared_look_day_planner_w */
 
 /* Task-list column visibility (the header menu) */
 #define TASK_CFG_COL_DONE            "col_done_visible"      /* bool, 1 */

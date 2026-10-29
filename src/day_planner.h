@@ -1,50 +1,33 @@
 #import <Cocoa/Cocoa.h>
 #import "library_window.h"
+#import "shared_day_planner.h"
 
 /*
- * day_planner — a right-side panel showing the hours of the day.  Tasks
- * dragged onto it are scheduled at that hour; existing blocks can be
- * stretched from either edge to adjust the session, or dragged to move
- * it.  A horizontal line tracks the current time.  Moving a task to In
- * Progress when its session begins is the notification worker's job
+ * day_planner — Tasks' side of the day planner (shared_day_planner.h, the
+ * right-side panel showing the hours of the day).  Tasks dragged onto it
+ * from the list or the board are scheduled at that hour; blocks can be
+ * stretched from either edge or dragged to move the session; a
+ * double-click opens the task's editor; the day's Google Calendar events
+ * (the sync's cache, gcal_store.h) are drawn while the sync is switched
+ * on.  Every write kicks the calendar sync.  Moving a task to In Progress
+ * when its session begins is the notification worker's job
  * (task_notify.h), which runs whether or not the panel is on screen.
  */
-@interface TasksDayPlanner : NSView
+@interface TasksPlannerHost : NSObject <SharedDayPlannerDelegate>
 
 /*
- * init_with_library: — build the panel.
+ * init_with_library: — build the panel and its delegate.
  *
  * Inputs:
  *   library — the window hosting it; held weakly
  *
  * Output:
- *   the view; the split view owns it.
+ *   the host; the library window keeps it (the panel holds it weakly).
  */
 - (instancetype)init_with_library:(TasksLibraryWindow *)library NS_DESIGNATED_INITIALIZER;
-- (instancetype)initWithFrame:(NSRect)frame NS_UNAVAILABLE;
-- (instancetype)initWithCoder:(NSCoder *)coder NS_UNAVAILABLE;
+- (instancetype)init NS_UNAVAILABLE;
 
-/*
- * reload — re-read the day's scheduled tasks from the database and
- * redraw.  Called on every refresh of the task pane and after any
- * schedule change.
- */
-- (void)reload;
-
-/*
- * scroll_to_now — scroll the view so the current time is visible.
- */
-- (void)scroll_to_now;
-
-/*
- * shut_down — stop the clock timer and release resources.  Idempotent.
- */
-- (void)shut_down;
-
-/* The scheduled items array, read by the canvas during drawing. */
-@property (nonatomic, readonly) NSMutableArray *items;
-
-/* The hosting library window. */
-@property (nonatomic, readonly, weak) TasksLibraryWindow *library;
+/* The panel; the split view owns it. */
+@property (nonatomic, readonly) SharedDayPlanner *view;
 
 @end

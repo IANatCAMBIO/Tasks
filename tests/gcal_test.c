@@ -130,6 +130,18 @@ api_checks(void)
               " \"end\":{\"dateTime\":\"2026-10-09T14:00:00Z\"},"
               " \"attendees\":[{\"self\":true,\"responseStatus\":\"declined\"}]}");
     check(r != NULL && r->declined, "parse: the account's own decline is seen");
+    check(r != NULL && strcmp(r->attendees, "") == 0, "parse: a nameless attendee is left out");
+    gcal_remote_free(r);
+
+    r = parse("{\"id\":\"ev6\",\"start\":{\"dateTime\":\"2026-10-09T13:00:00Z\"},"
+              " \"end\":{\"dateTime\":\"2026-10-09T14:00:00Z\"},"
+              " \"attendees\":[{\"email\":\"ann@x\",\"displayName\":\"Ann Lee\"},"
+              "                {\"email\":\"bo@x\",\"self\":true},"
+              "                {\"email\":\"room@x\",\"displayName\":\"Room 4\",\"resource\":true},"
+              "                {\"email\":\"cy@x\",\"displayName\":\"Cy\\nDee\"}]}");
+    check(r != NULL && strcmp(r->attendees, "Ann Lee" SHARED_DB_GCAL_ATTENDEE_SEP "bo@x"
+                                            SHARED_DB_GCAL_ATTENDEE_SEP "Cy Dee") == 0,
+          "parse: attendees by name, else email; no rooms; one line each");
     gcal_remote_free(r);
 
     check(parse("{\"start\":{\"dateTime\":\"2026-10-09T13:00:00Z\"}}") == NULL,
@@ -235,10 +247,11 @@ store_checks(TaskDatabase *db)
 
     gint64 lo = task_due_from_ymd(2026, 10, 9), hi = task_due_from_ymd(2026, 10, 10);
     GPtrArray   *evs   = g_ptr_array_new();
-    gcal_event_t day   = { NULL, "e1", "Offsite", NULL, lo, hi, TRUE };
-    gcal_event_t meet  = { NULL, "e2", "1:1", NULL, lo + 10 * 3600, lo + 11 * 3600, FALSE };
-    gcal_event_t late  = { NULL, "e3", "Late", NULL, hi - 1800, hi + 1800, FALSE };
-    gcal_event_t later = { NULL, "e4", "Tomorrow", NULL, hi + 3600, hi + 7200, FALSE };
+    gcal_event_t day   = { NULL, "e1", "Offsite", NULL, lo, hi, TRUE, NULL };
+    gcal_event_t meet  = { NULL, "e2", "1:1", NULL, lo + 10 * 3600, lo + 11 * 3600, FALSE,
+                           "Ann" SHARED_DB_GCAL_ATTENDEE_SEP "Bo" };
+    gcal_event_t late  = { NULL, "e3", "Late", NULL, hi - 1800, hi + 1800, FALSE, NULL };
+    gcal_event_t later = { NULL, "e4", "Tomorrow", NULL, hi + 3600, hi + 7200, FALSE, NULL };
     g_ptr_array_add(evs, &meet);
     g_ptr_array_add(evs, &later);
     g_ptr_array_add(evs, &late);
@@ -257,6 +270,19 @@ store_checks(TaskDatabase *db)
           strcmp(((gcal_event_t *)g_ptr_array_index(today, 0))->color, "#336699") == 0,
           "events: carry their calendar's colour");
     g_ptr_array_free(today, TRUE);
+
+    sqlite3_stmt *st = NULL;
+    sqlite3_prepare_v2(shared_db_handle(db->shared),
+                       "SELECT attendees FROM gcal_event WHERE event_id = ?", -1, &st, NULL);
+    sqlite3_bind_text(st, 1, "e2", -1, SQLITE_STATIC);
+    check(sqlite3_step(st) == SQLITE_ROW &&
+          strcmp((const char *)sqlite3_column_text(st, 0), "Ann" SHARED_DB_GCAL_ATTENDEE_SEP "Bo") == 0,
+          "events: the attendees are cached for Notes");
+    sqlite3_reset(st);
+    sqlite3_bind_text(st, 1, "e1", -1, SQLITE_STATIC);
+    check(sqlite3_step(st) == SQLITE_ROW && strcmp((const char *)sqlite3_column_text(st, 0), "") == 0,
+          "events: no attendees are cached as empty");
+    sqlite3_finalize(st);
 
     GPtrArray *empty = g_ptr_array_new();
     gcal_store_set_events(db, "work@x", empty);

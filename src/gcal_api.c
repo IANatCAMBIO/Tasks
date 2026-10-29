@@ -19,7 +19,8 @@
 #define API_BASE GCAL_API_BASE
 
 /* The event fields a pass reads: everything else stays on Google's side. */
-#define EVENT_FIELDS "id,status,summary,start,end,attendees(self,responseStatus)," \
+#define EVENT_FIELDS "id,status,summary,start,end," \
+                     "attendees(self,responseStatus,displayName,email,resource)," \
                      "extendedProperties/private"
 
 /*
@@ -94,6 +95,7 @@ gcal_remote_free(gcal_remote_t *r)
     if (r == NULL) return;
     g_free(r->event_id);
     g_free(r->title);
+    g_free(r->attendees);
     g_free(r);
 }
 
@@ -117,13 +119,25 @@ gcal_api_parse_event(task_json_t *item)
                                                    "private"), GCAL_TASK_PROPERTY);
     r->task_id = tid != NULL ? g_ascii_strtoll(tid, NULL, 10) : 0;
 
+    /* The attendees, as shared_db.h's gcal_event.attendees lists them: a
+     * room or other resource is not one, and a line break inside a name
+     * would split it in two. */
     task_json_t *attendees = task_json_get(item, "attendees");
+    GString     *names     = g_string_new("");
     for (guint i = 0; i < task_json_len(attendees); i++) {
         task_json_t *a = task_json_at(attendees, i);
         if (task_json_bool(a, "self", FALSE) &&
             g_strcmp0(task_json_str(a, "responseStatus"), "declined") == 0)
             r->declined = TRUE;
+        const gchar *name = task_json_str(a, "displayName");
+        if (name == NULL || *name == '\0') name = task_json_str(a, "email");
+        if (task_json_bool(a, "resource", FALSE) || name == NULL || *name == '\0') continue;
+        if (names->len > 0) g_string_append(names, SHARED_DB_GCAL_ATTENDEE_SEP);
+        gsize at = names->len;
+        g_string_append(names, name);
+        g_strdelimit(names->str + at, "\r\n", ' ');
     }
+    r->attendees = g_string_free(names, FALSE);
 
     /* A cancelled event's record may carry no times at all; it is still
      * an answer ("deleted"), so only a live event must have them. */

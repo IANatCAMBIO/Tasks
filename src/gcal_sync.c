@@ -174,6 +174,7 @@ pull(pass_ctx_t *ctx, GPtrArray *show, GPtrArray *keep)
                 e->start    = r->start;
                 e->end      = r->end;
                 e->all_day  = r->all_day;
+                e->attendees = g_strdup(r->attendees);
                 g_ptr_array_add(cache, e);
             }
         }

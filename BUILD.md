@@ -193,7 +193,7 @@ The programs, all linked against the core only (no AppKit), include:
 | `sidebar_test` | a tag's label, the selection fallback after a rebuild |
 | `order_test` | saved orders: key spelling, the permutation, dropping keys |
 | `app_test` | the event bus, the outside-change watch (`data_version`), due-date urgency, the recurrence pass waking on a main-loop timer |
-| `gcal_test` | the calendar sync without the network: every planning rule, reading events and writing request bodies, the sync's tables (dirty check, compare-and-set reschedule, event cache, account), the sign-in's loopback listener |
+| `gcal_test` | the calendar sync without the network: every planning rule, reading events (attendees included) and writing request bodies, the sync's tables (dirty check, compare-and-set reschedule, event cache with attendees, account), the sign-in's loopback listener |
 
 They work in scratch folders under `dev/test-data` and refuse to run unless
 `TASKS_DATA_DIR` names the sandbox and `CAMBIO_SHARED_DB` a file inside it
@@ -245,7 +245,8 @@ src/
   favorites_bar.[hm]   Favorites bar: the favorite tags
   task_list.[hm]       task list          (stub)
   kanban.[hm]          Kanban board       (stub)
-  day_planner.[hm]     day planner, with Google Calendar events
+  day_planner.[hm]     the day planner's Tasks side: the day's sessions and
+                       events, drops, moves (the panel: shared_day_planner.h)
   editor_window.[hm]   task editor        (stub)
   settings_window.[hm] Settings           (stub)
 tests/                 core tests; check.h and fixture.h are the harness

@@ -76,7 +76,10 @@ The day planner syncs with Google Calendar, both ways.  Meetings in the
 calendars you choose are drawn in the planner so you can schedule around
 them.  Tasks you drag onto the planner become events in your calendar, and
 moving, stretching or removing them updates the event.  Moving or deleting
-that event in Google Calendar updates the planner.
+that event in Google Calendar updates the planner.  The meetings pulled,
+attendees included, are kept in the database Tasks shares with Notes,
+whose own day planner shows them and makes a meeting's note from them —
+so Notes' calendar is as fresh as Tasks' last sync.
 
 To set it up:
 

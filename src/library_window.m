@@ -44,7 +44,8 @@ static NSString * const search_tooltip       =
 @property (nonatomic, strong) NSLayoutConstraint *favorites_height; /* 0 while hidden */
 @property (nonatomic, strong) TasksTaskList *task_list;
 @property (nonatomic, strong) TasksKanban *kanban;
-@property (nonatomic, strong) TasksDayPlanner *day_planner;
+@property (nonatomic, strong) SharedDayPlanner *day_planner;
+@property (nonatomic, strong) TasksPlannerHost *planner_host;  /* the planner's delegate */
 @property (nonatomic, strong) NSTextField *status_left;    /* "<view>" or "#<tag>"      */
 @property (nonatomic, strong) NSTextField *status_right;   /* the latest event message  */
 @property (nonatomic, weak) NSSearchField *search_field;   /* owned by its toolbar item */
@@ -434,7 +435,8 @@ build_layout
     [self build_float_bar:pane];
 
 
-    self.day_planner = [[TasksDayPlanner alloc] init_with_library:self];
+    self.planner_host = [[TasksPlannerHost alloc] init_with_library:self];
+    self.day_planner  = self.planner_host.view;
 
     NSBox *rule   = [[NSBox alloc] initWithFrame:NSZeroRect];
     rule.boxType  = NSBoxSeparator;
@@ -455,7 +457,7 @@ build_layout
     self.sidebar_item = shared_ui_pane_item(self.sidebar, shared_look_sidebar_min_w);
     self.sidebar_item.canCollapse     = YES;
     self.sidebar_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;
-    self.planner_item = shared_ui_pane_item(self.day_planner, tasks_look_day_planner_min_w);
+    self.planner_item = shared_ui_pane_item(self.day_planner, shared_look_day_planner_min_w);
     self.planner_item.canCollapse     = YES;
     self.planner_item.holdingPriority = NSLayoutPriorityDefaultLow + 1;
     [self.split addSplitViewItem:self.sidebar_item];
@@ -1324,7 +1326,7 @@ sidebar_extent
 
 /*
  * planner_extent — the shown day planner's width: the one it was last
- * dragged to, at least tasks_look_day_planner_min_w; tasks_look_day_planner_w
+ * dragged to, at least shared_look_day_planner_min_w; shared_look_day_planner_w
  * until the first drag.
  *
  * Output:
@@ -1334,8 +1336,8 @@ sidebar_extent
 planner_extent
 {
     gint saved = task_config_get_int(TASK_CFG_DAY_PLANNER_W);
-    if (saved == 0) return tasks_look_day_planner_w;
-    return MAX((CGFloat)saved, tasks_look_day_planner_min_w);
+    if (saved == 0) return shared_look_day_planner_w;
+    return MAX((CGFloat)saved, shared_look_day_planner_min_w);
 }
 
 /*
@@ -1414,7 +1416,7 @@ content_min_size
         width += [self sidebar_extent] + self.split.splitView.dividerThickness;
     }
     if (task_config_get_bool(TASK_CFG_DAY_PLANNER_VISIBLE)) {
-        width += self.split.splitView.dividerThickness + tasks_look_day_planner_min_w;
+        width += self.split.splitView.dividerThickness + shared_look_day_planner_min_w;
     }
     return NSMakeSize(width, tasks_look_window_min_h);
 }

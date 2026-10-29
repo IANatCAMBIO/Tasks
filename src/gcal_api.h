@@ -45,6 +45,8 @@ typedef struct {
     gboolean  declined;              /* the account's own invitation was
                                       * declined: not something to plan
                                       * around                              */
+    gchar    *attendees;             /* SHARED_DB_GCAL_ATTENDEE_SEP-joined
+                                      * names (shared_db.h); "" for none    */
 } gcal_remote_t;
 
 void gcal_remote_free(gcal_remote_t *r);

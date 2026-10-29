@@ -89,19 +89,7 @@ static const CGFloat tasks_look_reminders_row_h  = 27.0;   /* one reminder      
 static const CGFloat tasks_look_reminders_icon   = 14.0;   /* its symbol          */
 static const CGFloat tasks_look_reminders_fit_buffer = 22.0; /* spare height when expanded */
 
-
-/* ── Day planner ────────────────────────────────────────────────────── */
-
-static const CGFloat    tasks_look_day_planner_w           = 320.0;  /* default panel width      */
-static const CGFloat    tasks_look_day_planner_min_w       = 300.0;  /* minimum panel width      */
-static const CGFloat    tasks_look_day_planner_hour_h      = 60.0;   /* points per hour          */
-static const NSInteger  tasks_look_day_planner_start_h     = 6;      /* business hours from 6 AM */
-static const NSInteger  tasks_look_day_planner_end_h       = 21;     /* ... to 9 PM; widened to fit the day's blocks */
-static const CGFloat    tasks_look_day_planner_label_w     = 44.0;   /* hour label column        */
-static const CGFloat    tasks_look_day_planner_pad_v       = 16.0;   /* canvas top/bottom pad; clears the first hour label */
-static const CGFloat    tasks_look_day_planner_resize_h    = 8.0;    /* edge hit-zone for resize */
-static const CGFloat    tasks_look_day_planner_block_inset = 2.0;    /* block l/r inset          */
-static const CGFloat    tasks_look_day_planner_time_w      = 2.0;    /* current-time line height */
+/* The day planner's metrics are shared_look.h's shared_look_day_planner_*. */
 
 /* ── Colours ────────────────────────────────────────────────────────── */
 
@@ -131,25 +119,6 @@ typedef NS_ENUM(NSInteger, TasksColor) {
  *   shared dynamic NSColor (never nil).  Main thread.
  */
 NSColor *tasks_color(TasksColor which);
-
-/*
- * tasks_color_dimmed — a system colour at a fraction of its strength, STILL
- * DYNAMIC.  -colorWithAlphaComponent: on a system colour resolves it on the
- * spot, for whichever appearance is current, and the result no longer
- * follows light and dark; this returns a dynamic colour that resolves the
- * base each time it is drawn, scaling the base's own alpha.  One colour per
- * base and strength, kept: a dynamic colour made of a block is equal to
- * nothing but itself, so callers that compare attributed strings (the
- * Kanban card's "unchanged, do not redraw") need the same object back.
- *
- * Inputs:
- *   base      — a system colour (labelColor, controlAccentColor, ...)
- *   alpha_pct — the strength, 0-100; 100 returns the base itself
- *
- * Output:
- *   shared dynamic NSColor.  Main thread.
- */
-NSColor *tasks_color_dimmed(NSColor *base, int alpha_pct);
 
 /*
  * tasks_due_color — the Due cell's text colour for a due date

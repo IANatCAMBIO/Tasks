@@ -5,7 +5,7 @@
 #include "task_pane.h"
 #include "task_rows.h"
 
-@class TasksDayPlanner;
+@class SharedDayPlanner;
 
 /*
  * library_window — the main window, and the contract between it and the
@@ -136,8 +136,9 @@
  * Single writer: toggle_pane (the "toggle-pane" command). */
 @property (nonatomic, readonly) BOOL kanban_on;
 
-/* The day planner panel; nil until build_layout. */
-@property (nonatomic, readonly) TasksDayPlanner *day_planner;
+/* The day planner panel (shared_day_planner.h; its delegate is a
+ * TasksPlannerHost, day_planner.h); nil until build_layout. */
+@property (nonatomic, readonly) SharedDayPlanner *day_planner;
 
 /* Whether the day planner shows: its split item is not collapsed (the
  * toggle-day-planner command flips it, sliding it as the sidebar slides). */
