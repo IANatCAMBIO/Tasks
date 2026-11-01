@@ -14,6 +14,11 @@
 /*
  * tasks_notify_add — enqueue one reminder and show the window.
  *
+ * A reminder for a task that is already listed does not add a second row: it
+ * is collapsed into the row shown, which takes the newer title and subtitle
+ * and carries a red circled count of the reminders it stands for.  Dismissing
+ * that row records every one of their keys.
+ *
  * Inputs:
  *   app      — the application context, borrowed; it outlives the window
  *   task_id  — the task the reminder is for, which a double-click opens

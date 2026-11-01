@@ -2,8 +2,9 @@
  * notify_window.m — Tasks reminders window (notify_window.h).
  *
  * One persistent NSPanel accumulates all pending reminders.  The window title
- * reads "1 Reminder" or "N Reminders".  A full-width blue hero area at the top
- * shows the selected item; a scrollable NSTableView lists every pending item.
+ * reads "Tasks - 1 Reminder" or "Tasks - N Reminders".  A full-width blue hero
+ * area at the top shows the selected item; a scrollable NSTableView lists every
+ * pending item.
  * Snooze and Dismiss split combo buttons sit at the bottom: the title fires
  * the default action and the chevron opens a menu of alternatives.  Mark
  * Complete, beside the expand chevron, finishes the selected reminders' tasks.
@@ -12,6 +13,15 @@
  * window when the list empties.  Snoozing removes the row and re-queues it
  * after the chosen interval via dispatch_after.  Double-clicking a row opens
  * the task's editor and leaves the reminder in place.
+ *
+ * ONE ROW PER TASK.  task_notify.m mints a fresh notification key for an
+ * undismissed task every reminder day, and again whenever its due date
+ * changes, so an overdue task is reminded each morning.  A reminder for a task
+ * already listed is therefore collapsed into the row shown: the row takes the
+ * newer title and subtitle and carries a red circled count of the reminders
+ * behind it, and dismissing it records every one of their keys.  Without that
+ * collapsing, a panel left standing — or closed with its red button, which
+ * only hides it — grew a second identical "Overdue" row every morning.
  *
  * A chevron button at the bar's lower left toggles between the default height
  * and one that fits every reminder; while expanded, the height follows the
@@ -29,19 +39,46 @@
 
 static const NSInteger snooze_default_mins = 10;
 
+/* The gap between a reminder's title and its repeat badge.  The badge carries
+ * it on its own left (its image is right-aligned), so the gap collapses with
+ * the badge and an unrepeated reminder's title gets the width back. */
+static const CGFloat badge_gap = 6.0;
+
+/* The highest count SF Symbols draws as "<n>.circle.fill"; a reminder repeated
+ * more often than this shows this number and the exact one in its tooltip. */
+static const NSUInteger badge_symbol_max = 50;
+
 /* ── Data model ──────────────────────────────────────────────────────── */
 
 @interface TasksReminderItem : NSObject
 @property (nonatomic, assign) int64_t   task_id;
-@property (nonatomic, copy)   NSString *key;       /* the notification key, recorded when dismissed */
-@property (nonatomic, copy)   NSString *title;
-@property (nonatomic, copy)   NSString *subtitle;
+/* Every notification key this one row stands for, oldest first: one per time
+ * the reminder fired for the task without being dismissed.  All of them are
+ * recorded when the row is dismissed, so none comes back. */
+@property (nonatomic, strong)   NSMutableArray<NSString *> *keys;
+@property (nonatomic, copy)     NSString *title;
+@property (nonatomic, copy)     NSString *subtitle;
+@property (nonatomic, readonly) NSUInteger repeats;
 - (instancetype)initWithTaskId:(int64_t)task_id key:(NSString *)key title:(NSString *)title
                       subtitle:(NSString *)subtitle;
+- (void)merge:(TasksReminderItem *)other;
 @end
 
 @implementation TasksReminderItem
 
+/*
+ * initWithTaskId:key:title:subtitle: — one reminder, firing for the first
+ * time.
+ *
+ * Inputs:
+ *   task_id  — the task it is for
+ *   key      — its notification key (task_notify.m)
+ *   title    — the task's title
+ *   subtitle — the context line, e.g. "Overdue"
+ *
+ * Output:
+ *   the item, holding that one key, so its repeats count is 1.
+ */
 - (instancetype)
 initWithTaskId:(int64_t)task_id key:(NSString *)key title:(NSString *)title
       subtitle:(NSString *)subtitle
@@ -49,14 +86,141 @@ initWithTaskId:(int64_t)task_id key:(NSString *)key title:(NSString *)title
     self = [super init];
     if (self) {
         _task_id  = task_id;
-        _key      = [key copy];
+        _keys     = [NSMutableArray arrayWithObject:[key copy]];
         _title    = [title copy];
         _subtitle = [subtitle copy];
     }
     return self;
 }
 
+/*
+ * repeats — how many times this reminder has fired: the number of keys it
+ * stands for, which is what the badge shows.
+ *
+ * Output:
+ *   the count, never 0; 1 for a reminder that has fired once.
+ */
+- (NSUInteger)
+repeats
+{
+    return _keys.count;
+}
+
+/*
+ * merge: — take another reminder for the same task into this row: the keys it
+ * stands for that this row does not hold yet, and its title and subtitle.
+ * Those are normally the newer ones, so an "Overdue" supersedes yesterday's
+ * "Due today"; a snoozed reminder returning to a row that fired again while
+ * it was away brings back its own line instead, which is the one the user
+ * snoozed.  Merging a row into itself, or a reminder for a different task,
+ * does nothing.
+ *
+ * Inputs:
+ *   other — the other reminder for this task, borrowed
+ */
+- (void)
+merge:(TasksReminderItem *)other
+{
+    if (other == nil || other == self || other.task_id != _task_id) return;
+
+    for (NSString *key in other.keys) {
+        if (![_keys containsObject:key]) [_keys addObject:key];
+    }
+    self.title    = other.title;
+    self.subtitle = other.subtitle;
+}
+
 @end
+
+/* ── Cell parts ──────────────────────────────────────────────────────── */
+
+/*
+ * tasks_reminder_badge — the red circled count on a reminder that has fired
+ * more than once.  It sizes itself from its image, so clearing the image
+ * collapses it to nothing and the title gets the room back; its width carries
+ * badge_gap, which the right-aligned image leaves empty on its left.
+ */
+@interface tasks_reminder_badge : NSImageView
+@end
+
+@implementation tasks_reminder_badge
+
+/*
+ * intrinsicContentSize — the circle plus its leading gap, or nothing at all
+ * when the badge has no image.
+ *
+ * Output:
+ *   the size the badge asks the row for.
+ */
+- (NSSize)
+intrinsicContentSize
+{
+    if (self.image == nil) return NSZeroSize;
+    return NSMakeSize(tasks_look_reminders_icon + badge_gap, tasks_look_reminders_icon);
+}
+
+/*
+ * setImage: — set the image and re-measure, so the row lays out again as the
+ * badge appears or goes.
+ *
+ * Inputs:
+ *   image — the circled-count symbol, or nil for no badge
+ */
+- (void)
+setImage:(NSImage *)image
+{
+    [super setImage:image];
+    [self invalidateIntrinsicContentSize];
+}
+
+@end
+
+/*
+ * cell_subview — a reminder cell's subview carrying `ident`.  Cells are reused
+ * (makeViewWithIdentifier:), so the views built on the first pass have to be
+ * found again every time a row is filled in.
+ *
+ * Inputs:
+ *   cell  — the cell view
+ *   ident — the identifier the subview was given when it was built
+ *
+ * Output:
+ *   the view, or nil when the cell carries none with that identifier.
+ */
+static NSView *
+cell_subview(NSTableCellView *cell, NSString *ident)
+{
+    for (NSView *v in cell.subviews) {
+        if ([v.identifier isEqualToString:ident]) return v;
+    }
+    return nil;
+}
+
+/*
+ * badge_image — the circled count for a reminder that fired n times, as SF
+ * Symbols' "<n>.circle.fill".  The symbols stop at badge_symbol_max, so a
+ * higher count draws that number and the caller's tooltip carries the exact
+ * one.  The red is the image view's tint, not the image's.
+ *
+ * Inputs:
+ *   n — how many times the reminder fired, 2 or more
+ *
+ * Output:
+ *   the image, or nil when the system has no such symbol.
+ */
+static NSImage *
+badge_image(NSUInteger n)
+{
+    NSString *name = [NSString stringWithFormat:@"%lu.circle.fill",
+                      (unsigned long)MIN(n, badge_symbol_max)];
+    NSImage  *sym  = [NSImage imageWithSystemSymbolName:name accessibilityDescription:nil];
+    if (sym == nil) return nil;
+
+    NSImageSymbolConfiguration *cfg =
+        [NSImageSymbolConfiguration configurationWithPointSize:tasks_look_reminders_icon
+                                                        weight:NSFontWeightRegular];
+    return [sym imageWithSymbolConfiguration:cfg];
+}
 
 /* ── Window controller ───────────────────────────────────────────────── */
 
@@ -73,6 +237,7 @@ initWithTaskId:(int64_t)task_id key:(NSString *)key title:(NSString *)title
 
 + (instancetype)shared;
 - (void)addItem:(TasksReminderItem *)item;
+- (TasksReminderItem *)item_for_task:(int64_t)task_id;
 - (void)update_hero;
 
 @end
@@ -112,8 +277,10 @@ init_window
     if (!self) return nil;
 
     _items = [[NSMutableArray alloc] init];
+    /* The title counts the reminders listed, from the empty list on, so the
+     * window's name has one spelling and one place it is set. */
+    [self update_title];
 
-    panel.title    = @"Reminders";
     panel.minSize  = NSMakeSize(tasks_look_reminders_min_w, tasks_look_reminders_min_h);
     panel.becomesKeyOnlyIfNeeded = NO;
     /* A reminder stays in view while another app is in front: above
@@ -409,15 +576,46 @@ place_lower_right
 }
 
 /*
- * addItem: — append a reminder to the list and bring the window forward.
+ * item_for_task: — the listed reminder for a task.
+ *
+ * Inputs:
+ *   task_id — the task
+ *
+ * Output:
+ *   the row standing for that task, or nil when none is listed.
+ */
+- (TasksReminderItem *)
+item_for_task:(int64_t)task_id
+{
+    for (TasksReminderItem *item in _items) {
+        if (item.task_id == task_id) return item;
+    }
+    return nil;
+}
+
+/*
+ * addItem: — add a reminder to the list and bring the window forward.  A
+ * reminder for a task that is already listed is collapsed into the row shown
+ * instead of adding a second one: the row keeps its place and its selection,
+ * takes the added reminder's title and subtitle (merge:), and counts it in
+ * its badge.
+ *
  * The showing waits for the next run-loop pass, so that a pass delivering
  * twenty overdue tasks at launch reloads the table and orders the window
  * front once, not twenty times.
+ *
+ * Inputs:
+ *   item — the reminder; the list takes it over, or merges it into the row it
+ *          belongs with and lets it go
  */
 - (void)
 addItem:(TasksReminderItem *)item
 {
-    [_items addObject:item];
+    TasksReminderItem *shown = [self item_for_task:item.task_id];
+
+    if (shown == nil) [_items addObject:item];
+    else              [shown merge:item];
+
     if (self.refresh_pending) return;
 
     self.refresh_pending = YES;
@@ -483,24 +681,27 @@ update_hero
 }
 
 /*
- * update_title — set the window title to "N Reminder(s)".
+ * update_title — set the window title to "Tasks - N Reminders".  The count is
+ * the rows listed: a reminder that fired more than once is one row, and its
+ * badge carries how many times.
  */
 - (void)
 update_title
 {
-    NSUInteger n = _items.count;
-    if (n == 1)
-        self.window.title = @"1 Reminder";
-    else
-        self.window.title = [NSString stringWithFormat:@"%lu Reminders",
-                             (unsigned long)n];
+    NSUInteger n    = _items.count;
+    NSString  *word = n == 1 ? @"Reminder" : @"Reminders";
+
+    self.window.title = [NSString stringWithFormat:@"Tasks - %lu %@",
+                         (unsigned long)n, word];
 }
 
 /* ── Actions ─────────────────────────────────────────────────────────── */
 
 /*
- * record_dismissed: — remember a dismissed reminder, so it is not shown
- * again until its task's due date or scheduled start changes.
+ * record_dismissed: — remember every notification key a dismissed reminder
+ * stands for, so none of them is shown again until its task's due date or
+ * scheduled start changes: the key that first put the row on screen, and any
+ * that fired into it while it stood there.
  *
  * Inputs:
  *   item — the reminder
@@ -508,8 +709,10 @@ update_title
 - (void)
 record_dismissed:(TasksReminderItem *)item
 {
-    if (self.app != NULL && self.app->db != NULL) {
-        task_db_reminder_dismiss(self.app->db, item.key.UTF8String);
+    if (self.app == NULL || self.app->db == NULL) return;
+
+    for (NSString *key in item.keys) {
+        task_db_reminder_dismiss(self.app->db, key.UTF8String);
     }
 }
 
@@ -697,6 +900,16 @@ tableView:(NSTableView *)tv
         [cell addSubview:st];
         st.identifier = @"status";
 
+        /* Repeat badge, between the title and the status label.  With no
+         * image it measures zero and the title spans to the status label. */
+        tasks_reminder_badge *bd = [[tasks_reminder_badge alloc] init];
+        bd.identifier       = @"badge";
+        bd.imageAlignment   = NSImageAlignRight;
+        bd.imageScaling     = NSImageScaleProportionallyDown;
+        bd.contentTintColor = shared_ui_color(shared_look_due_overdue);
+        bd.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell addSubview:bd];
+
         [NSLayoutConstraint activateConstraints:@[
             [iv.leadingAnchor  constraintEqualToAnchor:cell.leadingAnchor constant:10.0],
             [iv.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
@@ -707,9 +920,12 @@ tableView:(NSTableView *)tv
             [st.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
             [st.widthAnchor    constraintGreaterThanOrEqualToConstant:60.0],
 
+            [bd.trailingAnchor constraintEqualToAnchor:st.leadingAnchor
+                                             constant:-badge_gap],
+            [bd.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
+
             [tf.leadingAnchor  constraintEqualToAnchor:iv.trailingAnchor constant:8.0],
-            [tf.trailingAnchor constraintLessThanOrEqualToAnchor:st.leadingAnchor
-                                                        constant:-6.0],
+            [tf.trailingAnchor constraintLessThanOrEqualToAnchor:bd.leadingAnchor],
             [tf.centerYAnchor  constraintEqualToAnchor:cell.centerYAnchor],
         ]];
     }
@@ -718,21 +934,25 @@ tableView:(NSTableView *)tv
     cell.textField.stringValue = item.title;
 
     /* Status label */
-    NSTextField *st = [cell viewWithTag:0];
-    for (NSView *v in cell.subviews) {
-        if ([v isKindOfClass:[NSTextField class]] &&
-            [((NSTextField *)v).identifier isEqualToString:@"status"]) {
-            st = (NSTextField *)v;
-            break;
-        }
-    }
-    if (st) {
+    NSTextField *st = (NSTextField *)cell_subview(cell, @"status");
+    if (st != nil) {
         st.stringValue = item.subtitle;
-        /* Colour "Overdue" red, others in secondary label colour. */
-        if ([item.subtitle isEqualToString:@"Overdue"])
-            st.textColor = [NSColor colorWithSRGBRed:0.85 green:0.15 blue:0.15 alpha:1.0];
-        else
-            st.textColor = NSColor.secondaryLabelColor;
+        /* "Overdue" in the same red as an overdue Due cell (tasks_due_color),
+         * anything else in the secondary label colour. */
+        st.textColor = [item.subtitle isEqualToString:@"Overdue"]
+            ? shared_ui_color(shared_look_due_overdue)
+            : NSColor.secondaryLabelColor;
+    }
+
+    /* Repeat badge: shown only once the reminder has fired more than once,
+     * with the exact count in its tooltip, which the symbol may cap. */
+    tasks_reminder_badge *bd = (tasks_reminder_badge *)cell_subview(cell, @"badge");
+    if (bd != nil) {
+        BOOL repeated = item.repeats > 1;
+        bd.image   = repeated ? badge_image(item.repeats) : nil;
+        bd.toolTip = repeated ? [NSString stringWithFormat:@"Reminded %lu times",
+                                 (unsigned long)item.repeats]
+                              : nil;
     }
 
     return cell;

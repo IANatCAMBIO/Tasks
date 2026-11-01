@@ -96,6 +96,31 @@ twice.
 The calendar is the real one even in a `make run` sandbox: leave the sync
 off there, or sandbox tasks become events in your calendar.
 
+## Reminders
+
+Tasks reminds you about a task that is **due today** at 8:00 AM, and about
+a **scheduled** one ten minutes before it starts.  Reminders arrive either
+in the app's own **Reminders** panel in the lower-right corner of the
+screen, like an Outlook meeting reminder, or through the macOS
+Notification Center — Settings → Notifications chooses which.
+
+The panel lists every pending reminder and its title counts them: **Tasks
+- 3 Reminders**.  Select one to see it in the blue area at the top,
+double-click it to open its task, and use **Snooze** to be reminded again
+in 5 minutes to 2 hours, **Dismiss** to let it go, or **Mark Complete**
+to finish the task from the panel.
+
+A task that is still not done is reminded again at 8:00 AM the next
+morning, and goes on being reminded while it stays overdue.  Those repeats
+do not pile up: a task has at most **one row** in the panel, and a row
+reminded more than once carries a red circled count — ③ — of the
+reminders standing behind it (its tooltip gives the exact number).
+Dismissing the row dismisses all of them.
+
+Closing the panel with its red button only puts it away; the reminders in
+it are still pending and the next one brings it back.  **Dismiss** or
+**Dismiss All** is what clears them.
+
 ## Where the data lives
 
 **The tasks** are in the database Notes and Tasks share:

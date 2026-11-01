@@ -25,6 +25,8 @@
  *     message fades and is superseded, Open Database File switches, refuses
  *     and offers the default, and the menu bar reaches every command with
  *     no shortcut used twice;
+ *   - the reminders panel collapses repeated reminders for one task into a
+ *     single badged row and counts the rows in its title;
  *   - a closed window is RELEASED: the library window controller, its
  *     window and every pane are gone after shut_down, and the editor and
  *     Settings windows leave nothing behind in NSApp.windows;
@@ -60,6 +62,7 @@
 #import "editor_window.h"
 #import "library_window.h"
 #import "look.h"
+#import "notify_window.h"
 #import "row_text.h"
 #import "settings_window.h"
 #import "favorites_bar.h"
@@ -2981,6 +2984,116 @@ check_day_planner_calendar(NSString *dir)
     }
 }
 
+/* The reminders panel's actions, which notify_window.m keeps private; the
+ * check drives them through the window controller, as a button would. */
+@protocol ReminderPanelActions
+- (void)dismiss_all;
+@end
+
+/*
+ * reminder_panel — the reminders panel among NSApp's windows, found by the
+ * title update_title gives it from the moment it is built.  notify_window.m
+ * keeps the panel in a module-level singleton and exports no accessor for it,
+ * and the panel is built on the first reminder, so this answers nil until
+ * then — and answers before the panel is on screen, which is why the check
+ * waits on its visibility and not on this.
+ *
+ * Output:
+ *   the panel, or nil when no reminder has been shown yet.
+ */
+static NSWindow *
+reminder_panel(void)
+{
+    for (NSWindow *window in NSApp.windows) {
+        if ([window isKindOfClass:NSPanel.class] && [window.title hasPrefix:@"Tasks - "])
+            return window;
+    }
+    return nil;
+}
+
+/*
+ * wait_for — spin the run loop until a condition holds, for up to a second.
+ * The reminders panel is listed, filled and retitled from the run-loop pass
+ * after tasks_notify_add (notify_window.m, addItem:), which a loaded machine
+ * does not always reach inside a fixed wait.
+ *
+ * Inputs:
+ *   ready — the condition, asked again after every turn of the loop
+ *
+ * Output:
+ *   YES once it held, NO when the wait ran out.
+ */
+static BOOL
+wait_for(BOOL (^ready)(void))
+{
+    for (int i = 0; i < 20; i++) {
+        if (ready()) return YES;
+        check_spin(0.05);
+    }
+    return ready();
+}
+
+/*
+ * check_reminders — the reminders panel (notify_window.h): the reminders a
+ * task collects while nobody dismisses them collapse into ONE row carrying
+ * their count, a second task adds a row, the title counts rows and not
+ * reminders, and Dismiss All empties the panel.
+ *
+ * The keys are spelled as task_notify.m spells them — one per reminder day
+ * for the same due date — because that is what used to pile up: before the
+ * collapsing, a task overdue for three days stood in the list three times.
+ *
+ * Inputs:
+ *   app — the application context
+ *   dir — the snapshot folder
+ */
+static void
+check_reminders(TaskApp *app, NSString *dir)
+{
+    @autoreleasepool {
+        NSArray<NSNumber *> *ids = first_task_ids(app, 2);
+        if (ids.count < 2) {
+            check(0, "reminders: the sandbox holds two tasks to remind about");
+            return;
+        }
+        long long first = ids[0].longLongValue, second = ids[1].longLongValue;
+
+        for (int day = 1; day <= 3; day++) {
+            NSString *key = [NSString stringWithFormat:@"due:%lld:2026-10-29:2026-10-%02d",
+                             first, 29 + day];
+            tasks_notify_add(app, first, key, @"Pay the invoice", @"Overdue");
+        }
+        check(wait_for(^BOOL{ return reminder_panel().visible; }),
+              "reminders: the panel opens on the first reminder");
+
+        NSWindow *panel = reminder_panel();
+        if (panel == nil) return;
+
+        NSArray *items = [panel.windowController valueForKey:@"items"];
+        check(items.count == 1, "reminders: three reminders for one task are one row");
+        check([[items.firstObject valueForKey:@"repeats"] unsignedIntegerValue] == 3,
+              "reminders: the row counts all three");
+        check([panel.title isEqualToString:@"Tasks - 1 Reminder"],
+              "reminders: the title counts rows, not reminders");
+
+        tasks_notify_add(app, second, @"sched:0:0", @"File the report", @"Due today");
+        items = [panel.windowController valueForKey:@"items"];
+        check(items.count == 2, "reminders: a reminder for another task adds a row");
+        check(wait_for(^BOOL{ return [panel.title isEqualToString:@"Tasks - 2 Reminders"]; }),
+              "reminders: the title pluralises");
+
+        check(snapshot(panel, dir, @"reminders"), "snapshot: reminders, one with a repeat badge");
+        panel.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        check(snapshot(panel, dir, @"reminders-dark"), "snapshot: reminders, dark");
+        panel.appearance = nil;
+
+        [(id<ReminderPanelActions>)panel.windowController dismiss_all];
+        items = [panel.windowController valueForKey:@"items"];
+        check(items.count == 0 && !panel.visible,
+              "reminders: Dismiss All empties the list and puts the panel away");
+    }
+}
+
 /*
  * main — run the checks.
  *
@@ -3052,6 +3165,7 @@ main(int argc, const char *argv[])
         check_editor_window(app, dir);
         check_settings(app, dir);
         check_day_planner_calendar(dir);
+        check_reminders(app, dir);
         check_memory_and_ownership(app);
 
         if (argc > 2) {
