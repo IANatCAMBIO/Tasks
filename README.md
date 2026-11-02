@@ -1,6 +1,6 @@
 # Tasks
 
-![Tasks, the Kanban board](images/screenshot.png)
+![Tasks: the task list and the day planner](images/screenshot.png)
 
 Tasks is a task manager that replaces Reminders on macOS — a native AppKit
 app organised by tags rather than lists, with a Kanban board, subtasks,
