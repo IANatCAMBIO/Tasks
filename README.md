@@ -1,276 +1,145 @@
 # Tasks
 
-A macOS task manager — tags, tall task rows, a Kanban board, subtasks, due
-dates, recurring tasks — with a native AppKit interface.  Its tasks live in
-the one SQLite file it shares with the Notes app: an action item written in
-a note is an ordinary task here, and an edit made in either app appears in
-the other.  It began as a port of the GTK4 [Tasks](https://github.com/IANatCAMBIO/Tasks)
-app; the AppKit app is now the project's main line.
+![Tasks, the Kanban board](images/screenshot.png)
 
-## Branches
+Tasks is a task manager that replaces Reminders on macOS — a native AppKit
+app organised by tags rather than lists, with a Kanban board, subtasks,
+recurring tasks and a day planner that syncs both ways with the macOS
+Calendar. Its tasks live in one SQLite file it shares with the Notes app,
+so an action item written in a note is an ordinary task here and an edit
+in either app shows up in the other.
 
-| Branch | What it is |
-|---|---|
-| `master` | The AppKit app for macOS.  This is the project. |
-| `gtk4-testing` | The original GTK4 app (Linux and macOS), kept as a testing branch: the behavioural reference for the port, and a place to try ideas against the GTK code.  It is not the product and does not receive AppKit work. |
+## Quickstart
 
-**Status: in progress.**  The non-UI core is carried over from the GTK app and
-runs under the Cocoa run loop; parts of the AppKit interface are still
-skeletons with placeholder panes.  What works today:
+**Prerequisites**
 
-- the main window: toolbar, search field, sidebar (the views, then every
-  tag), the Favorites bar, task list (tall rows), status bar, the standard
-  menus;
-- task commands from the menus, the toolbar and the context menu: new,
-  delete, mark complete, high priority, add tag, clear completed;
-  show/hide completed; show/hide sidebar and Favorites bar; list/board
-  toggle;
-- recurring tasks roll forward while the app runs.
-
-Not yet ported (placeholders): the Kanban board, the task editor, Settings,
-sorting and manual order in the list, Compact Controls.  The plan and the interfaces the
-UI is being built against are in [porting/INTERFACES.md](porting/INTERFACES.md).
-
-The code is plain C for the core (with GLib, to be removed in a later phase)
-and Objective-C written in a C style for the interface.  No Xcode project, no
-nibs.
-
-## Requirements
-
-- macOS 14 or later to build against; the built app runs on the macOS version
-  it was built on, or later (see [BUILD.md](BUILD.md), "Platform notes").
-- Xcode Command Line Tools (`xcode-select --install`).
+- macOS 14 (Sonoma) or later
+- Xcode Command Line Tools: `xcode-select --install`
 - MacPorts with `glib2`, `sqlite3` and `pkgconf`:
 
   ```sh
   sudo port install glib2 sqlite3 pkgconf
   ```
-- The `shared_data` repository checked out beside this one
-  (`../shared_data`): the shared database module is compiled in from it
-  (see [BUILD.md](BUILD.md)).
 
-## Build and try it
-
-```sh
-make          # builds Tasks.app
-make seed     # creates a test database in dev/data
-make run      # runs the app against dev/data
-make test     # core tests
-```
-
-`make run` never touches real data: it points the app at `dev/data` inside
-the source tree, and at a shared database file there
-(`dev/data/shared_data.db`).
-
-## Install
+**Clone and build.** Tasks compiles in the `shared_data` and `shared_ui`
+modules, so check all three repositories out beside each other — the
+build looks for `../shared_data` and `../shared_ui`, or the paths in
+`SHARED_DATA_DIR` and `SHARED_UI_DIR`:
 
 ```sh
-make install  # copies Tasks.app to ~/Applications
+git clone https://github.com/IANatCAMBIO/Tasks.git tasks
+git clone https://github.com/IANatCAMBIO/SharedData.git shared_data
+git clone https://github.com/IANatCAMBIO/SharedUI.git shared_ui
+cd tasks
+export PATH=/opt/local/bin:$PATH   # MacPorts pkg-config
+make install
 ```
 
-A running installed copy is asked to quit first and reopened afterwards.
+`make install` builds the bundle and copies it to `~/Applications/Tasks.app`
+(per-user; no `sudo`). A running copy is asked to quit first and reopened
+afterwards.
 
-## Calendar
-
-The day planner syncs with the **macOS Calendar**, both ways, and so with
-every account set up in the Calendar app (Google, iCloud, Exchange…),
-which does the syncing with the service.  Tasks has no sign-in of its
-own.  Meetings in the calendars you choose are drawn in the planner so
-you can schedule around them.  Tasks you drag onto the planner become
-events in the calendar you choose, and moving, stretching or removing
-them updates the event.  Moving or deleting that event in Calendar (or in
-Google Calendar, once Calendar has synced it) updates the planner.
-
-To set it up, open Settings → Calendar and tick **Sync the day planner
-with Calendar**.  macOS asks once for access to your calendars; then
-choose the calendar tasks go to and the calendars to show.  Notes has the
-same section: the switch and the shown calendars are one setting both
-apps share, kept in their shared database.  If access was refused,
-**Open Privacy Settings…** goes to System Settings → Privacy & Security →
-Calendars.
-
-Tasks pushed to Google by the earlier Google sync are found again in the
-macOS Calendar by their Google id on the first sync, so none is pushed
-twice.
-
-The calendar is the real one even in a `make run` sandbox: leave the sync
-off there, or sandbox tasks become events in your calendar.
-
-## Reminders
-
-Tasks reminds you about a task that is **due today** at 8:00 AM, and about
-a **scheduled** one ten minutes before it starts.  Reminders arrive either
-in the app's own **Reminders** panel in the lower-right corner of the
-screen, like an Outlook meeting reminder, or through the macOS
-Notification Center — Settings → Notifications chooses which.
-
-The panel lists every pending reminder and its title counts them: **Tasks
-- 3 Reminders**.  Select one to see it in the blue area at the top,
-double-click it to open its task, and use **Snooze** to be reminded again
-in 5 minutes to 2 hours, **Dismiss** to let it go, or **Mark Complete**
-to finish the task from the panel.
-
-A task that is still not done is reminded again at 8:00 AM the next
-morning, and goes on being reminded while it stays overdue.  Those repeats
-do not pile up: a task has at most **one row** in the panel, and a row
-reminded more than once carries a red circled count — ③ — of the
-reminders standing behind it (its tooltip gives the exact number).
-Dismissing the row dismisses all of them.
-
-Closing the panel with its red button only puts it away; the reminders in
-it are still pending and the next one brings it back.  **Dismiss** or
-**Dismiss All** is what clears them.
-
-## Where the data lives
-
-**The tasks** are in the database Notes and Tasks share:
-
-```
-~/Library/Application Support/camb.io/
-    shared_data.db   the shared database (with its -wal and -shm files)
-    location         optional: the path of a database kept elsewhere
-    backups/         backups, by default
-```
-
-Both apps open the same file and follow the same `location` pointer, which
-**File > Open Database File…** writes when you answer **Make Default**.  The
-file must be on a local disk and not inside iCloud Drive, Dropbox or
-another synced folder: the app refuses to open it there.  Only a shared
-database can be opened; an old Tasks `tasks.db` or a Notes `notes.db` is
-refused untouched (as is an empty file: the shared module creates a missing
-database complete, in one step), and is brought across with the shared
-module's migration tool instead.  Changes Notes (or a script) makes to the
-tasks appear within a second, keeping the selection and the scroll; a change
-to notes alone refreshes only the "From note: …" lines of open editors.  An edit never overwrites a field you did
-not change, even one you were in the middle of editing.  When a change cannot
-be saved because another app held the file for too long, the status bar says
-so and the panes show what is really stored; an editor keeps the change,
-saves it again with the next change or on closing, and will not close while
-it cannot.
-
-**Tags are how tasks are organised**; there are no lists.  A task carries
-any number of tags, none included: a task without a tag is listed under
-All Tasks alone.  The sidebar at the left shows three
-views — **All Tasks**, **All Favorites** (every task with a favorite tag)
-and the **3-Day Forecast** — then every tag, by name, with how many open tasks
-carry it (Settings → Appearance → **Show task counts next to tags in the
-sidebar**, on by default).  Selecting a tag shows
-every task carrying it, the way a list would (sorting, Kanban, search, its
-own manual order); each row says what it is tagged.
-
-- The editor's **Tags** field gives a task its tags.  Typing offers the
-  tags that already exist (pick one with the arrow keys or a click);
-  Return makes what you typed a tag, a new one when no tag has that name.
-  Names ignore case: "work" typed is the existing "Work".  Delete a tag's
-  token to take it off.
-- Select tasks and right-click, **Add Tag ▸** gives them all a tag.
-- Right-click a tag in the sidebar, **Edit Tag…**: give it an emoji (a
-  click in the emoji slot opens the emoji picker), and make it a favorite
-  or not.  A tag's name never changes.
-- Right-click a tag, **Clear Tag from All Tasks**: after a confirmation
-  ("Are you sure you want to remove the tag … from N tasks?") the tag comes off every
-  task that carries it, so it leaves this sidebar.  It stays in the tag
-  lists (Add Tag, a new task) while a note carries it; once no task and no
-  note does, it is deleted.
-- **Favorite** tags have a button each in the **Favorites bar** above the
-  task pane (View → Hide/Show Favorites Bar), and so can the All Tasks,
-  All Favorites and 3-Day Forecast views; right-click a tag or a view for
-  **Add to Favorites**, a button for **Remove from Favorites**.  Drag a
-  button along the bar to put the favorites in your order (new ones join
-  at the end: views, then tags by name).  The sidebar toggles with the
-  button at the far left of the toolbar (⌃⌘S); drag its right edge to
-  make it wider or narrower, and it keeps that width.
-- A subtask is born with its parent's tags.  New Task gives the selected
-  tag, or none with a view selected; Quick Task gives none.
-- **Tags are shared with Notes**: a note can carry the same tags (its Tags
-  field and its `#tags`), and an emoji set in either app shows in both.
-  The sidebar and the Favorites bar show the tags your tasks carry;
-  wherever you choose a tag (the Tags field, Add Tag)
-  every tag is offered, Notes' too.  Favorites are each app's own.
-- A tag exists while a task or a note carries it: when the last one lets
-  go — untagged or deleted — the tag goes.
-- A task Notes writes carries the tag **❗ Action Items**.
-
-Lists are gone, and so are Notes' folders.  Opening an older database for
-the first time (schema 100) makes a verified backup, then turns each list
-into a tag on its tasks — its emoji kept — each list group into a tag on
-the tasks of its lists, and every folder into a tag on the notes in it.
-Each action item written in a note in a folder gets the folder's name
-written before its title once ("Captain's Log - lock down my diet RE
-keto") unless the title already starts with it; from then on titles are
-yours.  The old per-task favourite star is dropped: favorites are tags.
-
-A task written as an action item in a note shows "From note: …" in its
-editor.  Its title, completion and due date stay in step with the note's
-line; deleting it here makes Notes drop the item mark from the line.
-
-**Backups** are on by default: every hour a verified copy of the shared
-database is written to `backups/` in the database file's own folder (or a
-folder chosen in Settings), named `shared_data-YYYYMMDD-HHMMSSZ.db` in UTC
-and keeping the newest 48.  Notes and Tasks share these settings, and
-whichever app is running makes the backup when it is due.  **Back Up Now**
-in Settings makes one at once; Settings also shows when the last backup was
-made and why the last pass failed, if it did — both when a copy was made
-but old backups could not be removed.
-
-**Tasks' own settings** stay in Tasks' folder (attachments are links to
-files wherever they are, and are not copied):
-
-```
-~/Library/Application Support/Tasks/
-    tasks.ini        the settings
-```
-
-Setting `TASKS_DATA_DIR` moves Tasks' folder and `CAMBIO_SHARED_DB` names
-the database file; `make run`, `make seed`, `make test` and `make ui-check`
-set both to places under `dev/`.  While `CAMBIO_SHARED_DB` is set, **Make
-Default** is refused with the shared module's reason, and backups go to
-the folder set for that database or, when none is set, to `backups/`
-beside it — never to the per-user folder.
-
-**This app does not share data with the GTK Tasks app** (the `gtk4-testing`
-branch) and cannot open that app's folder (`~/.local/share/tasks`): the
-database code refuses any path inside it.
-
-## Configuration
-
-Settings are changed in the app and stored in `tasks.ini` (group `[tasks]`,
-written by the app; comments are not preserved), apart from the backup
-settings, which live in the shared database so that Notes follows them too.
-The Settings window (⌘,) holds the appearance options (bold titles, Kanban
-shadows, business-day forecast, the sidebar's tag counts), New Tasks
-(whether Quick Task's ⌃⌥⌘T works from any app),
-the database's health
-and fingerprint, the backups, notifications and the Calendar; the View
-menu holds the rest.  Every key and its default is listed in
-`src/task_config.h`.
-
-## Keyboard shortcuts
-
-| Shortcut | Action |
+| Command | What it does |
 |---|---|
-| ⌘N | New Task (with the selected tag; with a view selected, none) |
-| ⌃⌥⌘T | Quick Task — a task without a tag whatever is selected, its editor in the lower-right corner of the screen; works from any app while Tasks is running |
-| ⌘I | Info… — open the task editor |
-| ⌘⌫ | Delete the selected task(s) |
-| ⌘F | Find — search the selected view |
-| ⌃⌘S | Hide / Show Sidebar |
-| ⇧⌘K | Kanban View / List View |
-| ⌘, | Settings… |
-| ⌘W | Close the window (closing the main window quits) |
+| `make` | build `Tasks.app` in the repo root |
+| `make seed` | create a test database in `dev/data` |
+| `make run` | build, then run against `dev/data` — never your real tasks |
+| `make install` | build, then install to `~/Applications` |
+| `make test` | release checks (build, unit, feature, UI) |
+| `make clean` | remove `build/` and the bundle |
 
-## Documents
+To try it without touching real data, `make seed && make run`; it points
+the app at `dev/data` inside the source tree and at a shared database
+there (`dev/data/shared_data.db`).
 
-- [BUILD.md](BUILD.md) — toolchain, dependencies, targets, platform notes.
-- [porting/INTERFACES.md](porting/INTERFACES.md) — the contract for the UI
-  work: frozen headers, ownership rules, the command table, work packages.
-- [porting/GTK_PORTING_MAP.md](porting/GTK_PORTING_MAP.md) — what the GTK
-  app does, feature by feature.
-- [porting/FILES_PLAYBOOK.md](porting/FILES_PLAYBOOK.md) — AppKit
-  conventions and lessons from the Files app.
-- `porting/gtk_reference/` — the GTK sources and documents, kept as the
-  behavioural reference until the port is complete.  They describe the GTK
-  app, not this one.  The full GTK4 app is on the `gtk4-testing` branch.
+While MacPorts GLib is linked in, the built app runs on the macOS version
+it was built on, or later. See [BUILD.md](BUILD.md) for the toolchain,
+dependencies, test targets and the platform notes.
+
+## First run
+
+Launch from `~/Applications`, or `make seed && make run` for the sandbox.
+
+**The database.** With no database where one is expected, Tasks asks
+whether to create a new one or open an existing shared database file. It
+never creates one silently. The default is
+`~/Library/Application Support/camb.io/shared_data.db`, shared with Notes;
+the file must be on a local disk and outside iCloud Drive, Dropbox or any
+other synced folder.
+
+**Calendar access** is asked for once, the first time you tick
+Settings ▸ Calendar ▸ *Sync the day planner with Calendar*. It is off until
+you do. If you refuse, **Open Privacy Settings…** takes you to System
+Settings ▸ Privacy & Security ▸ Calendars. The calendar is your real one
+even in a `make run` sandbox, so leave the sync off there.
+
+**Notifications** are asked for the first time a reminder is due, and only
+if Settings ▸ Notifications is set to use Notification Center. Tasks'
+own Reminders panel needs no permission and is the default.
+
+**Code signing.** The build signs with your first "Apple Development"
+certificate if you have one (`security find-identity -v -p codesigning`),
+so the Calendar and Notification grants survive rebuilds and
+`make install`. Without a certificate it falls back to an ad-hoc
+signature, which macOS ties to a single build — the grants then have to be
+given again after each install. To choose a specific identity:
+
+```sh
+make install CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)"
+```
+
+## Uninstalling
+
+1. If you turned on Settings ▸ Calendar, untick **Sync the day planner
+   with Calendar** first, so Tasks stops writing events to your calendar.
+   Events it already created stay in Calendar; delete them there.
+2. Quit Tasks and delete `~/Applications/Tasks.app`.
+3. Your data is outside the bundle and survives, so Notes goes on using
+   it. To remove it too:
+
+   ```sh
+   rm -rf ~/Library/Application\ Support/Tasks        # Tasks' own settings
+   rm -rf ~/Library/Application\ Support/camb.io      # the shared database and backups
+   ```
+
+   Delete `camb.io` only if you are removing Notes as well — the notes are
+   in that same file.
+
+## Features
+
+Compared with Reminders:
+
+- **Tags instead of lists** — a task carries any number of tags, or none.
+  The sidebar lists every tag with its open count, and selecting one
+  behaves like a list of its own: sorting, Kanban, search and manual order
+- **A Kanban board** (⇧⌘K) — New / In Progress / Done columns you drag
+  between, with subtask checklists and attachment counts on the cards
+- **One database with Notes** — an action item written in a note *is* a
+  task here, tagged ❗ Action Items; edits flow both ways within a second,
+  and neither app overwrites a field the other changed
+- **A day planner that syncs both ways with macOS Calendar** — meetings
+  from every account Calendar knows (Google, iCloud, Exchange) are drawn
+  in, and a task dragged onto the planner becomes a real calendar event
+  that follows you when you move, stretch or delete it
+- **Reminders that don't pile up** — an overdue task is reminded again
+  each morning but keeps a single row, carrying a red circled count of the
+  reminders behind it. Snooze from 5 minutes to 2 hours, dismiss, or mark
+  complete from the panel itself
+- **Its own reminder panel**, Outlook-style in the corner of the screen,
+  instead of Notification Center — your choice in Settings
+- **Quick Task from any app** (⌃⌥⌘T) — a global shortcut that opens a
+  one-task editor in the corner of the screen without bringing Tasks
+  forward
+- **Hourly verified backups**, on by default: `VACUUM INTO` copies kept 48
+  deep, with the policy in the database so Notes follows it too
+- **A 3-Day Forecast view**, subtasks that inherit their parent's tags,
+  recurring tasks that roll forward while the app runs, tall rows with
+  notes and attachment counts, and a Compact Controls layout for a narrow
+  window
+
+Everything in detail — the tag model, the Calendar setup, the reminder
+rules, where the data lives and the keyboard shortcuts — is in
+[USER_GUIDE.md](USER_GUIDE.md).
 
 ## License
 
