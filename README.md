@@ -130,6 +130,11 @@ Compared with Reminders:
 - **Quick Task from any app** (⌃⌥⌘T) — a global shortcut that opens a
   one-task editor in the corner of the screen without bringing Tasks
   forward
+- **A database that does not grow for ever** — Settings can delete
+  completed tasks once they are a set number of days, months or years old,
+  off until you turn it on and asking before the first pass. An action
+  item from a note loses the task it became and nothing else: the line in
+  the note keeps its text, with a ✅ where the `!` was
 - **Hourly verified backups**, on by default: `VACUUM INTO` copies kept 48
   deep, with the policy in the database so Notes follows it too
 - **A 3-Day Forecast view**, subtasks that inherit their parent's tags,

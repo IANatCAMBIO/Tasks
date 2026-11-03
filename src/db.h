@@ -41,8 +41,10 @@
  * such a task.
  *
  * Deletion is a SOFT flag (`deleted` = tombstone): a tombstoned row is
- * hidden everywhere until it is purged.  Every mutation of a task's own
- * fields stamps `updated_at` (unix seconds).
+ * hidden everywhere until it is purged.  What purges one is the
+ * completed-task cleanup (cleanup.h, task_db_tasks_purge_done), the only
+ * thing in either app that takes rows out of the file.  Every mutation of
+ * a task's own fields stamps `updated_at` (unix seconds).
  * =========================================================================== */
 
 #ifndef TASK_DB_H
@@ -678,6 +680,52 @@ void task_db_reminders_prune(TaskDatabase *db, gint64 before);
  * answers by unmarking the line.  Returns TRUE when the rows were removed.
  * ------------------------------------------------------------------------- */
 gboolean task_db_task_purge(TaskDatabase *db, gint64 id);
+
+/* ---------------------------------------------------------------------------
+ * task_db_tasks_done_before() — how many live top-level tasks a cleanup
+ * pass would take right now: those completed before `cutoff` (unix
+ * seconds).  What a Settings confirmation counts before the user agrees to
+ * it.  Judged exactly as task_db_tasks_purge_done judges them, so the
+ * number it reports is the number that goes.
+ * ------------------------------------------------------------------------- */
+guint task_db_tasks_done_before(TaskDatabase *db, gint64 cutoff);
+
+/* ---------------------------------------------------------------------------
+ * task_db_tasks_purge_done() — THE CLEANUP PASS: take every top-level task
+ * completed before `cutoff` (unix seconds), with its subtasks, in ONE
+ * transaction.  What the retention setting asks for (cleanup.h holds the
+ * policy; this is the write).
+ *
+ * A task is aged by its completed_at, or by updated_at when nothing
+ * stamped the completion.  Whole FAMILIES only — a top-level task with its
+ * subtasks, as Clear Completed treats them — and never a family holding a
+ * recurring task, which is not finished work but a task between
+ * occurrences.
+ *
+ * Two outcomes, because a Notes action item is not Tasks' row to remove:
+ *
+ *   - no note line carries any task of the family: the rows are PURGED,
+ *     and the schema's cascades take their task_tags and attachments rows
+ *     (a tag whose last carrier this was goes too).  The calendar binding
+ *     is the exception and outlives the row on purpose (cal_store.h), so
+ *     that the sync can still delete the event it made.  Already
+ *     tombstoned families are purged here as well, which is what finally
+ *     clears the ones below.
+ *   - a note line still carries one: the family is TOMBSTONED instead
+ *     (task_db_task_delete's rule), the link left for Notes, which unmarks
+ *     the line — the note KEEPS the text, with a mark where the '!' was
+ *     for how the work ended (a check mark here: every task this pass
+ *     takes was completed), and loses only the task the line had become.  The link goes with that, and a later pass purges the
+ *     rows.  Purging first would be a data bug: the next save of that note
+ *     would see a line naming a task that no longer exists and write it
+ *     again as a new one.
+ *
+ * Output:
+ *   how many top-level tasks were purged; *tombstoned (may be NULL)
+ *   receives how many were tombstoned for Notes instead.  0 and 0 when
+ *   nothing was due or the transaction failed (logged).
+ * ------------------------------------------------------------------------- */
+guint task_db_tasks_purge_done(TaskDatabase *db, gint64 cutoff, guint *tombstoned);
 
 /* ---------------------------------------------------------------------------
  * task_db_task_note() — the title of the note a task was written in, when

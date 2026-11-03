@@ -46,6 +46,17 @@
 #define TASK_CFG_QUICK_TASK_HOTKEY   "quick_task_hotkey"       /* bool, 1: Quick Task's shortcut
                                                                * works from any app (hotkey.h) */
 
+/* Cleanup (Settings window; the pass is cleanup.h) */
+#define TASK_CFG_CLEANUP_ENABLED     "cleanup_completed"       /* bool, 0: delete completed
+                                                               * tasks once they are old */
+#define TASK_CFG_CLEANUP_AFTER       "cleanup_completed_after" /* int, 6: how many units old
+                                                               * (TASK_CLEANUP_AFTER_MIN..MAX) */
+#define TASK_CFG_CLEANUP_UNIT        "cleanup_completed_unit"  /* int, 4: the unit of that
+                                                               * number, a TaskRecurUnit —
+                                                               * DAY, MONTH or YEAR (4 =
+                                                               * months); anything else
+                                                               * reads as months */
+
 /* Library window state */
 #define TASK_CFG_SHOW_COMPLETED      "show_completed"        /* bool, 1 */
 #define TASK_CFG_SHOW_SUBTASKS       "show_subtasks"         /* bool, 1: a subtask gets a row of

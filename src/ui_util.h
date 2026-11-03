@@ -68,6 +68,25 @@ NSString *tasks_title_string(const Task *task, NSString *untitled);
  */
 NSString *tasks_tag_title(const TaskTag *tag);
 
+/* ── Controls ───────────────────────────────────────────────────────── */
+
+/*
+ * tasks_popup_button — a pop-up menu of fixed choices, in the apps' text
+ * size.  Every pop-up in the app is made here, so the editor's status and
+ * interval menus and Settings' retention menu are one control with one
+ * look.
+ *
+ * Inputs:
+ *   titles — the choices, in index order; the index IS the value the
+ *            caller reads back (a TaskStatus, a TaskRecurUnit)
+ *   target — receives the action
+ *   action — sent when the selection changes
+ *
+ * Output:
+ *   the pop-up, its first choice selected.
+ */
+NSPopUpButton *tasks_popup_button(NSArray<NSString *> *titles, id target, SEL action);
+
 /* ── Images ─────────────────────────────────────────────────────────── */
 
 /*

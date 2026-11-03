@@ -9,6 +9,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include "backup.h"
+#include "cleanup.h"
 #include "core_views.h"
 #include "db.h"
 #import "cal_eventkit.h"
@@ -99,6 +100,7 @@ start_config:(char **)out_path
     TaskApp *app = task_app_new();
     task_core_views_init();
     task_recur_init(app);
+    task_cleanup_init(app);
     task_backup_init(app);
     task_notify_init(app);
     cal_eventkit_init(app);

@@ -8,6 +8,7 @@ The full reference for Tasks. See [README.md](README.md) to install it and
 - [Reminders](#reminders)
 - [Where the data lives](#where-the-data-lives)
 - [Working with Notes](#working-with-notes)
+- [Cleanup: deleting completed tasks](#cleanup-deleting-completed-tasks)
 - [Backups](#backups)
 - [Configuration](#configuration)
 - [Keyboard shortcuts](#keyboard-shortcuts)
@@ -191,7 +192,65 @@ will not close while it cannot.
 
 A task written as an action item in a note shows "From note: …" in its
 editor. Its title, completion and due date stay in step with the note's
-line; deleting it here makes Notes drop the item mark from the line.
+line; deleting it here — by hand or through
+[Cleanup](#cleanup-deleting-completed-tasks) — makes Notes drop the item
+mark from the line and keep the text, leaving ✅ in its place when the task
+was completed and 🪦 when it was deleted before it was done.
+
+## Cleanup: deleting completed tasks
+
+A completed task is only **hidden** (View > Show Completed): nothing takes
+it out of the database, so a file you have used for years holds every task
+you ever ticked. The **Cleanup** section of Settings (⌘,) is what removes
+them.
+
+**Off until you turn it on.** Tick *Delete completed tasks once they are
+old* and set how old under it — a number and days, months or years, six
+months by default. Months and years are calendar months and years, so
+"6 months" means six months back from today rather than 180 days. The line
+under the setting always says what that amounts to right now: how many
+completed tasks are already older than the cutoff, and the date they are
+older than.
+
+Turning the switch on asks first, naming how many tasks it is about to
+delete; answering **Cancel** leaves the switch off rather than putting the
+question off until the tasks have gone. After that a pass runs at every
+launch and once a day while the app is open. **Clean Up Now** runs one
+pass immediately and works with the switch off, so a one-off tidy-up does
+not mean turning automatic deletion on. Deleted tasks are **not**
+recoverable from the app — they are in your backups and nowhere else.
+
+What a pass takes, and what it leaves:
+
+| | |
+|---|---|
+| A completed top-level task older than the cutoff | deleted, with its subtasks |
+| A completed **subtask** of a task still being worked on | kept — a family goes whole or not at all |
+| A **recurring** task sitting completed between occurrences | kept — it comes back round, so it is not finished work |
+| A completed task **tagged, pinned or attached** | deleted like any other; its attachments are links, so the files themselves are untouched |
+| A completed task with a **day-planner session** | deleted; the calendar event it made is deleted with it on the next sync pass |
+| A tag whose last task a pass removes | removed with it, as everywhere else in the app |
+| An **action item from a note** | the task is deleted; the note keeps the text, with a ✅ where the `!` was |
+
+**Action items are the special case.** A task created by a `!` line in a
+note cannot simply be removed, because the line still names it and Notes
+would write it back as a new task. A pass therefore marks it deleted and
+leaves the link, and Notes answers that the way it answers any deletion
+from Tasks: it takes the `!` off the line and leaves the sentence exactly
+as you typed it. Because a cleaned-up task was completed, Notes writes a
+**✅** where the `!` was, so the line still reads as finished work rather
+than as a sentence someone once wrote. (A task deleted while it was still
+open gets 🪦 instead, so a note says afterwards which of its items were
+finished and which were given up on. Cleanup only ever takes completed
+tasks, so only a deletion by hand in Tasks leaves that one.) The task is gone from Tasks, the writing stays
+in the note. The row itself is cleared from the database by the next pass,
+once Notes has unmarked the line — so an action item's last trace leaves the
+file the first time Notes runs after the cleanup, not before.
+
+The age a task is judged by is when it was last completed. A task
+completed by a writer that recorded no completion time is judged by when
+it last changed instead, which is never earlier than its completion — so
+nothing is ever deleted sooner than the retention allows.
 
 ## Backups
 
@@ -212,8 +271,8 @@ backup settings, which live in the shared database so that Notes follows
 them too. The Settings window (⌘,) holds the appearance options (bold
 titles, Kanban shadows, business-day forecast, the sidebar's tag counts),
 New Tasks (whether Quick Task's ⌃⌥⌘T works from any app), the database's
-health and fingerprint, the backups, notifications and the Calendar; the
-View menu holds the rest. Every key and its default is listed in
+health and fingerprint, Cleanup (how long completed tasks are kept), the
+backups, notifications and the Calendar; the View menu holds the rest. Every key and its default is listed in
 `src/task_config.h`.
 
 ## Keyboard shortcuts

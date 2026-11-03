@@ -79,6 +79,7 @@
 #include "check.h"
 
 #include "backup.h"
+#include "cleanup.h"
 #include "core_views.h"
 #include "task_config.h"
 #include "task_order.h"
@@ -2749,9 +2750,24 @@ check_settings(TaskApp *app, NSString *dir)
         check(label(@"⚠ alongside the database") != nil,
               "settings: a backup folder beside the database is flagged as such");
 
-        NSTextField *interval_field = (NSTextField *)find(^BOOL(NSView *view) {
-            return [view isKindOfClass:NSTextField.class] && ((NSTextField *)view).editable;
-        });
+        /* The number pair is found by its STEPPER's range, not by being
+         * the first editable field in the form: Cleanup has a number pair
+         * of its own, and it sits above this one. */
+        NSTextField *(^paired_field)(NSStepper *) = ^NSTextField *(NSStepper *stepper) {
+            for (NSView *view in stepper.superview.subviews) {
+                if ([view isKindOfClass:NSTextField.class] && ((NSTextField *)view).editable)
+                    return (NSTextField *)view;
+            }
+            return nil;
+        };
+        NSStepper *(^stepper_ranged)(double) = ^NSStepper *(double max) {
+            return (NSStepper *)find(^BOOL(NSView *view) {
+                return [view isKindOfClass:NSStepper.class] &&
+                       ((NSStepper *)view).maxValue == max;
+            });
+        };
+        NSTextField *interval_field =
+            paired_field(stepper_ranged(SHARED_BACKUP_INTERVAL_MIN_MAX));
         interval_field.stringValue = @"99999";
         [interval_field sendAction:interval_field.action to:interval_field.target];
         check(policy(app, SHARED_SETTING_BACKUP_INTERVAL_MIN) == SHARED_BACKUP_INTERVAL_MIN_MAX &&
@@ -2817,6 +2833,73 @@ check_settings(TaskApp *app, NSString *dir)
               "settings: ... until a backup succeeds");
         check(label(@"Last backup: ") != nil,
               "settings: when the last backup was made (backup_last_at) is shown");
+
+        /* Cleanup: the retention is held to its range and written as a
+         * pair, the line under it says what that amounts to, and Clean Up
+         * Now asks before it takes anything.  A task completed longer ago
+         * than the retention is made here, and the pass is what removes
+         * it. */
+        gint was_after = task_config_get_int(TASK_CFG_CLEANUP_AFTER);
+        gint was_unit  = task_config_get_int(TASK_CFG_CLEANUP_UNIT);
+        gint64 ancient = task_db_task_create(app->db, 0, "ui-check finished long ago", NULL);
+        char  *backdate = sqlite3_mprintf(
+            "UPDATE tasks SET status = 2, completed_at = %lld, updated_at = %lld"
+            " WHERE id = %lld",
+            (long long)(time(NULL) - 400 * 24 * 60 * 60),
+            (long long)(time(NULL) - 400 * 24 * 60 * 60), (long long)ancient);
+        sqlite3_exec(shared_db_handle(app->db->shared), backdate, NULL, NULL, NULL);
+        sqlite3_free(backdate);
+
+        NSStepper     *after_stepper = stepper_ranged(TASK_CLEANUP_AFTER_MAX);
+        NSTextField   *after_field   = paired_field(after_stepper);
+        NSPopUpButton *unit_menu     = (NSPopUpButton *)find(^BOOL(NSView *view) {
+            return [view isKindOfClass:NSPopUpButton.class];
+        });
+        after_field.stringValue = @"99999";
+        [after_field sendAction:after_field.action to:after_field.target];
+        check(task_config_get_int(TASK_CFG_CLEANUP_AFTER) == TASK_CLEANUP_AFTER_MAX &&
+              after_field.integerValue == TASK_CLEANUP_AFTER_MAX,
+              "settings: a typed retention is held to its range and written");
+        after_field.integerValue = 1;
+        [after_field sendAction:after_field.action to:after_field.target];
+        [unit_menu selectItemAtIndex:2];
+        [unit_menu sendAction:unit_menu.action to:unit_menu.target];
+        check(task_config_get_int(TASK_CFG_CLEANUP_AFTER) == 1 &&
+              task_config_get_int(TASK_CFG_CLEANUP_UNIT) == TASK_RECUR_YEAR,
+              "settings: the retention's number and unit are written together");
+
+        guint due = task_cleanup_pending(app);
+        check(due >= 1 && label([NSString stringWithFormat:@"%u completed task", due]) != nil,
+              "settings: the line under it says how much the retention amounts to");
+
+        [button(@"Clean Up Now") performClick:nil];
+        check_spin(0.2);
+        check(tool_panel() != nil, "settings: Clean Up Now asks before it deletes anything");
+        answer_panel(0);                 /* Cancel is the default button    */
+        check_spin(0.2);
+        Task *spared = task_db_task_get(app->db, ancient);
+        check(spared != NULL && task_cleanup_pending(app) == due,
+              "settings: ... and Cancel leaves every task where it was");
+        task_free(spared);
+
+        [button(@"Clean Up Now") performClick:nil];
+        check_spin(0.2);
+        answer_panel(1);                 /* Delete                          */
+        check_spin(0.3);
+        check(task_db_task_get(app->db, ancient) == NULL && task_cleanup_pending(app) == 0,
+              "settings: Clean Up Now removes what is older than the retention");
+        check(label(@"Deleted ") != nil, "settings: ... and says what it took");
+
+        [button(@"Delete completed tasks once they are old") performClick:nil];
+        check_spin(0.2);
+        check(task_config_get_bool(TASK_CFG_CLEANUP_ENABLED) && tool_panel() == nil,
+              "settings: the cleanup switch writes its setting, asking nothing with "
+              "nothing due");
+        [button(@"Delete completed tasks once they are old") performClick:nil];
+        check(!task_config_get_bool(TASK_CFG_CLEANUP_ENABLED),
+              "settings: ... and switches off again at once");
+        task_config_set_int(TASK_CFG_CLEANUP_AFTER, was_after);
+        task_config_set_int(TASK_CFG_CLEANUP_UNIT, was_unit);
 
         /* Put the settings back, then close with a probe still in flight. */
         shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_DIR, seeded_dir, NULL);

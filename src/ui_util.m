@@ -46,6 +46,24 @@ tasks_tag_title(const TaskTag *tag)
     return title;
 }
 
+/* ── Controls ───────────────────────────────────────────────────────── */
+
+/*
+ * tasks_popup_button — a pop-up menu of fixed choices.
+ * Inputs/output are documented in ui_util.h.
+ */
+NSPopUpButton *
+tasks_popup_button(NSArray<NSString *> *titles, id target, SEL action)
+{
+    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+
+    popup.font   = [NSFont systemFontOfSize:shared_look_ui_font];
+    popup.target = target;
+    popup.action = action;
+    [popup addItemsWithTitles:titles];
+    return popup;
+}
+
 /* ── Images ─────────────────────────────────────────────────────────── */
 
 /*

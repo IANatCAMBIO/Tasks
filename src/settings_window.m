@@ -8,6 +8,8 @@
 
 #include "backup.h"
 #include "cal_sync.h"
+#include "cleanup.h"
+#include "recur.h"
 #include "task_config.h"
 #include "task_health.h"
 #include "task_ops.h"
@@ -279,6 +281,20 @@ copy_to_pasteboard(NSString *text)
 @property (nonatomic, strong) NSTextField *backup_status; /* the last Back Up Now's outcome;
                                                            * hidden until there is one    */
 
+/* Cleanup. */
+@property (nonatomic, strong) NSButton *cleanup_box;         /* the master switch        */
+@property (nonatomic, strong) NSTextField *cleanup_field;    /* the retention's number   */
+@property (nonatomic, strong) NSStepper *cleanup_stepper;
+@property (nonatomic, strong) NSPopUpButton *cleanup_unit;   /* days, months or years;
+                                                              * index into
+                                                              * task_cleanup_units()    */
+@property (nonatomic, strong) NSTextField *cleanup_count;    /* how many tasks are that
+                                                              * old, and the date they
+                                                              * are older than          */
+@property (nonatomic, strong) NSButton *cleanup_button;      /* Clean Up Now             */
+@property (nonatomic, strong) NSTextField *cleanup_status;   /* the last pass's outcome;
+                                                              * hidden until there is one */
+
 /* New tasks. */
 
 /* Notifications. */
@@ -293,6 +309,10 @@ copy_to_pasteboard(NSString *text)
 /* Declared here because the C callbacks below call them before their
  * definitions; documented where they are defined. */
 - (void)show_probe:(const task_health_probe_t *)probe;
+- (void)refresh_cleanup;
+- (void)run_cleanup;
+- (void)ask_cleanup:(guint)n on_cancel:(void (^)(void))cancelled;
+- (void)show_cleanup_status:(NSString *)text;
 - (void)show_backup_status:(NSString *)text;
 - (void)refresh_backup;
 @end
@@ -384,6 +404,7 @@ init_with_app:(TaskApp *)app
     [self build_form];
     shared_ui_use_ui_font(self.form);
     [self refresh_backup];
+    [self refresh_cleanup];
     [self refresh_database];
     [self fit_window];
     [window center];
@@ -507,6 +528,96 @@ database_rows
 
     return @[shared_ui_heading(@"Database"), [self database_plate],
              button_row(@[self.update_button])];
+}
+
+/*
+ * retention_row — "Delete them after [n] [months]": how old completed work
+ * has to be before a pass takes it.  The unit menu offers the three units
+ * a database is kept in (task_cleanup_units); the pair's range is
+ * TASK_CLEANUP_AFTER_MIN..MAX, which is what a typed number is clamped to.
+ *
+ * Output:
+ *   the row.
+ */
+- (NSStackView *)
+retention_row
+{
+    gint          after;
+    TaskRecurUnit unit;
+    task_cleanup_policy(&after, &unit);
+
+    NSMutableArray<NSString *> *units = [NSMutableArray array];
+    NSInteger chosen = 0;
+    for (guint i = 0; i < TASK_CLEANUP_N_UNITS; i++) {
+        [units addObject:tasks_string(task_recur_unit_label(task_cleanup_units()[i]))];
+        if (task_cleanup_units()[i] == unit) chosen = (NSInteger)i;
+    }
+
+    self.cleanup_field   = number_field(number_field_w, self, @selector(retention_changed:));
+    self.cleanup_stepper = number_stepper(TASK_CLEANUP_AFTER_MIN, TASK_CLEANUP_AFTER_MAX, 1,
+                                          self, @selector(retention_changed:));
+    self.cleanup_unit    = tasks_popup_button(units, self, @selector(retention_changed:));
+    [self.cleanup_unit selectItemAtIndex:chosen];
+    [self show_number:after field:self.cleanup_field stepper:self.cleanup_stepper];
+
+    self.cleanup_field.toolTip =
+        @"How long a completed task is kept. Months and years are calendar months and "
+        @"years, so six months is six months back from today.";
+
+    NSStackView *row = [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:@"Delete them after"], self.cleanup_field,
+        self.cleanup_stepper, self.cleanup_unit,
+    ]];
+    row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    row.alignment   = NSLayoutAttributeFirstBaseline;
+    [row setCustomSpacing:stepper_gap afterView:self.cleanup_field];
+    return row;
+}
+
+/*
+ * cleanup_rows — the Cleanup section: the master switch, how old is old
+ * enough, how much that is right now, what the rule does not touch, and
+ * the button that runs one pass by hand.
+ *
+ * The number, the unit and the button stay usable with the switch OFF, and
+ * deliberately: they are what Clean Up Now goes by, so a one-off tidy-up
+ * does not mean turning automatic deletion on to get it.  The switch
+ * governs the daily pass alone.
+ *
+ * Output:
+ *   the section's rows, heading first.
+ */
+- (NSArray<NSView *> *)
+cleanup_rows
+{
+    CGFloat text_w = form_content_w();
+
+    self.cleanup_box = [NSButton checkboxWithTitle:@"Delete completed tasks once they are old"
+                                            target:self
+                                            action:@selector(toggle_cleanup:)];
+    self.cleanup_box.toolTip =
+        @"A completed task is hidden, not removed: without this the database keeps every "
+        @"task ever ticked. Off until you turn it on, and never deletes anything you have "
+        @"not agreed to.";
+
+    self.cleanup_count  = shared_ui_note(@"", text_w);
+    self.cleanup_status = shared_ui_note(@"", text_w);
+    self.cleanup_status.hidden = YES;
+
+    NSTextField *note = shared_ui_note(
+        @"A task goes for good, with its subtasks. A repeating task is never taken — it "
+        @"comes back round rather than being finished. An action item from Notes loses the "
+        @"task it became and nothing else: the line in the note keeps its text, and the "
+        @"“!” in front of it becomes a ✅ — or a 🪦 for a task deleted before it was "
+        @"done.", text_w);
+
+    self.cleanup_button = [NSButton buttonWithTitle:@"Clean Up Now"
+                                             target:self
+                                             action:@selector(clean_up_now:)];
+
+    return @[shared_ui_heading(@"Cleanup"), self.cleanup_box, [self retention_row],
+             self.cleanup_count, note, button_row(@[self.cleanup_button]),
+             self.cleanup_status];
 }
 
 /*
@@ -731,7 +842,7 @@ calendar_rows
 }
 
 /*
- * build_form — lay the six sections out in one vertical stack, in the
+ * build_form — lay the seven sections out in one vertical stack, in the
  * style of Files' Preferences, inside a scroll view that only comes into
  * play when the form is taller than tasks_look_settings_max_h.
  */
@@ -740,7 +851,8 @@ build_form
 {
     NSArray<NSArray<NSView *> *> *sections =
         @[[self appearance_rows], [self new_task_rows], [self notification_rows],
-          [self database_rows], [self backup_rows], [self calendar_rows]];
+          [self database_rows], [self cleanup_rows], [self backup_rows],
+          [self calendar_rows]];
     NSMutableArray<NSView *> *rows = [NSMutableArray array];
     for (NSArray<NSView *> *section in sections) [rows addObjectsFromArray:section];
 
@@ -1015,6 +1127,205 @@ copy_path:(id)sender
 update_database:(id)sender
 {
     [self start_probe:YES];
+}
+
+/* ── Cleanup ─────────────────────────────────────────────────────────── */
+
+/*
+ * cutoff_text — the date a task has to have been completed before to be
+ * old enough to go, as a date rather than as "6 months": the phrase the
+ * setting is written in cannot say whether that is before or after the
+ * first of the month, and the date can.
+ *
+ * Output:
+ *   the localized date of task_cleanup_cutoff.
+ */
+static NSString *
+cutoff_text(void)
+{
+    NSDate *when = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)task_cleanup_cutoff()];
+
+    return [NSDateFormatter localizedStringFromDate:when
+                                          dateStyle:NSDateFormatterMediumStyle
+                                          timeStyle:NSDateFormatterNoStyle];
+}
+
+/*
+ * refresh_cleanup — show the cleanup settings: the switch, and the line
+ * that says what the retention currently amounts to — how many completed
+ * tasks are already older than the cutoff, and whether anything is going
+ * to happen to them.  Called after every change to the policy and after
+ * every pass, since both move the count.
+ */
+- (void)
+refresh_cleanup
+{
+    BOOL  on = task_config_get_bool(TASK_CFG_CLEANUP_ENABLED);
+    guint n  = task_cleanup_pending(self.app);
+
+    self.cleanup_box.state = on ? NSControlStateValueOn : NSControlStateValueOff;
+    self.cleanup_count.stringValue = n == 0
+        ? [NSString stringWithFormat:@"No completed task is older than %@.", cutoff_text()]
+        : [NSString stringWithFormat:@"%u completed task%@ older than %@%@", n,
+                    n == 1 ? @" is" : @"s are", cutoff_text(),
+                    on ? @" — the next daily pass takes them."
+                       : @", and they are kept until you turn this on."];
+}
+
+/*
+ * toggle_cleanup: — the master switch changed.  Turning it ON is agreed to
+ * once, HERE, with the number of tasks it is about to delete in the
+ * question: the daily pass would take them within the day either way, so a
+ * Cancel means the switch does not go on at all, and the answer is not put
+ * off until something has already gone.  Turning it off is immediate and
+ * silent — nothing is lost by stopping.
+ *
+ * Inputs:
+ *   sender — the checkbox
+ */
+- (void)
+toggle_cleanup:(NSButton *)sender
+{
+    BOOL on = sender.state == NSControlStateValueOn;
+
+    task_config_set_bool(TASK_CFG_CLEANUP_ENABLED, on);
+    if (!on) {
+        [self refresh_cleanup];
+        return;
+    }
+
+    guint n = task_cleanup_pending(self.app);
+    if (n == 0) {
+        [self refresh_cleanup];      /* nothing to agree to yet             */
+        return;
+    }
+
+    __weak TasksSettingsWindow *ws = self;
+    [self ask_cleanup:n on_cancel:^{
+        /* The switch does not go on: see above. */
+        task_config_set_bool(TASK_CFG_CLEANUP_ENABLED, FALSE);
+        [ws refresh_cleanup];
+    }];
+}
+
+/*
+ * ask_cleanup:on_cancel: — the ONE question asked in front of a deletion,
+ * whether the switch or Clean Up Now asked it: how many tasks go, when
+ * they were completed, and what happens to a note that carries one.  On
+ * agreement the pass runs; otherwise `cancelled` decides what the refusal
+ * means to the caller.
+ *
+ * Inputs:
+ *   n         — how many top-level tasks would go (never 0: there is
+ *               nothing to ask about then)
+ *   cancelled — run on Cancel, Escape or the close box, whether or not the
+ *               window is still open; may be nil
+ */
+- (void)
+ask_cleanup:(guint)n on_cancel:(void (^)(void))cancelled
+{
+    __weak TasksSettingsWindow *ws = self;
+
+    shared_ui_confirm(self.window,
+        [NSString stringWithFormat:@"Delete %u completed task%s?", n, n == 1 ? "" : "s"],
+        [NSString stringWithFormat:
+            @"They were completed before %@. Notes keeps the text of any action item among "
+            @"them. You cannot undo this action.", cutoff_text()],
+        @"Delete", YES, ^(BOOL confirmed) {
+        /* A refusal is acted on even when the window has gone — closing
+         * Settings with the question up is not an answer of yes, and the
+         * switch it governs is in the config, not in this window. */
+        if (!confirmed) {
+            if (cancelled != nil) cancelled();
+            return;
+        }
+        TasksSettingsWindow *me = ws;
+        if (me == nil || me.is_shut_down) return;   /* the next pass does it */
+        [me run_cleanup];
+    });
+}
+
+/*
+ * retention_changed: — the retention's field, stepper or unit menu
+ * changed: write the pair (both halves together, so a half-applied change
+ * is never stored) and say what it now amounts to.  Nothing is deleted
+ * here; the next pass, or Clean Up Now, does that.
+ *
+ * Inputs:
+ *   sender — the field, the stepper or the menu
+ */
+- (void)
+retention_changed:(NSControl *)sender
+{
+    NSInteger after = sender == self.cleanup_unit
+        ? self.cleanup_stepper.integerValue
+        : [self show_number:sender.integerValue
+                      field:self.cleanup_field
+                    stepper:self.cleanup_stepper];
+    NSInteger unit = self.cleanup_unit.indexOfSelectedItem;
+
+    task_cleanup_policy_set((gint)after,
+                            task_cleanup_units()[unit < 0 ? 0 : (guint)unit]);
+    [self refresh_cleanup];
+}
+
+/*
+ * clean_up_now: — Clean Up Now: one pass by hand, whatever the switch
+ * says, after the same question the switch asks.  Also the only way to
+ * exercise the feature without waiting for the timer.
+ *
+ * Inputs:
+ *   sender — the button (unused)
+ */
+- (void)
+clean_up_now:(id)sender
+{
+    guint n = task_cleanup_pending(self.app);
+    if (n == 0) {
+        [self show_cleanup_status:[NSString stringWithFormat:
+            @"Nothing to delete: no completed task is older than %@", cutoff_text()]];
+        return;
+    }
+
+    [self ask_cleanup:n on_cancel:nil];
+}
+
+/*
+ * run_cleanup — one pass, reported under the button (and by the core in
+ * the status bar), with the count line brought up to date.
+ */
+- (void)
+run_cleanup
+{
+    guint tombstoned = 0;
+    guint purged     = task_cleanup_run(self.app, &tombstoned);
+    guint total      = purged + tombstoned;
+
+    [self refresh_cleanup];
+    if (total == 0) {
+        [self show_cleanup_status:@"Nothing was deleted"];
+        return;
+    }
+    NSString *done = [NSString stringWithFormat:@"Deleted %u completed task%s", total,
+                      total == 1 ? "" : "s"];
+    [self show_cleanup_status:tombstoned == 0 ? done :
+        [NSString stringWithFormat:
+            @"%@; %u came from a note, whose text is untouched", done, tombstoned]];
+}
+
+/*
+ * show_cleanup_status: — show a line under the Clean Up Now button: what
+ * the last pass did.
+ *
+ * Inputs:
+ *   text — the line
+ */
+- (void)
+show_cleanup_status:(NSString *)text
+{
+    self.cleanup_status.stringValue = text;
+    self.cleanup_status.hidden      = NO;
+    [self fit_window];
 }
 
 /* ── Backups ─────────────────────────────────────────────────────────── */

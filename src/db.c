@@ -1970,6 +1970,123 @@ task_db_task_purge(TaskDatabase *db, gint64 id)
                                deletes, id);
 }
 
+/* ---------------------------------------------------------------------------
+ * The cleanup pass's shared SQL (task_db_tasks_done_before,
+ * task_db_tasks_purge_done).  Both statements judge the same thing, so the
+ * rule lives here once.
+ * ------------------------------------------------------------------------- */
+
+/* The stamp a task's finished work is aged by: when it was completed, or
+ * its last change when nothing stamped the completion (a row written by a
+ * writer that does not stamp it, or before completed_at was kept).  Taking
+ * updated_at there is the conservative reading: it is never EARLIER than
+ * the completion, so a task is never aged out before its time.            */
+#define DONE_SINCE_SQL(t) \
+    "(CASE WHEN " t ".completed_at > 0 THEN " t ".completed_at" \
+    " ELSE " t ".updated_at END)"
+
+/* WHERE fragment over a top-level candidate `h`: the ONE definition of
+ * "this family is finished work, older than the cutoff `cut` names".
+ *
+ * Whole FAMILIES only, as Clear Completed treats them: a top-level task
+ * stands or goes with its subtasks, so a completed subtask under a task
+ * still being worked on is never taken on its own.
+ *
+ * A family holding a RECURRING task is never finished work — the task
+ * comes back round, and the completed state it is sitting in is the state
+ * the recurrence pass undoes before the next occurrence.  A yearly task
+ * completed seven months ago would otherwise be deleted as stale.         */
+#define CLEANUP_OLD_SQL(cut) \
+    "h.parent_id IS NULL AND h.status = " DONE_SQL \
+    " AND " DONE_SINCE_SQL("h") " < " cut \
+    " AND NOT EXISTS (SELECT 1 FROM tasks r" \
+    "                  WHERE (r.id = h.id OR r.parent_id = h.id)" \
+    "                    AND r.recur_interval <> 0)"
+
+/* EXISTS fragment over the same `h`: a note's line still carries a task of
+ * the family, so the family is Notes' to let go of (see
+ * task_db_tasks_purge_done).                                              */
+#define CLEANUP_LINKED_SQL \
+    "EXISTS (SELECT 1 FROM note_task nt JOIN tasks m ON m.id = nt.task_id" \
+    "         WHERE m.id = h.id OR m.parent_id = h.id)"
+
+/* task_db_tasks_done_before() — how many families the pass would take (see
+ * db.h).                                                                   */
+guint
+task_db_tasks_done_before(TaskDatabase *db, gint64 cutoff)
+{
+    sqlite3_stmt *st = NULL;
+    gint          n  = 0;
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
+            "SELECT COUNT(*) FROM tasks h WHERE h.deleted = 0 AND "
+            CLEANUP_OLD_SQL("?1"), -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, cutoff);
+        if (sqlite3_step(st) == SQLITE_ROW)
+            n = sqlite3_column_int(st, 0);
+    } else {
+        step_done(db, NULL, "done before", NULL);
+    }
+    sqlite3_finalize(st);
+    return n > 0 ? (guint)n : 0;
+}
+
+/* task_db_tasks_purge_done() — the cleanup pass, in one transaction (see
+ * db.h).                                                                   */
+guint
+task_db_tasks_purge_done(TaskDatabase *db, gint64 cutoff, guint *tombstoned)
+{
+    if (tombstoned != NULL) *tombstoned = 0;
+
+    gboolean own;
+    if (!txn_join(db, &own))
+        return 0;
+
+    /* The families nothing in Notes carries go for good, rows and all: the
+     * heads are MATERIALIZED, so the set is settled before the first row
+     * leaves it.  The schema's cascades take the task_tags and attachments
+     * rows with them, and the task_tags delete prunes a tag whose last
+     * carrier this was.  The calendar binding (cal_task) has no foreign key
+     * and deliberately OUTLIVES the row (cal_store.h): the sync's next pass
+     * finds a binding with no task, deletes the event and unbinds — which
+     * is how a cleaned-up planner session leaves the macOS Calendar.      */
+    sqlite3_stmt *st     = NULL;
+    gint          purged = 0;
+    gboolean      ok     = FALSE;
+    if (sqlite3_prepare_v2(shared_db_handle(db->shared),
+            "WITH heads AS MATERIALIZED ("
+            "  SELECT h.id AS id FROM tasks h"
+            "   WHERE " CLEANUP_OLD_SQL("?1") " AND NOT " CLEANUP_LINKED_SQL ")"
+            " DELETE FROM tasks WHERE id IN (SELECT id FROM heads)"
+            "                      OR parent_id IN (SELECT id FROM heads)"
+            " RETURNING parent_id IS NULL", -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, cutoff);
+        ok = step_done(db, st, "purge done", &purged);
+    } else {
+        step_done(db, NULL, "purge done", NULL);
+    }
+    sqlite3_finalize(st);
+
+    /* What Notes still carries is TOMBSTONED instead, never purged: the
+     * note's line is Notes' to rewrite (it unmarks the line and drops the
+     * link, keeping the text), and a row pulled out from under a line that
+     * still names it would be written again as a brand-new task by the
+     * next save of that note.  Once the link has gone the family is an
+     * ordinary tombstone, and the pass above purges it.                   */
+    gint linked = 0;
+    if (ok) {
+        linked = tombstone_each(db,
+            "SELECT h.id AS pid FROM tasks h"
+            " WHERE h.deleted = 0 AND " CLEANUP_OLD_SQL("?2")
+            "   AND " CLEANUP_LINKED_SQL, cutoff, "cleanup notes");
+        ok = linked >= 0;
+    }
+
+    if (!txn_leave(db, own, ok))
+        return 0;
+    if (tombstoned != NULL) *tombstoned = (guint)linked;
+    return purged > 0 ? (guint)purged : 0;
+}
+
 /* task_db_task_note() — the title of the note a task was born in (see
  * db.h).                                                                    */
 gchar *

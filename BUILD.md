@@ -170,6 +170,7 @@ The programs, all linked against the core only (no AppKit), include:
 | `loop_test` | the main-loop service: one-shot and repeating timers, cancellation, background hand-back |
 | `config_test` | the data-folder policy and override, the fence round the GTK app's data, config defaults and write-through |
 | `shared_test` | the shared database: the column-diff update (two connections change different fields and both survive) and its stamping rules; Notes action items (the Action Items tag the schema gives them, the note lookup, the tombstone, the purge Tasks refuses); the tags Notes shares (a note's tag offered but not shown until a task carries it, its spelling kept, the favorite flags apart, the tag outliving a task while a note carries it); refreshing only on a change to Tasks' data (`change_rev`), never on its own writes; writes failing, and then succeeding, while a second process (this test re-run with `--hold`) holds the write lock past the busy timeout — this test takes about 20 s |
+| `cleanup_test` | the completed-task cleanup: the retention policy and its clamp, the calendar cutoff (a month is a month, a clock change allowed for), what a pass takes and what it must not (open work, a completed subtask of an open task, a task between occurrences of a repeat), a tag going with the last task that carried it, and the Notes action item — tombstoned with its link so Notes keeps the note's text, removed outright only once Notes has let go |
 | `backup_test` | backups through the shared module: refused destinations (Tasks' live-data fence and the module's folder checks), Back Up Now and its UTC file name, retention, the periodic poll |
 | `switch_test` | Open Database File: refusals (an old `tasks.db` and an empty file among them, left untouched), a switch, Make Default under the sandbox |
 | `rows_test` | the row description (lines, emphasis, the tags line, notes preview, a Notes item's plain title) and the pane collection (filters, search, status line, the Favorites view); which tag New Task gives (the selected tag, else the default tag) |
@@ -197,8 +198,9 @@ src/
   db.[ch]              Tasks' queries over the shared database (shared_db.h opens it)
   search.[ch]          search query language
   recur.[ch]           recurring tasks
+  cleanup.[ch]         deleting completed tasks once they are older than the retention
   backup.[ch]          backups through the shared module, on a background thread
-  task_worker.[ch]     scheduler for the recurrence pass and the backup poll
+  task_worker.[ch]     scheduler for the recurrence pass, the cleanup pass and the backup poll
   task_switch.[ch]     File > Open Database File, Make Default
   task_view.[ch]       registry of sidebar views
   core_views.[ch]      the three built-in views

@@ -60,7 +60,7 @@ gint64
 task_recur_advance(gint64 from, TaskRecurUnit unit, gint interval,
                    gint at_minute)
 {
-    if (interval <= 0)
+    if (interval == 0)
         return from;
     GDateTime *dt = task_local_dt(from);
     if (dt == NULL)

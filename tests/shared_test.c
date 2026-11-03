@@ -169,52 +169,6 @@ test_stamps(TaskApp *app)
 }
 
 /*
- * link_to_note — make a task a Notes action item, as Notes writes it: a
- * note, and a note_task row naming the task.
- *
- * Inputs:
- *   app     — the fixture
- *   task_id — the task
- *   title   — the note's title
- */
-static void
-link_to_note(TaskApp *app, gint64 task_id, const char *title)
-{
-    char *sql = sqlite3_mprintf(
-        "INSERT INTO notes (title, created_at, updated_at) VALUES (%Q, 0, 0);"
-        "INSERT INTO note_task (task_id, note_id, ord) VALUES (%lld, last_insert_rowid(), 0);"
-        "UPDATE action_uid_seq SET next = (SELECT max(uid) + 1 FROM note_task);",
-        title, (long long)task_id);
-    sqlite3_exec(shared_db_handle(app->db->shared), sql, NULL, NULL, NULL);
-    sqlite3_free(sql);
-}
-
-/*
- * row_int — the first column of the first row of a query (a count, or one
- * value of one row).
- *
- * Inputs:
- *   app — the fixture
- *   sql — the query
- *
- * Output:
- *   the value, -1 on error or when there is no row.
- */
-static gint64
-row_int(TaskApp *app, const char *sql)
-{
-    sqlite3_stmt *st = NULL;
-    gint64        n  = -1;
-
-    if (sqlite3_prepare_v2(shared_db_handle(app->db->shared), sql, -1, &st, NULL) == SQLITE_OK &&
-        sqlite3_step(st) == SQLITE_ROW) {
-        n = sqlite3_column_int64(st, 0);
-    }
-    sqlite3_finalize(st);
-    return n;
-}
-
-/*
  * tag_listed — is a tag of this name among task_db_tags(scope)?
  *
  * Inputs:
@@ -326,8 +280,8 @@ test_action_tag(TaskApp *app)
 
     check(task_db_tag_find(app->db, SHARED_DB_ACTION_LIST_NAME) == NULL,
           "action tag: none while there are no Notes items");
-    link_to_note(app, in_w, "Meeting");
-    link_to_note(app, in_h, "Home");
+    fixture_link_to_note(app, in_w, "Meeting");
+    fixture_link_to_note(app, in_h, "Home");
 
     TaskTag *action = task_db_tag_find(app->db, SHARED_DB_ACTION_LIST_NAME);
     check(action != NULL && strcmp(action->emoji, SHARED_DB_ACTION_LIST_EMOJI) == 0,
@@ -371,7 +325,7 @@ test_note_items(TaskApp *app)
     gint64 sub   = task_db_task_create(app->db, plain, "A subtask", NULL);
     char   sql[256];
 
-    link_to_note(app, born, "Weekly sync");
+    fixture_link_to_note(app, born, "Weekly sync");
     gchar *note = task_db_task_note(app->db, born);
     check(note != NULL && strcmp(note, "Weekly sync") == 0,
           "notes: a task a note_task row names reports its note's title");
@@ -383,7 +337,7 @@ test_note_items(TaskApp *app)
           "notes: a Notes-born task is never purged");
 
     /* A note-linked SUBTASK protects its parent from a purge as well. */
-    link_to_note(app, sub, "Another note");
+    fixture_link_to_note(app, sub, "Another note");
     check(!task_db_task_purge(app->db, plain) && task_db_task_get(app->db, sub) != NULL,
           "notes: a parent whose subtask is Notes-born is not purged");
     sqlite3_exec(shared_db_handle(app->db->shared), "DELETE FROM note_task WHERE task_id IN "
@@ -396,7 +350,7 @@ test_note_items(TaskApp *app)
     snprintf(sql, sizeof sql,
              "SELECT count(*) FROM note_task WHERE task_id = %lld AND seen_deleted = 0",
              (long long)born);
-    check(gone != NULL && gone->deleted && gone->updated_at > 0 && row_int(app, sql) == 1,
+    check(gone != NULL && gone->deleted && gone->updated_at > 0 && fixture_row_int(app, sql) == 1,
           "notes: deleting it tombstones the task and keeps the link for Notes");
     task_free(gone);
 
@@ -445,7 +399,7 @@ task_column(TaskApp *app, gint64 id, const char *column)
 {
     char sql[160];
     snprintf(sql, sizeof sql, "SELECT %s FROM tasks WHERE id = %lld", column, (long long)id);
-    return row_int(app, sql);
+    return fixture_row_int(app, sql);
 }
 
 /*

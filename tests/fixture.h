@@ -59,4 +59,53 @@ fixture_close(TaskApp *app)
     task_config_close();
 }
 
+/*
+ * fixture_link_to_note — make a task a Notes action item, as Notes writes
+ * one: a note, and a note_task row naming the task.  What tells the tests
+ * of anything that treats Notes-born tasks differently (a purge, the
+ * cleanup pass) that this task came from a note.
+ *
+ * Inputs:
+ *   app     — the fixture
+ *   task_id — the task
+ *   title   — the note's title
+ */
+static inline void
+fixture_link_to_note(TaskApp *app, gint64 task_id, const char *title)
+{
+    char *sql = sqlite3_mprintf(
+        "INSERT INTO notes (title, created_at, updated_at) VALUES (%Q, 0, 0);"
+        "INSERT INTO note_task (task_id, note_id, ord) VALUES (%lld, last_insert_rowid(), 0);"
+        "UPDATE action_uid_seq SET next = (SELECT max(uid) + 1 FROM note_task);",
+        title, (long long)task_id);
+    sqlite3_exec(shared_db_handle(app->db->shared), sql, NULL, NULL, NULL);
+    sqlite3_free(sql);
+}
+
+/*
+ * fixture_row_int — the first column of the first row of a query (a count,
+ * or one value of one row): how a test looks at a table the core's API
+ * does not expose.
+ *
+ * Inputs:
+ *   app — the fixture
+ *   sql — the query
+ *
+ * Output:
+ *   the value, -1 on error or when there is no row.
+ */
+static inline gint64
+fixture_row_int(TaskApp *app, const char *sql)
+{
+    sqlite3_stmt *st = NULL;
+    gint64        n  = -1;
+
+    if (sqlite3_prepare_v2(shared_db_handle(app->db->shared), sql, -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW) {
+        n = sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+    return n;
+}
+
 #endif /* TESTS_FIXTURE_H */

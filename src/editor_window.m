@@ -297,29 +297,6 @@ time_text(NSDatePicker *picker)
 }
 
 /*
- * popup_button — a pop-up menu of fixed choices.
- *
- * Inputs:
- *   titles — the choices, in index order
- *   target — the editor
- *   action — sent when the selection changes
- *
- * Output:
- *   new pop-up button, first choice selected.
- */
-static NSPopUpButton *
-popup_button(NSArray<NSString *> *titles, id target, SEL action)
-{
-    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-
-    popup.font   = [NSFont systemFontOfSize:shared_look_ui_font];
-    popup.target = target;
-    popup.action = action;
-    [popup addItemsWithTitles:titles];
-    return popup;
-}
-
-/*
  * count_stepper — the stepper beside a count field.  It holds the count's
  * last valid value: the field may show half-typed text, the stepper never
  * does.
@@ -842,7 +819,7 @@ build_fields:(NSStackView *)form
     for (int status = 0; status < TASK_STATUS_N_VALUES; status++) {
         [statuses addObject:tasks_string(task_status_label((TaskStatus)status))];
     }
-    self.status_popup = popup_button(statuses, self, @selector(status_changed:));
+    self.status_popup = tasks_popup_button(statuses, self, @selector(status_changed:));
     [self.status_popup.widthAnchor constraintEqualToConstant:status_popup_w].active = YES;
 
     self.due_field = entry_field(@"YYYY-MM-DD", date_field_w,
@@ -1087,7 +1064,7 @@ build_recurrence
         @"is put back to New and its due date moves to that repeat.", self);
     self.every_stepper = count_stepper(TASK_EDIT_EVERY_MIN, TASK_EDIT_EVERY_MAX, self,
                                        @selector(stepper_changed:));
-    self.unit_popup = popup_button(units, self, @selector(recur_control_changed:));
+    self.unit_popup = tasks_popup_button(units, self, @selector(recur_control_changed:));
     NSStackView *every = row_stack(@[self.every_field, self.every_stepper, self.unit_popup]);
 
     /* Row 3: Reset to New <N> <unit> beforehand.  The lead's units are the
@@ -1097,7 +1074,7 @@ build_recurrence
         @"automatically when it would not fit inside the repeat itself.", self);
     self.lead_stepper = count_stepper(TASK_EDIT_LEAD_MIN, TASK_EDIT_LEAD_MAX, self,
                                       @selector(stepper_changed:));
-    self.lead_unit_popup = popup_button(
+    self.lead_unit_popup = tasks_popup_button(
         [units subarrayWithRange:NSMakeRange(0, TASK_EDIT_LEAD_N_UNITS)], self,
         @selector(recur_control_changed:));
     NSStackView *lead = row_stack(@[self.lead_field, self.lead_stepper, self.lead_unit_popup,

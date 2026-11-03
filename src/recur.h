@@ -188,7 +188,13 @@ gint64 task_recur_lead_seconds(const Task *t);
  * day"); pass -1 to keep the clock time the arithmetic produced, which is
  * what the minute and hour units want.
  *
- * Returns the new unix time, or `from` unchanged when interval <= 0.
+ * A NEGATIVE interval steps BACK by the calendar, by the same rules.  That
+ * is what a retention period is ("6 months ago": cleanup.h), and the one
+ * calendar step belongs here rather than copied there with the other sign.
+ * Recurrence itself never passes one — an interval of 0 is what means "does
+ * not recur", and that still returns `from` untouched.
+ *
+ * Returns the new unix time, or `from` unchanged when interval is 0.
  * ------------------------------------------------------------------------- */
 gint64 task_recur_advance(gint64 from, TaskRecurUnit unit, gint interval,
                           gint at_minute);
