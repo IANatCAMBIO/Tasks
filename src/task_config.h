@@ -48,6 +48,12 @@
 
 /* Library window state */
 #define TASK_CFG_SHOW_COMPLETED      "show_completed"        /* bool, 1 */
+#define TASK_CFG_SHOW_SUBTASKS       "show_subtasks"         /* bool, 1: a subtask gets a row of
+                                                            * its own in the views that gather
+                                                            * every level (a tag, All Favorites,
+                                                            * the 3-Day Forecast); off, only its
+                                                            * parent's row is listed, which lists
+                                                            * the subtask itself as always */
 #define TASK_CFG_KANBAN_VIEW         "kanban_view"           /* bool, 0 */
 #define TASK_CFG_COMPACT             "compact_layout"        /* bool, 0 */
 #define TASK_CFG_SIDEBAR_VISIBLE     "sidebar_visible"       /* bool, 1: the tag sidebar */

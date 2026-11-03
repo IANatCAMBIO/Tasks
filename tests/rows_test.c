@@ -328,6 +328,27 @@ test_collect(TaskApp *app)
     task_pane_content_free(content);
     task_config_set_bool(TASK_CFG_SHOW_COMPLETED, TRUE);
 
+    /* Hiding subtasks takes the subtask's OWN row away and nothing else:
+     * its parent's row still carries it as a subtask line. */
+    task_config_set_bool(TASK_CFG_SHOW_SUBTASKS, FALSE);
+    content = task_pane_collect(app, sel, NULL);
+    gboolean has_sub_row = FALSE, parent_lists_sub = FALSE;
+    for (size_t i = 0; i < content->rows->count; i++) {
+        const task_row_t *row = content->rows->rows[i];
+        if (row->id == stamp) has_sub_row = TRUE;
+        if (row->id != b) continue;
+        for (size_t l = 0; l < row->line_count; l++) {
+            if (row->lines[l].kind == task_row_line_subtask &&
+                strcmp(row->lines[l].text, "find a stamp") == 0) {
+                parent_lists_sub = TRUE;
+            }
+        }
+    }
+    check(content->rows->count == 3 && !has_sub_row && parent_lists_sub,
+          "collect: the setting hides a subtask's own row, not its line on its parent's row");
+    task_pane_content_free(content);
+    task_config_set_bool(TASK_CFG_SHOW_SUBTASKS, TRUE);
+
     TaskSearch *q = task_search_parse("stamp");
     content = task_pane_collect(app, sel, q);
     check(content->rows->count == 2 && content->rows->rows[0]->id == b,

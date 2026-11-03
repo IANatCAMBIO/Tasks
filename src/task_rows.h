@@ -153,6 +153,7 @@ typedef struct {
     GHashTable *tags_by_task;       /* task id -> GPtrArray of TaskTag*   */
     gboolean    bold;               /* the bold_task_titles setting       */
     gboolean    show_done;          /* the show_completed setting         */
+    gboolean    show_subs;          /* the show_subtasks setting          */
 } TaskRowCtx;
 
 /*
@@ -190,7 +191,8 @@ GPtrArray *task_row_ctx_subtasks(const TaskRowCtx *ctx, const Task *t);
 /*
  * task_row_describe — build the description of ONE task.  Used for every
  * row of a refresh and to rebuild a single row in place (after its
- * checkbox is toggled, say).  Does not apply the show_completed filter.
+ * checkbox is toggled, say).  Applies NEITHER visibility filter
+ * (show_completed, show_subtasks): the caller asked for this task.
  *
  * Inputs:
  *   t   — the task, not NULL
@@ -211,9 +213,12 @@ task_row_t *task_row_describe(const Task *t, const TaskRowCtx *ctx);
 void task_row_free(task_row_t *row);
 
 /*
- * task_rows_build — describe every task of a refresh, honouring the
- * show_completed setting (Done tasks are left out when it is off).  The
- * count of the result is therefore what the status bar reports as shown.
+ * task_rows_build — describe every task of a refresh, honouring both
+ * visibility settings: a Done task is left out when show_completed is off,
+ * and a SUBTASK is left out when show_subtasks is off — its own row only,
+ * the subtask lines inside its parent's row are the parent's content and
+ * stay.  The count of the result is therefore what the status bar reports
+ * as shown.
  *
  * Inputs:
  *   tasks — GPtrArray of Task* (borrowed), in display order

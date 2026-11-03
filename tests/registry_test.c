@@ -28,6 +28,7 @@ static const struct {
     { TASK_CFG_KANBAN_SHADOW,       kind_bool, "1"   },
     { TASK_CFG_FORECAST_BUSINESS_DAYS, kind_bool, "1" },
     { TASK_CFG_SHOW_COMPLETED,      kind_bool, "1"   },
+    { TASK_CFG_SHOW_SUBTASKS,       kind_bool, "1"   },
     { TASK_CFG_KANBAN_VIEW,         kind_bool, "0"   },
     { TASK_CFG_COMPACT,             kind_bool, "0"   },
     { TASK_CFG_SIDEBAR_VISIBLE,     kind_bool, "1"   },

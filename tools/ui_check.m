@@ -500,8 +500,10 @@ use_windows(TaskApp *app, TasksLibraryWindow *library, int cycles)
 
             [library perform_command:@"toggle-pane" param:nil];
             [library perform_command:@"toggle-completed" param:nil];
+            [library perform_command:@"toggle-subtasks" param:nil];
             [library perform_command:@"toggle-pane" param:nil];
             [library perform_command:@"toggle-completed" param:nil];
+            [library perform_command:@"toggle-subtasks" param:nil];
             task_app_notify_changed(app);
             task_app_status(app, "cycle %d", i);
             check_spin(0.02);

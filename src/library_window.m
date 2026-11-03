@@ -2007,6 +2007,42 @@ validate_toggle_completed(id target, id item, SharedCommandState *state)
 }
 
 /*
+ * run_toggle_subtasks — Hide / Show Subtasks: whether a subtask gets a row
+ * of its own in the views that gather every level (a tag, All Favorites,
+ * the 3-Day Forecast).  Its parent's row lists it either way, so hiding
+ * the rows takes nothing off the screen but the repetition.
+ *
+ * Inputs:
+ *   target — the window
+ *   sender — the item (unused)
+ */
+static void
+run_toggle_subtasks(id target, id sender)
+{
+    task_config_set_bool(TASK_CFG_SHOW_SUBTASKS, !task_config_get_bool(TASK_CFG_SHOW_SUBTASKS));
+    [(TasksLibraryWindow *)target refresh_tasks];
+}
+
+/*
+ * validate_toggle_subtasks — the other face while they are hidden.
+ *
+ * Inputs:
+ *   target — the window (unused)
+ *   item   — the item (unused)
+ *   state  — the command's look, adjusted here
+ *
+ * Output: YES.
+ */
+static BOOL
+validate_toggle_subtasks(id target, id item, SharedCommandState *state)
+{
+    if (!task_config_get_bool(TASK_CFG_SHOW_SUBTASKS)) {
+        shared_command_state_set(state, @"Show Subtasks", nil, NO);
+    }
+    return YES;
+}
+
+/*
  * run_toggle_sidebar — Hide / Show Sidebar.
  *
  * Inputs:
@@ -2217,6 +2253,7 @@ shell_commands(size_t *n)
         { @"open-database",        run_open_database,        NULL                          },
         { @"find",                 run_find,                 validate_not_compact          },
         { @"toggle-completed",     run_toggle_completed,     validate_toggle_completed     },
+        { @"toggle-subtasks",      run_toggle_subtasks,      validate_toggle_subtasks      },
         { @"toggle-sidebar",       run_toggle_sidebar,       validate_toggle_sidebar       },
         { @"toggle-favorites-bar", run_toggle_favorites_bar, validate_toggle_favorites_bar },
         { @"toggle-day-planner",   run_toggle_day_planner,   validate_toggle_day_planner   },

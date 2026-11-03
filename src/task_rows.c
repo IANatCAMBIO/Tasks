@@ -311,6 +311,7 @@ task_row_ctx_init(TaskApp *app, TaskRowCtx *ctx)
     ctx->tags_by_task = task_db_tags_by_task(app->db);
     ctx->bold      = task_config_get_bool(TASK_CFG_BOLD_TITLES);
     ctx->show_done = task_config_get_bool(TASK_CFG_SHOW_COMPLETED);
+    ctx->show_subs = task_config_get_bool(TASK_CFG_SHOW_SUBTASKS);
 }
 
 /*
@@ -411,8 +412,11 @@ task_row_free(task_row_t *row)
 }
 
 /*
- * task_rows_build — the rows of a refresh, completed ones left out when the
- * setting hides them.
+ * task_rows_build — the rows of a refresh: completed tasks left out when
+ * the setting hides them, and a subtask's own row when the setting hides
+ * those.  Only the row goes; the subtask lines of its parent's row are
+ * built by lines_build from the context's grouping either way, so a hidden
+ * subtask is still read on the row of the parent it belongs to.
  * Inputs/output are documented in task_rows.h.
  */
 task_row_list_t *
@@ -426,6 +430,7 @@ task_rows_build(GPtrArray *tasks, const TaskRowCtx *ctx)
     for (guint i = 0; i < tasks->len; i++) {
         const Task *t = g_ptr_array_index(tasks, i);
         if (!ctx->show_done && t->status == TASK_STATUS_DONE) continue;
+        if (!ctx->show_subs && t->parent_id != 0) continue;
         list->rows[list->count++] = task_row_describe(t, ctx);
     }
     return list;

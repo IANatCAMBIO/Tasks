@@ -78,6 +78,16 @@ pane, **Hide / Show Sidebar** (⌃⌘S) and **Hide / Show Favorites Bar** give
 the task pane the window, and **Kanban View / List View** (⇧⌘K) switches
 between the two. Recurring tasks roll forward while the app runs.
 
+View → **Hide Subtasks** takes the rows a subtask gets of its own — the
+`↳` rows in a tag, in All Favorites and in the 3-Day Forecast, which All
+Tasks never shows — out of the list and off the board, so each family
+reads as one row. Nothing is lost: a parent's row lists its subtasks as
+always (up to four, then "+N more"), they are still searched, and ticking
+one off in the editor still promotes the parent to In Progress. Note that
+a subtask comes due on its own: with the rows hidden, a subtask due
+tomorrow whose parent has no due date is not listed in the 3-Day Forecast
+at all.
+
 ## The day planner and Calendar
 
 The day planner syncs with the **macOS Calendar**, both ways, and so with

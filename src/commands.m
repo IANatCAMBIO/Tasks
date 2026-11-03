@@ -37,6 +37,7 @@ static const shared_command_t commands[] = {
     { @"find",                @"Find…",                   @"f", cmd,       app, nil, nil },
     { @"toggle-completed",    @"Hide Completed",          @"",  0,         app, @"eye.slash",
       @"Hide completed tasks" },
+    { @"toggle-subtasks",     @"Hide Subtasks",           @"",  0,         app, nil, nil },
     { @"toggle-sidebar",      @"Hide Sidebar",            @"s", cmd_ctrl,  app, @"sidebar.left",
       @"Hide the sidebar" },
     { @"toggle-favorites-bar", @"Hide Favorites Bar",     @"",  0,         app, nil, nil },

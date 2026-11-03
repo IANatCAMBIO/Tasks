@@ -20,6 +20,7 @@ static const struct {
     { TASK_CFG_SIDEBAR_COUNTS,      "1"   },
     { TASK_CFG_QUICK_TASK_HOTKEY,   "1"   },
     { TASK_CFG_SHOW_COMPLETED,      "1"   },
+    { TASK_CFG_SHOW_SUBTASKS,       "1"   },
     { TASK_CFG_KANBAN_VIEW,         "0"   },
     { TASK_CFG_COMPACT,             "0"   },
     { TASK_CFG_SIDEBAR_VISIBLE,     "1"   },

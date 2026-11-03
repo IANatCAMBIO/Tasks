@@ -680,6 +680,7 @@ build_menu_bar
     /* ── View menu ── what the task pane shows, then how the window looks. */
     NSMenu *view_menu = add_menu(bar, @"View");
     [view_menu addItem:command(@"toggle-completed")];
+    [view_menu addItem:command(@"toggle-subtasks")];
     NSMenuItem *columns = [[NSMenuItem alloc] initWithTitle:@"Columns" action:NULL keyEquivalent:@""];
     columns.submenu     = [[NSMenu alloc] initWithTitle:@"Columns"];
     [columns.submenu addItem:command(@"column-done")];
