@@ -639,6 +639,7 @@ keyDown:(NSEvent *)event
                                                                  * diffed against; owned   */
 @property (nonatomic, assign) BOOL       discarded;             /* Cancel: save nothing more */
 @property (nonatomic, assign) BOOL       is_shut_down;
+@property (nonatomic, assign) BOOL       tags_offered;   /* the closing tag suggestions were answered */
 
 /* Fitting the window to the folds. */
 @property (nonatomic, assign) BOOL                is_folding;   /* a resize is animating    */
@@ -3038,6 +3039,50 @@ windowShouldClose:(NSWindow *)sender
         });
         return NO;
     }
+    return ![self offer_tags];
+}
+
+/*
+ * offer_tags — the failsafe for a task closed with no tag: when its title
+ * matches existing tags by substring (shared_ui_title_tag_matches), a tool
+ * panel recommends them.  Add Tags puts the ticked ones on the task and
+ * closes; Close Without Tags closes as it is; Escape or the close box
+ * leaves the window open.  Asked once per window, once answered.
+ *
+ * Output:
+ *   YES when the panel was shown (the window stays open until it is
+ *   answered); NO when there is nothing to offer and the window may close.
+ */
+- (BOOL)
+offer_tags
+{
+    if (self.tags_offered || [self stored_tag_names].count > 0) return NO;
+
+    NSMutableArray<NSString *> *all  = [NSMutableArray array];
+    GPtrArray                  *tags = task_db_tags(self.app->db, TASK_TAGS_ALL);
+    for (guint i = 0; i < tags->len; i++) {
+        [all addObject:tasks_string(((const TaskTag *)g_ptr_array_index(tags, i))->name)];
+    }
+    task_ptr_array_free_tags(tags);
+
+    NSArray<NSString *> *names = shared_ui_title_tag_matches(self.title_field.stringValue, all);
+    if (names.count == 0) return NO;
+
+    __weak TasksEditorWindow *ws = self;
+    shared_ui_offer_tags(self.window, names, ^(NSArray<NSString *> *chosen) {
+        TasksEditorWindow *s = ws;
+        if (!s) return;
+        s.tags_offered = YES;
+        for (NSString *name in chosen) {
+            if (task_db_task_tag_add(s.app->db, s.task_id, name.UTF8String) == 0) {
+                gchar *what = g_strdup_printf("The tag \xe2\x80\x9c%s\xe2\x80\x9d", name.UTF8String);
+                task_app_write_failed(s.app, what);
+                g_free(what);
+            }
+        }
+        if (chosen.count > 0) task_app_notify_tasks(s.app);
+        [s close];
+    });
     return YES;
 }
 
