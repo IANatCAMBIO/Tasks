@@ -2210,6 +2210,27 @@ check_editor_window(TaskApp *app, NSString *dir)
                 if (w.visible && [w.title isEqualToString:@"merge-test"]) editor_win = w;
             }
             NSTextField *title = (NSTextField *)find_text(editor_win.contentView, @"merge-test");
+
+            /* The tab order follows the rows: title, then tags, then the
+             * due date (the window recalculates its key view loop). */
+            NSView *second = title.nextValidKeyView;
+            NSView *third  = second.nextValidKeyView;
+            check([second isKindOfClass:NSTokenField.class],
+                  "editor: Tab from the title lands on the tags");
+            check([third isKindOfClass:NSTextField.class] &&
+                  [((NSTextField *)third).placeholderString isEqualToString:@"YYYY-MM-DD"],
+                  "editor: ... and then on the due date");
+
+            /* A click into the due field opens the calendar under it (the
+             * field runs its `clicked` block once the click has started the
+             * edit); the calendar goes when the editor does. */
+            NSUInteger   windows_before = visible_windows();
+            void       (^clicked)(void) = [third valueForKey:@"clicked"];
+            if (clicked != nil) clicked();
+            check_spin(0.1);
+            check(clicked != nil && visible_windows() == windows_before + 1,
+                  "editor: a click into the due date opens the calendar");
+
             title.stringValue = @"typed here";
             [NSNotificationCenter.defaultCenter
                 postNotificationName:NSControlTextDidChangeNotification object:title];
@@ -2233,6 +2254,8 @@ check_editor_window(TaskApp *app, NSString *dir)
                   "editor: ... and the editor still shows what was typed");
             tasks_editor_close(id);
             check_spin(0.1);
+            check(secondary_windows(library.window) == 0,
+                  "editor: ... and the calendar closes with the editor");
             task_db_task_delete(app->db, id);
         }
         [library close];
@@ -2568,19 +2591,16 @@ check_tags(TaskApp *app, NSString *dir)
               find_button(editor_win.contentView, @"Favorite") == nil,
               "editor: no completion line for a task never completed, and no Favorite box");
 
-        /* Done, the completion date shows on its own line under the tags
-         * and flags, and the window grows to fit it. */
+        /* Done, the completion date shows on the High Priority line under
+         * the status; that line is always there, so the window keeps its
+         * height. */
         CGFloat open_h = NSHeight(editor_win.frame);
         task_db_task_set_status(app->db, tagged, TASK_STATUS_DONE);
         tasks_editor_refresh_all();
         check_spin(0.2);
-        NSView *done_line = nil;
-        for (NSView *view in editor_win.contentView.subviews.firstObject.subviews.firstObject.subviews) {
-            if ([view isKindOfClass:NSTextField.class] &&
-                [((NSTextField *)view).stringValue hasPrefix:@"Completed "]) done_line = view;
-        }
-        check(done_line != nil && !done_line.hidden && NSHeight(editor_win.frame) > open_h,
-              "editor: a Done task shows when it was completed, on a line of its own");
+        NSTextField *done_line = find_text(editor_win.contentView, @"Completed ");
+        check(done_line != nil && !done_line.hidden && NSHeight(editor_win.frame) == open_h,
+              "editor: a Done task shows when it was completed, beside the priority flag");
         check(snapshot(editor_win, dir, @"editor-completed"), "editor: snapshot, a completed task");
         task_db_task_set_status(app->db, tagged, TASK_STATUS_NEW);
         tasks_editor_refresh_all();

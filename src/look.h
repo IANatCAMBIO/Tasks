@@ -51,6 +51,9 @@ static const CGFloat tasks_look_float_pad        = 2.0;    /* plate edge to butt
 
 /* ── Task rows (the list and the cards share row_text.h) ────────────── */
 
+static const CGFloat tasks_look_row_small_font   = 9.0;    /* every line but the
+                                                             * title (which is
+                                                             * shared_look_ui_font) */
 static const CGFloat tasks_look_row_line_gap     = 1.0;    /* between lines       */
 static const CGFloat tasks_look_row_pad_v        = 8.0;    /* above and below the
                                                              * text in a list row */
@@ -61,6 +64,7 @@ static const CGFloat tasks_look_drag_rule        = 2.0;    /* row drop marker   
 static const CGFloat tasks_look_lane_pad         = 6.0;    /* lane border to card */
 static const CGFloat tasks_look_lane_gap         = 6.0;    /* between lanes/cards */
 static const CGFloat tasks_look_card_pad         = 8.0;    /* card border to text */
+static const CGFloat tasks_look_card_radius      = 5.0;    /* card corner         */
 static const CGFloat tasks_look_card_grip_pad    = 5.0;    /* round the grip      */
 static const CGFloat tasks_look_card_mark_h      = 3.0;    /* insertion bar       */
 static const CGFloat tasks_look_card_ghost_alpha = 0.65;   /* the dragged copy    */

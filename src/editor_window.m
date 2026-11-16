@@ -562,6 +562,38 @@ keyDown:(NSEvent *)event
 
 @end
 
+/*
+ * tasks_date_field — the due date field: a click into it opens the
+ * calendar as well as starting the edit, so the calendar needs no button
+ * of its own.  Only the click that enters the field does this: once the
+ * field is being edited its clicks go to the field editor and move the
+ * caret, as in any text field.
+ */
+@interface tasks_date_field : NSTextField
+
+/* Run after a click has started the edit; the editor opens the calendar. */
+@property (nonatomic, copy) void (^clicked)(void);
+
+@end
+
+@implementation tasks_date_field
+
+/*
+ * mouseDown: — the click starts the edit as usual (the caret is placed,
+ * a drag selects), then the calendar is asked for.
+ *
+ * Inputs:
+ *   event — the mouse-down event
+ */
+- (void)
+mouseDown:(NSEvent *)event
+{
+    [super mouseDown:event];
+    if (self.clicked != nil) self.clicked();
+}
+
+@end
+
 /* ── The editor ─────────────────────────────────────────────────────── */
 
 @interface TasksEditorWindow : NSWindowController <NSWindowDelegate, NSTokenFieldDelegate,
@@ -791,9 +823,12 @@ build_layout
 }
 
 /*
- * build_fields: — the always-visible part of the form: title, status and
- * due date, the two flags, the notes, and for a subtask the line saying
- * whose subtask it is.
+ * build_fields: — the always-visible part of the form: title, tags, due
+ * date and status, the priority flag, the notes, and for a subtask the line
+ * saying whose subtask it is.  The rows follow the tab order: title, tags,
+ * due date, status, then the flag — which is why the flag has a row of its
+ * own under the status: on the tags row it would come before the due date
+ * with Full Keyboard Access on.
  *
  * Inputs:
  *   form — the form's column, to append to
@@ -815,26 +850,6 @@ build_fields:(NSStackView *)form
     self.source_label.hidden = YES;
     add_row(form, self.source_label);
 
-    /* Status at the left, the due date and time at the right. */
-    NSMutableArray<NSString *> *statuses = [NSMutableArray array];
-    for (int status = 0; status < TASK_STATUS_N_VALUES; status++) {
-        [statuses addObject:tasks_string(task_status_label((TaskStatus)status))];
-    }
-    self.status_popup = tasks_popup_button(statuses, self, @selector(status_changed:));
-    [self.status_popup.widthAnchor constraintEqualToConstant:status_popup_w].active = YES;
-
-    self.due_field = entry_field(@"YYYY-MM-DD", date_field_w,
-        @"The due date, as YYYY-MM-DD or M/D/YY.  Leave it empty for no due date.", self);
-    self.due_time_field = time_picker(@"The time of day this task is due.", self,
-                                      @selector(time_changed:));
-    NSView *status_row = row_stack(@[
-        form_label(@"Status:"), self.status_popup, spacer(),
-        form_label(@"Due:"), self.due_field,
-        calendar_button(self, @selector(pick_due_date:), @"Pick a due date"),
-        form_label(@"at"), self.due_time_field,
-    ]);
-    add_row(form, status_row);
-
     /* The tags, as tokens: typing offers the existing tags (tag_popup, not
      * the token field's own completions), Return or a comma makes the typed
      * text a tag, new or not. */
@@ -851,26 +866,58 @@ build_fields:(NSStackView *)form
     [self.tag_field setContentHuggingPriority:NSLayoutPriorityDefaultLow - 1
                                forOrientation:NSLayoutConstraintOrientationHorizontal];
 
-    /* The tags at the left, taking the spare width; the flag right-aligned
-     * under the time picker. */
-    self.priority_check = [NSButton checkboxWithTitle:@"High Priority" target:self
-                                               action:@selector(flag_changed:)];
-    self.priority_check.font = [NSFont systemFontOfSize:shared_look_ui_font];
-    NSView *flags_row = row_stack(@[form_label(@"Tags:"), self.tag_field,
-                                    self.priority_check]);
-    [form setCustomSpacing:tasks_look_form_spacing * 1.2 afterView:status_row];
-    add_row(form, flags_row);
+    NSView *tags_row = row_stack(@[form_label(@"Tags:"), self.tag_field]);
+    add_row(form, tags_row);
 
-    /* When the task was completed, on a line of its own under the flags;
-     * hidden for a task never completed (show_completed:). */
+    /* The due date and time at the left, the status at the right. */
+    tasks_date_field *due = [[tasks_date_field alloc] initWithFrame:NSZeroRect];
+    due.font               = [NSFont systemFontOfSize:shared_look_ui_font];
+    due.bezelStyle         = NSTextFieldRoundedBezel;
+    due.placeholderString  = @"YYYY-MM-DD";
+    due.toolTip            = @"The due date: click to pick it from a calendar, or type it "
+                             @"as YYYY-MM-DD or M/D/YY.  Leave it empty for no due date.";
+    due.delegate           = self;
+    due.usesSingleLineMode = YES;
+    [due.widthAnchor constraintEqualToConstant:date_field_w].active = YES;
+    __weak TasksEditorWindow *ws = self;
+    due.clicked = ^{
+        TasksEditorWindow *s = ws;
+        if (s != nil) [s pick_date_for:s.due_field from:s.due_field];
+    };
+    self.due_field = due;
+    self.due_time_field = time_picker(@"The time of day this task is due.", self,
+                                      @selector(time_changed:));
+
+    NSMutableArray<NSString *> *statuses = [NSMutableArray array];
+    for (int status = 0; status < TASK_STATUS_N_VALUES; status++) {
+        [statuses addObject:tasks_string(task_status_label((TaskStatus)status))];
+    }
+    self.status_popup = tasks_popup_button(statuses, self, @selector(status_changed:));
+    [self.status_popup.widthAnchor constraintEqualToConstant:status_popup_w].active = YES;
+
+    NSView *due_row = row_stack(@[
+        form_label(@"Due:"), self.due_field,
+        form_label(@"at"), self.due_time_field, spacer(),
+        form_label(@"Status:"), self.status_popup,
+    ]);
+    [form setCustomSpacing:tasks_look_form_spacing * 1.2 afterView:tags_row];
+    add_row(form, due_row);
+
+    /* When the task was completed, at the left of the line under the status;
+     * hidden for a task never completed (show_completed:).  The flag is
+     * right-aligned under the status pop-up on the same line. */
     self.completed_label = [NSTextField labelWithString:@""];
     self.completed_label.font      = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     self.completed_label.textColor = NSColor.secondaryLabelColor;
     self.completed_label.hidden    = YES;
-    add_row(form, self.completed_label);
 
-    [form setCustomSpacing:tasks_look_form_spacing * 2.5 afterView:flags_row];
-    [form setCustomSpacing:tasks_look_form_spacing * 2.5 afterView:self.completed_label];
+    self.priority_check = [NSButton checkboxWithTitle:@"High Priority" target:self
+                                               action:@selector(flag_changed:)];
+    self.priority_check.font = [NSFont systemFontOfSize:shared_look_ui_font];
+    NSView *flag_row = row_stack(@[self.completed_label, spacer(), self.priority_check]);
+    add_row(form, flag_row);
+
+    [form setCustomSpacing:tasks_look_form_spacing * 2.5 afterView:flag_row];
     add_row(form, shared_ui_heading(@"Notes"));
     add_row(form, [self build_notes]);
 
@@ -2652,19 +2699,20 @@ tableViewSelectionDidChange:(NSNotification *)note
 /* ── The date picker ────────────────────────────────────────────────── */
 
 /*
- * pick_date_for:from: — open a calendar over the window, beside the button
- * that asked for it.  Clicking a day writes it into the date field and
- * closes the calendar; a click outside it or Escape closes it without a
- * date.  The calendar opens on the date the field holds, or on today.
- * Typing in the field works as well (an empty field is no date); this is
- * the other way in.
+ * pick_date_for:from: — open a calendar over the window, under the view
+ * that asked for it: the due field itself (a click into it), or the
+ * calendar button beside a schedule field.  Clicking a day writes it into
+ * the date field and closes the calendar; a click outside it or Escape
+ * closes it without a date.  The calendar opens on the date the field
+ * holds, or on today.  Typing in the field works as well (an empty field
+ * is no date); this is the other way in.
  *
  * Inputs:
- *   field  — the due or the start field the picked day is written into
- *   button — the calendar button the calendar points at
+ *   field  — the date field the picked day is written into
+ *   anchor — the view the calendar hangs under
  */
 - (void)
-pick_date_for:(NSTextField *)field from:(NSView *)button
+pick_date_for:(NSTextField *)field from:(NSView *)anchor
 {
     [self.date_popover close];
 
@@ -2691,7 +2739,7 @@ pick_date_for:(NSTextField *)field from:(NSView *)button
     self.date_popover.behavior          = NSPopoverBehaviorTransient;
     self.date_popover.contentViewController = controller;
     self.date_popover_field             = field;
-    [self.date_popover showRelativeToRect:button.bounds ofView:button preferredEdge:NSRectEdgeMaxY];
+    [self.date_popover showRelativeToRect:anchor.bounds ofView:anchor preferredEdge:NSRectEdgeMaxY];
     [picker.window makeFirstResponder:picker];
 }
 
@@ -2736,18 +2784,6 @@ date_picked:(NSDatePicker *)sender
 time_changed:(id)sender
 {
     [self queue_save];
-}
-
-/*
- * pick_due_date: — the calendar button beside the due date.
- *
- * Inputs:
- *   sender — the button
- */
-- (void)
-pick_due_date:(id)sender
-{
-    [self pick_date_for:self.due_field from:sender];
 }
 
 /*
@@ -3148,6 +3184,7 @@ shut_down
     if (self.window.attachedSheet != nil) {
         [self.window endSheet:self.window.attachedSheet returnCode:NSModalResponseCancel];
     }
+    [self.date_popover close];
     /* The tables must not ask for rows once the row lists are freed. */
     self.subtask_table.dataSource    = nil;
     self.subtask_table.delegate      = nil;

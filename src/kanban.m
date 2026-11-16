@@ -471,17 +471,22 @@ drawRect:(NSRect)dirty
     NSRect  bounds = self.bounds;
     NSColor *border;
 
+    /* Fill and border share one path, inset half a point so the one-point
+     * stroke sits inside the frame; the corners show the lane behind. */
+    NSBezierPath *shape = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds, 0.5, 0.5)
+                                                          xRadius:tasks_look_card_radius
+                                                          yRadius:tasks_look_card_radius];
     [NSColor.textBackgroundColor setFill];
-    NSRectFill(bounds);
+    [shape fill];
     if (self.selected) {
         [tasks_color(TasksColorCardSelected) setFill];
-        NSRectFillUsingOperation(bounds, NSCompositingOperationSourceOver);
+        [shape fill];
         border = NSColor.controlAccentColor;
     } else {
         border = tasks_color(self.hovered ? TasksColorCardBorderHover : TasksColorCardBorder);
     }
     [border setStroke];
-    [NSBezierPath strokeRect:NSInsetRect(bounds, 0.5, 0.5)];
+    [shape stroke];
 
     NSAttributedString *grip = grip_glyph();
     [grip drawAtPoint:NSMakePoint(tasks_look_card_grip_pad,
@@ -860,8 +865,10 @@ draw_shadows:(NSRect)dirty
         if (card.dragged || !NSIntersectsRect(NSInsetRect(card.frame, -reach, -reach), dirty)) {
             continue;
         }
-        [[NSBezierPath bezierPathWithRect:NSInsetRect(card.frame, card_shadow_inset,
-                                                      card_shadow_inset)] fill];
+        [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(card.frame, card_shadow_inset,
+                                                             card_shadow_inset)
+                                         xRadius:tasks_look_card_radius
+                                         yRadius:tasks_look_card_radius] fill];
     }
     [NSGraphicsContext restoreGraphicsState];
 }

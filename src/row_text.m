@@ -6,7 +6,7 @@
  * row_font — the font of a line.
  *
  * Inputs:
- *   small  — the small size (every line but the title)
+ *   size   — the point size
  *   bold   — bold weight
  *   italic — italic
  *
@@ -15,15 +15,16 @@
  *   font has no italic).
  */
 static NSFont *
-row_font(BOOL small, BOOL bold, BOOL italic)
+row_font(CGFloat size, BOOL bold, BOOL italic)
 {
-    /* Eight faces, each made once: a row's string is built on every
-     * refresh, and the italic face goes through a font descriptor. */
-    static NSFont *faces[8];
-    unsigned       which = (small ? 4 : 0) | (bold ? 2 : 0) | (italic ? 1 : 0);
+    /* Each face made once: a row's string is built on every refresh, and
+     * the italic face goes through a font descriptor.  Keyed by size and
+     * the two traits; the sizes in use are the title's and the small one. */
+    static NSMutableDictionary<NSNumber *, NSFont *> *faces;
+    NSNumber *which = @(size * 4 + (bold ? 2 : 0) + (italic ? 1 : 0));
+    if (faces == nil) faces = [NSMutableDictionary dictionary];
     if (faces[which] != nil) return faces[which];
 
-    CGFloat size = shared_look_ui_font;         /* every line the apps' size; a small one is told by its alpha */
     NSFont *font = bold ? [NSFont boldSystemFontOfSize:size] : [NSFont systemFontOfSize:size];
 
     if (italic) {
@@ -69,7 +70,8 @@ tasks_row_text(const task_row_t *row, BOOL emphasized)
 
     for (size_t i = 0; i < row->line_count; i++) {
         const task_row_line_t *line = &row->lines[i];
-        NSFont *font = row_font(line->small, line->bold, line->italic);
+        CGFloat size = line->small ? tasks_look_row_small_font : shared_look_ui_font;
+        NSFont *font = row_font(size, line->bold, line->italic);
 
         /* A character appended to the plain string takes the attributes of
          * the one before it, the paragraph style among them. */
@@ -80,7 +82,7 @@ tasks_row_text(const task_row_t *row, BOOL emphasized)
         if (prefix.length > 0) {
             [text appendAttributedString:[[NSAttributedString alloc]
                 initWithString:prefix
-                    attributes:@{ NSFontAttributeName:            row_font(line->small, NO, NO),
+                    attributes:@{ NSFontAttributeName:            row_font(size, NO, NO),
                                   NSForegroundColorAttributeName: base,
                                   NSParagraphStyleAttributeName:  para }]];
         }

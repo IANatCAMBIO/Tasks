@@ -450,7 +450,7 @@ estimated_text_height(size_t line_count)
         NSLayoutManager *layout = [[NSLayoutManager alloc] init];
         title_h = [layout defaultLineHeightForFont:[NSFont systemFontOfSize:shared_look_ui_font]];
         small_h = [layout defaultLineHeightForFont:
-                      [NSFont systemFontOfSize:shared_look_ui_font]] +
+                      [NSFont systemFontOfSize:tasks_look_row_small_font]] +
                   tasks_look_row_line_gap;
     });
     return ceil(title_h + (line_count > 1 ? line_count - 1 : 0) * small_h);

@@ -14,6 +14,9 @@
  * narrow for it, never wrapped: a row's height is its line count's, the
  * same at any width.
  *
+ * The title line is shared_look_ui_font and every other line
+ * tasks_look_row_small_font, in the list and on the cards alike.
+ *
  * Emphasis is applied exactly as the description says: bold, italic,
  * strike-through, the small size, and ALPHA for dimming — applied to
  * whatever the base text colour is, so dimmed text stays readable on a
