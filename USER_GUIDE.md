@@ -101,7 +101,9 @@ event. Moving or deleting that event in Calendar (or in Google Calendar,
 once Calendar has synced it) updates the planner.
 
 To set it up, open Settings → Calendar and tick **Sync the day planner
-with Calendar**. macOS asks once for access to your calendars; then choose
+with Calendar**. The day planner's toolbar button appears while the
+switch is on and goes when it is off, closing the planner if it was open
+(View → Show Day Planner still opens it either way). macOS asks once for access to your calendars; then choose
 the calendar tasks go to and the calendars to show. Notes has the same
 section: the switch and the shown calendars are one setting both apps
 share, kept in their shared database. If access was refused, **Open
@@ -151,14 +153,15 @@ it are still pending and the next one brings it back. **Dismiss** or
     backups/         backups, by default
 ```
 
-Both apps open the same file and follow the same `location` pointer, which
-**File > Open Database File…** writes when you answer **Make Default**.
-The file must be on a local disk and not inside iCloud Drive, Dropbox or
+Both apps open the same file and follow the same `location` pointer. The
+file is created, checked and backed up by **camb.io Database Manager**
+(`camb.io_db_mgr.app`, the menu bar app in the `cambio_db` repository); Tasks
+only opens what is there, and with no database says so and quits. The
+file must be on a local disk and not inside iCloud Drive, Dropbox or
 another synced folder: the app refuses to open it there. Only a shared
 database can be opened; an old Tasks `tasks.db` or a Notes `notes.db` is
-refused untouched (as is an empty file: the shared module creates a
-missing database complete, in one step), and is brought across with the
-shared module's migration tool instead.
+refused untouched, and is brought across with the shared module's
+migration tool instead.
 
 **Tasks' own settings** stay in Tasks' folder (attachments are links to
 files wherever they are, and are not copied):
@@ -170,10 +173,7 @@ files wherever they are, and are not copied):
 
 Setting `TASKS_DATA_DIR` moves Tasks' folder and `CAMBIO_SHARED_DB` names
 the database file; `make run`, `make seed`, `make test` and `make ui-check`
-set both to places under `dev/`. While `CAMBIO_SHARED_DB` is set, **Make
-Default** is refused with the shared module's reason, and backups go to
-the folder set for that database or, when none is set, to `backups/`
-beside it — never to the per-user folder.
+set both to places under `dev/`.
 
 **This app does not share data with the GTK Tasks app** (the
 `gtk4-testing` branch) and cannot open that app's folder
@@ -218,7 +218,8 @@ question off until the tasks have gone. After that a pass runs at every
 launch and once a day while the app is open. **Clean Up Now** runs one
 pass immediately and works with the switch off, so a one-off tidy-up does
 not mean turning automatic deletion on. Deleted tasks are **not**
-recoverable from the app — they are in your backups and nowhere else.
+recoverable from the app — they are in camb.io Database Manager's backups and
+nowhere else.
 
 What a pass takes, and what it leaves:
 
@@ -254,25 +255,21 @@ nothing is ever deleted sooner than the retention allows.
 
 ## Backups
 
-**Backups** are on by default: every hour a verified copy of the shared
-database is written to `backups/` in the database file's own folder (or a
-folder chosen in Settings), named `shared_data-YYYYMMDD-HHMMSSZ.db` in UTC
-and keeping the newest 48. Notes and Tasks share these settings, and
-whichever app is running makes the backup when it is due. **Back Up Now**
-in Settings makes one at once; Settings also shows when the last backup
-was made and why the last pass failed, if it did — both when a copy was
-made but old backups could not be removed.
+Backups, like the integrity check and the database's fingerprint, are
+**camb.io Database Manager**'s (`camb.io_db_mgr.app`, in the `cambio_db` repository
+beside this one): its menu bar window holds the backup switch, the
+schedule, the folder and **Back Up Now**, and shows when the last backup
+was made. Tasks makes no backups of its own.
 
 ## Configuration
 
 Settings are changed in the app and stored in `tasks.ini` (group
-`[tasks]`, written by the app; comments are not preserved), apart from the
-backup settings, which live in the shared database so that Notes follows
-them too. The Settings window (⌘,) holds the appearance options (bold
-titles, Kanban shadows, business-day forecast, the sidebar's tag counts),
-New Tasks (whether Quick Task's ⌃⌥⌘T works from any app), the database's
-health and fingerprint, Cleanup (how long completed tasks are kept), the
-backups, notifications and the Calendar; the View menu holds the rest. Every key and its default is listed in
+`[tasks]`, written by the app; comments are not preserved). The Settings
+window (⌘,) holds the appearance options (bold titles, Kanban shadows,
+business-day forecast, the sidebar's tag counts), New Tasks (whether
+Quick Task's ⌃⌥⌘T works from any app), notifications, Cleanup (how long
+completed tasks are kept) and the Calendar; the View menu holds the rest.
+Every key and its default is listed in
 `src/task_config.h`.
 
 ## Keyboard shortcuts

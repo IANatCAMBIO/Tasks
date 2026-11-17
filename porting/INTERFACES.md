@@ -23,14 +23,13 @@ Read with it:
 1. **Never touch the live data.**  The GTK app's data is in
    `~/.local/share/tasks/`.  Do not open, read, list or write anything there —
    not from code, not from a shell, not "just to look".  The code refuses:
-   `task_db_open`, `task_db_verify_file`, `task_db_file_sha256`, the config
-   loader and the backup folder all reject any path inside it
-   (`src/task_paths.h`), whether it gets there as written, through
-   `..`, or through a symbolic link.  Do not weaken or bypass the fence; a
-   file chooser that lands there must show the refusal, not work around it.
-   The fence knows that directory by its LOCATION only: it cannot recognise a
-   GTK database kept somewhere else.  Anything that opens a database the
-   user picks (Open Database File…) needs the owner's decision first (§15).
+   `task_db_open`, `task_db_open_existing` and the config loader all
+   reject any path inside it (`src/task_paths.h`), whether it gets there
+   as written, through `..`, or through a symbolic link.  Do not weaken or
+   bypass the fence.  The fence knows that directory by its LOCATION only:
+   it cannot recognise a GTK database kept somewhere else.  (The app no
+   longer opens a database the user picks: the file is camb.io Database Manager's,
+   §15.)
 2. **Every build, run and test uses the sandbox.**  `make run`, `make seed`,
    `make test`, `make ui-check` set `TASKS_DATA_DIR` to a directory under
    `dev/` (gitignored) and `CAMBIO_SHARED_DB` to a database file inside it.
@@ -95,8 +94,7 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
 | `db` | Tasks' queries over the shared database; the schema, stamps, WAL, path and backups are the shared module's (`shared_db.h`, from `../shared_data`) |
 | `search` | the search box's query language (unchanged) |
 | `recur` | recurrence arithmetic and the deadline-armed pass |
-| `backup` | backups through the shared module, on a background job; policy in `shared_settings` |
-| `task_worker` | the scheduler the recurrence pass and the backup are registered with |
+| `task_worker` | the scheduler the recurrence pass, the cleanup pass and the notifications are registered with (the backup poll moved to camb.io Database Manager, 2026-11-17) |
 | `task_view`, `core_views` | the registry of sidebar views (Favorites, All Tasks, 3-Day Forecast, Action Items) |
 | `task_ops` | clear-completed (a tag's), the default tag (`task_ops_default_tag`) |
 | `task_rows` | what a task row SAYS, as toolkit-neutral data |
@@ -111,15 +109,15 @@ The Makefile compiles every `src/*.c` as core and every `src/*.m` as UI.  A
   `TaskApp`, its database connection, `task_config`, `task_dates` (its
   timezone cache), every AppKit object.
 - A SQLite connection never crosses threads.  Background work that needs the
-  database opens its own with `task_db_open_existing`, as the backup and
-  the gcal sync do: only the main connection, at launch or "Create New
-  Database", may create the file (`task_db_open`), so a worker never makes
-  an empty database where the user moved the real one aside.  Its commits
-  bump `data_version` for the main connection, so they reach the windows
-  through the outside-change watch (§4) like any other app's.
+  database opens its own with `task_db_open_existing`, as the main
+  connection does at launch: nothing in the app creates the file
+  (`task_db_open` is the tests' and the seed tool's), so a worker never
+  makes an empty database where the user moved the real one aside.  Its
+  commits bump `data_version` for the main connection, so they reach the
+  windows through the outside-change watch (§4) like any other app's.
 - Background C work: `task_loop_background(fn, ctx)`; it hands its result back
   with `task_loop_main_async(fn, ctx)`.  It must copy every setting it needs
-  BEFORE it starts (see `task_backup_start`).
+  BEFORE it starts.
 - Objective-C may use GCD and blocks directly (playbook §3.14–3.15): capture
   every input as locals, hop back with
   `dispatch_async(dispatch_get_main_queue(), …)`, guard against stale results
@@ -300,7 +298,6 @@ One table (`src/commands.m`) drives menu items, toolbar items and validation.
 | Delete Task | shell | ⌘⌫ | |
 | Info… (open editor) | shell | ⌘I | |
 | Clear Completed Tasks | shell | | |
-| Open Database File… | shell | ⌘O | |
 | Find… | shell | ⌘F | |
 | Hide/Show Completed | shell | | |
 | Manual/Automatic Sorting | shell | | |
@@ -515,15 +512,11 @@ persistence, the teardown order.
 
 Still to do:
 - **Compact mode** (§11) and its floating New/Delete pair.
-- **Open Database File…** — done: pick a `.db`, verify it read-only (only a
-  stamped shared database passes; an old `tasks.db` is refused in the shared
-  module's words), close editors, open it, re-arm workers, health check,
-  then offer "Make Default", which writes the shared pointer file
-  (`shared_db_set_default_path`) both apps follow — never while
-  `CAMBIO_SHARED_DB` names the file.
-- First-run choice (map D7): today a missing database is simply created in
-  the data directory.  Decide with the owner whether the Welcome choice
-  (open existing / create new) is wanted.
+- **Open Database File…** and the first-run choice (map D7) — were done,
+  then removed (2026-11-17): the database's location, creation, health
+  check and backups belong to camb.io Database Manager (`../cambio_db`); Tasks
+  opens the file `shared_db_path()` names with `task_db_open_existing`
+  and quits with a notice when it is not there.
 - Status message: hold 3 s then FADE over 1 s (the skeleton clears it).
 - Sort-toggle and search interplay already follows the reference; the search
   field's Return/Escape handling is in place.
@@ -576,14 +569,13 @@ delete the task).  After a subtask tick, resync the parent's status control.
 
 Owns: `settings_window.[hm]`.  Reference: `settings_window.c`.
 Appearance (bold titles, Kanban shadows, the business-day forecast, the
-note-context title prefix), the Database plate, backups (map §3.9).  After
-a change that alters rows call `task_app_notify_tasks` — it also reloads
-the day planner and retitles the reminders (`tasks_notify_retitle`).  The backup settings are the
-shared database's (`shared_backup_policy_get` / `shared_settings_set`, and
-`task_backup_set_dir` for the folder), which Notes follows too; the poll reads them afresh, so nothing is re-armed.  The Kanban shadow needs no call into the board:
-the board re-reads `TASK_CFG_KANBAN_SHADOW` on every `show_rows:`.
-Lift into the core: `dir_shares_fate`, `health_stamp`
-(`settings_window.c:120–136, 206–225`).
+note-context title prefix), Cleanup, notifications, the Calendar.  The
+Database plate and the backups (map §3.9) were carried and then moved to
+camb.io Database Manager's window (2026-11-17).  After a change that alters rows
+call `task_app_notify_tasks` — it also reloads the day planner and
+retitles the reminders (`tasks_notify_retitle`).  The Kanban shadow needs
+no call into the board: the board re-reads `TASK_CFG_KANBAN_SHADOW` on
+every `show_rows:`.
 
 ### Shared rules for all packages
 
@@ -713,23 +705,21 @@ screenshots the running app where that permission exists.
   the command table; `task_order_*` (tests only so far).  The no-unused-code
   rule applies again at integration: whatever still has no caller then is
   deleted.
-- **Open Database — shared databases only (owner decision, 2026-10-12).**
-  The file Notes and Tasks share carries `application_id` and
-  `user_version` stamps (`shared_db.h`); any other file — the GTK app's or
-  this app's old `tasks.db`, a Notes `notes.db` — is refused untouched.  Old
-  files are converted by `migrate_shared` (`../shared_data/migrate/`).  The
-  location fence round the GTK app's live data stays.
-- **First-run Welcome screen (owner decision).**  When no database is found
-  at launch, a Welcome tool panel offers "Open Existing Database…" (an
-  NSOpenPanel; the file chosen becomes the default for both apps; Cancel
-  comes back to the question), "Create New Database" (task_db_open creates
-  the shared file at `shared_db_path()`) and Quit, which Escape and the
-  close box also mean.  The launch carries on from the answer
-  (`finish_launch_at:choice:`).  This prevents users
-  with an existing GTK database from being silently given a second, empty
-  one.
+- **Shared databases only (owner decision, 2026-10-12).**  The file Notes
+  and Tasks share carries `application_id` and `user_version` stamps
+  (`shared_db.h`); any other file — the GTK app's or this app's old
+  `tasks.db`, a Notes `notes.db` — is refused untouched.  Old files are
+  converted by `migrate_shared` (`../shared_data/migrate/`).  The location
+  fence round the GTK app's live data stays.
+- **The database is camb.io Database Manager's (owner decision, 2026-11-17).**
+  Open Database File… / Make Default and the first-run Welcome screen
+  (open existing / create new) were removed with the backups and the
+  health check: `camb.io_db_mgr.app` (`../cambio_db`) creates the file at
+  `shared_db_path()`, checks it and backs it up.  Tasks opens it with
+  `task_db_open_existing` and, when it is missing or will not open, shows
+  one notice naming camb.io Database Manager and quits.
 - Not swept: comments inside the carried core files (`db.c`, `recur.c`,
-  `backup.c`, …) still mention sync, plugins and GTK-era names in places.
+  …) still mention sync, plugins and GTK-era names in places.
 - The unused sync-era `task_db_*` functions listed in map §2.2 are still in
   `db.c` (the brief kept `db.c` untouched); they are dead code to remove in
   the GLib phase.

@@ -56,24 +56,6 @@
 #include "shared_db.h"
 
 /* ---------------------------------------------------------------------------
- * TaskDbHealth — the outcome of one health pass over a database.
- *
- * `ok` is the only thing a caller normally acts on; `ran` is what tells
- * "the checks found problems" apart from "the checks could not be run",
- * which are a very different sentence to put in front of a user — and the
- * dividing line is whether the checks came back with ANYTHING, not
- * whether sqlite returned an error, because a corrupt file does both.
- * `detail` is NULL when there is nothing to say; `when` is unix time, and
- * 0 means no pass has been made.
- * ------------------------------------------------------------------------- */
-typedef struct {
-    gboolean  ok;                    /* both checks ran AND both passed     */
-    gboolean  ran;                   /* both checks actually executed       */
-    gint64    when;                  /* unix time of the pass, 0 = never    */
-    gchar    *detail;                /* what went wrong, or NULL (owned)    */
-} TaskDbHealth;
-
-/* ---------------------------------------------------------------------------
  * TaskDatabase — one open connection.  A connection must not cross threads:
  * the sync worker opens its own on the same path (task_db_open_existing).  The
  * SQLite handle is shared_db_handle(db->shared), the path
@@ -81,10 +63,6 @@ typedef struct {
  * ------------------------------------------------------------------------- */
 typedef struct {
     shared_db *shared;               /* the connection (owned)              */
-    /* The last health pass over this file, held IN MEMORY for the life of
-     * the connection and deliberately never written down — see
-     * task_db_health_check.                                               */
-    TaskDbHealth health;
     /* The change revisions (shared_db_poll) of the data this connection's
      * app last loaded or wrote: 'tasks' and 'notes'; -1 when unknown.
      * Kept by task_db_outside_change and by every commit of this
@@ -240,28 +218,28 @@ typedef struct {
 void task_free(Task *t);
 
 /* ---------------------------------------------------------------------------
- * task_db_open() — open a connection to the shared database at `path`
- * (shared_db_open: a missing file is created complete, in one step — so
- * only the main connection, at launch or Create New, uses it; any
- * file that is not a stamped shared database — an empty one, an old
+ * task_db_open() — open a connection to the shared database at `path`,
+ * CREATING a missing file complete, in one step (shared_db_open).  The
+ * app itself never creates the database — camb.io Database Manager (camb.io_db_mgr.app)
+ * does, and the app opens it with task_db_open_existing — so this is for
+ * the tests and the seed tool, which make their sandbox databases with it.
+ * Any file that is not a stamped shared database — an empty one, an old
  * tasks.db, a Notes notes.db — is refused untouched, as is one on a
- * network volume or in a cloud-synced folder).  Nothing in Tasks creates
- * a file at the path first.  The path to open is shared_db_path().  Returns
- * the handle, or NULL with `err` set to the module's own words.
+ * network volume or in a cloud-synced folder.  Returns the handle, or NULL
+ * with `err` set to the module's own words.
  *
  * A path inside the GTK app's live data directory (task_paths.h) is
- * REFUSED, as it is by task_db_verify_file and task_db_file_sha256: this
- * app never reads or writes there.
+ * REFUSED: this app never reads or writes there.
  * ------------------------------------------------------------------------- */
 TaskDatabase *task_db_open(const gchar *path, GError **err);
 
 /* ---------------------------------------------------------------------------
- * task_db_open_existing() — task_db_open for every connection but the main
- * one opened at launch / Create New: the backup worker and
- * File > Open Database File….  It never creates a file
- * (shared_db_open_existing): a database the user moved aside — during a
- * restore or a rollback — is reported missing instead of being silently
- * replaced by an empty one.  Inputs and output as task_db_open.
+ * task_db_open_existing() — task_db_open for the app's every connection:
+ * the main one at launch (shared_db_path() says where) and the workers'
+ * own.  It never creates a file (shared_db_open_existing): a missing
+ * database — never created by camb.io Database Manager, or moved aside during a
+ * restore — is reported instead of being silently replaced by an empty
+ * one.  Inputs and output as task_db_open.
  * ------------------------------------------------------------------------- */
 TaskDatabase *task_db_open_existing(const gchar *path, GError **err);
 
@@ -297,89 +275,6 @@ enum {
  *   to be safe).
  * ------------------------------------------------------------------------- */
 guint task_db_outside_change(TaskDatabase *db);
-
-/* ---------------------------------------------------------------------------
- * task_db_verify_file() — is the database at `path` structurally sound?
- *
- * Runs the shared module's full check (shared_db_check: integrity_check,
- * foreign_key_check, stamps, WAL, cross-table invariants) on a SEPARATE
- * read-only connection, so it says nothing about whatever is open
- * elsewhere; a file that is not a stamped shared database is refused.  Returns TRUE only when both actually RAN and both passed;
- * `detail` (optional, g_free) receives sqlite's own words on failure.
- *
- * This exists because "sqlite3_open succeeded" proves nothing: SQLite
- * opens a malformed file happily and only errors when a damaged page is
- * READ.  Anything that copies the database must verify the copy this way
- * before it is trusted — never by opening it.
- * ------------------------------------------------------------------------- */
-gboolean task_db_verify_file(const gchar *path, gchar **detail);
-
-/* ---------------------------------------------------------------------------
- * task_db_health_check() — verify the OPEN database and remember the result.
- *
- * Runs the same check task_db_verify_file runs, against this
- * connection, and stores what it found on the connection so a later
- * reader (the Settings window) can say WHEN the answer was true.
- * Returns TRUE when the database is sound.
- *
- * It writes NOTHING to the database, and that is the point rather than an
- * optimisation.  The verdict used to be stamped into sync_state, which
- * made a health check MUTATE THE FILE IT WAS MEASURING: every run changed
- * the database's bytes, so the SHA-256 shown beside it moved on every
- * press of Update while the user's tasks sat untouched.  A fingerprint
- * that its own refresh invalidates is worse than no fingerprint.  Holding
- * the verdict in memory also makes "checked 14:55 today" mean a check
- * made in THIS session, where a stamp read off disk could describe a file
- * that has changed many times since.
- *
- * The cost, accepted: the verdict does not survive a restart, so a launch
- * with the startup check switched off shows "Not checked" until Update is
- * pressed.  Living on the connection is also what makes a database SWITCH
- * safe — the old connection's verdict cannot outlive the file it describes.
- * ------------------------------------------------------------------------- */
-gboolean task_db_health_check(TaskDatabase *db);
-
-/* task_db_health() — the stored result, or NULL when no pass has been made
- * on this connection.  Borrowed, owned by the connection: do not free it,
- * and do not keep it across a task_db_health_check.                      */
-const TaskDbHealth *task_db_health(TaskDatabase *db);
-
-/* ---------------------------------------------------------------------------
- * task_db_health_check_file() — the health pass made over the FILE at
- * `path` instead of an open handle, for a caller that must not hold the
- * main thread while it runs (the Settings window's Update).
- *
- * Runs on the separate read-only connection task_db_verify_file uses, so
- * it may be called from any thread and can never create or change the
- * file.  The verdict is RETURNED in *out — `ran` included, which
- * task_db_verify_file does not report — and stored nowhere:
- * task_db_health_record is what puts it on the open handle, back on the
- * main thread.  out->detail is the caller's (g_free), NULL when sound.
- * Returns out->ok.
- * ------------------------------------------------------------------------- */
-gboolean task_db_health_check_file(const gchar *path, TaskDbHealth *out);
-
-/* ---------------------------------------------------------------------------
- * task_db_health_record() — make `verdict` the stored result of `db`: what
- * task_db_health answers with from now on.  The one writer of the stored
- * verdict; task_db_health_check goes through it too.
- *
- * Takes verdict->detail over (it is NULL afterwards).  The caller is
- * responsible for the verdict being about the file `db` has open.
- * ------------------------------------------------------------------------- */
-void task_db_health_record(TaskDatabase *db, TaskDbHealth *verdict);
-
-/* ---------------------------------------------------------------------------
- * task_db_file_sha256() — hex SHA-256 of the file at `path`, or NULL when
- * it cannot be read (g_free the result).
- *
- * Answers about the file AS IT STANDS, and is never stored: a live
- * database changes with the next thing the user types, and writing the
- * digest into the database would change it again.  A caller showing one
- * is showing a fingerprint of this moment, which is exactly what makes it
- * comparable with `shasum -a 256` or with a backup.
- * ------------------------------------------------------------------------- */
-gchar *task_db_file_sha256(const gchar *path);
 
 /* Every write below that returns gboolean returns TRUE when its change was
  * committed and FALSE when it was not (logged): above all when another

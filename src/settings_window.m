@@ -1,4 +1,5 @@
 #import "settings_window.h"
+#import "library_window.h"
 #import "look.h"
 #import "ui_util.h"
 #import "task_notify.h"
@@ -6,16 +7,11 @@
 
 #import "cal_eventkit.h"
 
-#include "backup.h"
 #include "cal_sync.h"
 #include "cleanup.h"
 #include "recur.h"
 #include "task_config.h"
-#include "task_health.h"
 #include "task_ops.h"
-#include "task_paths.h"
-
-#include <time.h>
 
 /* ── Metrics and limits ─────────────────────────────────────────────── */
 
@@ -23,30 +19,7 @@
  * tasks_look_section_gap). */
 static const CGFloat heading_gap = 8.0;
 
-/* The Database plate: a bordered panel in the text background colour, so
- * what the database IS reads as a different kind of thing from the
- * controls below that change it. */
-static const CGFloat plate_radius  = 6.0;
-static const CGFloat plate_pad_h   = 10.0;  /* border to text, left and right */
-static const CGFloat plate_pad_v   = 8.0;   /* ... above and below             */
-static const CGFloat plate_col_gap = 8.0;   /* label column to value column    */
-static const CGFloat plate_row_gap = 4.0;
-static const CGFloat plate_value_w = 270.0; /* where a long path wraps: the
-                                             * plate's width less the labels
-                                             * and the "copy" link            */
-static const CGFloat plate_part_gap = 5.0;  /* between the parts of one value:
-                                             * the light and its verdict, a
-                                             * value and its "copy" link      */
-
-/* How much of the 64-character digest is shown: enough to compare at a
- * glance, short enough to sit on one line.  The whole of it is in the
- * tooltip and is what "copy" copies. */
-static const NSUInteger sha_head = 8;
-static const NSUInteger sha_tail = 4;
-
-/* The backup schedule's interval field.  The interval is in minutes, 0
- * meaning "only when Back Up Now is pressed"; its range and step are the
- * shared module's (SHARED_BACKUP_INTERVAL_MIN_MAX / _STEP). */
+/* The Cleanup retention's number field and its stepper. */
 static const CGFloat   number_field_w       = 52.0;  /* a number field, as Notes' */
 static const CGFloat   stepper_gap          = 2.0;   /* a field to its stepper */
 
@@ -88,63 +61,6 @@ static CGFloat
 form_content_w(void)
 {
     return tasks_look_settings_w - 2 * tasks_look_form_margin;
-}
-
-/*
- * plate_label — a one-line label of the Database plate, in a colour (the
- * window's text size, shared_ui_use_ui_font).
- *
- * Inputs:
- *   text  — the text
- *   color — its colour
- *
- * Output:
- *   configured label.
- */
-static NSTextField *
-plate_label(NSString *text, NSColor *color)
-{
-    NSTextField *label = [NSTextField labelWithString:text];
-
-    label.textColor = color;
-    return label;
-}
-
-/*
- * plate_value — a value of the Database plate: small, selectable (so it
- * can be copied), wrapping where a long path needs to.
- *
- * Output:
- *   configured, empty label.
- */
-static NSTextField *
-plate_value(void)
-{
-    NSTextField *label = shared_ui_note(@"", plate_value_w);
-
-    label.textColor  = NSColor.labelColor;
-    label.selectable = YES;
-    return label;
-}
-
-/*
- * value_row — the parts of one plate value side by side on one baseline.
- *
- * Inputs:
- *   parts — the views, left to right
- *
- * Output:
- *   the row.
- */
-static NSStackView *
-value_row(NSArray<NSView *> *parts)
-{
-    NSStackView *row = [NSStackView stackViewWithViews:parts];
-
-    row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    row.alignment   = NSLayoutAttributeFirstBaseline;
-    row.spacing     = plate_part_gap;
-    return row;
 }
 
 /*
@@ -220,66 +136,12 @@ button_row(NSArray<NSButton *> *buttons)
     return row;
 }
 
-/*
- * copy_to_pasteboard — replace the general pasteboard's contents with a
- * string.
- *
- * Inputs:
- *   text — the string
- */
-static void
-copy_to_pasteboard(NSString *text)
-{
-    NSPasteboard *board = NSPasteboard.generalPasteboard;
-
-    [board clearContents];
-    [board setString:text forType:NSPasteboardTypeString];
-}
-
 /* ── The window ─────────────────────────────────────────────────────── */
 
 @interface TasksSettingsWindow : NSWindowController <NSWindowDelegate>
 @property (nonatomic, assign) TaskApp *app;              /* borrowed; outlives the window */
 @property (nonatomic, strong) NSScrollView *scroll;      /* the window's content          */
 @property (nonatomic, strong) NSStackView *form;         /* every row, top to bottom      */
-
-/* The Database plate: five facts about one file, refreshed together. */
-@property (nonatomic, strong) NSTextField *health_light; /* the round indicator           */
-@property (nonatomic, strong) NSTextField *health_label; /* the verdict and when          */
-@property (nonatomic, strong) NSTextField *path_label;
-@property (nonatomic, strong) NSTextField *data_label;   /* "42 tasks with 8 tags"        */
-@property (nonatomic, strong) NSTextField *size_label;
-@property (nonatomic, strong) NSTextField *sha_label;    /* the digest, shortened         */
-@property (nonatomic, strong) NSButton *sha_copy;        /* its "copy" link               */
-@property (nonatomic, copy) NSString *sha256;            /* the whole digest; nil when the
-                                                          * file could not be read        */
-@property (nonatomic, strong) NSButton *update_button;
-/* The id of the probe whose answer the plate is waiting for; 0 for none.
- * An answer carrying any other id is from a superseded request. */
-@property (nonatomic, assign) NSUInteger awaited_probe;
-/* Whether that probe is an Update (it ran the integrity check and its
- * outcome is announced) rather than the read made when the window opens. */
-@property (nonatomic, assign) BOOL checking;
-
-/* Backups. */
-@property (nonatomic, strong) NSButton *backup_box;      /* the master switch             */
-@property (nonatomic, strong) NSTextField *interval_field;
-@property (nonatomic, strong) NSStepper *interval_stepper;
-@property (nonatomic, strong) NSTextField *keep_field;
-@property (nonatomic, strong) NSStepper *keep_stepper;
-@property (nonatomic, strong) NSTextField *folder_label; /* "Backing up to <folder>"      */
-@property (nonatomic, strong) NSTextField *fate_label;   /* the "alongside the database"
-                                                          * warning; hidden otherwise     */
-@property (nonatomic, strong) NSTextField *last_label;   /* backup_last_at: when the last
-                                                          * backup was made; hidden before
-                                                          * the first                     */
-@property (nonatomic, strong) NSTextField *error_label;  /* backup_last_error: why the last
-                                                          * backup failed; hidden when it
-                                                          * did not                       */
-@property (nonatomic, strong) NSButton *choose_button;
-@property (nonatomic, strong) NSButton *backup_button;
-@property (nonatomic, strong) NSTextField *backup_status; /* the last Back Up Now's outcome;
-                                                           * hidden until there is one    */
 
 /* Cleanup. */
 @property (nonatomic, strong) NSButton *cleanup_box;         /* the master switch        */
@@ -308,66 +170,15 @@ copy_to_pasteboard(NSString *text)
 
 /* Declared here because the C callbacks below call them before their
  * definitions; documented where they are defined. */
-- (void)show_probe:(const task_health_probe_t *)probe;
 - (void)refresh_cleanup;
 - (void)run_cleanup;
 - (void)ask_cleanup:(guint)n on_cancel:(void (^)(void))cancelled;
 - (void)show_cleanup_status:(NSString *)text;
-- (void)show_backup_status:(NSString *)text;
-- (void)refresh_backup;
 @end
 
 /* The one Settings window while it is open; nil otherwise.  This reference
  * is what owns the controller. */
 static TasksSettingsWindow *settings_window;
-
-/* Probe ids count up and are never reused, so an answer can be matched to
- * the window, and the request, that asked for it. */
-static NSUInteger last_probe_id;
-
-/* ── Core callbacks ─────────────────────────────────────────────────── */
-
-/*
- * on_probe — a database probe has reported (task_health.h).  The answer is
- * shown only if the window that asked is still open and still waiting for
- * THIS probe: the staleness guard for a window closed, or an Update pressed
- * again, while the probe ran.
- *
- * Inputs:
- *   app   — the application context (unused)
- *   probe — what was found (borrowed)
- *   data  — the probe's id, as a pointer-sized integer
- */
-static void
-on_probe(TaskApp *app, const task_health_probe_t *probe, void *data)
-{
-    TasksSettingsWindow *window = settings_window;
-
-    if (window == nil || window.awaited_probe != (NSUInteger)data) return;
-    [window show_probe:probe];
-}
-
-/*
- * on_backup_done — a Back Up Now pass has finished (backup.h).  Reported to
- * whichever Settings window is open now, since the outcome is news about
- * the app's backups rather than about the window that asked; with none
- * open the library's status bar has already said it.
- *
- * Inputs:
- *   app     — the application context (unused)
- *   ok      — whether the pass succeeded
- *   message — its one-line outcome (borrowed)
- *   data    — unused
- */
-static void
-on_backup_done(TaskApp *app, gboolean ok, const gchar *message, gpointer data)
-{
-    NSString *text = message != NULL ? tasks_string(message)
-                   : ok              ? @"Backed up" : @"Backup failed";
-
-    [settings_window refresh_backup];
-    [settings_window show_backup_status:text];
-}
 
 @implementation TasksSettingsWindow
 
@@ -403,9 +214,7 @@ init_with_app:(TaskApp *)app
 
     [self build_form];
     shared_ui_use_ui_font(self.form);
-    [self refresh_backup];
     [self refresh_cleanup];
-    [self refresh_database];
     [self fit_window];
     [window center];
     return self;
@@ -434,100 +243,6 @@ appearance_rows
         [rows addObject:box];
     }
     return rows;
-}
-
-/*
- * database_plate — the bordered panel of five facts about the database.
- *
- * Health leads because it is the one line that can be bad news; the path,
- * the two quantities and the digest follow as what the verdict is about.
- * The values sit in a grid so that they all start at one x: five lines
- * each starting where its own label ended would read as five unrelated
- * sentences.
- *
- * Output:
- *   the plate, as wide as the form's content.
- */
-- (NSBox *)
-database_plate
-{
-    NSColor *dim = NSColor.secondaryLabelColor;
-
-    self.health_light = plate_label(@"●", NSColor.tertiaryLabelColor);
-    self.health_label = plate_label(@"", NSColor.labelColor);
-    self.path_label   = plate_value();
-    self.data_label   = plate_value();
-    self.size_label   = plate_value();
-
-    /* The digest is shown shortened, so it is not selectable (a selection
-     * would copy the short form); its "copy" link copies the whole of it. */
-    self.sha_label      = plate_label(@"—", NSColor.labelColor);
-    self.sha_label.font = [NSFont monospacedSystemFontOfSize:shared_look_ui_font
-                                                      weight:NSFontWeightRegular];
-    self.sha_copy       = shared_ui_copy_link(self, @selector(copy_sha:));
-
-    NSGridView *grid = [NSGridView gridViewWithViews:@[
-        @[plate_label(@"Health:", dim),
-          value_row(@[self.health_light, self.health_label])],
-        @[plate_label(@"Current database:", dim),
-          value_row(@[self.path_label, shared_ui_copy_link(self, @selector(copy_path:))])],
-        @[plate_label(@"Data:", dim),         self.data_label],
-        @[plate_label(@"Size on disk:", dim), self.size_label],
-        @[plate_label(@"SHA-256:", dim),
-          value_row(@[self.sha_label, self.sha_copy])],
-    ]];
-    grid.columnSpacing = plate_col_gap;
-    grid.rowSpacing    = plate_row_gap;
-    grid.rowAlignment  = NSGridRowAlignmentFirstBaseline;
-    grid.translatesAutoresizingMaskIntoConstraints = NO;
-
-    NSBox *plate = [[NSBox alloc] initWithFrame:NSZeroRect];
-    plate.boxType            = NSBoxCustom;
-    plate.titlePosition      = NSNoTitle;
-    plate.fillColor          = NSColor.controlBackgroundColor;
-    plate.borderColor        = NSColor.separatorColor;
-    plate.borderWidth        = 1.0;
-    plate.cornerRadius       = plate_radius;
-    plate.contentViewMargins = NSMakeSize(plate_pad_h, plate_pad_v);
-    [plate.widthAnchor constraintEqualToConstant:form_content_w()].active = YES;
-
-    /* The grid keeps its natural width (the trailing edge is only a
-     * limit), so no column is stretched to fill the plate. */
-    NSView *inside = plate.contentView;
-    [inside addSubview:grid];
-    [NSLayoutConstraint activateConstraints:@[
-        [grid.leadingAnchor constraintEqualToAnchor:inside.leadingAnchor],
-        [grid.topAnchor constraintEqualToAnchor:inside.topAnchor],
-        [grid.bottomAnchor constraintEqualToAnchor:inside.bottomAnchor],
-        [grid.trailingAnchor constraintLessThanOrEqualToAnchor:inside.trailingAnchor],
-    ]];
-    return plate;
-}
-
-/*
- * database_rows — the Database section: its heading, the plate, and under
- * the plate the Update button, which sits under the whole plate rather
- * than beside one line because it renews every line.
- *
- * There is deliberately no control here for WHERE the database is kept: a
- * database somewhere else is opened with File > Open Database File.
- *
- * Output:
- *   the section's rows, heading first.
- */
-- (NSArray<NSView *> *)
-database_rows
-{
-    self.update_button = [NSButton buttonWithTitle:@"Update"
-                                            target:self
-                                            action:@selector(update_database:)];
-    self.update_button.toolTip =
-        @"Re-read every line above: run PRAGMA integrity_check and PRAGMA foreign_key_check "
-        @"against this database, then re-count its tasks and tags and re-read its size and "
-        @"SHA-256.";
-
-    return @[shared_ui_heading(@"Database"), [self database_plate],
-             button_row(@[self.update_button])];
 }
 
 /*
@@ -618,99 +333,6 @@ cleanup_rows
     return @[shared_ui_heading(@"Cleanup"), self.cleanup_box, [self retention_row],
              self.cleanup_count, note, button_row(@[self.cleanup_button]),
              self.cleanup_status];
-}
-
-/*
- * schedule_row — "Every [n] minutes, keeping [m] files": the backup's
- * interval and how many files are retained, each a field with a stepper.
- * The retention bound has a hard floor of one, because a rotation that
- * keeps nothing is not a rotation.
- *
- * Output:
- *   the row.
- */
-- (NSStackView *)
-schedule_row
-{
-    self.interval_field   = number_field(number_field_w, self, @selector(interval_changed:));
-    self.interval_stepper = number_stepper(0, SHARED_BACKUP_INTERVAL_MIN_MAX,
-                                           SHARED_BACKUP_INTERVAL_MIN_STEP,
-                                           self, @selector(interval_changed:));
-    self.keep_field       = number_field(number_field_w, self, @selector(keep_changed:));
-    self.keep_stepper     = number_stepper(SHARED_BACKUP_KEEP_MIN, SHARED_BACKUP_KEEP_MAX, 1,
-                                           self, @selector(keep_changed:));
-
-    self.interval_field.toolTip =
-        @"Minutes between backups. 0 backs up only when you press Back Up Now. Notes "
-        @"and Tasks share this setting, and whichever is running makes the backup.";
-    self.keep_field.toolTip =
-        @"How many backup files to retain. The oldest are removed once a new backup has been "
-        @"verified, never before.";
-
-    [self show_number:[self policy:SHARED_SETTING_BACKUP_INTERVAL_MIN]
-                field:self.interval_field
-              stepper:self.interval_stepper];
-    [self show_number:[self policy:SHARED_SETTING_BACKUP_KEEP]
-                field:self.keep_field
-              stepper:self.keep_stepper];
-
-    NSStackView *row = [NSStackView stackViewWithViews:@[
-        [NSTextField labelWithString:@"Every"], self.interval_field, self.interval_stepper,
-        [NSTextField labelWithString:@"minutes, keeping"], self.keep_field, self.keep_stepper,
-        [NSTextField labelWithString:@"files"],
-    ]];
-    row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    row.alignment   = NSLayoutAttributeFirstBaseline;
-    [row setCustomSpacing:stepper_gap afterView:self.interval_field];
-    [row setCustomSpacing:stepper_gap afterView:self.keep_field];
-    return row;
-}
-
-/*
- * backup_rows — the Backups section: the master switch, the schedule it
- * turns on, where the copies land (with the warning when that is beside
- * the database), when the last backup was made and why the last pass
- * failed when it did (both can show: a copy made whose pruning failed),
- * the two buttons that answer those lines, and the outcome of the last
- * Back Up Now.
- *
- * Output:
- *   the section's rows, heading first.
- */
-- (NSArray<NSView *> *)
-backup_rows
-{
-    CGFloat text_w = form_content_w();
-
-    self.backup_box = [NSButton checkboxWithTitle:@"Back up the database automatically"
-                                           target:self
-                                           action:@selector(toggle_backup:)];
-    self.backup_box.toolTip =
-        @"Writes a verified copy of the database Notes and Tasks share into a folder of your "
-        @"choice on a timer, keeping only the most recent few. Both apps follow these "
-        @"settings. Worth pointing at a disk independent of wherever the database itself "
-        @"lives, so one mishap cannot take both.";
-
-    self.folder_label  = shared_ui_note(@"", text_w);
-    self.fate_label    = shared_ui_note(@"", text_w);
-    self.backup_status = shared_ui_note(@"", text_w);
-    self.last_label    = shared_ui_note(@"", text_w);
-    self.error_label   = shared_ui_note(@"", text_w);
-    self.error_label.textColor = NSColor.systemRedColor;
-    self.fate_label.stringValue = @"⚠ alongside the database — change it to survive "
-                                  @"losing that folder";
-    self.backup_status.hidden   = YES;
-
-    self.choose_button = [NSButton buttonWithTitle:@"Change Folder…"
-                                            target:self
-                                            action:@selector(choose_folder:)];
-    self.backup_button = [NSButton buttonWithTitle:@"Back Up Now"
-                                            target:self
-                                            action:@selector(back_up_now:)];
-
-    return @[shared_ui_heading(@"Backups"), self.backup_box, [self schedule_row],
-             self.folder_label, self.fate_label, self.last_label, self.error_label,
-             button_row(@[self.choose_button, self.backup_button]), self.backup_status];
 }
 
 /*
@@ -823,7 +445,8 @@ notif_mode_changed:(NSButton *)sender
 /*
  * calendar_rows — the Calendar section: its heading and the shared
  * section (shared_calendar.h), with the calendar sessions go to.  A
- * change runs the sync at once and refits the window to the section.
+ * change runs the sync at once, lets the library's planner and toolbar
+ * follow the switch, and refits the window to the section.
  *
  * Output:
  *   the section's rows, heading first.
@@ -836,13 +459,14 @@ calendar_rows
         init_with_settings:tasks_calendar_settings() tasks:YES width:form_content_w()
                    changed:^{
         cal_sync_settings_changed();
+        tasks_library_calendar_sync_changed();   /* the planner and its button follow */
         [ws fit_window];
     }];
     return @[shared_ui_heading(@"Calendar"), self.calendar.view];
 }
 
 /*
- * build_form — lay the seven sections out in one vertical stack, in the
+ * build_form — lay the five sections out in one vertical stack, in the
  * style of Files' Preferences, inside a scroll view that only comes into
  * play when the form is taller than tasks_look_settings_max_h.
  */
@@ -851,8 +475,7 @@ build_form
 {
     NSArray<NSArray<NSView *> *> *sections =
         @[[self appearance_rows], [self new_task_rows], [self notification_rows],
-          [self database_rows], [self cleanup_rows], [self backup_rows],
-          [self calendar_rows]];
+          [self cleanup_rows], [self calendar_rows]];
     NSMutableArray<NSView *> *rows = [NSMutableArray array];
     for (NSArray<NSView *> *section in sections) [rows addObjectsFromArray:section];
 
@@ -941,195 +564,29 @@ toggle_option:(NSButton *)sender
     task_app_notify_tasks(self.app);
 }
 
-/* ── Database ────────────────────────────────────────────────────────── */
-
-/*
- * refresh_facts — the plate's lines that are known without reading the
- * file: the path, the counts, and the health verdict the database handle
- * holds.  The verdict is READ, never made, here: a plate that ran a check
- * every time it was drawn would be a check nobody asked for.
- */
-- (void)
-refresh_facts
-{
-    TaskDatabase *db = self.app->db;
-    gint n_tasks = 0;
-    gint n_tags  = 0;
-
-    self.path_label.stringValue = tasks_string(shared_db_file(db->shared));
-
-    task_db_totals(db, &n_tasks, &n_tags);
-    self.data_label.stringValue =
-        [NSString stringWithFormat:@"%d task%s with %d tag%s",
-            n_tasks, n_tasks == 1 ? "" : "s", n_tags, n_tags == 1 ? "" : "s"];
-
-    char *summary = NULL;
-    char *detail  = NULL;
-    task_health_light_t light =
-        task_health_describe(task_db_health(db), (int64_t)time(NULL), &summary, &detail);
-    self.health_light.textColor   = light == task_health_good ? NSColor.systemGreenColor
-                                  : light == task_health_bad  ? NSColor.systemRedColor
-                                                              : NSColor.tertiaryLabelColor;
-    self.health_label.stringValue = tasks_string(summary);
-    /* The detail is sqlite's own words and can run to many lines, so it
-     * lives in the tooltip: the line says WHAT, hovering says which. */
-    self.health_label.toolTip     = tasks_string(detail);
-    free(summary);
-    free(detail);
-}
-
-/*
- * start_probe: — read the database file in the background (task_health.h)
- * and show the answer when it arrives.  Update is disabled meanwhile, so
- * one request is in flight per window; the id is what tells its answer
- * from one this window is no longer waiting for.
- *
- * Inputs:
- *   check — YES for an Update (run the integrity check too), NO for the
- *           plain read of size and digest
- */
-- (void)
-start_probe:(BOOL)check
-{
-    self.awaited_probe         = ++last_probe_id;
-    self.checking              = check;
-    self.update_button.enabled = NO;
-    if (check) {
-        /* The verdict on show is about to be replaced: no light for it. */
-        self.health_light.textColor   = NSColor.tertiaryLabelColor;
-        self.health_label.stringValue = @"Checking…";
-    }
-    task_health_probe_start(self.app, check, on_probe, (void *)self.awaited_probe);
-}
-
-/*
- * refresh_database — fill the plate for the database the app has open: the
- * lines known at once, then the file's size and digest from a background
- * read (no integrity check: that is what Update is for).
- */
-- (void)
-refresh_database
-{
-    [self refresh_facts];
-    [self start_probe:NO];
-}
-
-/*
- * show_probe: — a probe this window was waiting for has reported: renew
- * every line of the plate.  After an Update the outcome also goes to the
- * status bar, because a check that comes back clean changes almost
- * nothing visible and would otherwise look like a button that does nothing.
- *
- * Inputs:
- *   probe — what was found (borrowed, valid during the call)
- */
-- (void)
-show_probe:(const task_health_probe_t *)probe
-{
-    BOOL checked = self.checking;
-
-    self.awaited_probe         = 0;
-    self.checking              = NO;
-    self.update_button.enabled = YES;
-
-    /* The app opened another database while the probe ran: its answer is
-     * about a file no longer on show.  Describe the one that is. */
-    if (!probe->current) {
-        [self refresh_database];
-        return;
-    }
-
-    [self refresh_facts];
-    self.size_label.stringValue = probe->size >= 0
-        ? [NSByteCountFormatter stringFromByteCount:probe->size
-                                         countStyle:NSByteCountFormatterCountStyleFile]
-        : @"unknown";
-    [self show_sha:probe->sha256 != NULL ? tasks_string(probe->sha256) : nil];
-    [self fit_window];
-
-    const TaskDbHealth *health = task_db_health(self.app->db);
-    if (checked && health != NULL) {
-        task_app_status(self.app, "%s",
-                        health->ok  ? "Database check passed"
-                      : health->ran ? "Database check found problems"
-                                    : "Database check did not complete");
-    }
-}
-
-/*
- * show_sha: — show a digest: the short form on the plate, the whole of it
- * in the tooltip, and kept for copy_sha:.
- *
- * The digest is of the file as it stands, hashed when asked rather than
- * stored anywhere: it is the only form of it that can be compared with
- * `shasum -a 256` or with a backup.
- *
- * Inputs:
- *   sha — the hex digest, or nil when the file could not be read
- */
-- (void)
-show_sha:(NSString *)sha
-{
-    BOOL readable = sha.length > sha_head + sha_tail;
-
-    self.sha256          = readable ? sha : nil;
-    self.sha_copy.hidden = !readable;
-    if (!readable) {
-        self.sha_label.stringValue = @"—";
-        self.sha_label.toolTip     = @"The database file could not be read.";
-        return;
-    }
-    self.sha_label.stringValue = [NSString stringWithFormat:@"%@…%@",
-        [sha substringToIndex:sha_head], [sha substringFromIndex:sha.length - sha_tail]];
-    self.sha_label.toolTip = [NSString stringWithFormat:
-        @"%@\n\nThe file as it stands. A database in use changes with the next edit, so this "
-        @"moves.", sha];
-}
-
-/*
- * copy_sha: — the digest's "copy" link: copy the whole of it.  The copy is
- * the digest the plate shows, not a fresh hash of a file that has moved on.
- *
- * Inputs:
- *   sender — the link (unused)
- */
-- (void)
-copy_sha:(id)sender
-{
-    if (!self.sha256) return;
-    copy_to_pasteboard(self.sha256);
-    task_app_status(self.app, "SHA-256 copied to the clipboard");
-}
-
-/*
- * copy_path: — the path's "copy" link: copy the database file's path.
- *
- * Inputs:
- *   sender — the link (unused)
- */
-- (void)
-copy_path:(id)sender
-{
-    copy_to_pasteboard(tasks_string(shared_db_file(self.app->db->shared)));
-    task_app_status(self.app, "Database path copied to the clipboard");
-}
-
-/*
- * update_database: — Update: run the integrity check and renew every line
- * of the plate, not just the verdict.  The plate is one statement about
- * one file; the counts and the size go stale on their own with every edit
- * made in the library, so they are exactly what someone presses this for.
- *
- * Inputs:
- *   sender — the button (unused)
- */
-- (void)
-update_database:(id)sender
-{
-    [self start_probe:YES];
-}
-
 /* ── Cleanup ─────────────────────────────────────────────────────────── */
+
+/*
+ * show_number:field:stepper: — bring a field and its stepper to one value,
+ * held to the stepper's range.
+ *
+ * Inputs:
+ *   value   — the value wanted (a typed one may be out of range)
+ *   field   — the pair's field
+ *   stepper — the pair's stepper, which holds the range
+ *
+ * Output:
+ *   the value shown.
+ */
+- (NSInteger)
+show_number:(NSInteger)value field:(NSTextField *)field stepper:(NSStepper *)stepper
+{
+    NSInteger shown = MAX((NSInteger)stepper.minValue, MIN((NSInteger)stepper.maxValue, value));
+
+    field.integerValue   = shown;
+    stepper.integerValue = shown;
+    return shown;
+}
 
 /*
  * cutoff_text — the date a task has to have been completed before to be
@@ -1328,270 +785,11 @@ show_cleanup_status:(NSString *)text
     [self fit_window];
 }
 
-/* ── Backups ─────────────────────────────────────────────────────────── */
-
-/*
- * show_number:field:stepper: — bring a field and its stepper to one value,
- * held to the stepper's range.
- *
- * Inputs:
- *   value   — the value wanted (a typed one may be out of range)
- *   field   — the pair's field
- *   stepper — the pair's stepper, which holds the range
- *
- * Output:
- *   the value shown.
- */
-- (NSInteger)
-show_number:(NSInteger)value field:(NSTextField *)field stepper:(NSStepper *)stepper
-{
-    NSInteger shown = MAX((NSInteger)stepper.minValue, MIN((NSInteger)stepper.maxValue, value));
-
-    field.integerValue   = shown;
-    stepper.integerValue = shown;
-    return shown;
-}
-
-/*
- * refresh_backup — show the backup settings: the switch, which controls it
- * leaves usable, where the copies land, when the last backup was made and
- * why the last pass failed — each line on its own, since a copy can be
- * made by a pass that then failed to prune.
- *
- * The folder line names the RESOLVED folder in every case, from the same
- * call every backup pass asks first (task_backup_dir), so the line cannot
- * promise a folder the copies do not go to — and when that call refuses,
- * the line says why.  A folder that is, or is inside, the database's own
- * gets the warning: those copies are real backups but cannot survive
- * losing that folder.
- */
-- (void)
-refresh_backup
-{
-    BOOL on = [self policy:SHARED_SETTING_BACKUP_ENABLED] != 0;
-
-    self.backup_box.state         = on ? NSControlStateValueOn : NSControlStateValueOff;
-    self.interval_field.enabled   = on;
-    self.interval_stepper.enabled = on;
-    self.keep_field.enabled       = on;
-    self.keep_stepper.enabled     = on;
-    self.choose_button.enabled    = on;
-    self.backup_button.enabled    = on;
-
-    char     *why    = NULL;
-    char     *dir    = task_backup_dir(self.app, &why);
-    NSString *db_dir = [tasks_string(shared_db_file(self.app->db->shared))
-                        stringByDeletingLastPathComponent];
-    self.folder_label.stringValue = dir != NULL
-        ? [NSString stringWithFormat:@"Backing up to %@", tasks_string(dir)]
-        : tasks_string(why);
-    self.fate_label.hidden = dir == NULL ||
-                             !task_path_shares_fate(dir, db_dir.fileSystemRepresentation);
-    free(dir);
-    free(why);
-
-    NSInteger last_at = [self policy:SHARED_SETTING_BACKUP_LAST_AT];
-    self.last_label.hidden      = last_at <= 0;
-    self.last_label.stringValue = last_at <= 0 ? @"" :
-        [NSString stringWithFormat:@"Last backup: %@",
-            [NSDateFormatter localizedStringFromDate:
-                [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)last_at]
-                                           dateStyle:NSDateFormatterMediumStyle
-                                           timeStyle:NSDateFormatterShortStyle]];
-
-    char *failure = NULL;
-    shared_settings_get(self.app->db->shared, SHARED_SETTING_BACKUP_LAST_ERROR, &failure, NULL);
-    self.error_label.hidden      = failure == NULL || failure[0] == '\0';
-    self.error_label.stringValue = self.error_label.hidden
-        ? @"" : [NSString stringWithFormat:@"The last backup pass failed: %@", tasks_string(failure)];
-    free(failure);
-}
-
-/*
- * policy: — one backup-policy value as the shared module applies it
- * (shared_backup_policy_get: the stored value, else its default, held to
- * its range), so the window shows exactly what the backups obey.
- *
- * Inputs:
- *   key — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN, _KEEP or _LAST_AT
- *
- * Output:
- *   the value (the module's default when it cannot be read).
- */
-- (NSInteger)
-policy:(const char *)key
-{
-    int64_t value = 0;
-    shared_backup_policy_get(self.app->db->shared, key, &value, NULL);
-    return (NSInteger)value;
-}
-
-/*
- * store_policy:value: — write one backup-policy value to shared_settings,
- * where both apps read it; a write that fails is said under the buttons.
- *
- * Inputs:
- *   key   — SHARED_SETTING_BACKUP_ENABLED, _INTERVAL_MIN or _KEEP
- *   value — the new value
- */
-- (void)
-store_policy:(const char *)key value:(NSInteger)value
-{
-    char *why = NULL;
-    if (shared_settings_set(self.app->db->shared, key, @(value).stringValue.UTF8String,
-                            &why) != 0)
-        [self show_backup_status:[NSString stringWithFormat:@"The setting was not saved: %@",
-                                  tasks_string(why)]];
-    free(why);
-}
-
-/*
- * toggle_backup: — the master switch: write it to the shared policy.  No
- * folder is asked for: the backup has a default destination, so switching
- * this on always does something; the poll picks the change up by itself.
- *
- * Inputs:
- *   sender — the checkbox
- */
-- (void)
-toggle_backup:(NSButton *)sender
-{
-    [self store_policy:SHARED_SETTING_BACKUP_ENABLED value:sender.state == NSControlStateValueOn];
-    [self refresh_backup];
-}
-
-/*
- * interval_changed: — the interval's field or stepper changed: write the
- * cadence to the shared policy, which the next poll applies.
- *
- * Inputs:
- *   sender — the field or the stepper
- */
-- (void)
-interval_changed:(NSControl *)sender
-{
-    NSInteger minutes = [self show_number:sender.integerValue
-                                    field:self.interval_field
-                                  stepper:self.interval_stepper];
-
-    /* Leaving the field without changing it also lands here, and need not
-     * write the database. */
-    if (minutes == [self policy:SHARED_SETTING_BACKUP_INTERVAL_MIN]) return;
-    [self store_policy:SHARED_SETTING_BACKUP_INTERVAL_MIN value:minutes];
-}
-
-/*
- * keep_changed: — the retention field or stepper changed: write the bound
- * to the shared policy; the module reads it at every backup.
- *
- * Inputs:
- *   sender — the field or the stepper
- */
-- (void)
-keep_changed:(NSControl *)sender
-{
-    NSInteger keep = [self show_number:sender.integerValue
-                                 field:self.keep_field
-                               stepper:self.keep_stepper];
-
-    if (keep == [self policy:SHARED_SETTING_BACKUP_KEEP]) return;
-    [self store_policy:SHARED_SETTING_BACKUP_KEEP value:keep];
-}
-
-/*
- * choose_folder: — Change Folder: pick the backup destination.  The panel
- * opens where backups go NOW (the resolved folder, default included), so
- * that re-picking from wherever the panel last was is not how backups end
- * up in two places.
- *
- * Inputs:
- *   sender — the button (unused)
- */
-- (void)
-choose_folder:(id)sender
-{
-    char *why     = NULL;
-    char *current = task_backup_dir(self.app, &why);
-    __weak TasksSettingsWindow *ws = self;
-
-    shared_ui_pick_path(SharedPickFolder, @"Choose Backup Folder", @"Select", nil,
-                        tasks_string(current), ^(NSString *path) {
-        TasksSettingsWindow *s = ws;
-        if (!s || s.is_shut_down || !path) return;   /* closed meanwhile, or cancelled */
-        [s use_backup_folder:path];
-    });
-    free(current);
-    free(why);
-}
-
-/*
- * use_backup_folder: — make a chosen folder the backup destination, if the
- * core will use it.  task_backup_set_dir is the judge: a folder it refuses
- * — one inside the live Tasks data directory above all, which this app
- * never touches — is not kept, and its reason is shown as given.
- *
- * Inputs:
- *   path — the chosen folder
- */
-- (void)
-use_backup_folder:(NSString *)path
-{
-    char *reason = NULL;
-
-    if (task_backup_set_dir(self.app, path.fileSystemRepresentation, &reason)) {
-        [self refresh_backup];
-        [self fit_window];
-    } else {
-        shared_ui_notice(self.window, @"Backups cannot go to that folder",
-                        tasks_string(reason), nil);
-    }
-    free(reason);
-}
-
-/*
- * back_up_now: — Back Up Now: one pass, reported under the buttons (and by
- * the core in the status bar).  Also the only way to exercise the feature
- * without waiting for the timer.
- *
- * A pass already in flight is said here, because the core starts no
- * second one and would call nothing back.
- *
- * Inputs:
- *   sender — the button (unused)
- */
-- (void)
-back_up_now:(id)sender
-{
-    if (self.app->backup_running) {
-        [self show_backup_status:@"A backup is already running"];
-        return;
-    }
-    [self show_backup_status:@"Backing up…"];
-    task_backup_start(self.app, on_backup_done, NULL);
-}
-
-/*
- * show_backup_status: — show a line under the backup buttons: a pass's
- * progress or its outcome.
- *
- * Inputs:
- *   text — the line
- */
-- (void)
-show_backup_status:(NSString *)text
-{
-    self.backup_status.stringValue = text;
-    self.backup_status.hidden      = NO;
-    [self fit_window];
-}
-
 /* ── Teardown ────────────────────────────────────────────────────────── */
 
 /*
  * shut_down — the window is going away: commit a number still being typed
- * (ending the edit sends the field's action), and stop waiting for any
- * probe, whose answer would otherwise be shown in a closed window.
- * Idempotent.
+ * (ending the edit sends the field's action).  Idempotent.
  */
 - (void)
 shut_down
@@ -1599,7 +797,6 @@ shut_down
     if (self.is_shut_down) return;
     [self.window makeFirstResponder:nil];
     self.is_shut_down  = YES;
-    self.awaited_probe = 0;
     [self.calendar shut_down];
 }
 

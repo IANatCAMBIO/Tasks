@@ -4,7 +4,6 @@
 
 #include "db.h"
 #include "task_paths.h"
-#include <glib/gstdio.h>             /* g_unlink, g_stat                    */
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -286,184 +285,12 @@ task_ptr_array_free_attachments(GPtrArray *a)
     g_ptr_array_free(a, TRUE);
 }
 
-/*
- * check_verdict — turn one answer of the shared module's check
- * (shared_db_check_summary / shared_db_check_file: 0 clean, 1 findings,
- * -1 did not run) into Tasks' verdict.  "Ran" is kept apart from "passed":
- * a check that could not run reports nothing, which must never read as a
- * clean result.
- *
- * Inputs:
- *   rc     — the module's answer
- *   ran    — whether the check executed (the module's, for a file)
- *   found  — the findings text (malloc'd, NULL unless rc == 1); consumed
- *   why    — why it did not run (malloc'd, may be NULL); consumed
- *   ran_out — optional out: TRUE when the check actually executed
- *   detail — optional out: the findings or why the check could not run,
- *            one per line (g_free), NULL on success
- *
- * Output:
- *   TRUE only when the check ran and found nothing.
- */
-static gboolean
-check_verdict(int rc, gboolean ran, char *found, char *why, gboolean *ran_out,
-              gchar **detail)
-{
-    if (ran_out != NULL)
-        *ran_out = ran;
-    if (detail != NULL)
-        *detail = rc == 1 ? g_strdup(found)
-                : rc < 0  ? g_strdup(why != NULL ? why : "the check did not run")
-                          : NULL;
-    free(found);
-    free(why);
-    return rc == 0;
-}
-
-/*
- * db_check — the shared module's full check (integrity_check,
- * foreign_key_check, the stamps, WAL and the cross-table invariants) on an
- * open connection: task_db_health_check's body, and through it the startup
- * check.
- *
- * Inputs:
- *   sdb    — an open connection (read-only or read-write), not NULL
- *   ran    — optional out: TRUE when the check actually executed
- *   detail — optional out: as for check_verdict
- *
- * Output:
- *   TRUE only when the check ran and found nothing.
- */
-static gboolean
-db_check(shared_db *sdb, gboolean *ran, gchar **detail)
-{
-    char *found = NULL;
-    char *why   = NULL;
-    int   rc    = shared_db_check_summary(sdb, 1, &found, &why);
-    return check_verdict(rc, rc >= 0, found, why, ran, detail);
-}
-
 /* What every entry point that takes a path says when that path is inside
  * the GTK app's live data directory (task_paths.h).  This app refuses to
  * read or write there, whoever asks.                                       */
 #define LIVE_DATA_REFUSAL \
     "refused: %s is inside the live Tasks data directory, which this " \
     "app never opens"
-
-/* ---------------------------------------------------------------------------
- * verify_file() — the check on a file nothing has open
- * (shared_db_check_file: a separate read-only connection, which refuses a
- * file that is not a stamped shared database), after Tasks' own refusal of
- * the GTK app's live data: the body shared by task_db_verify_file and
- * task_db_health_check_file, which differ only in what they report.
- *
- * Inputs:
- *   path   — the database file
- *   ran    — optional out: TRUE when the check actually executed; FALSE
- *            when the file was refused or could not be opened
- *   detail — optional out: what went wrong (g_free), NULL when sound
- *
- * Output:
- *   TRUE only when the check ran and passed.
- * ------------------------------------------------------------------------- */
-static gboolean
-verify_file(const gchar *path, gboolean *ran, gchar **detail)
-{
-    if (task_path_is_live_data(path)) {
-        if (ran != NULL)
-            *ran = FALSE;
-        if (detail != NULL)
-            *detail = g_strdup_printf(LIVE_DATA_REFUSAL, path);
-        return FALSE;
-    }
-    char *found  = NULL;
-    char *why    = NULL;
-    int   ran_rc = 0;
-    int   rc     = shared_db_check_file(path, 1, &ran_rc, &found, &why);
-    return check_verdict(rc, ran_rc != 0, found, why, ran, detail);
-}
-
-/* task_db_verify_file() — see db.h.                                        */
-gboolean
-task_db_verify_file(const gchar *path, gchar **detail)
-{
-    return verify_file(path, NULL, detail);
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_file_sha256() — hex SHA-256 of the file at `path` (see db.h).
- *
- * Read in fixed-size chunks rather than slurped: this runs against the
- * live database, whose size is the user's business and not ours to hold
- * in memory twice.
- * ------------------------------------------------------------------------- */
-#define SHA_CHUNK 65536              /* bytes per read                      */
-
-gchar *
-task_db_file_sha256(const gchar *path)
-{
-    if (task_path_is_live_data(path))
-        return NULL;
-    FILE *f = g_fopen(path, "rb");
-    if (f == NULL)
-        return NULL;
-
-    GChecksum *sum = g_checksum_new(G_CHECKSUM_SHA256);
-    guchar    *buf = g_malloc(SHA_CHUNK);
-    gsize      n;                    /* bytes in the current chunk          */
-    while ((n = fread(buf, 1, SHA_CHUNK, f)) > 0)
-        g_checksum_update(sum, buf, (gssize)n);
-    gboolean bad = ferror(f) != 0;
-    g_free(buf);
-    fclose(f);
-
-    gchar *hex = bad ? NULL : g_strdup(g_checksum_get_string(sum));
-    g_checksum_free(sum);
-    return hex;
-}
-
-/* ---------------------------------------------------------------------------
- * task_db_health_check() / task_db_health() — the health of the open
- * database, held on the connection (see db.h).
- *
- * Nothing is written to the database.  Recording the verdict IN it made
- * the check change the bytes it had just measured, which moved the digest
- * shown beside it on every run.
- * ------------------------------------------------------------------------- */
-gboolean
-task_db_health_check(TaskDatabase *db)
-{
-    TaskDbHealth verdict = { 0 };
-
-    verdict.ok   = db_check(db->shared, &verdict.ran, &verdict.detail);
-    verdict.when = g_get_real_time() / G_USEC_PER_SEC;
-    task_db_health_record(db, &verdict);
-    return db->health.ok;
-}
-
-/* task_db_health_check_file() — see db.h.                                  */
-gboolean
-task_db_health_check_file(const gchar *path, TaskDbHealth *out)
-{
-    out->ok   = verify_file(path, &out->ran, &out->detail);
-    out->when = g_get_real_time() / G_USEC_PER_SEC;
-    return out->ok;
-}
-
-/* task_db_health_record() — see db.h.                                      */
-void
-task_db_health_record(TaskDatabase *db, TaskDbHealth *verdict)
-{
-    g_free(db->health.detail);
-    db->health      = *verdict;      /* the detail changes hands            */
-    verdict->detail = NULL;
-}
-
-const TaskDbHealth *
-task_db_health(TaskDatabase *db)
-{
-    return db->health.when != 0 ? &db->health : NULL;
-}
 
 /* ---------------------------------------------------------------------------
  * open_task_db() — the body of task_db_open and task_db_open_existing.  The
@@ -547,7 +374,6 @@ task_db_close(TaskDatabase *db)
     if (db == NULL)
         return;
     shared_db_close(db->shared);
-    g_free(db->health.detail);
     g_free(db);
 }
 

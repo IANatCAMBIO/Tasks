@@ -22,9 +22,8 @@
  *     dark, list and board, Compact mode, an editor, Settings);
  *   - the shell behaves: the window opens at its saved size, Compact mode
  *     hides and restores what it should and remembers both sizes, a status
- *     message fades and is superseded, Open Database File switches, refuses
- *     and offers the default, and the menu bar reaches every command with
- *     no shortcut used twice;
+ *     message fades and is superseded, and the menu bar reaches every
+ *     command with no shortcut used twice;
  *   - the reminders panel collapses repeated reminders for one task into a
  *     single badged row and counts the rows in its title;
  *   - a closed window is RELEASED: the library window controller, its
@@ -58,6 +57,7 @@
 #import <Cocoa/Cocoa.h>
 
 #import "app_delegate.h"
+#import "cal_eventkit.h"
 #import "day_planner.h"
 #import "editor_window.h"
 #import "library_window.h"
@@ -76,9 +76,10 @@
 - (NSArray<NSString *> *)tag_matches:(NSString *)typed;
 @end
 
+#import "shared_calendar.h"
+
 #include "check.h"
 
-#include "backup.h"
 #include "cleanup.h"
 #include "core_views.h"
 #include "task_config.h"
@@ -714,6 +715,40 @@ content_is(NSWindow *window, const char *w_key, const char *h_key)
 }
 
 /*
+ * toolbar_index — where an item sits in a window's toolbar.
+ *
+ * Inputs:
+ *   window — the window
+ *   ident  — the item's identifier
+ *
+ * Output:
+ *   its index, or NSNotFound.
+ */
+static NSUInteger
+toolbar_index(NSWindow *window, NSString *ident)
+{
+    return [window.toolbar.items indexOfObjectPassingTest:^BOOL(NSToolbarItem *item, NSUInteger i, BOOL *stop) {
+        return [item.itemIdentifier isEqualToString:ident];
+    }];
+}
+
+/*
+ * toolbar_has — whether a window's toolbar holds an item.
+ *
+ * Inputs:
+ *   window — the window
+ *   ident  — the item's identifier
+ *
+ * Output:
+ *   YES when it does.
+ */
+static BOOL
+toolbar_has(NSWindow *window, NSString *ident)
+{
+    return toolbar_index(window, ident) != NSNotFound;
+}
+
+/*
  * search_field_of — the toolbar's search field.
  *
  * Inputs:
@@ -909,101 +944,6 @@ secondary_windows(NSWindow *library)
         }
     }
     return count;
-}
-
-/*
- * check_open_database — File > Open Database File..., from the picked path
- * onwards: a switch, the refusals (an old Tasks database among them), the
- * default question answered "Make Default" and refused in the shared
- * module's words while CAMBIO_SHARED_DB names the file, and back.  The
- * live data directory is a FAKE one inside the sandbox ($XDG_DATA_HOME).
- *
- * Inputs:
- *   app — the application context, the sandbox database open
- *   dir — where snapshots go (the refusal's tool panel)
- */
-static void
-check_open_database(TaskApp *app, NSString *dir)
-{
-    NSFileManager *files   = NSFileManager.defaultManager;
-    NSString      *sandbox = tasks_string(getenv(TASK_DATA_DIR_ENV));
-    NSString      *home    = tasks_string(shared_db_file(app->db->shared));
-    NSString      *folder  = [sandbox stringByAppendingPathComponent:@"ui-check"];
-    NSString      *other   = [folder stringByAppendingPathComponent:@"other.db"];
-    NSString      *junk    = [folder stringByAppendingPathComponent:@"junk.db"];
-    NSString      *old     = [folder stringByAppendingPathComponent:@"tasks.db"];
-    NSString      *live    = [folder stringByAppendingPathComponent:@"xdg/tasks/tasks.db"];
-
-    /* A second database holding one task; a file that is not a database. */
-    [files removeItemAtPath:folder error:NULL];
-    [files createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:NULL];
-    TaskDatabase *db = task_db_open(other.fileSystemRepresentation, NULL);
-    task_db_task_create(db, 0, "The only task", "Elsewhere");
-    task_db_close(db);
-    [@"not a database" writeToFile:junk atomically:YES encoding:NSUTF8StringEncoding error:NULL];
-    sqlite3 *sq = NULL;
-    sqlite3_open(old.fileSystemRepresentation, &sq);
-    sqlite3_exec(sq, "CREATE TABLE tasks (id INTEGER PRIMARY KEY); PRAGMA user_version = 14",
-                 NULL, NULL, NULL);
-    sqlite3_close(sq);
-
-    @autoreleasepool {
-        TasksLibraryWindow *library = [[TasksLibraryWindow alloc] init_with_app:app];
-        NSWindow *window = library.window;
-        [library showWindow:nil];
-        tasks_editor_open(app, first_task_ids(app, 1).firstObject.longLongValue);
-        check_spin(0.2);
-
-        [library open_database:junk];
-        check_spin(0.3);
-        check(tool_panel() != nil && [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
-              "open database: a file that is not a database is refused in a tool panel");
-        check(snapshot(tool_panel(), dir, @"tool-panel"), "snapshot: a tool panel");
-        check(secondary_windows(window) == 1, "open database: ... and the editors stay open");
-        answer_panel(0);
-
-        [library open_database:old];
-        check_spin(0.3);
-        check(find_text(tool_panel().contentView, @"not a shared database") != nil &&
-              [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
-              "open database: an old Tasks database is refused in the shared module's words");
-        answer_panel(0);
-
-        setenv("XDG_DATA_HOME", [folder stringByAppendingPathComponent:@"xdg"].fileSystemRepresentation, 1);
-        [library open_database:live];
-        check_spin(0.3);
-        check(find_text(tool_panel().contentView, @"refused") != nil &&
-              [tasks_string(shared_db_file(app->db->shared)) isEqualToString:home],
-              "open database: a path in the live data directory shows the core's refusal");
-        answer_panel(0);
-        unsetenv("XDG_DATA_HOME");
-
-        [library open_database:other];
-        check_spin(0.3);
-        check([tasks_string(shared_db_file(app->db->shared)) isEqualToString:other] && secondary_windows(window) == 0,
-              "open database: a sound database is switched to, the editors closed first");
-        check(find_text(window.contentView, @"All Tasks - 1 task") != nil,
-              "open database: ... and the panes show its tasks");
-        check(find_text(tool_panel().contentView, @"Make this the default database?") != nil,
-              "open database: ... and it is offered as the default");
-        answer_panel(1);                  /* Make Default; [0] is Cancel */
-        check(find_text(tool_panel().contentView, @"not changed from a sandboxed run") != nil,
-              "open database: ... Make Default shows the shared module's refusal while CAMBIO_SHARED_DB is set");
-        answer_panel(0);
-
-        [library open_database:other];
-        check_spin(0.3);
-        check(tool_panel() == nil && find_text(window.contentView, @"already open") != nil,
-              "open database: the open database again only says so");
-
-        [library open_database:home];
-        check_spin(0.3);
-        check([tasks_string(shared_db_file(app->db->shared)) isEqualToString:home] && tool_panel() == nil,
-              "open database: back to the default database, with no question to ask");
-        [library close];
-    }
-    check_spin(0.2);
-    [files removeItemAtPath:folder error:NULL];
 }
 
 /*
@@ -1569,6 +1509,36 @@ check_sidebar(TaskApp *app, NSString *dir)
         check([window.toolbar.items.firstObject.itemIdentifier
                   isEqualToString:@"toggle-sidebar"],
               "toolbar: the sidebar button is at the far left");
+
+        /* The day planner button, and an open planner, follow the calendar
+         * switch.  The switch is flipped on and straight back off with no
+         * run-loop turn in between, so nothing reads the owner's calendar. */
+        id<SharedCalendarSettings> cal = tasks_calendar_settings();
+        NSString *cal_was = [cal calendar_setting:SHARED_CALENDAR_ENABLED];
+        BOOL planner_was = library.day_planner_shown;
+        if (!planner_was) {
+            [library perform_command:@"toggle-day-planner" param:nil];
+            check_spin(SLIDE_SECONDS);   /* each slide ends before the next */
+        }
+        [cal set_calendar_setting:SHARED_CALENDAR_ENABLED value:@"0"];
+        [library calendar_sync_changed];
+        check_spin(SLIDE_SECONDS);
+        check(toolbar_has(window, @"toggle-day-planner") == NO,
+              "toolbar: with the calendar sync off there is no day planner button");
+        check(!library.day_planner_shown, "toolbar: and an open planner closes with the switch");
+        [cal set_calendar_setting:SHARED_CALENDAR_ENABLED value:@"1"];
+        [library calendar_sync_changed];
+        [cal set_calendar_setting:SHARED_CALENDAR_ENABLED value:cal_was];
+        check(toolbar_has(window, @"toggle-day-planner") &&
+              [window.toolbar.items[toolbar_index(window, @"toggle-day-planner") - 1].itemIdentifier
+                  isEqualToString:@"toggle-pane"],
+              "toolbar: with it on, the button is back after the pane toggle");
+        check(!library.day_planner_shown, "toolbar: switching on does not open the planner by itself");
+        [library calendar_sync_changed];
+        check(toolbar_has(window, @"toggle-day-planner") == (cal_was.integerValue != 0),
+              "toolbar: and follows the switch put back");
+        if (planner_was && cal_was.integerValue != 0) [library perform_command:@"toggle-day-planner" param:nil];
+        check_spin(SLIDE_SECONDS);
         [library perform_command:@"toggle-sidebar" param:nil];
         check_spin(SLIDE_SECONDS);
         check(sidebar.hiddenOrHasHiddenAncestor, "toggle: Hide Sidebar hides it");
@@ -2505,25 +2475,6 @@ check_editor_window(TaskApp *app, NSString *dir)
 
 
 /*
- * policy — one backup-policy value as the shared module applies it
- * (shared_backup_policy_get), as the Settings window shows it.
- *
- * Inputs:
- *   app — the application context
- *   key — a SHARED_SETTING_BACKUP_* integer key
- *
- * Output:
- *   the value.
- */
-static int64_t
-policy(TaskApp *app, const char *key)
-{
-    int64_t value = 0;
-    shared_backup_policy_get(app->db->shared, key, &value, NULL);
-    return value;
-}
-
-/*
  * check_tags — the editor's tag field: a tag typed is created and shows in
  * the sidebar; the field offers the existing tags (not those the task
  * carries) and takes an existing one in any case as itself; the tag's row
@@ -2664,38 +2615,18 @@ check_tags(TaskApp *app, NSString *dir)
 
 /*
  * check_settings — drive the Settings window through its own controls:
- * every Appearance box writes its key, Update records a verdict from the
- * background, a number is held to its range, a backup folder the core
- * refuses (a stand-in live data directory under dev/) is not kept,
- * Back Up Now writes a backup into a folder under dev/, and a window
- * closed with a probe in flight is released.  Every setting is put back.
- * The "copy" links are not pressed: they would replace the clipboard of
- * whoever is running this.
+ * every Appearance box writes its key, the Cleanup retention is held to
+ * its range and written as a pair, Clean Up Now asks before it deletes,
+ * and a closed window is released.  Every setting is put back.
  *
  * Inputs:
  *   app — the application context
- *   dir — the snapshot folder; the scratch folders are made beside it
+ *   dir — the snapshot folder
  */
 static void
 check_settings(TaskApp *app, NSString *dir)
 {
-    NSFileManager *files   = NSFileManager.defaultManager;
-    NSString      *parent  = dir.stringByDeletingLastPathComponent;
-    NSString      *backups = [parent stringByAppendingPathComponent:@"ui-check-backups"];
-    NSString      *xdg     = [parent stringByAppendingPathComponent:@"ui-check-xdg"];
-    NSString      *live    = [xdg stringByAppendingPathComponent:@"tasks"];
     __weak NSWindow *weak_window = nil;
-
-    /* The backup policy is the shared database's (backup.h).  It starts
-     * switched off here, in the folder the seed chose (beside the sandbox
-     * database), whatever an earlier run left, and is put back at the end. */
-    int64_t was_enabled = policy(app, SHARED_SETTING_BACKUP_ENABLED);
-    char  *seeded_dir  = NULL;
-    shared_settings_get(app->db->shared, SHARED_SETTING_BACKUP_DIR, &seeded_dir, NULL);
-    shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_ENABLED, "0", NULL);
-
-    [files createDirectoryAtPath:backups withIntermediateDirectories:YES attributes:nil error:NULL];
-    [files createDirectoryAtPath:live withIntermediateDirectories:YES attributes:nil error:NULL];
 
     @autoreleasepool {
         tasks_settings_window_open(app);
@@ -2749,30 +2680,8 @@ check_settings(TaskApp *app, NSString *dir)
         }
         check(boxes_write, "settings: every Appearance box writes its setting, on and off");
 
-        /* Update: the check runs in the background and lands on the handle. */
-        int64_t pressed = (int64_t)time(NULL);
-        [button(@"Update") performClick:nil];
-        check(!button(@"Update").enabled && label(@"Checking") != nil,
-              "settings: Update is busy while the check runs");
-        for (int i = 0; i < 100 && !button(@"Update").enabled; i++) check_spin(0.05);
-        const TaskDbHealth *health = task_db_health(app->db);
-        check(health != NULL && health->ok && health->when >= pressed,
-              "settings: Update records a fresh verdict on the database");
-        check(label(@"Healthy — checked") != nil && button(@"Update").enabled,
-              "settings: ... and the plate says so");
-
-        /* Backups: the switch, then a number held to its range. */
-        int64_t interval = policy(app, SHARED_SETTING_BACKUP_INTERVAL_MIN);
-        [button(@"Back up the database automatically") performClick:nil];
-        check(policy(app, SHARED_SETTING_BACKUP_ENABLED) == 1 &&
-              button(@"Back Up Now").enabled,
-              "settings: the backup switch writes the shared setting and wakes the controls");
-        check(label(@"⚠ alongside the database") != nil,
-              "settings: a backup folder beside the database is flagged as such");
-
         /* The number pair is found by its STEPPER's range, not by being
-         * the first editable field in the form: Cleanup has a number pair
-         * of its own, and it sits above this one. */
+         * the first editable field in the form. */
         NSTextField *(^paired_field)(NSStepper *) = ^NSTextField *(NSStepper *stepper) {
             for (NSView *view in stepper.superview.subviews) {
                 if ([view isKindOfClass:NSTextField.class] && ((NSTextField *)view).editable)
@@ -2786,74 +2695,6 @@ check_settings(TaskApp *app, NSString *dir)
                        ((NSStepper *)view).maxValue == max;
             });
         };
-        NSTextField *interval_field =
-            paired_field(stepper_ranged(SHARED_BACKUP_INTERVAL_MIN_MAX));
-        interval_field.stringValue = @"99999";
-        [interval_field sendAction:interval_field.action to:interval_field.target];
-        check(policy(app, SHARED_SETTING_BACKUP_INTERVAL_MIN) == SHARED_BACKUP_INTERVAL_MIN_MAX &&
-              interval_field.integerValue == SHARED_BACKUP_INTERVAL_MIN_MAX,
-              "settings: a typed interval is held to its range and written");
-        interval_field.integerValue = (NSInteger)interval;
-        [interval_field sendAction:interval_field.action to:interval_field.target];
-
-        /* A folder the core refuses is not kept, and the refusal is shown.
-         * The stand-in live directory is under dev/: XDG_DATA_HOME moves
-         * what the fence calls live data for as long as it is set. */
-        SEL use_folder = NSSelectorFromString(@"use_backup_folder:");
-        setenv("XDG_DATA_HOME", xdg.fileSystemRepresentation, 1);
-        [NSApp sendAction:use_folder to:window.delegate from:live];
-        check_spin(0.3);
-        char *kept = NULL;
-        shared_settings_get(app->db->shared, SHARED_SETTING_BACKUP_DIR, &kept, NULL);
-        check(g_strcmp0(kept, seeded_dir) == 0 && tool_panel() != nil,
-              "settings: a backup folder inside live data is refused with a notice, not kept");
-        free(kept);
-        answer_panel(0);
-        unsetenv("XDG_DATA_HOME");
-
-        /* A folder away from the database: kept, no warning, backed up to. */
-        [NSApp sendAction:use_folder to:window.delegate from:backups];
-        check(label([@"Backing up to " stringByAppendingString:backups]) != nil &&
-              label(@"⚠ alongside the database") == nil,
-              "settings: a folder away from the database is used, without the warning");
-        NSPredicate *named = [NSPredicate predicateWithFormat:@"SELF BEGINSWITH %@",
-                              @SHARED_DB_BACKUP_PREFIX];
-        [button(@"Back Up Now") performClick:nil];
-        for (int i = 0; i < 100 && label(@"Backed up to") == nil; i++) check_spin(0.05);
-        NSArray<NSString *> *made = [[files contentsOfDirectoryAtPath:backups error:NULL]
-            filteredArrayUsingPredicate:named];
-        check(label(@"Backed up to") != nil && made.count == 1,
-              "settings: Back Up Now writes one backup there through the shared module");
-        [button(@"Back Up Now") performClick:nil];
-        for (int i = 0; i < 100 && [[files contentsOfDirectoryAtPath:backups error:NULL]
-                                        filteredArrayUsingPredicate:named].count < 2; i++) {
-            check_spin(0.05);
-        }
-        check_spin(0.2);
-        check([[files contentsOfDirectoryAtPath:backups error:NULL]
-                  filteredArrayUsingPredicate:named].count == 2 && !app->backup_running,
-              "settings: Back Up Now again makes a second, new backup");
-        check(snapshot(window, dir, @"settings-backups"), "settings: snapshot, backups on");
-
-        /* The last failure the module recorded is shown, and a backup that
-         * then succeeds (the module removes the record) takes it away; the
-         * time of the last backup is shown beside it. */
-        SEL refresh = NSSelectorFromString(@"refresh_backup");
-        shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_LAST_ERROR,
-                            "the disk was full", NULL);
-        [NSApp sendAction:refresh to:window.delegate from:nil];
-        check(label(@"The last backup pass failed: the disk was full") != nil,
-              "settings: the last backup's failure (backup_last_error) is shown");
-        [button(@"Back Up Now") performClick:nil];
-        for (int i = 0; i < 100 && (app->backup_running ||
-                                    label(@"The last backup pass failed") != nil); i++) {
-            check_spin(0.05);
-        }
-        check(label(@"The last backup pass failed") == nil,
-              "settings: ... until a backup succeeds");
-        check(label(@"Last backup: ") != nil,
-              "settings: when the last backup was made (backup_last_at) is shown");
-
         /* Cleanup: the retention is held to its range and written as a
          * pair, the line under it says what that amounts to, and Clean Up
          * Now asks before it takes anything.  A task completed longer ago
@@ -2921,21 +2762,10 @@ check_settings(TaskApp *app, NSString *dir)
         task_config_set_int(TASK_CFG_CLEANUP_AFTER, was_after);
         task_config_set_int(TASK_CFG_CLEANUP_UNIT, was_unit);
 
-        /* Put the settings back, then close with a probe still in flight. */
-        shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_DIR, seeded_dir, NULL);
-        [button(@"Back up the database automatically") performClick:nil];
-        check(policy(app, SHARED_SETTING_BACKUP_ENABLED) == 0,
-              "settings: (backups off again)");
-        shared_settings_set(app->db->shared, SHARED_SETTING_BACKUP_ENABLED,
-                            was_enabled ? "1" : "0", NULL);
-        [button(@"Update") performClick:nil];
         [window close];
     }
     check_spin(0.5);
-    check(weak_window == nil, "settings: a window closed during a check is released");
-    [files removeItemAtPath:backups error:NULL];
-    [files removeItemAtPath:xdg error:NULL];
-    free(seeded_dir);
+    check(weak_window == nil, "settings: a closed window is released");
 }
 
 
@@ -3244,6 +3074,7 @@ main(int argc, const char *argv[])
         task_core_views_init();
         tasks_commands_install();
         TaskApp *app  = task_app_new();
+        cal_eventkit_init(app);          /* the calendar settings object, as at launch */
         char    *path = shared_db_path(NULL);
         app->db = path != NULL && g_file_test(path, G_FILE_TEST_EXISTS)
             ? task_db_open(path, NULL) : NULL;
@@ -3261,7 +3092,6 @@ main(int argc, const char *argv[])
         check_row_text(app);
         check_compact(app, dir);
         check_status_message(app);
-        check_open_database(app, dir);
         check_menu_bar();
         check_sidebar(app, dir);
         check_tags(app, dir);
@@ -3279,6 +3109,7 @@ main(int argc, const char *argv[])
             check_spin(atof(argv[2]));
         }
 
+        cal_eventkit_shut_down();
         task_app_free(app);
         task_config_close();
         return check_result();

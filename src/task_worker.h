@@ -1,8 +1,8 @@
 /* ===========================================================================
  * task_worker.h — the periodic background pass, once.
  *
- * Several subsystems (the rotating backup, the recurrence pass, and the
- * syncs that used to live here) each wanted the same thing: a
+ * Several subsystems (the recurrence pass, the cleanup pass, and the
+ * syncs and backup that used to live here) each wanted the same thing: a
  * config-driven timer that runs a pass every N minutes against the
  * database path it was armed with.  Each grew its own copy — an
  * identical flag, timer id, copied path, tick, destroy hook and arm
@@ -10,7 +10,7 @@
  *
  * Three copies is how they drifted.  The Settings "move the database"
  * flow (since deleted — gotcha 14) re-armed all three; the File → Open
- * Database path re-armed two, leaving the backup worker pointed at a
+ * Database path re-armed two, leaving one worker pointed at a
  * file that had just been moved — where it would open the missing path
  * and helpfully CREATE an empty database there.  That is a data-safety
  * bug produced purely by duplication, and
@@ -35,8 +35,8 @@
 
 /* Whether arming also runs a pass immediately.
  *
- *   NEVER  — arm the timer and nothing else (the backup: an unprompted
- *            copy at every launch is not wanted).
+ *   NEVER  — arm the timer and nothing else (a pass at every launch is
+ *            not wanted).
  *   ARMED  — one pass, but only when a timer was actually installed, and
  *            only when `ready` says so (a sync at interval 0 means the
  *            user asked for manual-only).
@@ -67,7 +67,7 @@ typedef enum {
  *                      from the registry); <= 0 means "no timer" (manual
  *                      only).  NULL means the period is period_min.
  *   period_min       — a FIXED period in minutes, for a worker whose
- *                      cadence is not a setting (the backup's poll); used
+ *                      cadence is not a setting; used
  *                      only when interval_key is NULL.  0 = no timer.
  *   initial          — see above.
  *   running          — the subsystem's own in-flight flag, so a tick that
@@ -113,8 +113,8 @@ void task_worker_arm(TaskApp *app, const TaskWorkerDef *def,
  * `db_path`.
  *
  * This is the call that must be used wherever the database changes
- * identity — startup, a directory switch, File → Open Database.  Naming
- * individual workers there is what let one go missing.
+ * identity (today only at startup).  Naming individual workers there is
+ * what let one go missing.
  * ------------------------------------------------------------------------- */
 void task_worker_arm_all(TaskApp *app, const gchar *db_path);
 

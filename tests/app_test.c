@@ -115,8 +115,8 @@ test_events(TaskApp *app)
 /*
  * test_outside_changes — the watch (task_app_check_outside): another
  * connection's commit fires the full refresh once; the app's own writes,
- * and another connection's transaction that writes nothing (the backup
- * poll's claim check), do not; the timer finds a change by itself.
+ * and another connection's transaction that writes nothing (camb.io
+ * Database's backup poll and its claim check), do not; the timer finds a change by itself.
  *
  * Inputs:
  *   app — the context

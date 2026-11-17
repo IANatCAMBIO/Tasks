@@ -33,7 +33,6 @@ static const shared_command_t commands[] = {
       @"Delete the selected task" },
     { @"task-info",           @"Info…",                   @"i", cmd,       app, nil, nil },
     { @"clear-completed",     @"Clear Completed Tasks",   @"",  0,         app, nil, nil },
-    { @"open-database",       @"Open Database File…",     @"o", cmd,       app, nil, nil },
     { @"find",                @"Find…",                   @"f", cmd,       app, nil, nil },
     { @"toggle-completed",    @"Hide Completed",          @"",  0,         app, @"eye.slash",
       @"Hide completed tasks" },

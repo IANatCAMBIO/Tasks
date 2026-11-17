@@ -2,8 +2,8 @@
  * task_paths — where this program keeps its data, and the one place it must
  * never go.
  *
- * Everything the app stores per user (the database, the ini, the default
- * backup folder) lives in ONE directory, answered by task_data_dir():
+ * Everything the app stores per user (the ini, attachments) lives in ONE
+ * directory, answered by task_data_dir():
  *
  *   1. $TASKS_DATA_DIR when it is set and not empty (the development and
  *      test sandbox: `make run`, `make seed` and `make test` always set it
@@ -14,7 +14,7 @@
  * <XDG data dir>/tasks (~/.local/share/tasks).  This fork is experimental
  * and must not be able to reach that directory by any route — a default,
  * a config value, a file chooser — so task_path_is_live_data() names it and
- * the database and backup code refuse any path it answers YES for.  The
+ * the database code refuses any path it answers YES for.  The
  * fence comes down when the fork is integrated and the owner decides how
  * the data moves across.
  *
@@ -77,31 +77,5 @@ char *task_data_dir_ensure(void);
  *   path that cannot be resolved at all is refused.
  */
 bool task_path_is_live_data(const char *path);
-
-/*
- * task_path_shares_fate — whether `dir` is `other`, or sits inside it: the
- * test behind the backup destination's warning in Settings.
- *
- * It is a containment test, not a comparison, because the DEFAULT backup
- * folder is a `backups/` directory inside the database's own: a child goes
- * to the trash at the same moment as its parent, so it is the one
- * arrangement the warning most needs to describe.
- *
- * Both paths are made absolute and have "//", "." and ".." collapsed by the
- * text alone, so "/a/b" and "/a/./b" are one answer, and "/a/backups-old"
- * is not read as living inside "/a/backups".  Compared without regard to
- * case, as the fence is.  Symbolic links are NOT resolved: that needs the
- * paths to exist, and would make the answer depend on whether a removable
- * disk happens to be plugged in.  Nothing is opened.
- *
- * Inputs:
- *   dir   — the directory asked about; NULL is "no"
- *   other — the directory it might share the fate of; NULL is "no"
- *
- * Output:
- *   true when losing `other` would lose `dir` too.  false also when a path
- *   cannot be made absolute or memory runs out.
- */
-bool task_path_shares_fate(const char *dir, const char *other);
 
 #endif /* TASK_PATHS_H */

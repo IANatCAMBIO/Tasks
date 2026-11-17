@@ -1,4 +1,5 @@
 #import "library_window.h"
+#import "cal_eventkit.h"
 #import "day_planner.h"
 #import "editor_window.h"
 #import "kanban.h"
@@ -10,10 +11,11 @@
 #import "task_list.h"
 #import "ui_util.h"
 
+#import "shared_calendar.h"
+
 #include "task_config.h"
 #include "task_ops.h"
 #include "task_order.h"
-#include "task_switch.h"
 #include "task_view.h"
 
 /*
@@ -26,6 +28,13 @@
 
 /* The toolbar's own identifiers (command items use the command table's). */
 static NSString * const toolbar_ident        = @"tasks.library";
+
+/* The command whose toolbar button follows the calendar switch. */
+static NSString * const planner_ident        = @"toggle-day-planner";
+
+/* The one library window, for tasks_library_calendar_sync_changed; nil
+ * while there is none. */
+static __weak TasksLibraryWindow *the_library;
 static NSString * const search_item_ident    = @"search";   /* as Notes names its */
 
 /* The search field's words.  The placeholder says what is searched: the box
@@ -294,6 +303,7 @@ init_with_app:(TaskApp *)app
     _app         = app;
     _selection   = task_sel_default();
     _kanban_on   = task_config_get_bool(TASK_CFG_KANBAN_VIEW);
+    the_library  = self;
 
     window.title        = @TASKS_APP_NAME;
     window.toolbarStyle = NSWindowToolbarStyleExpanded;
@@ -540,7 +550,11 @@ build_toolbar
 }
 
 /*
- * toolbar_idents — the toolbar's items, left to right.
+ * toolbar_idents — the toolbar's items, left to right.  The day planner
+ * button is there only while the day planner syncs with Calendar: with
+ * the sync off the planner is a view the user has not taken up, and its
+ * button would be one more thing to explain.  The View menu keeps the
+ * command.
  *
  * Output:
  *   item identifiers.
@@ -548,7 +562,7 @@ build_toolbar
 static NSArray<NSToolbarItemIdentifier> *
 toolbar_idents(void)
 {
-    return @[
+    NSMutableArray<NSToolbarItemIdentifier> *idents = [@[
         @"toggle-sidebar",
         NSToolbarSpaceItemIdentifier,
         @"new-task",
@@ -556,10 +570,43 @@ toolbar_idents(void)
         NSToolbarSpaceItemIdentifier,
         @"toggle-completed",
         @"toggle-pane",
-        @"toggle-day-planner",
-        NSToolbarFlexibleSpaceItemIdentifier,
-        search_item_ident,
-    ];
+    ] mutableCopy];
+    if (shared_calendar_enabled(tasks_calendar_settings())) [idents addObject:planner_ident];
+    [idents addObject:NSToolbarFlexibleSpaceItemIdentifier];
+    [idents addObject:search_item_ident];
+    return idents;
+}
+
+/*
+ * calendar_sync_changed — the planner button is put in, or taken out,
+ * where toolbar_idents now wants it; an open planner closes with the
+ * switch.
+ * Documented in library_window.h.
+ */
+- (void)
+calendar_sync_changed
+{
+    NSToolbar *toolbar = self.window.toolbar;
+    NSArray<NSToolbarItemIdentifier> *wanted = toolbar_idents();
+    NSUInteger have = [toolbar.items indexOfObjectPassingTest:^BOOL(NSToolbarItem *item, NSUInteger i, BOOL *stop) {
+        return [item.itemIdentifier isEqualToString:planner_ident];
+    }];
+    NSUInteger want = [wanted indexOfObject:planner_ident];
+    if (want != NSNotFound && have == NSNotFound) {
+        [toolbar insertItemWithItemIdentifier:planner_ident atIndex:(NSInteger)want];
+    } else if (want == NSNotFound && have != NSNotFound) {
+        [toolbar removeItemAtIndex:(NSInteger)have];
+    }
+    if (want == NSNotFound && self.day_planner_shown) [self toggle_day_planner];
+}
+
+/*
+ * tasks_library_calendar_sync_changed — see library_window.h.
+ */
+void
+tasks_library_calendar_sync_changed(void)
+{
+    [the_library calendar_sync_changed];
 }
 
 /*
@@ -1549,123 +1596,6 @@ windowDidUpdate:(NSNotification *)note
     }
 }
 
-/* ── The database ────────────────────────────────────────────────────── */
-
-/*
- * report_database_health — check the open database and say what was found.
- * Documented in library_window.h.
- */
-- (void)
-report_database_health
-{
-    if (task_db_health_check(self.app->db)) {
-        task_app_status(self.app, "DB at %s loaded, integrity check passed",
-                        shared_db_file(self.app->db->shared));
-        return;
-    }
-    const TaskDbHealth *health = task_db_health(self.app->db);
-    NSString *lead = health->ran ? @"The database integrity check found issues:"
-                                 : @"The database integrity check did not complete:";
-    shared_ui_notice(self.window, @"Database Integrity Check",
-                    [NSString stringWithFormat:@"%@\n\n%@", lead,
-                        tasks_string(health->detail != NULL ? health->detail : "?")],
-                    nil);
-}
-
-/*
- * offer_default_database: — after a database was opened by hand, ask
- * whether both apps should open it at every launch.  Nothing is asked when
- * it already is the default (task_switch_can_be_default).  "Make Default"
- * asks the shared module, and a refusal (a sandboxed run, while
- * $CAMBIO_SHARED_DB is set) is shown in the module's words.  Declining
- * leaves it open for this session only.
- *
- * Inputs:
- *   path — the database just opened
- */
-- (void)
-offer_default_database:(NSString *)path
-{
-    if (!task_switch_can_be_default(path.fileSystemRepresentation)) return;
-
-    __weak TasksLibraryWindow *ws = self;
-    shared_ui_confirm(self.window, @"Make this the default database?",
-                     [NSString stringWithFormat:
-                         @"%@\n\nNotes and " @TASKS_APP_NAME @" will open it at every launch.  "
-                         @"Cancel keeps it open in " @TASKS_APP_NAME @" for this session only.",
-                         path],
-                     @"Make Default", NO, ^(BOOL confirmed) {
-        TasksLibraryWindow *s = ws;
-        if (!s || s.is_shut_down || !confirmed) return;
-        /* Only if it is still the open database: another may have been
-         * opened while the question was up. */
-        const char *file = path.fileSystemRepresentation;
-        if (strcmp(shared_db_file(s.app->db->shared), file) != 0) return;
-        char *why = NULL;
-        if (shared_db_set_default_path(file, &why) == 0) {
-            task_app_status(s.app, "Default database set to %s", file);
-        } else {
-            shared_ui_notice(s.window, @"Could not make it the default",
-                            tasks_string(why), nil);
-        }
-        free(why);
-    });
-}
-
-/*
- * open_database: — switch the running app to another database file.
- * Inputs and the full behaviour are documented in library_window.h.
- */
-- (void)
-open_database:(NSString *)path
-{
-    if (self.is_shut_down) return;
-
-    const char *file = path.fileSystemRepresentation;
-    char       *why  = NULL;
-    task_switch_check_t verdict = task_switch_check(self.app, file, &why);
-
-    if (verdict == task_switch_already_open) {
-        task_app_status(self.app, "%s is already open", file);
-        return;
-    }
-    if (verdict == task_switch_can_open) {
-        /* The editors close first: each flushes its pending save, which
-         * must land in the database the task came from. */
-        tasks_editor_close_all();
-        if (task_switch_database(self.app, file, &why)) {
-            /* The selection named a row of the old database. */
-            [self select:task_sel_default()];
-            task_app_notify_changed(self.app);
-            [self report_database_health];
-            [self offer_default_database:path];
-            return;
-        }
-    }
-    shared_ui_notice(self.window, @"Could not open the database",
-                    [NSString stringWithFormat:@"%@\n\n%@", path, tasks_string(why)], nil);
-    free(why);
-}
-
-/*
- * pick_database — File > Open Database File...: let the user pick a .db
- * file, then switch to it.
- */
-- (void)
-pick_database
-{
-    __weak TasksLibraryWindow *ws = self;
-    shared_ui_pick_path(SharedPickOpenFile, @"Choose a shared Notes and Tasks database to open.",
-                        @"Open", @[[UTType typeWithFilenameExtension:@"db"]], nil, ^(NSString *path) {
-        if (!path) return;
-        /* On the next pass: the panel's sheet is still coming down, and
-         * what follows may put up a sheet of its own. */
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [ws open_database:path];
-        });
-    });
-}
-
 /* ── Command dispatch ────────────────────────────────────────────────── */
 
 /*
@@ -1926,19 +1856,6 @@ static BOOL
 validate_clear_completed(id target, id item, SharedCommandState *state)
 {
     return task_sel_tag_id(((TasksLibraryWindow *)target).selection) != 0;
-}
-
-/*
- * run_open_database — Open Database File…
- *
- * Inputs:
- *   target — the window
- *   sender — the item (unused)
- */
-static void
-run_open_database(id target, id sender)
-{
-    [(TasksLibraryWindow *)target pick_database];
 }
 
 /*
@@ -2250,7 +2167,6 @@ shell_commands(size_t *n)
         { @"delete-task",          run_delete_task,          validate_delete_task          },
         { @"task-info",            run_task_info,            validate_task_info            },
         { @"clear-completed",      run_clear_completed,      validate_clear_completed      },
-        { @"open-database",        run_open_database,        NULL                          },
         { @"find",                 run_find,                 validate_not_compact          },
         { @"toggle-completed",     run_toggle_completed,     validate_toggle_completed     },
         { @"toggle-subtasks",      run_toggle_subtasks,      validate_toggle_subtasks      },

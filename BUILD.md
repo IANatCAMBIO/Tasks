@@ -103,9 +103,10 @@ file at 200 is refused by a Notes or Tasks built against an older
 `TASKS_DATA_DIR` to a folder under `dev/` and `CAMBIO_SHARED_DB` to a
 database file inside it (`dev/data/shared_data.db`; each test its own
 scratch file under `dev/test-data`), so no development run uses the
-per-user data folder or the per-user shared database.  With no backup
-folder set, the shared module puts a sandbox database's backups in
-`backups/` beside it (`dev/data/backups`).  `dev/` is gitignored.
+per-user data folder or the per-user shared database.  The sandbox
+database is created by the seed tool and the tests themselves
+(`task_db_open`); the app only opens an existing file.  `dev/` is
+gitignored.
 
 The build must produce no compiler warnings.  One line of output is not a
 warning: `codesign` prints "replacing existing signature" each time it
@@ -171,8 +172,6 @@ The programs, all linked against the core only (no AppKit), include:
 | `config_test` | the data-folder policy and override, the fence round the GTK app's data, config defaults and write-through |
 | `shared_test` | the shared database: the column-diff update (two connections change different fields and both survive) and its stamping rules; Notes action items (the Action Items tag the schema gives them, the note lookup, the tombstone, the purge Tasks refuses); the tags Notes shares (a note's tag offered but not shown until a task carries it, its spelling kept, the favorite flags apart, the tag outliving a task while a note carries it); refreshing only on a change to Tasks' data (`change_rev`), never on its own writes; writes failing, and then succeeding, while a second process (this test re-run with `--hold`) holds the write lock past the busy timeout — this test takes about 20 s |
 | `cleanup_test` | the completed-task cleanup: the retention policy and its clamp, the calendar cutoff (a month is a month, a clock change allowed for), what a pass takes and what it must not (open work, a completed subtask of an open task, a task between occurrences of a repeat), a tag going with the last task that carried it, and the Notes action item — tombstoned with its link so Notes keeps the note's text, removed outright only once Notes has let go |
-| `backup_test` | backups through the shared module: refused destinations (Tasks' live-data fence and the module's folder checks), Back Up Now and its UTC file name, retention, the periodic poll |
-| `switch_test` | Open Database File: refusals (an old `tasks.db` and an empty file among them, left untouched), a switch, Make Default under the sandbox |
 | `rows_test` | the row description (lines, emphasis, the tags line, notes preview, a Notes item's plain title) and the pane collection (filters, search, status line, the Favorites view); which tag New Task gives (the selected tag, else the default tag) |
 | `tags_test` | tags: adding by name (any case, trimmed), the refusals, a subtask's inherited tags, removal (the last tag too), a tag going with its last task, emoji and favorite, a tag's view and its saved order |
 | `sidebar_test` | a tag's label, the selection fallback after a rebuild |
@@ -199,9 +198,7 @@ src/
   search.[ch]          search query language
   recur.[ch]           recurring tasks
   cleanup.[ch]         deleting completed tasks once they are older than the retention
-  backup.[ch]          backups through the shared module, on a background thread
-  task_worker.[ch]     scheduler for the recurrence pass, the cleanup pass and the backup poll
-  task_switch.[ch]     File > Open Database File, Make Default
+  task_worker.[ch]     scheduler for the recurrence pass, the cleanup pass and the notifications
   task_view.[ch]       registry of sidebar views
   core_views.[ch]      the three built-in views
   task_ops.[ch]        clear-completed, the default tag

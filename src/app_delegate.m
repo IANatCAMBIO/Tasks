@@ -6,9 +6,6 @@
 #import "task_notify.h"
 #import "ui_util.h"
 
-#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
-
-#include "backup.h"
 #include "cleanup.h"
 #include "core_views.h"
 #include "db.h"
@@ -16,7 +13,6 @@
 #include "cal_sync.h"
 #include "recur.h"
 #include "task_config.h"
-#include "task_switch.h"
 #include "task_paths.h"
 #include "task_worker.h"
 
@@ -70,11 +66,10 @@ static const shared_command_handler_t *app_commands(size_t *n);
 /* ── Launch ──────────────────────────────────────────────────────────── */
 
 /*
- * start_config — bring the config and the non-database registries up.
- * Called at launch before the database is opened.  The database path is
- * resolved here (shared_db_path: $CAMBIO_SHARED_DB, else the pointer file
- * both apps follow, else the per-user default) and returned so the caller
- * can check whether it exists before deciding to show the Welcome screen.
+ * start_config — bring the config and the registries up.  Called at launch
+ * before the database is opened.  The database path is resolved here
+ * (shared_db_path: $CAMBIO_SHARED_DB, else the pointer file both apps
+ * follow, else the per-user default) and returned.
  *
  * Inputs:
  *   out_path — receives the resolved database path (caller must free);
@@ -101,7 +96,6 @@ start_config:(char **)out_path
     task_core_views_init();
     task_recur_init(app);
     task_cleanup_init(app);
-    task_backup_init(app);
     task_notify_init(app);
     cal_eventkit_init(app);
     cal_sync_init(app, cal_eventkit_backend());
@@ -116,84 +110,6 @@ start_config:(char **)out_path
         return message;
     }
     return nil;
-}
-
-/*
- * open_db_at: — open (or create) the database at `path`.  Only the open:
- * the workers are armed and the health reported once the library window
- * exists, so that what they say has somewhere to land.
- *
- * Inputs:
- *   path — filesystem path to the .db file (UTF-8)
- *
- * Output:
- *   nil on success; otherwise a message saying what failed.
- */
-- (NSString *)
-open_db_at:(const gchar *)path
-{
-    GError *err   = NULL;
-    self.app->db  = task_db_open(path, &err);
-    if (self.app->db == NULL) {
-        NSString *message = [NSString stringWithFormat:@"%@",
-            tasks_string(err != NULL ? err->message : "The database cannot be opened.")];
-        g_clear_error(&err);
-        return message;
-    }
-    return nil;
-}
-
-/* How the database to open was arrived at. */
-typedef NS_ENUM(NSInteger, TasksWelcomeChoice) {
-    TasksWelcomeCreate = 0,         /* the default path; a new database is
-                                     * created there if it is missing     */
-    TasksWelcomeOpen                /* an existing file the user picked    */
-};
-
-/*
- * ask_welcome: — first-run welcome, in a tool panel: open an existing
- * database, create a new one at the default path, or quit (also what
- * Escape and the close box do).  Launch carries on from the answer
- * (finish_launch_at:choice:); cancelling the file chooser comes back to
- * the question rather than creating a database the user did not ask for.
- *
- * Inputs:
- *   default_path — the path "Create New Database" uses (its name is shown)
- */
-- (void)
-ask_welcome:(NSString *)default_path
-{
-    NSString *message = [NSString stringWithFormat:
-        @"No database was found.  You can open an existing database shared "
-        @"by Notes and Tasks, or create a new one named \u201C%@\u201D.",
-        default_path.lastPathComponent];
-
-    __weak TasksAppDelegate *ws = self;
-    [SharedToolPanel show_message:@"Welcome to " @TASKS_APP_NAME message:message
-                          symbol:@"tray.full.fill"
-                         buttons:@[@"Open Existing Database\u2026", @"Create New Database", @"Quit"]
-                     destructive:-1 over:nil
-                         handler:^(NSInteger index) {
-        TasksAppDelegate *s = ws;
-        if (index == 1) {
-            [s finish_launch_at:default_path choice:TasksWelcomeCreate];
-            return;
-        }
-        if (index != 0) {
-            [NSApp terminate:nil];
-            return;
-        }
-        /* The file chooser is the system's: there is no app-drawn one. */
-        shared_ui_pick_path(SharedPickOpenFile, @"Choose a shared Notes and Tasks database to open.",
-                            @"Open", @[[UTType typeWithFilenameExtension:@"db"]], nil,
-                            ^(NSString *path) {
-            if (path) {
-                [s finish_launch_at:path choice:TasksWelcomeOpen];
-            } else {
-                [s ask_welcome:default_path];
-            }
-        });
-    }];
 }
 
 /*
@@ -216,13 +132,17 @@ watch_sigterm
 
 /*
  * applicationDidFinishLaunching: — start the core and build the menu bar,
- * then hand over to finish_launch_at:choice: — at once, or, on first run
- * (no shared database found), once the Welcome panel (ask_welcome:) has
- * been answered.
+ * open the shared database, build the library window, then arm the
+ * workers.  The workers are armed AFTER the window exists so that a status
+ * message posted while arming has somewhere to land.
  *
- * If the core cannot start, the reason is shown and the app quits.  By then
- * the data directory may have been created; no existing data has been
- * changed.
+ * The database is never created here: camb.io Database Manager (camb.io_db_mgr.app,
+ * the menu bar app that owns the shared file, its integrity check and its
+ * backups) creates it, and Tasks only opens what is there
+ * (task_db_open_existing).  A database that is missing or cannot be
+ * opened is reported in one notice and the app quits.  If the core cannot
+ * start, the reason is shown and the app quits likewise; by then the data
+ * directory may have been created, but no existing data has been changed.
  *
  * Inputs:
  *   note — NSApplicationDidFinishLaunchingNotification (unused)
@@ -236,8 +156,8 @@ applicationDidFinishLaunching:(NSNotification *)note
     [self build_menu_bar];
     [self watch_sigterm];
 
-    char     *default_path = NULL;
-    NSString *config_err   = [self start_config:&default_path];
+    char     *path       = NULL;
+    NSString *config_err = [self start_config:&path];
     if (config_err) {
         shared_ui_notice(nil, @"Could not start", config_err, ^{
             [NSApp terminate:nil];
@@ -245,53 +165,20 @@ applicationDidFinishLaunching:(NSNotification *)note
         return;
     }
 
-    /* First run: the shared database does not exist yet, so ask before
-     * creating one. */
-    NSString *path = tasks_string(default_path);
-    BOOL first_run = !g_file_test(default_path, G_FILE_TEST_EXISTS);
-    free(default_path);
-    if (first_run) {
-        [self ask_welcome:path];
-    } else {
-        [self finish_launch_at:path choice:TasksWelcomeCreate];
-    }
-}
-
-/*
- * finish_launch_at:choice: — the rest of the launch, once the database to
- * open is known: open it (an existing file picked at the Welcome panel
- * becomes the default for both apps, through the pointer file
- * shared_db_set_default_path), build the library window, then arm the
- * workers and check the database.  The workers are armed AFTER the window
- * exists so that a status message posted while arming has somewhere to
- * land.  A database that cannot be opened is reported and the app quits.
- *
- * Inputs:
- *   open_path — the database file
- *   choice    — how it was arrived at
- */
-- (void)
-finish_launch_at:(NSString *)open_path choice:(TasksWelcomeChoice)choice
-{
-    const char *path   = open_path.fileSystemRepresentation;
-    NSString   *db_err = [self open_db_at:path];
-    /* An existing database chosen at the Welcome panel is the one both
-     * apps open from now on — or the Welcome panel would be back next
-     * time.  The shared module refuses while $CAMBIO_SHARED_DB fixes the
-     * file; the database is then open for this session only. */
-    BOOL made_default = NO;
-    if (db_err == nil && choice == TasksWelcomeOpen && task_switch_can_be_default(path)) {
-        char *why = NULL;
-        made_default = shared_db_set_default_path(path, &why) == 0;
-        if (!made_default) NSLog(@"[launch] cannot make %s the default: %s", path, why);
-        free(why);
-    }
-    BOOL for_session_only = db_err == nil && choice == TasksWelcomeOpen && !made_default;
-
-    if (db_err) {
-        shared_ui_notice(nil, @"Could not open the database", db_err, ^{
-            [NSApp terminate:nil];
-        });
+    GError *err  = NULL;
+    self.app->db = task_db_open_existing(path, &err);
+    free(path);
+    if (self.app->db == NULL) {
+        NSString *reason = tasks_string(err != NULL ? err->message
+                                                    : "The database cannot be opened.");
+        g_clear_error(&err);
+        shared_ui_notice(nil, @"Could not open the database",
+                         [NSString stringWithFormat:
+                             @"%@\n\nThe database Notes and Tasks share is created and looked "
+                             @"after by camb.io Database Manager (camb.io_db_mgr.app), which lives in the "
+                             @"menu bar. Start it once to create the database, then open Tasks "
+                             @"again.", reason],
+                         ^{ [NSApp terminate:nil]; });
         return;
     }
 
@@ -303,16 +190,9 @@ finish_launch_at:(NSString *)open_path choice:(TasksWelcomeChoice)choice
     [self.library showWindow:nil];
     [NSApp activate];
 
-    /* The workers and the health check come AFTER the window: what they
-     * report lands in its status bar and its sheets. */
     task_worker_arm_all(self.app, shared_db_file(self.app->db->shared));
     task_app_watch_start(self.app);
-    [self.library report_database_health];
     [self start_hotkey];
-    if (for_session_only) {
-        task_app_status(self.app, "%s is open for this session only",
-                        shared_db_file(self.app->db->shared));
-    }
 
     gint n_tasks = 0, n_tags = 0;
     task_db_totals(self.app->db, &n_tasks, &n_tags);
@@ -639,8 +519,8 @@ build_menu_bar
     [app_menu addItem:NSMenuItem.separatorItem];
     [app_menu addItem:standard_item(@"Quit " @TASKS_APP_NAME, @selector(terminate:), @"q", cmd)];
 
-    /* ── File menu ── what is created, then the selected task, the selected
-     * tag, and the file all of it is kept in. */
+    /* ── File menu ── what is created, then the selected task, then the
+     * selected tag. */
     NSMenu *file_menu = add_menu(bar, @"File");
     [file_menu addItem:command(@"new-task")];
     [file_menu addItem:command(@"quick-task")];
@@ -653,8 +533,6 @@ build_menu_bar
     [file_menu addItem:command(@"add-favorite")];
     [file_menu addItem:command(@"remove-favorite")];
     [file_menu addItem:command(@"clear-tag")];
-    [file_menu addItem:NSMenuItem.separatorItem];
-    [file_menu addItem:command(@"open-database")];
     [file_menu addItem:NSMenuItem.separatorItem];
     [file_menu addItem:standard_item(@"Close Window", @selector(performClose:), @"w", cmd)];
 

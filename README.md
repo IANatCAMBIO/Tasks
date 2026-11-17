@@ -60,12 +60,13 @@ dependencies, test targets and the platform notes.
 
 Launch from `~/Applications`, or `make seed && make run` for the sandbox.
 
-**The database.** With no database where one is expected, Tasks asks
-whether to create a new one or open an existing shared database file. It
-never creates one silently. The default is
-`~/Library/Application Support/camb.io/shared_data.db`, shared with Notes;
-the file must be on a local disk and outside iCloud Drive, Dropbox or any
-other synced folder.
+**The database.** Tasks opens the database it shares with Notes,
+`~/Library/Application Support/camb.io/shared_data.db`, and never creates
+one: that is the job of **camb.io Database Manager** (`camb.io_db_mgr.app`, the menu
+bar app in the `cambio_db` repository beside this one), which also checks
+the file's integrity and keeps its backups. Start it once before Tasks;
+with no database there, Tasks says so and quits. The file must be on a
+local disk and outside iCloud Drive, Dropbox or any other synced folder.
 
 **Calendar access** is asked for once, the first time you tick
 Settings ▸ Calendar ▸ *Sync the day planner with Calendar*. It is off until
@@ -135,8 +136,9 @@ Compared with Reminders:
   off until you turn it on and asking before the first pass. An action
   item from a note loses the task it became and nothing else: the line in
   the note keeps its text, with a ✅ where the `!` was
-- **Hourly verified backups**, on by default: `VACUUM INTO` copies kept 48
-  deep, with the policy in the database so Notes follows it too
+- **One database, looked after in one place** — its integrity checks and
+  hourly verified backups are camb.io Database Manager's (`../cambio_db`), the
+  same for Notes
 - **A 3-Day Forecast view**, subtasks that inherit their parent's tags,
   recurring tasks that roll forward while the app runs, tall rows with
   notes and attachment counts, and a Compact Controls layout for a narrow

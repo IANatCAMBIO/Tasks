@@ -37,9 +37,6 @@
  *                    the editors' "From note" lines — is re-read.
  *   status_l       — listeners for a one-line event message.
  *   listener_next  — the next subscription id.
- *   backup_running — TRUE while the backup's worker (backup.h) is in
- *                    flight; blocks a second concurrent pass.
- *   backup_timer   — the backup's periodic task_loop timer id, or 0.
  *   watch_timer    — the outside-change watch's task_loop timer id, or 0
  *                    (task_app_watch_start).
  */
@@ -50,8 +47,6 @@ typedef struct TaskApp {
     GSList       *notes_l;
     GSList       *status_l;
     guint         listener_next;
-    gboolean      backup_running;
-    guint         backup_timer;
     guint         watch_timer;
 } TaskApp;
 
@@ -65,8 +60,8 @@ TaskApp *task_app_new(void);
 
 /*
  * task_app_free — stop the outside-change watch, close the database, drop
- * any listener still subscribed and free the context.  The backup timer
- * must already be cancelled (the caller disarms the workers first; see
+ * any listener still subscribed and free the context.  The workers'
+ * timers must already be cancelled (the caller disarms them first; see
  * task_worker_disarm_all).
  *
  * Inputs:

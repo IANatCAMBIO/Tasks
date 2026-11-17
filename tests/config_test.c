@@ -277,13 +277,6 @@ test_fence_enforced(const char *scratch)
     check(task_db_open(path, NULL) == NULL, "enforced: task_db_open refuses a link to it");
     unlink(path);
 
-    gchar *detail = NULL;
-    check(!task_db_verify_file(target, &detail) && detail != NULL &&
-          strstr(detail, "refused") != NULL,
-          "enforced: task_db_verify_file refuses it");
-    g_free(detail);
-    check(task_db_file_sha256(target) == NULL, "enforced: task_db_file_sha256 refuses it");
-
 
     /* The stand-in live files are exactly as they were made. */
     char  seen[32] = "";

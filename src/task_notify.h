@@ -33,7 +33,7 @@
 /*
  * task_notify_init — register the notification worker with the shared
  * scheduler (task_worker.h).  Call once at startup, before any window
- * or thread exists, alongside task_recur_init and task_backup_init.
+ * or thread exists, alongside task_recur_init.
  *
  * Inputs:
  *   app — the application context

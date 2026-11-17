@@ -7,7 +7,7 @@
 /*
  * prepare — compile one statement.  Failures are not logged: every reader
  * then returns nothing (the tables are the shared schema's, so a failure
- * here means a damaged file, which the health check reports).
+ * here means a damaged file, which camb.io Database Manager's check reports).
  *
  * Inputs:
  *   db  — the connection

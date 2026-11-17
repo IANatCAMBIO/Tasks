@@ -31,9 +31,6 @@
  * Every fixed key, with its type and default.  "bool" is "1"/"0".  A key
  * with no default reads as NULL / FALSE / 0 until it is written. */
 
-/* The backup policy is not here: it lives in the shared database's
- * shared_settings (backup.h), one policy for Notes and Tasks. */
-
 /* Appearance (Settings window) */
 #define TASK_CFG_BOLD_TITLES         "bold_task_titles"        /* bool, 0 */
 #define TASK_CFG_KANBAN_SHADOW       "kanban_shadow"           /* bool, 1 */

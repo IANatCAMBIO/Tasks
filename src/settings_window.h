@@ -3,16 +3,15 @@
 
 /*
  * settings_window — the Settings window: Appearance, New Tasks (Quick
- * Task's system-wide shortcut), notifications, the
- * database health plate, rotating backups, Google Calendar.
+ * Task's system-wide shortcut), notifications, Cleanup, the Calendar.
+ * The database itself — its health, its fingerprint, its backups — is
+ * camb.io Database Manager's (camb.io_db_mgr.app), not shown here.
  *
  * Every control is write-through: a change lands in the config at once
  * (task_config.h) and there is no OK or Apply.  A setting that changes
  * what the task pane shows is followed by task_app_notify_tasks, and the
  * panes re-read their settings on every refresh — so Settings never needs
- * to reach into another window.  The backup settings are the shared
- * database's (backup.h), which Notes follows too; the periodic poll reads
- * them afresh every time, so nothing needs re-arming.
+ * to reach into another window.
  *
  * The module owns its one window: created on first open, released when it
  * closes.

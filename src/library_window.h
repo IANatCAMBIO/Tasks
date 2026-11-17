@@ -102,6 +102,13 @@
 
 @end
 
+/*
+ * tasks_library_calendar_sync_changed — the calendar switch moved in
+ * Settings: the one library window, if there is one, follows it
+ * (calendar_sync_changed).
+ */
+void tasks_library_calendar_sync_changed(void);
+
 @interface TasksLibraryWindow : NSWindowController <NSUserInterfaceValidations>
 
 /*
@@ -143,6 +150,15 @@
 /* Whether the day planner shows: its split item is not collapsed (the
  * toggle-day-planner command flips it, sliding it as the sidebar slides). */
 @property (nonatomic, readonly) BOOL day_planner_shown;
+
+/*
+ * calendar_sync_changed — "Sync the day planner with Calendar" moved: the
+ * day planner button is in the toolbar only while the switch is on (the
+ * View menu keeps the command either way), and switching it off closes
+ * the planner if it was open.  A toolbar already as it should be is left
+ * alone.
+ */
+- (void)calendar_sync_changed;
 
 /*
  * manual_sort_live — whether rows may be dropped into a hand-made order
@@ -233,40 +249,6 @@
  *           already carries.  Any other command leaves the menu empty.
  */
 - (void)fill_menu:(NSMenu *)menu with_destinations_of:(NSString *)ident;
-
-/* ── The database ───────────────────────────────────────────────────── */
-
-/*
- * report_database_health — run the integrity check on the open database
- * and say what it found: a status message when it is sound, an alert on
- * this window when it is not.  Called after every open — at launch by the
- * app delegate, and by open_database: — because the check is the only
- * thing that catches a file gone bad before more is written into it.
- */
-- (void)report_database_health;
-
-/*
- * open_database: — switch the running app to another database file (what
- * File > Open Database File... does with the file the user picked).
- *
- * The file is checked first, read-only (task_switch.h): one that is
- * damaged, is not a stamped shared database (an old tasks.db), or lies
- * inside the GTK app's live data directory is refused with an alert giving
- * the core's reason, and nothing changes — the editors stay open and the
- * old database stays in use.
- * Otherwise the editors are closed (flushing their saves into the OLD
- * database), the databases are swapped, the workers re-armed, every pane
- * refreshed on the default selection, and the new database's health
- * reported.  If the file is not the default already
- * (task_switch_can_be_default) the user is then asked whether both apps
- * should open it at every launch; declining keeps it for this session
- * only, and a refusal by the shared module (while CAMBIO_SHARED_DB is set)
- * is shown in an alert in the module's words.
- *
- * Inputs:
- *   path — absolute path of the database file
- */
-- (void)open_database:(NSString *)path;
 
 /* ── Commands (see commands.h) ──────────────────────────────────────── */
 
